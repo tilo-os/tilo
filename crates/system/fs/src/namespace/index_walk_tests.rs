@@ -7,7 +7,7 @@
 //! or move of this replica's own, and a peer's delta through any of the
 //! apply entry points, must touch the nodes the change names instead, which
 //! the same counter proves. `node_lookup_count` is the unit
-//! `crates/system/fs/tests/performance_gate.rs` bounds for a listing, so a
+//! `crates/system/fs/tests/performance_check.rs` bounds for a listing, so a
 //! per-field re-read fails here rather than in a number nobody attributes.
 
 #![allow(clippy::arithmetic_side_effects, reason = "test fixtures")]

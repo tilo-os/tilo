@@ -13,7 +13,7 @@ use std::sync::{Arc, Mutex};
 struct Seen {
     syncs: Rc<Cell<usize>>,
     updates: Rc<Cell<usize>>,
-    drain_close_gate: Rc<RefCell<Option<Rc<Cell<bool>>>>>,
+    drain_close_check: Rc<RefCell<Option<Rc<Cell<bool>>>>>,
     drained: Rc<Cell<bool>>,
     saves: Rc<Cell<usize>>,
     saved: Rc<Cell<bool>>,
@@ -92,16 +92,20 @@ impl Widget for OwnerProbe {
 }
 impl crate::undo::CommittedActions for OwnerProbe {
     fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
-        self.actions
-            .take_committed()
-            .or_else(|| self.seen.drain_close_gate.borrow().is_some().then(Vec::new))
+        self.actions.take_committed().or_else(|| {
+            self.seen
+                .drain_close_check
+                .borrow()
+                .is_some()
+                .then(Vec::new)
+        })
     }
 }
 impl crate::undo::UndoPoints for OwnerProbe {
     fn get_state(&self) -> Option<String> {
-        if let Some(gate) = self.seen.drain_close_gate.borrow_mut().take() {
+        if let Some(check) = self.seen.drain_close_check.borrow_mut().take() {
             self.seen.drained.set(true);
-            gate.set(true);
+            check.set(true);
         }
         None
     }
@@ -539,7 +543,7 @@ fn update_drain_refusal_still_attempts_fresh_sync_and_retains_first_error() {
     let updates = seen.updates.get();
     let syncs = seen.syncs.get();
     let actor = frame.state.doc.get_actor().clone();
-    *seen.drain_close_gate.borrow_mut() = Some(binding.closing.clone());
+    *seen.drain_close_check.borrow_mut() = Some(binding.closing.clone());
     seen.wake.borrow().as_ref().unwrap().wake();
     let probe = crate::bound_dispatch::document_admission_probe::Probe::new(&binding);
     let result = frame.service_pending_owner_models();
@@ -549,7 +553,7 @@ fn update_drain_refusal_still_attempts_fresh_sync_and_retains_first_error() {
     let restored = frame.state.doc.get_actor() == &actor;
     let update_entered = seen.updates.get() == updates + 1;
     let sync_refused = seen.syncs.get() == syncs;
-    // The metadata callback tested the actual closing gate; no Source close
+    // The metadata callback tested the actual closing check; no Source close
     // occurred. Restore only this test condition before original strict close.
     binding.closing.set(false);
     close(&mut frame, 1);
@@ -611,7 +615,7 @@ fn failed_and_unvisited_snapshot_owners_precede_callback_late_owner() {
     assert_eq!(retry.unwrap(), 3);
 }
 
-fn background_gate(case: &str, presentation: super::owner_background_work::Presentation) {
+fn background_check(case: &str, presentation: super::owner_background_work::Presentation) {
     use durable_store::DurableStore;
     // The unwraps below name no case: a failure's output ends with this line.
     eprintln!("case: {case}");
@@ -748,9 +752,9 @@ fn background_owner_services_original_model_and_save_without_paint() {
             },
         ),
     ] {
-        background_gate(case, presentation);
+        background_check(case, presentation);
     }
-    // The other side of the gate: only a shown, running window with a GPU can paint, and what
+    // The other side of the check: only a shown, running window with a GPU can paint, and what
     // the service did is reported either way.
     let shown = Presentation {
         hidden: false,

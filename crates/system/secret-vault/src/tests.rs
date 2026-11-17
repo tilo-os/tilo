@@ -123,15 +123,15 @@ fn local_keys_are_created_once_and_never_replaced_or_minted_beside_a_vault() {
         for _ in 0..8 {
             let root = tempfile::tempdir().unwrap();
             let dir = root.path().to_path_buf();
-            let gate = std::sync::Arc::new(std::sync::Barrier::new(8));
+            let hold = std::sync::Arc::new(std::sync::Barrier::new(8));
             // Spawn every member before joining: interleaving spawn/join
             // would deadlock the barrier.
             let mut workers = Vec::with_capacity(8);
             for _ in 0..8 {
                 let dir = dir.clone();
-                let gate = std::sync::Arc::clone(&gate);
+                let hold = std::sync::Arc::clone(&hold);
                 workers.push(std::thread::spawn(move || {
-                    gate.wait();
+                    hold.wait();
                     FORMAT.load_or_create_key(&dir, Custody::LocalFile).unwrap()
                 }));
             }
@@ -255,13 +255,13 @@ fn windows_dpapi_keys_converge_and_bind_to_their_format() {
     {
         let root = tempfile::tempdir().unwrap();
         let dir = root.path().to_path_buf();
-        let gate = std::sync::Arc::new(std::sync::Barrier::new(4));
+        let hold = std::sync::Arc::new(std::sync::Barrier::new(4));
         let mut workers = Vec::with_capacity(4);
         for _ in 0..4 {
             let dir = dir.clone();
-            let gate = std::sync::Arc::clone(&gate);
+            let hold = std::sync::Arc::clone(&hold);
             workers.push(std::thread::spawn(move || {
-                gate.wait();
+                hold.wait();
                 windows::load_or_create_key(&FORMAT, &dir).unwrap()
             }));
         }

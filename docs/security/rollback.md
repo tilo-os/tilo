@@ -213,7 +213,7 @@ the stronger one. `tilo-rollback boot-status` prints the whole decision —
 Secure Boot state, lockdown level, the `db` digest, the recorded one, and whether a
 PIN-less slot would open this boot — without touching a device.
 
-Repair mode is unaffected and stays gated on a typed secret. Its command line
+Repair mode is unaffected and still needs a typed secret. Its command line
 measures differently, so both kinds of generation token refuse it
 ([repair-mode.md](repair-mode.md), "Why generation-bound unlock is still
 stronger").
@@ -363,10 +363,10 @@ the boot loader falls back to is still able to unseal.
 
 They also disagree about strictness, deliberately.
 `rollback_system_is_healthy` here requires `systemctl is-system-running` =
-`running`, because it gates **destroying** the fallback and refusing costs
+`running`, because it checks **destroying** the fallback and refusing costs
 nothing. `tilo-boot-health` requires only that the session came up (a greeter
 that presented a frame and held it without greetd restarting), because it
-gates **keeping the current generation**, and the same strictness there would
+checks **keeping the current generation**, and the same strictness there would
 fail every boot of every generation over one unrelated broken unit and walk the
 retention window down to nothing.
 

@@ -9,7 +9,7 @@ first frame says what it rendered on: a launch on a CPU rasterizer (llvmpipe in 
 without a GPU) compiles and runs vello's shaders on the CPU and is held to the software
 budget the VM checks use, a launch on a GPU to the hardware one.
 
-Plain functions over text, so the VM checks and the installed-image gate in CI
+Plain functions over text, so the VM checks and the installed-image check in CI
 (app_startup_check.py) judge alike.
 """
 

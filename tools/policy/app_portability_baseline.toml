@@ -1,5 +1,5 @@
 # Platform code that apps and the SDK's portable crates still contain
-# (the `portability` gate in `tilo-app check --lint --all`, rules in
+# (the `portability` check in `tilo-app check --lint --all`, rules in
 # app_portability_rules.toml). Keyed package -> rule -> count. Counts may
 # only fall: lower an entry when you remove sites (`tilo-app check --lint
 # --all --print-baseline` prints the tightened table); never add one. A new

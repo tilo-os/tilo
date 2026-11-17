@@ -679,7 +679,7 @@ mod tests {
 
     tilo_test_env::scenario! {
         #[allow(clippy::too_many_lines, reason = "one scenario test keeps each merged phase and its fresh fixture visible")]
-        fn a_continuation_record_is_private_and_gates_unsafe_copies;
+        fn a_continuation_record_is_private_and_checks_unsafe_copies;
 
         phase desktop_offer_shows_familiar_folders_at_first_login_and_keeps_an_open_review;
         {
@@ -789,7 +789,7 @@ mod tests {
             }
         }
 
-        phase continuation_retries_and_identity_gates_prevent_unsafe_copies;
+        phase continuation_retries_and_identity_checks_prevent_unsafe_copies;
         {
             {
                 let (_temp, store, choices) = fixture();
@@ -911,7 +911,7 @@ mod tests {
             use std::os::fd::AsRawFd;
             use std::os::unix::net::UnixListener;
             let temp = tempfile::tempdir().unwrap();
-            let path = temp.path().join("gate");
+            let path = temp.path().join("check");
             let _server = UnixListener::bind(&path).unwrap();
             assert_eq!(unsafe { libc::listen(_server.as_raw_fd(), 1) }, 0);
             let mut held = Vec::new();

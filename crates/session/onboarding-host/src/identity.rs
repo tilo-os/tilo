@@ -142,14 +142,14 @@ impl Onboarding {
         )
     }
 
-    /// Toggle the acknowledgement — reversible: unticking must lose the ability to proceed again, or the gate is decorative.
+    /// Toggle the acknowledgement — reversible: unticking must lose the ability to proceed again, or the check is decorative.
     pub fn set_acknowledged(&mut self, value: bool) {
         self.acknowledged = value;
     }
 
     /// Whether the "create my identity" action is available.
     ///
-    /// This is the gate the whole module exists for: the key isn't minted
+    /// This is the check the whole module exists for: the key isn't minted
     /// until the person has said, in as many words, that they understand losing the device loses the identity.
     pub fn can_create(&self) -> bool {
         self.screen == Screen::NoRecovery && self.acknowledged
@@ -507,8 +507,8 @@ mod tests {
             assert!(o.can_create());
         }
 
-        phase withdrawing_the_acknowledgement_closes_the_gate_again;
-        // Unticking has to actually revoke — a checkbox that can't be undone is a decoration, not a gate.
+        phase withdrawing_the_acknowledgement_blocks_creation_again;
+        // Unticking has to actually revoke — a checkbox that can't be undone is a decoration, not a check.
         {
             let mut o = Onboarding::new();
             o.begin();
@@ -552,7 +552,7 @@ mod tests {
             );
         }
 
-        phase completing_without_the_gate_changes_nothing;
+        phase completing_without_acknowledgement_changes_nothing;
         // A UI bug must not be able to mint behind the user's back.
         {
             let mut o = Onboarding::new();
@@ -562,7 +562,7 @@ mod tests {
             };
             assert!(
                 !o.complete(minted.clone()),
-                "complete refuses before the gate"
+                "complete refuses before the check"
             );
             assert_eq!(o.screen(), Screen::Intro);
             assert!(o.minted().is_none());
@@ -575,7 +575,7 @@ mod tests {
             assert!(o.is_done());
         }
 
-        phase resuming_a_created_identity_never_reopens_the_creation_gate;
+        phase resuming_a_created_identity_never_reopens_creation;
         {
             let mut onboarding = Onboarding::new();
             onboarding.resume_created(MintedIdentity {

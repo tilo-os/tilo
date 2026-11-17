@@ -122,7 +122,7 @@ async fn selected_file_real_native_write_is_bounded_and_revocation_is_terminal()
     let backend = CountedBackend {
         selected: SelectedFileBackend::new(session, file).unwrap(),
         writes: Arc::clone(&writes),
-        gate: None,
+        hold: None,
     };
     let (server_stream, client_stream) = UnixStream::pair().unwrap();
     let server = serve_workspace_connected(
@@ -185,7 +185,7 @@ async fn selected_file_real_native_write_is_bounded_and_revocation_is_terminal()
 struct CountedBackend {
     selected: SelectedFileBackend,
     writes: Arc<std::sync::atomic::AtomicUsize>,
-    gate: Option<Arc<WriteGate>>,
+    hold: Option<Arc<WriteGuard>>,
 }
 impl WorkspaceBackend for CountedBackend {
     fn list(&self, path: &str) -> Result<Vec<runtime_fs::DirEntry>, String> {
@@ -207,7 +207,7 @@ impl WorkspaceBackend for CountedBackend {
                 Arc::new(CountedFile {
                     file,
                     writes: Arc::clone(&self.writes),
-                    gate: self.gate.clone(),
+                    hold: self.hold.clone(),
                 }) as Arc<dyn WorkspaceFileBackend>
             })
         })
@@ -216,7 +216,7 @@ impl WorkspaceBackend for CountedBackend {
 struct CountedFile {
     file: Arc<dyn WorkspaceFileBackend>,
     writes: Arc<std::sync::atomic::AtomicUsize>,
-    gate: Option<Arc<WriteGate>>,
+    hold: Option<Arc<WriteGuard>>,
 }
 impl WorkspaceFileBackend for CountedFile {
     fn read(&self, offset: u64, max_len: u32) -> Result<Vec<u8>, String> {
@@ -225,8 +225,8 @@ impl WorkspaceFileBackend for CountedFile {
     fn write(&self, offset: u64, bytes: &[u8]) -> Result<u32, String> {
         self.writes
             .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
-        if let Some(gate) = &self.gate {
-            gate.wait()?;
+        if let Some(hold) = &self.hold {
+            hold.wait()?;
         }
         self.file.write(offset, bytes)
     }
@@ -238,12 +238,12 @@ impl WorkspaceFileBackend for CountedFile {
     }
 }
 
-struct WriteGate {
+struct WriteGuard {
     release: std::sync::Mutex<bool>,
     changed: std::sync::Condvar,
     entered: tokio::sync::mpsc::UnboundedSender<()>,
 }
-impl WriteGate {
+impl WriteGuard {
     fn wait(&self) -> Result<(), String> {
         self.entered.send(()).map_err(|error| error.to_string())?;
         let (released, deadline) = self
@@ -264,7 +264,7 @@ impl WriteGate {
         self.changed.notify_all();
     }
 }
-struct ReleaseOnDrop(Arc<WriteGate>);
+struct ReleaseOnDrop(Arc<WriteGuard>);
 impl Drop for ReleaseOnDrop {
     fn drop(&mut self) {
         self.0.release();
@@ -303,17 +303,17 @@ async fn blocked_native_pipeline_refuses_excess_write_before_copy_or_invocation(
         )
         .unwrap();
     let (entered, mut waiting) = tokio::sync::mpsc::unbounded_channel();
-    let gate = Arc::new(WriteGate {
+    let hold = Arc::new(WriteGuard {
         release: std::sync::Mutex::new(false),
         changed: std::sync::Condvar::new(),
         entered,
     });
-    let release = ReleaseOnDrop(Arc::clone(&gate));
+    let release = ReleaseOnDrop(Arc::clone(&hold));
     let writes = Arc::new(AtomicUsize::new(0));
     let backend = CountedBackend {
         selected: SelectedFileBackend::new(session, file).unwrap(),
         writes: Arc::clone(&writes),
-        gate: Some(Arc::clone(&gate)),
+        hold: Some(Arc::clone(&hold)),
     };
     let (server_stream, client_stream) = UnixStream::pair().unwrap();
     let server = serve_workspace_connected(
@@ -353,7 +353,7 @@ async fn blocked_native_pipeline_refuses_excess_write_before_copy_or_invocation(
                 "excess RPC never called blocked native provider"
             );
             assert_eq!(std::fs::metadata(&selected).unwrap().len(), 0);
-            gate.release();
+            hold.release();
             for task in pending {
                 assert_eq!(task.await.unwrap().unwrap(), 1);
             }
@@ -573,7 +573,7 @@ async fn existing_read_write_and_atomic_append_use_live_exact_inode_custody() {
 
 #[cfg(target_os = "linux")]
 #[test]
-fn append_final_effect_gate_observes_independently_expired_lifetime() {
+fn append_final_effect_hold_observes_independently_expired_lifetime() {
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     let disk = tempfile::tempdir().unwrap();
     let path = disk.path().join("chosen");

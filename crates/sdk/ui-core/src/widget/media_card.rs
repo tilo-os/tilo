@@ -363,7 +363,7 @@ impl<'a> MediaCardFace<'a> {
         let radius = self.art_radius(&m, art);
         let name = self.title.or(self.seed).unwrap_or_default();
         paint_art(ctx, &m, art, radius, self.art, name);
-        seat(ctx, art, radius);
+        inner_hairline(ctx, art, radius);
         for badge in self.badges {
             paint_badge(ctx, &m, art, *badge);
         }
@@ -492,20 +492,20 @@ impl<'a> MediaCardFace<'a> {
     }
 }
 
-/// The seated edge: a hairline just inside the art's outline, derived
+/// A hairline just inside the art's outline, derived
 /// against the ground, so bright or dark art never bleeds into it.
-fn seat(ctx: &mut PaintCtx<'_>, art: Rect, radius: f64) {
+fn inner_hairline(ctx: &mut PaintCtx<'_>, art: Rect, radius: f64) {
     let ground = ctx.theme.tokens.colors.surfaces.content;
     ctx.scene.stroke(
         &vello::kurbo::Stroke::new(1.0),
         ctx.transform,
-        crate::tokens::colors::Colors::hairline_on(ground, SEAT_ALPHA),
+        crate::tokens::colors::Colors::hairline_on(ground, INNER_HAIRLINE_ALPHA),
         None,
         &crate::surface::edge_outline(art, radius),
     );
 }
 
-const SEAT_ALPHA: u8 = 26;
+const INNER_HAIRLINE_ALPHA: u8 = 26;
 
 /// Paint `kind` as a small tile of art at `radius` (a list row's leading thumbnail): a
 /// picture cover-fitted, an app icon in its quiet tile, or the generated placeholder seeded

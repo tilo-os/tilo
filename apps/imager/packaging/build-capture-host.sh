@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Source this so the package gate receives the freshly observed host cohort.
+# Source this so the package check receives the freshly observed host cohort.
 [ "${1:-}" = --features ] && [ -n "${2:-}" ] \
     || { echo 'capture host build requires --features FEATURE' >&2; exit 1; }
 capture_host_feature="$2"

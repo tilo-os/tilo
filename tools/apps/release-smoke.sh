@@ -2,7 +2,7 @@
 # What a Release / apps build must show before its packages may be signed, run from the
 # repository root after dist/apps/package-apps.sh built every app of the default collection for
 # this machine's architecture into target/thin-app and packaged them into dist/app-release.
-# Each measurement gates on its own subject: a tapp over its
+# Each measurement waits for its own subject: a tapp over its
 # budget must not hide the runtime's numbers, or the reverse, so every one runs and the script
 # fails at the end if any did.
 #
@@ -291,7 +291,7 @@ engines() (
 )
 
 failed=()
-# RELEASE_SMOKE_STEPS narrows the run to some of the steps (the size gate on main takes the two
+# RELEASE_SMOKE_STEPS narrows the run to some of the steps (the size check on main takes the two
 # size budgets); a release runs them all.
 for step in ${RELEASE_SMOKE_STEPS:-tapp_size runtime_size loader_cost first_frame media typst spotify engines}; do
   case $step in

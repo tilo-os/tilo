@@ -113,7 +113,7 @@ pub struct BenchConfig {
     /// Also run what is measured in time alone, which counts no [`Work`]: loading the record,
     /// the first frame over the index, search over every entry, re-indexing and republishing the
     /// whole workspace, idle wakeups; and every sample of an open (the first counts its work). Off, a
-    /// run does the work a gate on the counts reads, and nothing else.
+    /// run does the work a check on the counts reads, and nothing else.
     pub timings: bool,
     pub env: Env,
 }

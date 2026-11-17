@@ -242,16 +242,16 @@ tilo_test_env::scenario! {
     {
         let backend = fs::read_to_string(repo().join("os/usr/libexec/tilo-install")).unwrap();
         let ssh = backend.find("SSH_REQUEST=").unwrap();
-        let gate = ssh
+        let check = ssh
             + backend[ssh..]
                 .find("[ \"$OFFLINE_TARGET\" -eq 0 ]")
                 .unwrap();
-        let apply = gate
-            + backend[gate..]
+        let apply = check
+            + backend[check..]
                 .find("/usr/libexec/tilo-install-dev-ssh --etc")
                 .unwrap();
-        assert!(backend[gate..apply].contains("/usr/lib/tilo/image-flavour"));
-        assert!(backend[gate..apply].contains("/usr/sbin/sshd"));
+        assert!(backend[check..apply].contains("/usr/lib/tilo/image-flavour"));
+        assert!(backend[check..apply].contains("/usr/sbin/sshd"));
         assert!(
             backend
                 .find("rm -f \"$DEPLOY_ETC/systemd/system/sshd.service\"")

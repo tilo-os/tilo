@@ -58,7 +58,7 @@ version running. The other everyday commands:
 ```sh
 tilo-app run      # build once and open it
 tilo-app test     # the Rust tests, plus the accessibility and action audit
-tilo-app check    # the full gate: structure, format, Clippy, tests, scenarios
+tilo-app check    # the full check: structure, format, Clippy, tests, scenarios
 tilo-app shot     # render the app to an image without a window
 ```
 

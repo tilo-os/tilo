@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Judge how fast an installed image's apps started, for gates outside run.py.
+"""Judge how fast an installed image's apps started, for checks outside run.py.
 
     ./os/dev/vm.sh ssh "$(python3 scripts/vm-acceptance/app_startup_check.py --probe)" \\
         | python3 scripts/vm-acceptance/app_startup_check.py [--scale F] [--report-only] [--require APP]

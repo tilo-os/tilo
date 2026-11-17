@@ -164,7 +164,7 @@ pub struct Chooser {
     /// scripted transport in tests.
     turns: Option<Arc<dyn TurnTransport>>,
     /// Timing marks wait here while a streamed turn owns the gateway channel.
-    marks: Arc<MarkGate>,
+    marks: Arc<MarkQueue>,
 }
 
 struct ProviderConnection {
@@ -255,7 +255,7 @@ impl Chooser {
     /// Construct a chooser over a profile selected in Settings. The profile
     /// is non-secret metadata; tilo-model-gateway owns credential resolution.
     pub fn with_provider(enabled: bool, timeout: Duration, selection: ProviderSelection) -> Self {
-        let marks = Arc::<MarkGate>::default();
+        let marks = Arc::<MarkQueue>::default();
         let turns: Arc<dyn TurnTransport> = Arc::new(GatewayTurns {
             profile_id: selection.profile_id.clone(),
             model_id: selection.model.id.clone(),
@@ -1031,7 +1031,7 @@ pub trait TurnTransport: Send + Sync {
 /// a mark sent while a streamed turn owns the channel would interleave with
 /// its frames. Marks wait here until the turn is done.
 #[derive(Debug, Default)]
-pub struct MarkGate {
+pub struct MarkQueue {
     state: Mutex<MarkState>,
 }
 
@@ -1059,7 +1059,7 @@ impl MarkState {
     }
 }
 
-impl MarkGate {
+impl MarkQueue {
     fn mark(&self, trace: tilo_model_client::PlanTrace, event: tilo_model_client::TraceEvent) {
         let Ok(mut state) = self.state.lock() else {
             return;
@@ -1120,7 +1120,7 @@ impl MarkGate {
 struct GatewayTurns {
     profile_id: String,
     model_id: String,
-    marks: Arc<MarkGate>,
+    marks: Arc<MarkQueue>,
 }
 
 impl TurnTransport for GatewayTurns {

@@ -97,43 +97,43 @@ EOF
 chmod +x "$work/systemctl" "$work/systemd-analyze" "$work/swapon" "$work/dmesg" "$work/journalctl"
 
 PATH="$work:$PATH" TILO_TEST_ACTIVE_US=19999000 \
-  "$repo/os/tests/boot_performance_gate.sh" >"$work/pass"
+  "$repo/os/tests/boot_performance_check.sh" >"$work/pass"
 grep -Fq 'kernel+userspace reached usable greeter in 19.999s (budget: 20s)' "$work/pass"
 
 # The boot sign-in's first frame is timed from when it knew who may sign in.
 PATH="$work:$PATH" TILO_TEST_ACTIVE_US=19999000 TILO_TEST_SIGNIN_PEOPLE=16.000000 \
-  TILO_TEST_SIGNIN_FRAME=16.250000 "$repo/os/tests/boot_performance_gate.sh" >"$work/signin"
+  TILO_TEST_SIGNIN_FRAME=16.250000 "$repo/os/tests/boot_performance_check.sh" >"$work/signin"
 grep -Fq 'boot sign-in first frame 250 ms after it knew who may sign in (budget: 300 ms)' "$work/signin"
 if PATH="$work:$PATH" TILO_TEST_ACTIVE_US=19999000 TILO_TEST_SIGNIN_PEOPLE=16.000000 \
-  TILO_TEST_SIGNIN_FRAME=16.400000 "$repo/os/tests/boot_performance_gate.sh" >/dev/null 2>"$work/signin.err"; then
-  echo 'boot performance gate accepted a boot sign-in whose first frame came 400 ms late' >&2
+  TILO_TEST_SIGNIN_FRAME=16.400000 "$repo/os/tests/boot_performance_check.sh" >/dev/null 2>"$work/signin.err"; then
+  echo 'boot performance check accepted a boot sign-in whose first frame came 400 ms late' >&2
   exit 1
 fi
 grep -Fq 'first frame 400 ms after it knew who may sign in (budget: 300 ms)' "$work/signin.err"
 if PATH="$work:$PATH" TILO_TEST_ACTIVE_US=19999000 TILO_TEST_SIGNIN_PEOPLE=16.000000 \
-  "$repo/os/tests/boot_performance_gate.sh" >/dev/null 2>"$work/signin.err"; then
-  echo 'boot performance gate accepted a boot sign-in that never showed the greeter' >&2
+  "$repo/os/tests/boot_performance_check.sh" >/dev/null 2>"$work/signin.err"; then
+  echo 'boot performance check accepted a boot sign-in that never showed the greeter' >&2
   exit 1
 fi
 grep -Fq 'the boot sign-in showed no frame of the greeter' "$work/signin.err"
 
 if PATH="$work:$PATH" TILO_TEST_ACTIVE_US=1000 TILO_TEST_REBUILT=systemd-hwdb-update.service \
-  "$repo/os/tests/boot_performance_gate.sh" >/dev/null 2>"$work/rebuilt"; then
-  echo 'boot performance gate accepted a first boot that rebuilt the hardware database' >&2
+  "$repo/os/tests/boot_performance_check.sh" >/dev/null 2>"$work/rebuilt"; then
+  echo 'boot performance check accepted a first boot that rebuilt the hardware database' >&2
   exit 1
 fi
 grep -Fq 'this boot rebuilt caches the image already carries: systemd-hwdb-update.service' "$work/rebuilt"
 
 if PATH="$work:$PATH" TILO_TEST_ACTIVE_US=20000001 \
-  "$repo/os/tests/boot_performance_gate.sh" >"$work/fail.out" 2>"$work/fail.err"; then
-  echo 'boot performance gate accepted an over-budget boot' >&2
+  "$repo/os/tests/boot_performance_check.sh" >"$work/fail.out" 2>"$work/fail.err"; then
+  echo 'boot performance check accepted an over-budget boot' >&2
   exit 1
 fi
 grep -Fq '20.000s (budget: 20s)' "$work/fail.err"
 grep -Fq 'mock critical chain' "$work/fail.err"
 
 PATH="$work:$PATH" TILO_TEST_ACTIVE_US=21000000 TILO_TEST_INITRD_US=15000000 \
-  TILO_TEST_USERSPACE_US=18000000 "$repo/os/tests/boot_performance_gate.sh" \
+  TILO_TEST_USERSPACE_US=18000000 "$repo/os/tests/boot_performance_check.sh" \
   >/dev/null 2>"$work/gaps.err" && { echo 'over-budget boot passed' >&2; exit 1; }
 grep -Fq '12.000s before [   14.000000] host kernel: Freeing initrd memory' "$work/gaps.err"
 grep -Fq 'kernel log starts at 0.100s' "$work/gaps.err"
@@ -146,7 +146,7 @@ grep -Fq 'initrd, longest gaps before switch-root:' "$work/gaps.err"
 grep -Fq 'switch-root milestones:' "$work/gaps.err"
 grep -Fq 'first-boot update check: ldconfig condition' "$work/gaps.err"
 PATH="$work:$PATH" TILO_TEST_ACTIVE_US=25000000 TILO_TEST_INITRD_US=14500000 \
-  TILO_TEST_USERSPACE_US=21000000 "$repo/os/tests/boot_performance_gate.sh" \
+  TILO_TEST_USERSPACE_US=21000000 "$repo/os/tests/boot_performance_check.sh" \
   >/dev/null 2>"$work/initrd-gaps.err" || true
 grep -Fq '4.000s before [   19.000000] host systemd[1]: Finished tilo-root-discover.service' "$work/initrd-gaps.err" \
   && grep -Fq '4.000s tilo-root-discover.service' "$work/initrd-gaps.err" \
@@ -158,16 +158,16 @@ if grep -A1 -F 'kernel log, longest gaps' "$work/gaps.err" | grep -Fq 'after the
 fi
 
 PATH="$work:$PATH" TILO_TEST_ACTIVE_US=19000000 TILO_TEST_INITRD_US=4000000 \
-  TILO_TEST_USERSPACE_US=14000000 "$repo/os/tests/boot_performance_gate.sh" >"$work/phases"
+  TILO_TEST_USERSPACE_US=14000000 "$repo/os/tests/boot_performance_check.sh" >"$work/phases"
 grep -Fq 'phases: kernel 4.000s, initrd 10.000s, userspace to greeter 5.000s' "$work/phases"
 
 # 4 CPUs, 1000 ticks of steal at 100 Hz = 10 s of 76 CPU-seconds.
 printf 'cpu  100 0 100 1000 0 0 0 1000 0 0\ncpu0 1 0 0 0\ncpu1 1 0 0 0\ncpu2 1 0 0 0\ncpu3 1 0 0 0\n' >"$work/stat"
 PATH="$work:$PATH" TILO_PROC_STAT="$work/stat" TILO_TEST_ACTIVE_US=19000000 \
-  "$repo/os/tests/boot_performance_gate.sh" >"$work/steal"
+  "$repo/os/tests/boot_performance_check.sh" >"$work/steal"
 grep -Fq 'cpu steal since boot: 10.000s over 4 CPUs (13% of 19.000s)' "$work/steal"
 PATH="$work:$PATH" TILO_PROC_STAT="$work/stat" TILO_TEST_ACTIVE_US=5000000 \
-  "$repo/os/tests/boot_performance_gate.sh" >"$work/fast"
+  "$repo/os/tests/boot_performance_check.sh" >"$work/fast"
 if grep -Fq 'cpu steal' "$work/fast"; then
   echo 'a boot well inside the budget printed contention diagnostics' >&2
   exit 1
@@ -179,58 +179,58 @@ fi
 # at least 7 s at the greeter, 5 s before it).
 printf '20.0 3000000 0\n24.5 8000000 400\n26.0 10000000 400\n' >"$work/samples"
 PATH="$work:$PATH" TILO_PROC_STAT="$work/stat" TILO_BOOT_HOST_SAMPLES="$work/samples" \
-  TILO_TEST_ACTIVE_US=25000000 "$repo/os/tests/boot_performance_gate.sh" >"$work/host-wait" \
+  TILO_TEST_ACTIVE_US=25000000 "$repo/os/tests/boot_performance_check.sh" >"$work/host-wait" \
   || fail 'a boot that was over budget only by waiting on its host failed'
 grep -Fq 'usable greeter in 25.000s (budget: 20s)' "$work/host-wait"
 grep -Fq 'of it 9.000s waiting on the host (I/O pressure and CPU steal), 16.000s the image' "$work/host-wait" \
-  || { cat "$work/host-wait" >&2; fail 'the gate did not name the host wait it took off'; }
+  || { cat "$work/host-wait" >&2; fail 'the check did not name the host wait it took off'; }
 printf '30.0 12000000 0\n' >"$work/late-samples"
 PATH="$work:$PATH" TILO_PROC_STAT="$work/stat" TILO_BOOT_HOST_SAMPLES="$work/late-samples" \
-  TILO_TEST_ACTIVE_US=25000000 "$repo/os/tests/boot_performance_gate.sh" >"$work/late-wait" 2>&1 \
+  TILO_TEST_ACTIVE_US=25000000 "$repo/os/tests/boot_performance_check.sh" >"$work/late-wait" 2>&1 \
   || { cat "$work/late-wait" >&2; fail 'a boot within budget once its host wait was taken off failed'; }
 grep -Fq 'of it 7.000s waiting on the host' "$work/late-wait" \
   || { cat "$work/late-wait" >&2; fail 'a late sample was not reduced by the time since the greeter'; }
 
 if PATH="$work:$PATH" TILO_TEST_ACTIVE_US=10000000 TILO_TEST_GREETD_US=20000001 \
-  "$repo/os/tests/boot_performance_gate.sh" >"$work/late-greeter.out" 2>"$work/late-greeter.err"; then
-  echo 'boot performance gate accepted a greeter that became usable over budget' >&2
+  "$repo/os/tests/boot_performance_check.sh" >"$work/late-greeter.out" 2>"$work/late-greeter.err"; then
+  echo 'boot performance check accepted a greeter that became usable over budget' >&2
   exit 1
 fi
 grep -Fq 'usable greeter in 20.000s (budget: 20s)' "$work/late-greeter.err"
 
 if PATH="$work:$PATH" TILO_TEST_ACTIVE_US=invalid \
-  "$repo/os/tests/boot_performance_gate.sh" >/dev/null 2>"$work/invalid"; then
-  echo 'boot performance gate accepted an invalid timestamp' >&2
+  "$repo/os/tests/boot_performance_check.sh" >/dev/null 2>"$work/invalid"; then
+  echo 'boot performance check accepted an invalid timestamp' >&2
   exit 1
 fi
 grep -Fq 'no monotonic activation timestamp' "$work/invalid"
 
 printf 'lzo [zstd] lz4\n' >"$work/zram0/comp_algorithm"
 if PATH="$work:$PATH" TILO_TEST_ACTIVE_US=1000 \
-  "$repo/os/tests/boot_performance_gate.sh" >/dev/null 2>"$work/wrong-zram"; then
-  echo 'boot performance gate accepted a high-latency zram compressor' >&2
+  "$repo/os/tests/boot_performance_check.sh" >/dev/null 2>"$work/wrong-zram"; then
+  echo 'boot performance check accepted a high-latency zram compressor' >&2
   exit 1
 fi
 grep -Fq 'zram0 active compressor is not lz4' "$work/wrong-zram"
 printf 'lzo lzo-rle [lz4] zstd\n' >"$work/zram0/comp_algorithm"
 
 if PATH="$work:$PATH" TILO_TEST_ACTIVE_US=1000 TILO_TEST_ZRAM_SWAP=no \
-  "$repo/os/tests/boot_performance_gate.sh" >/dev/null 2>"$work/inactive-zram"; then
-  echo 'boot performance gate accepted an inactive zram swap device' >&2
+  "$repo/os/tests/boot_performance_check.sh" >/dev/null 2>"$work/inactive-zram"; then
+  echo 'boot performance check accepted an inactive zram swap device' >&2
   exit 1
 fi
 grep -Fq 'zram0 is not active swap' "$work/inactive-zram"
 
 if PATH="$work:$PATH" TILO_TEST_ACTIVE_US=1000 TILO_TEST_EXTRA_SWAP=/dev/nvme0n1p3 \
-  "$repo/os/tests/boot_performance_gate.sh" >/dev/null 2>"$work/persistent-swap"; then
-  echo 'boot performance gate accepted persistent disk swap beside zram' >&2
+  "$repo/os/tests/boot_performance_check.sh" >/dev/null 2>"$work/persistent-swap"; then
+  echo 'boot performance check accepted persistent disk swap beside zram' >&2
   exit 1
 fi
 grep -Fq 'persistent or unexpected swap is active' "$work/persistent-swap"
 
 if PATH="$work:$PATH" TILO_TEST_ACTIVE_US=1000 TILO_NTSYNC_DEVICE="$work/not-a-device" \
-  "$repo/os/tests/boot_performance_gate.sh" >/dev/null 2>"$work/no-ntsync"; then
-  echo 'boot performance gate accepted a missing ntsync device' >&2
+  "$repo/os/tests/boot_performance_check.sh" >/dev/null 2>"$work/no-ntsync"; then
+  echo 'boot performance check accepted a missing ntsync device' >&2
   exit 1
 fi
 grep -Fq 'Wine/Proton ntsync device is unavailable' "$work/no-ntsync"
@@ -238,26 +238,26 @@ grep -Fq 'Wine/Proton ntsync device is unavailable' "$work/no-ntsync"
 mkdir -p "$work/block/sda/queue"
 printf 'mq-deadline [bfq] none\n' >"$work/block/sda/queue/scheduler"
 PATH="$work:$PATH" TILO_TEST_ACTIVE_US=1000 \
-  "$repo/os/tests/boot_performance_gate.sh" >/dev/null
+  "$repo/os/tests/boot_performance_check.sh" >/dev/null
 printf '[mq-deadline] bfq none\n' >"$work/block/sda/queue/scheduler"
 if PATH="$work:$PATH" TILO_TEST_ACTIVE_US=1000 \
-  "$repo/os/tests/boot_performance_gate.sh" >/dev/null 2>"$work/wrong-scheduler"; then
-  echo 'boot performance gate accepted non-BFQ scheduling on a physical disk' >&2
+  "$repo/os/tests/boot_performance_check.sh" >/dev/null 2>"$work/wrong-scheduler"; then
+  echo 'boot performance check accepted non-BFQ scheduling on a physical disk' >&2
   exit 1
 fi
 grep -Fq 'physical disk BFQ scheduler is not active' "$work/wrong-scheduler"
 printf 'mq-deadline [bfq] none\n' >"$work/block/sda/queue/scheduler"
 
 if PATH="$work:$PATH" TILO_TEST_ACTIVE_US=1000 TILO_TEST_GRAPHICAL_ACTIVE=no \
-  "$repo/os/tests/boot_performance_gate.sh" >/dev/null 2>"$work/inactive"; then
-  echo 'boot performance gate accepted an inactive graphical target' >&2
+  "$repo/os/tests/boot_performance_check.sh" >/dev/null 2>"$work/inactive"; then
+  echo 'boot performance check accepted an inactive graphical target' >&2
   exit 1
 fi
 grep -Fq 'graphical.target is not active' "$work/inactive"
 
 if PATH="$work:$PATH" TILO_TEST_ACTIVE_US=1000 TILO_TEST_GREETD_ACTIVE=no \
-  "$repo/os/tests/boot_performance_gate.sh" >/dev/null 2>"$work/no-greeter"; then
-  echo 'boot performance gate accepted a failed display manager' >&2
+  "$repo/os/tests/boot_performance_check.sh" >/dev/null 2>"$work/no-greeter"; then
+  echo 'boot performance check accepted a failed display manager' >&2
   exit 1
 fi
 grep -Fq 'greetd.service is not active' "$work/no-greeter"
@@ -265,8 +265,8 @@ grep -Fq 'greetd.service is not active' "$work/no-greeter"
 # A first boot whose initial session account did not exist yet: greetd failed
 # and was restarted until it hit its start limit, leaving the panel dark.
 if PATH="$work:$PATH" TILO_TEST_ACTIVE_US=1000 TILO_TEST_GREETD_RESTARTS=4 \
-  "$repo/os/tests/boot_performance_gate.sh" >/dev/null 2>"$work/restarted-greeter"; then
-  echo 'boot performance gate accepted a greeter that systemd had to restart' >&2
+  "$repo/os/tests/boot_performance_check.sh" >/dev/null 2>"$work/restarted-greeter"; then
+  echo 'boot performance check accepted a greeter that systemd had to restart' >&2
   exit 1
 fi
 grep -Fq 'greetd.service was restarted 4 times' "$work/restarted-greeter"
@@ -274,8 +274,8 @@ grep -Fq 'greetd.service was restarted 4 times' "$work/restarted-greeter"
 printf 'disabled\n' >"$work/drm/card1-eDP-1/enabled"
 printf 'Off\n' >"$work/drm/card1-eDP-1/dpms"
 if PATH="$work:$PATH" TILO_TEST_ACTIVE_US=1000 \
-  "$repo/os/tests/boot_performance_gate.sh" >/dev/null 2>"$work/dark-crtc"; then
-  echo 'boot performance gate accepted a greeter on a switched-off display' >&2
+  "$repo/os/tests/boot_performance_check.sh" >/dev/null 2>"$work/dark-crtc"; then
+  echo 'boot performance check accepted a greeter on a switched-off display' >&2
   exit 1
 fi
 grep -Fq 'no connected display is lit at the greeter (1 connected)' "$work/dark-crtc"
@@ -284,16 +284,16 @@ printf 'On\n' >"$work/drm/card1-eDP-1/dpms"
 
 printf '0\n' >"$work/backlight/panel/brightness"
 if PATH="$work:$PATH" TILO_TEST_ACTIVE_US=1000 \
-  "$repo/os/tests/boot_performance_gate.sh" >/dev/null 2>"$work/dark-backlight"; then
-  echo 'boot performance gate accepted a greeter behind a zero backlight' >&2
+  "$repo/os/tests/boot_performance_check.sh" >/dev/null 2>"$work/dark-backlight"; then
+  echo 'boot performance check accepted a greeter behind a zero backlight' >&2
   exit 1
 fi
 grep -Fq 'backlight panel is dark at the greeter (brightness 0, bl_power 0)' "$work/dark-backlight"
 printf '1024\n' >"$work/backlight/panel/brightness"
 printf '4\n' >"$work/backlight/panel/bl_power"
 if PATH="$work:$PATH" TILO_TEST_ACTIVE_US=1000 \
-  "$repo/os/tests/boot_performance_gate.sh" >/dev/null 2>"$work/powered-down-backlight"; then
-  echo 'boot performance gate accepted a powered-down backlight' >&2
+  "$repo/os/tests/boot_performance_check.sh" >/dev/null 2>"$work/powered-down-backlight"; then
+  echo 'boot performance check accepted a powered-down backlight' >&2
   exit 1
 fi
 grep -Fq 'backlight panel is dark at the greeter (brightness 1024, bl_power 4)' "$work/powered-down-backlight"
@@ -301,29 +301,29 @@ printf '0\n' >"$work/backlight/panel/bl_power"
 
 # A machine without a display (a headless board) has nothing to light.
 PATH="$work:$PATH" TILO_TEST_ACTIVE_US=1000 TILO_DRM_SYSFS="$work/no-drm" \
-  TILO_BACKLIGHT_SYSFS="$work/no-backlight" "$repo/os/tests/boot_performance_gate.sh" >/dev/null
+  TILO_BACKLIGHT_SYSFS="$work/no-backlight" "$repo/os/tests/boot_performance_check.sh" >/dev/null
 
 # Firmware that reports a TPM no driver serves made systemd wait out the
 # device timeout under the splash, in the initrd and again after switch-root.
 if PATH="$work:$PATH" TILO_TEST_ACTIVE_US=1000 \
   TILO_TEST_DEVICE_TIMEOUT='dev-tpmrm0.device - /dev/tpmrm0' \
-  "$repo/os/tests/boot_performance_gate.sh" >/dev/null 2>"$work/device-timeout"; then
-  echo 'boot performance gate accepted a boot that waited out a missing device' >&2
+  "$repo/os/tests/boot_performance_check.sh" >/dev/null 2>"$work/device-timeout"; then
+  echo 'boot performance check accepted a boot that waited out a missing device' >&2
   exit 1
 fi
 grep -Fq 'this boot waited out a device that never appeared:' "$work/device-timeout"
 grep -Fq '  dev-tpmrm0.device - /dev/tpmrm0.' "$work/device-timeout"
 
 if PATH="$work:$PATH" TILO_TEST_ACTIVE_US=1000 TILO_GREETD_SOCKET="$work/missing-greetd.sock" \
-  "$repo/os/tests/boot_performance_gate.sh" >/dev/null 2>"$work/no-greeter-socket"; then
-  echo 'boot performance gate accepted a display manager without a login endpoint' >&2
+  "$repo/os/tests/boot_performance_check.sh" >/dev/null 2>"$work/no-greeter-socket"; then
+  echo 'boot performance check accepted a display manager without a login endpoint' >&2
   exit 1
 fi
 grep -Fq 'greetd login endpoint is unavailable' "$work/no-greeter-socket"
 
 if PATH="$work:$PATH" TILO_TEST_ACTIVE_US=1000 TILO_BOOT_USERSPACE_BUDGET_SEC=99999999999999999999 \
-  "$repo/os/tests/boot_performance_gate.sh" >/dev/null 2>"$work/huge-budget"; then
-  echo 'boot performance gate accepted an overflow-prone budget' >&2
+  "$repo/os/tests/boot_performance_check.sh" >/dev/null 2>"$work/huge-budget"; then
+  echo 'boot performance check accepted an overflow-prone budget' >&2
   exit 1
 fi
 grep -Fq 'boot budget must be between 1 and 600 seconds' "$work/huge-budget"
@@ -670,4 +670,4 @@ for demand_activated in bluetooth ModemManager fwupd power-profiles-daemon syste
   fi
 done
 
-printf 'ok: boot performance gate enforces its userspace deadline and diagnostics\n'
+printf 'ok: boot performance check enforces its userspace deadline and diagnostics\n'

@@ -378,7 +378,7 @@ pub struct MainPanel {
     header_node: Option<NodeId>,
     metadata_height: f64,
     /// Currently displayed page (None until a selection lands). Also the
-    /// "is a page open" signal that gates the title vs. the empty state.
+    /// "is a page open" signal that checks the title vs. the empty state.
     page_id: Option<PageId>,
     date_index: crate::metadata::NoteDateIndex,
     dates: crate::metadata::NoteDates,

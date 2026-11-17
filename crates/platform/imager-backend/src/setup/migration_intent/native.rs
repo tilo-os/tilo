@@ -908,7 +908,7 @@ pub fn reviewed_app_routing_fixture() -> (tempfile::TempDir, MigrationIntent) {
 }
 
 #[cfg(test)]
-mod app_budget_gate_tests {
+mod app_budget_check_tests {
     use super::*;
     #[test]
     fn manually_selected_plan_below_actual_app_budget_cannot_bind_or_publish() {

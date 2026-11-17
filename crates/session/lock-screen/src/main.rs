@@ -21,14 +21,14 @@ use ui::launch::{LaunchArgs, LaunchError};
 thread_local! {
     /// What the app is lent: the state the lock screen shows in and takes
     /// the person's password through.
-    static SEAT: RefCell<Option<LockState>> = const { RefCell::new(None) };
+    static STATE: RefCell<Option<LockState>> = const { RefCell::new(None) };
 }
 
 fn main() {
     let state = LockState::default();
     state.show(shown());
     lock_session::serve(&state);
-    SEAT.with(|slot| *slot.borrow_mut() = Some(state));
+    STATE.with(|slot| *slot.borrow_mut() = Some(state));
     // The standard launch of any app — its record, its capture scenarios and
     // its launch modes — with this process's host in place of the usual one,
     // because the state is lent per process.
@@ -43,7 +43,7 @@ fn prepared(
 ) -> Result<PreparedComponentInputs, LaunchError> {
     let inputs = ComponentRunnerInputs::from_native_process();
     let mut prepared = NativeProcessHost::prepare_window(definition, None, inputs)?;
-    if let Some(state) = SEAT.with(|slot| slot.borrow_mut().take()) {
+    if let Some(state) = STATE.with(|slot| slot.borrow_mut().take()) {
         prepared.context.lend(state);
     }
     Ok(prepared)

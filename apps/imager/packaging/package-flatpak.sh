@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Build the Imager on its native release runner, export it against the pinned
 # Flatpak runtime, and produce the single-file bundle linked by the release
-# page. The final sandbox smoke-load is the ABI compatibility gate.
+# page. The final sandbox smoke-load is the ABI compatibility check.
 set -euo pipefail
 
 repo="$(git rev-parse --show-toplevel)"

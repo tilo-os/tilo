@@ -5,7 +5,7 @@
 //! `org_kde_kwin_server_decoration` for Qt5 and some GTK and Wine builds.
 //! Not only cosmetic: a client that keeps its own title bar keeps it out of the size it was
 //! configured — configured 670x668 it commits 670x633 and never commits again, leaving a 35px dead
-//! band of empty tab and stranding the presentation gate.
+//! band of empty tab and stranding the presentation check.
 //! The frame belongs to the desktop rather than to the window's state, so it is the same frame
 //! focused or not: what is checked is that neither protocol changes its answer when another window
 //! takes the keyboard.

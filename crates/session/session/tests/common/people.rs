@@ -1499,7 +1499,7 @@ impl Device {
             .join("\n")
     }
 
-    /// The publisher this device's session goes by at its own seat: what every other device in a
+    /// The publisher this device's session goes by on its own device: what every other device in a
     /// workspace it is in knows it as.
     pub fn publisher(&self) -> Option<String> {
         let own = &self.state()["state"]["peers"]["own"];

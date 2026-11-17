@@ -343,22 +343,22 @@ tilo_test_env::scenario! {
     {
         for cancel in [false, true] {
             let fixture = fixture(if cancel { 964 } else { 963 });
-            let (job, gate) = scope_with_original_callback_gate(&fixture, 12);
+            let (job, check) = scope_with_original_callback_hold(&fixture, 12);
             let effect = job.effect_scope().unwrap();
             let called = Arc::new(AtomicBool::new(false));
             let worker_called = called.clone();
-            gate.armed.store(true, Ordering::Release);
+            check.armed.store(true, Ordering::Release);
             let worker = std::thread::spawn(move || {
                 effect.with_effect(|| {
                     worker_called.store(true, Ordering::Release);
                     Ok(())
                 })
             });
-            tilo_test_env::recv("the gate to be entered", &gate.entered);
+            tilo_test_env::recv("the check to be entered", &check.entered);
             if cancel {
                 job.cancel();
             }
-            gate.release.send(()).unwrap();
+            check.release.send(()).unwrap();
             let result = worker.join().unwrap();
             assert_eq!(
                 called.load(Ordering::Acquire),
@@ -373,17 +373,17 @@ tilo_test_env::scenario! {
     phase causal_scope_cancel_during_original_callback_fences_owner_check;
     {
         let fixture = fixture(965);
-        let (job, gate) = scope_with_original_callback_gate(&fixture, 13);
+        let (job, check) = scope_with_original_callback_hold(&fixture, 13);
         let concurrent = job.effect_scope().unwrap();
-        gate.armed.store(true, Ordering::Release);
-        let deny = gate.deny_other_checks.clone();
+        check.armed.store(true, Ordering::Release);
+        let deny = check.deny_other_checks.clone();
         let restore = deny.clone();
         let worker = std::thread::spawn(move || {
-            tilo_test_env::recv("the gate to be entered", &gate.entered);
+            tilo_test_env::recv("the check to be entered", &check.entered);
             deny.store(true, Ordering::Release);
             let result: Result<(), String> =
                 concurrent.with_effect(|| panic!("denied worker effect started"));
-            gate.release.send(()).unwrap();
+            check.release.send(()).unwrap();
             result
         });
         let result = job.check();
@@ -400,17 +400,17 @@ tilo_test_env::scenario! {
     }
 }
 
-struct OriginalCallbackGate {
+struct OriginalCallbackHold {
     armed: Arc<AtomicBool>,
     deny_other_checks: Arc<AtomicBool>,
     entered: std::sync::mpsc::Receiver<()>,
     release: std::sync::mpsc::Sender<()>,
 }
 
-fn scope_with_original_callback_gate(
+fn scope_with_original_callback_hold(
     fixture: &Fixture,
     id: u64,
-) -> (ResourceInvocationScope, OriginalCallbackGate) {
+) -> (ResourceInvocationScope, OriginalCallbackHold) {
     let armed = Arc::new(AtomicBool::new(false));
     let deny_other_checks = Arc::new(AtomicBool::new(false));
     let (entered_tx, entered) = std::sync::mpsc::channel();
@@ -457,7 +457,7 @@ fn scope_with_original_callback_gate(
     let job = ResourceInvocationScope::for_owner(fixture.owner.clone(), lease).unwrap();
     (
         job,
-        OriginalCallbackGate {
+        OriginalCallbackHold {
             armed,
             deny_other_checks,
             entered,
@@ -467,9 +467,9 @@ fn scope_with_original_callback_gate(
 }
 
 tilo_test_env::scenario! {
-    fn a_remote_actors_view_operations_are_gated_by_the_invoker_scope;
+    fn a_remote_actors_view_operations_are_guarded_by_the_invoker_scope;
 
-    phase invoker_scope_nests_and_gates_remote_view_operations;
+    phase invoker_scope_nests_and_checks_remote_view_operations;
     {
         use tilo_actions::{ActionContract, ActionInvoker, PresenceId};
         let presence = PresenceId::new("agent-a-view").unwrap();

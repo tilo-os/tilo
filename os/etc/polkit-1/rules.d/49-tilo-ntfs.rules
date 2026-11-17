@@ -1,4 +1,4 @@
-// NTFS drives open only through the consent-gated NTFS mount service, whose
+// NTFS drives open only through the consent-guarded NTFS mount service, whose
 // prompt the shell draws. UDisks would otherwise mount one with the kernel
 // driver for any process of the active user, with no prompt and with the
 // driver loaded by the mount itself. Administrators running UDisks as root

@@ -110,7 +110,7 @@ fn browser_media_reply_enables_voice_without_native_attachment_access() {
     assert!(app.call_allows(crate::call::CallAction::Join));
     assert!(
         !app.call_allows(crate::call::CallAction::Speak),
-        "the live workspace role still gates publication"
+        "the live workspace role still checks publication"
     );
 }
 

@@ -5234,7 +5234,7 @@ impl Widget for TextInput {
             self.draw_pending_token(scene, transform, theme);
             self.draw_autocorrection(scene, transform, theme);
             self.draw_autocorrection_preview(scene, transform, text_renderer, theme);
-            self.draw_peers_and_gate(scene, transform, text_renderer, theme, presence);
+            self.draw_peers_and_permission_scrim(scene, transform, text_renderer, theme, presence);
             #[cfg(test)]
             let _probe = crate::profiling::frame_probe::span("text.note");
             self.note_shown(transform, theme, text_renderer);
@@ -5337,7 +5337,7 @@ impl Widget for TextInput {
             self.draw_autocorrection(scene, transform, theme);
             self.draw_autocorrection_preview(scene, transform, text_renderer, theme);
         }
-        self.draw_peers_and_gate(scene, transform, text_renderer, theme, presence);
+        self.draw_peers_and_permission_scrim(scene, transform, text_renderer, theme, presence);
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
@@ -6163,7 +6163,7 @@ impl TextInput {
             .is_some_and(|key| presence.shows_anyone_at(&key))
     }
 
-    fn draw_peers_and_gate(
+    fn draw_peers_and_permission_scrim(
         &self,
         scene: &mut Scene,
         transform: Affine,

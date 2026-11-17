@@ -4,7 +4,7 @@
  * rules every device takes, tilo-session-client's `way_in`); the page takes it
  * and says what happened. In the order the rules try them:
  * 1. the person's own desktop (`/me`) is this browser's, with no peer,
- *    once the home's entry let them in where it gates (`ownDesktop`);
+ *    once the home's entry let them in where it checks (`ownDesktop`);
  * 2. an invitation is inspected (what the host verified: workspace, role,
  *    inviter, how many people it has), confirmed by the person, then
  *    redeemed. An invitation is the approval of whoever made it: the host
@@ -138,8 +138,8 @@ async function viaHost({workspace, id = null, runtime, deps, onProgress}) {
  * host let in is sent to the home's entry instead, which says how to get
  * in; an admission to the workspace is not a desktop of their own. */
 async function ownDesktop({home, runtime, deps, onProgress}) {
-  const gated = Boolean(home?.admission && deps.ownDesktopOpen) && !await deps.ownDesktopOpen(home);
-  if (gated) {
+  const guarded = Boolean(home?.admission && deps.ownDesktopOpen) && !await deps.ownDesktopOpen(home);
+  if (guarded) {
     const {peer} = await viaHost({workspace: home, runtime, deps, onProgress});
     await peer?.dispose?.();
     if (!await deps.ownDesktopOpen(home)) throw new AdmissionError('no-access', NO_ACCESS);

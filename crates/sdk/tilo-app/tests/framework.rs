@@ -369,7 +369,7 @@ tilo_test_env::scenario! {
 }
 
 tilo_test_env::scenario! {
-    fn actions_are_gated_by_role_and_confirmed_for_every_surface;
+    fn actions_are_guarded_by_role_and_confirmed_for_every_surface;
 
     phase a_viewer_cannot_edit;
     {

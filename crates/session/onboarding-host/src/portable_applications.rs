@@ -234,7 +234,7 @@ mod tests {
         });
     }
     #[test]
-    fn actual_owned_helper_protocol_gates_completion_and_binds_saved_declaration() {
+    fn actual_owned_helper_protocol_checks_completion_and_binds_saved_declaration() {
         let (home, identity, declaration) = fixture();
         let mut pending =
             Pending::open(home.path().into(), identity.clone(), declaration.clone()).unwrap();

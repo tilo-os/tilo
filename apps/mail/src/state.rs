@@ -988,7 +988,7 @@ impl MailState {
                 // can contain Inbox and Trash rows at once, so calling Delete
                 // here must never silently change into permanent deletion for
                 // the latter. The explicit `Purge` variant below is separately
-                // labelled, destructive in the resource tree, and folder-gated
+                // labelled, destructive in the resource tree, and folder-guarded
                 // again by the canonical reducer.
                 let move_to_trash: Vec<MessageId> = ids
                     .iter()

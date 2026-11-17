@@ -2523,7 +2523,7 @@ mod tests {
             }
         }
 
-        phase the_pubkey_mismatch_check_is_not_gated_on_debug_assertions;
+        phase the_pubkey_mismatch_check_does_not_require_debug_assertions;
         // The refusal is a property of the build, not of
         // `debug_assertions`. Nothing here may be compiled out.
         {

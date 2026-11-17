@@ -941,7 +941,7 @@ pub struct VideoEditorApp {
     #[cfg(not(any(feature = "gst", feature = "decode")))]
     page_monitor: crate::page_sound::PageMonitor,
     /// The level the mix is running at, written by whatever is mixing and
-    /// read here. **Not** feature-gated: a build with no audio backend still
+    /// read here. **Not** feature-dependent: a build with no audio backend still
     /// has a mixer, still has a meter surface, and a `--shots` capture stages
     /// blocks through this exact api rather than through a drawing that
     /// imitates one.
@@ -2330,7 +2330,7 @@ impl VideoEditorApp {
     }
 
     /// One predicate, because the play button, the transport readout and the name a
-    /// reader hears for it must agree: gating them all on `playing` left a shuttle at
+    /// reader hears for it must agree: guarding them all on `playing` left a shuttle at
     /// 16× wearing a play triangle and reporting itself nowhere.
     fn is_moving(&self) -> bool {
         self.playback.playing || self.shuttle != 0.0
@@ -6713,7 +6713,7 @@ impl Widget for VideoEditorApp {
         if self.presentation.export_open {
             kids.push(self.a11y_export_dialog());
         }
-        // A render that outlived its dialog. Gated on the *render*, never on
+        // A render that outlived its dialog. Depends on the *render*, never on
         // the dialog — a dismissed export used to vanish from the tree
         // entirely while it was still encoding.
         if let Some(status) = self.a11y_export_status() {

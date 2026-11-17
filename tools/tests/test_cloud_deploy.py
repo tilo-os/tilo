@@ -556,7 +556,7 @@ class CloudDeployTests(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn("qualified web-entry at", err)
 
-    def test_a_source_only_observation_does_not_enable_a_gated_feature(self):
+    def test_a_source_only_observation_does_not_enable_a_guarded_feature(self):
         path = self.qualification(self.target, observation="source")
         code, _, err = self.plan("--qualification", str(path))
         self.assertEqual(code, 1)

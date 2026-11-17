@@ -5013,7 +5013,7 @@ pub enum CursorPlacement {
 /// Markdown heading prefix at the start of `text`: `(level, prefix_byte_len)`.
 ///
 /// Shared by `from_markdown`, live `#` to `######` promotion, and the typed-prefix
-/// gate that only fires when the caret sits exactly on that prefix.
+/// check that only fires when the caret sits exactly on that prefix.
 fn heading_markdown_prefix(text: &str) -> Option<(u8, usize)> {
     let hashes = text.bytes().take_while(|byte| *byte == b'#').count();
     let level = u8::try_from(hashes)
@@ -11308,7 +11308,7 @@ impl BlockEditor {
             b.line.set_focus(true);
             // Only the previously focused line saw CursorMoved. Forward the
             // current pointer before the new line handles this same press;
-            // otherwise its hover gate rejects it or uses a stale position.
+            // otherwise its hover check rejects it or uses a stale position.
             b.line
                 .inner_mut()
                 .update_pointer_position(self.last_mouse_pos);

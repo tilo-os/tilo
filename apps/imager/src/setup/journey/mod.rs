@@ -884,7 +884,7 @@ impl InstallerPreview {
         if !self.live {
             return true;
         }
-        super::internal_install_flow::live_gate_open()
+        super::internal_install_flow::live_install_allowed()
     }
 
     fn storage_content(&self) -> ui::widget::Column {
@@ -4799,7 +4799,7 @@ impl InstallerPreview {
             t(if self.direct_route_enabled() {
                 "installer-native-full-os-body"
             } else {
-                "imager-setup-internal-gated"
+                "imager-setup-internal-not-enabled"
             })
         } else if key == "computer" && !self.direct_route_enabled() {
             t("installer-preview-computer-usb-body")
@@ -6640,7 +6640,7 @@ mod tests {
             imager_backend::setup::migration_intent::reviewed_app_routing_fixture();
         let mut environment = tilo_test_env::ScopedEnv::new();
         environment.set(runtime_identity::FILE_SECRETS_ENV, "1");
-        environment.set(super::super::internal_install_flow::RUNTIME_GATE_VAR, "1");
+        environment.set(super::super::internal_install_flow::RUNTIME_ALLOW_VAR, "1");
         environment.set("XDG_STATE_HOME", root.path().join("state"));
         environment.set("XDG_CONFIG_HOME", root.path().join("config"));
         let minimum = intent.application_minimum();
@@ -9001,15 +9001,15 @@ mod tests {
             return;
         }
         use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
-        type Gate = (std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>);
-        static GATE: std::sync::OnceLock<std::sync::Mutex<Option<Gate>>> =
+        type Check = (std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>);
+        static CHECK: std::sync::OnceLock<std::sync::Mutex<Option<Check>>> =
             std::sync::OnceLock::new();
-        fn gated_capture(
+        fn guarded_capture(
             home: &std::path::Path,
             operation: &str,
             categories: imager_backend::setup::migration_handoff::Categories,
         ) -> std::io::Result<imager_backend::setup::migration_handoff::Plan> {
-            let (started, release) = GATE.get().unwrap().lock().unwrap().take().unwrap();
+            let (started, release) = CHECK.get().unwrap().lock().unwrap().take().unwrap();
             started.send(()).map_err(std::io::Error::other)?;
             release
                 .recv_timeout(tilo_test_env::hang_bound())
@@ -9018,7 +9018,7 @@ mod tests {
         }
         let (started, ready) = std::sync::mpsc::channel();
         let (release, wait) = std::sync::mpsc::channel();
-        *GATE
+        *CHECK
             .get_or_init(|| std::sync::Mutex::new(None))
             .lock()
             .unwrap() = Some((started, wait));
@@ -9031,7 +9031,7 @@ mod tests {
         environment.set("XDG_STATE_HOME", root.path().join("state"));
         let (reply, receiver) = std::sync::mpsc::channel();
         environment.set(runtime_identity::FILE_SECRETS_ENV, "1");
-        environment.set(super::super::internal_install_flow::RUNTIME_GATE_VAR, "1");
+        environment.set(super::super::internal_install_flow::RUNTIME_ALLOW_VAR, "1");
         let mut app = fixture();
         choose(&mut app, "computer");
         choose(&mut app, "migrate");
@@ -9060,7 +9060,7 @@ mod tests {
             preview.journey.categories = [true, false, false];
             preview.belongings.home = Some(home.clone());
             preview.migration_selection.permission_reply = Some(receiver);
-            preview.migration_selection.capture = Some(gated_capture);
+            preview.migration_selection.capture = Some(guarded_capture);
         })
         .unwrap();
         app.effect(&InstallerPreviewEffect::ContinuePreview)
@@ -9707,7 +9707,7 @@ mod tests {
         let mut env = tilo_test_env::ScopedEnv::new();
         env.set(runtime_identity::FILE_SECRETS_ENV, "1");
         env.set("XDG_STATE_HOME", root.path().join("state"));
-        env.set(super::super::internal_install_flow::RUNTIME_GATE_VAR, "0");
+        env.set(super::super::internal_install_flow::RUNTIME_ALLOW_VAR, "0");
         let home = root.path().join("home");
         std::fs::create_dir(&home).unwrap();
         std::fs::set_permissions(&home, std::fs::Permissions::from_mode(0o700)).unwrap();
@@ -9859,11 +9859,11 @@ mod tests {
 
     #[cfg(target_os = "linux")]
     #[test]
-    fn gated_computer_route_reviews_explicit_usb_choice_without_empty_storage() {
+    fn guarded_computer_route_reviews_explicit_usb_choice_without_empty_storage() {
         use std::os::unix::fs::PermissionsExt;
         let mut env = tilo_test_env::ScopedEnv::new();
         env.set(runtime_identity::FILE_SECRETS_ENV, "1");
-        env.set(super::super::internal_install_flow::RUNTIME_GATE_VAR, "0");
+        env.set(super::super::internal_install_flow::RUNTIME_ALLOW_VAR, "0");
         let temp = crate::setup::test_support::qualified_tempdir();
         let root = temp.path().canonicalize().unwrap();
         std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
@@ -9880,7 +9880,7 @@ mod tests {
             preview.live = true;
             assert!(
                 !preview.direct_route_enabled(),
-                "this qualification requires a closed release gate"
+                "this qualification requires a closed release check"
             );
         })
         .unwrap();
@@ -11404,7 +11404,7 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
         let mut env = tilo_test_env::ScopedEnv::new();
         env.set(runtime_identity::FILE_SECRETS_ENV, "1");
-        env.set(super::super::internal_install_flow::RUNTIME_GATE_VAR, "1");
+        env.set(super::super::internal_install_flow::RUNTIME_ALLOW_VAR, "1");
         let temp = crate::setup::test_support::qualified_tempdir();
         let root = temp.path().canonicalize().unwrap();
         std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();

@@ -363,7 +363,7 @@ pub struct PeerSurface {
     writable: bool,
     /// The share's own rule for this viewer's input, asked before every event rather than copied
     /// into a second flag.
-    gate: ShareRegistry,
+    check: ShareRegistry,
     standing: Standing,
     awaiting_keyframe: bool,
     picture: Option<Picture>,
@@ -409,8 +409,8 @@ impl PeerSurface {
         decoder.set_picture_wait(PICTURE_WAIT);
         decoder.set_stream_colorimetry(Some(colorimetry));
         decoder.set_display_size(Some((start.width, start.height)));
-        let mut gate = ShareRegistry::new();
-        gate.insert(
+        let mut check = ShareRegistry::new();
+        check.insert(
             start.local_peer,
             start.surface,
             StreamingShare {
@@ -428,7 +428,7 @@ impl PeerSurface {
             width: start.width,
             height: start.height,
             writable: start.writable,
-            gate,
+            check,
             standing: Standing::Started,
             awaiting_keyframe: false,
             picture: None,
@@ -807,7 +807,10 @@ impl PeerSurface {
 
     /// Ship one input event to the sender, through the share's own rule.
     fn send(&mut self, event: &InputEvent) -> Result<ActionOutput, String> {
-        if !self.gate.accept_remote_input(self.local_peer, self.surface) {
+        if !self
+            .check
+            .accept_remote_input(self.local_peer, self.surface)
+        {
             return Err(t("peer-window-refused-view-only"));
         }
         let encoded = postcard::to_allocvec(event).map_err(|error| error.to_string())?;

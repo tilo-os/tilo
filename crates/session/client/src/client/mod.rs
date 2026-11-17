@@ -17,10 +17,10 @@ use crate::Enrolled;
 use crate::network::{Cmd, Device, Event, Outbox, Topic, Transport, topic_of};
 use crate::presence::OwnPresence;
 
-pub use gate::Shell;
+pub use message_policy::Shell;
 pub use presence::Presence;
 
-mod gate;
+mod message_policy;
 mod presence;
 
 /// What a host keeps of the peer network beside the boards: its channels, its fabric, the windows it
@@ -69,7 +69,7 @@ pub struct Client {
     user: Option<[u8; 32]>,
     /// What became of the enrollments asked for since the last call.
     enrolled: std::sync::mpsc::Receiver<Enrolled>,
-    /// The shell this session shows, which the workspace gate reads every message from another
+    /// The shell this session shows, which the workspace check reads every message from another
     /// member against: `None` until the session hands it over.
     shell: RefCell<Option<Rc<dyn Shell>>>,
     /// What this host keeps of the peer network beside the boards.
@@ -153,7 +153,7 @@ impl Client {
         }
     }
 
-    /// Hand the workspace gate the shell this session shows: whose workspaces' policies hold every
+    /// Hand the workspace check the shell this session shows: whose workspaces' policies hold every
     /// member's messages to what the workspace grants them.
     pub fn attach_shell(&self, shell: Rc<dyn Shell>) {
         self.shell.borrow_mut().replace(shell);

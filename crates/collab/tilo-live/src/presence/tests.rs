@@ -133,7 +133,7 @@ tilo_test_env::scenario! {
         assert_eq!(json["activity"], "Reading");
     }
 
-    phase this_seats_own_row_is_what_this_device_said_here;
+    phase this_devices_own_row_is_what_this_device_said_here;
     {
         let mut board = board();
         let own = Own {

@@ -1560,12 +1560,12 @@ mod tests {
 
     /// Holds a monitor's bus mid-write until the test lets it go.
     #[derive(Default)]
-    struct Gate {
+    struct Check {
         open: Mutex<bool>,
         opened: std::sync::Condvar,
     }
 
-    impl Gate {
+    impl Check {
         fn pass(&self) {
             let open = self.open.lock().unwrap();
             drop(self.opened.wait_while(open, |open| !*open).unwrap());
@@ -1577,17 +1577,17 @@ mod tests {
         }
     }
 
-    /// A monitor's fake I²C bus: writes wait at its gate, if it has one, and every frame on the wire is
+    /// A monitor's fake I²C bus: writes wait at its check, if it has one, and every frame on the wire is
     /// recorded.
     struct SlowBus {
         frames: Arc<Mutex<Vec<Vec<u8>>>>,
-        gate: Option<Arc<Gate>>,
+        check: Option<Arc<Check>>,
     }
 
     impl ddc::I2cTransport for SlowBus {
         fn write(&mut self, bytes: &[u8]) -> std::io::Result<()> {
-            if let Some(gate) = &self.gate {
-                gate.pass();
+            if let Some(check) = &self.check {
+                check.pass();
             }
             self.frames.lock().unwrap().push(bytes.to_vec());
             Ok(())
@@ -1611,12 +1611,12 @@ mod tests {
             let in_flight = Arc::new(Mutex::new(BTreeMap::<String, usize>::new()));
             let overlapped = Arc::new(std::sync::atomic::AtomicBool::new(false));
             // DP-1's bus holds every write until the presses are done.
-            let dp1_gate = Arc::new(Gate::default());
-            let (wire, flight, overlap, gate) = (
+            let dp1_check = Arc::new(Check::default());
+            let (wire, flight, overlap, check) = (
                 Arc::clone(&buses),
                 Arc::clone(&in_flight),
                 Arc::clone(&overlapped),
-                Arc::clone(&dp1_gate),
+                Arc::clone(&dp1_check),
             );
             let service = BrightnessService::spawn(
                 Arc::new(|| vec![ddc_monitor("DP-1"), ddc_monitor("DP-2")]),
@@ -1647,8 +1647,8 @@ mod tests {
                             overlap.store(true, Ordering::SeqCst);
                         }
                         let frames = Arc::clone(wire.lock().unwrap().entry(name.clone()).or_default());
-                        let gate = (name == "/dev/DP-1").then(|| Arc::clone(&gate));
-                        let mut bus = SlowBus { frames, gate };
+                        let check = (name == "/dev/DP-1").then(|| Arc::clone(&check));
+                        let mut bus = SlowBus { frames, check };
                         let raw = ddc_raw(pct, maximum.expect("the scale is cached"));
                         let result = ddc::set_vcp(&mut bus, ddc::VCP_BRIGHTNESS, raw)
                             .map_err(|error| error.to_string());
@@ -1681,7 +1681,7 @@ mod tests {
                     .get("/dev/DP-2")
                     .is_some_and(|frames| !frames.lock().unwrap().is_empty())
             });
-            dp1_gate.open();
+            dp1_check.open();
             idle(&service);
             let dp1 = buses.lock().unwrap().get("/dev/DP-1").cloned().unwrap();
             let frames = dp1.lock().unwrap().clone();

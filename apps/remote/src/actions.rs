@@ -229,7 +229,7 @@ mod tests {
 
         phase connect_is_offered_only_for_connectable_profiles;
         {
-            eprintln!("phase tilo_connect_action_is_available_without_the_ssh_vnc_dev_gate");
+            eprintln!("phase tilo_connect_action_is_available_without_the_ssh_vnc_dev_check");
             {
                 let mut connection = sample(Uuid::new_v4(), "Tilo device");
                 connection.kind = ConnectionKind::Tilo;
@@ -258,7 +258,7 @@ mod tests {
                 ));
             }
 
-            eprintln!("phase legacy_rdp_resource_names_the_missing_backend_instead_of_a_generic_gate");
+            eprintln!("phase legacy_rdp_resource_names_the_missing_backend_instead_of_a_generic_check");
             {
                 let mut connection = sample(Uuid::new_v4(), "Old Windows host");
                 connection.kind = ConnectionKind::Rdp;

@@ -240,7 +240,7 @@ fn acting_fabric(
 
 /// The app wire the apps read and invoke this session's services on, when it serves one: the socket
 /// the launcher hands its apps, and the link the loop answers their calls through.
-/// The broker it serves on is `collaboration` 's, which the session's channel service gates a
+/// The broker it serves on is `collaboration` 's, which the session's channel service checks a
 /// workspace's sealed records with, and whose keys an endpoint asks a record's keys from. What the
 /// app wire takes from the session besides its broker: who keeps its agents, the sessions they work
 /// in, and the tools service apps reach their lists' changes through.

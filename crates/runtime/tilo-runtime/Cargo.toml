@@ -73,7 +73,7 @@ iroh.workspace = true
 # something needs this device reachable.
 tilo-endpoint-reachability = { path = "../../system/endpoint-reachability" }
 iroh-blobs.workspace = true
-# The launcher's manifest view, service names and developer-override gate;
+# The launcher's manifest view, service names and developer-override check;
 # its binary builds every Linux app sandbox.
 launcher = { path = "../../packaging/launcher" }
 libc.workspace = true

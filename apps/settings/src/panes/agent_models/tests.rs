@@ -1003,8 +1003,8 @@ fn a_stalled_model_manager_never_holds_the_window() {
 
     let mut app = TestApp::<crate::resource::SettingsShell>::new().unwrap();
     crate::effects::show_pane(&mut app, crate::categories::Category::AgentModels);
-    let gate = crate::stall::Stall::new();
-    let stalled = Arc::clone(&gate);
+    let hold = crate::stall::Stall::new();
+    let stalled = Arc::clone(&hold);
     app.with_widget::<crate::window::Inspected, _>(move |settings| {
         let model = crate::panes::agent_models::area(settings).unwrap().model();
         let mut model = model.borrow_mut();
@@ -1029,7 +1029,7 @@ fn a_stalled_model_manager_never_holds_the_window() {
     app.harness()
         .poll_frame()
         .expect("the window draws its next frame");
-    gate.assert_held("the click");
+    hold.assert_held("the click");
     let shown = |app: &mut TestApp<crate::resource::SettingsShell>| {
         app.with_widget::<crate::window::Inspected, _>(|settings| {
             let model = crate::panes::agent_models::area(settings)
@@ -1051,7 +1051,7 @@ fn a_stalled_model_manager_never_holds_the_window() {
         "the last snapshot is shown until the manager answers"
     );
 
-    gate.release();
+    hold.release();
     let deadline = tilo_test_env::hang_deadline();
     while shown(&mut app) != ["Porch Model"] {
         assert!(

@@ -553,10 +553,10 @@ fn a_view_only_peer_cannot_post_react_or_hydrate_embeds() {
     );
     assert!(
         !app.embed_allowed("/var/workspace/secret.png"),
-        "an ungranted embed is gated"
+        "an ungranted embed is guarded"
     );
 
-    // Sending is a no-op under the gate.
+    // Sending is a no-op under the check.
     let before = crate::testing::messages(&doc, "c_crit").len();
     app.insert_text(&mut ui::widget::Edits::lend(&mut doc), "should not post");
     app.send_focused(&mut ui::widget::Edits::lend(&mut doc));
@@ -568,7 +568,7 @@ fn a_view_only_peer_cannot_post_react_or_hydrate_embeds() {
     assert_eq!(
         crate::testing::messages(&doc, "c_crit").len(),
         before,
-        "gated peer posts nothing"
+        "guarded peer posts nothing"
     );
 
     // Attaching is a no-op too.
@@ -577,10 +577,10 @@ fn a_view_only_peer_cannot_post_react_or_hydrate_embeds() {
     write_real_png(&png, 32, 32);
     assert!(
         !app.attach_file(&mut ui::widget::Edits::lend(&mut doc), &png),
-        "a gated peer can't attach either"
+        "a guarded peer can't attach either"
     );
 
-    // And reacting is gated.
+    // And reacting is guarded.
     if let Some(id) = app
         .messages
         .iter()
@@ -597,7 +597,7 @@ fn a_view_only_peer_cannot_post_react_or_hydrate_embeds() {
         let after = app.messages.iter().find(|mm| mm.id == id).unwrap();
         assert!(
             after.reactions.iter().all(|r| r.emoji != "👍"),
-            "gated: no reaction added"
+            "guarded: no reaction added"
         );
     }
 }

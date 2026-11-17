@@ -375,7 +375,7 @@ def call(command: list[str], log: Path, cwd: Path, env: dict[str, str] | None = 
 
 
 def run_hosting(ctx: RunContext) -> list[record.Record]:
-    # Historical refs predate this gate; every side that has it must pass it.
+    # Historical refs predate this check; every side that has it must pass it.
     if "keystroke_writes" in ctx.bins:
         call([ctx.bins["keystroke_writes"]], ctx.dir / "keystroke-writes.log", ctx.repo)
     # Both sides need a bench that knows --relay-cpus; an older one refuses it.
@@ -420,10 +420,10 @@ def run_render(ctx: RunContext) -> list[record.Record]:
 
 
 def run_fs(ctx: RunContext) -> list[record.Record]:
-    log = ctx.dir / "fs-gate.log"
+    log = ctx.dir / "fs-check.log"
     call(["bash", ctx.repo / "tools/with-test-environment.sh", ctx.bins["performance_timing"], "--nocapture",
-          "--test-threads=1"], log, ctx.cwd["performance_timing"], {"TILO_FS_PERF_GATE": "1"}, check=False)
-    return adapters.fs_gate([log.read_text(encoding="utf-8", errors="replace")], ctx.env)
+          "--test-threads=1"], log, ctx.cwd["performance_timing"], {"TILO_FS_PERF_CHECK": "1"}, check=False)
+    return adapters.fs_check([log.read_text(encoding="utf-8", errors="replace")], ctx.env)
 
 
 # The session and its MCP server, as tools/ci/perf-scheduled.sh builds them:
@@ -520,10 +520,10 @@ def test_executable(command: tuple[str, ...], target: str, repo: Path, log: Path
 def side_group(group: Group, repo: Path) -> Group:
     """Keep A/B comparisons with refs before a benchmark moved usable."""
     if group.name == "fs" and not (repo / "crates/system/fs/tests/performance_timing.rs").is_file():
-        # The latency scenarios were the performance gate until it counted work.
+        # The latency scenarios were the performance check until it counted work.
         return dataclasses.replace(group, tests={"performance_timing": (
-            ("cargo", "test", "--locked", "-p", "tilo-fs", "--test", "performance_gate", "--no-run"),
-            "performance_gate")})
+            ("cargo", "test", "--locked", "-p", "tilo-fs", "--test", "performance_check", "--no-run"),
+            "performance_check")})
     return group
 
 
@@ -641,7 +641,7 @@ def run(options: argparse.Namespace, repo: Path, groups: list[Group]) -> int:
     if options.summary:
         with options.summary.open("a", encoding="utf-8") as stream:
             stream.write(text)
-    # A verdict is evidence, not a gate: only a run that could not measure fails.
+    # A verdict is evidence, not a check: only a run that could not measure fails.
     return 0 if analysis.paired and not failures else 1
 
 

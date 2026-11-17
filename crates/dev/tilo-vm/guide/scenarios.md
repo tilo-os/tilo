@@ -17,7 +17,7 @@ tilo-vm scenario install --dry-run --json    # the plan, nothing booted
 ```
 
 No account and no dev VM are involved. The scenario runs its own QEMU VM through
-`os/dev/vm.sh` (the headless path the release gate uses; set `TILO_DISTROBOX=""`
+`os/dev/vm.sh` (the headless path the release check uses; set `TILO_DISTROBOX=""`
 when QEMU is on the host itself) in a named cycle, so its disks, TPM and
 firmware state exist for this run only.
 
@@ -199,6 +199,6 @@ tpm-pin` needs a firmware store that trusts the image (`TILO_SECBOOT_KEYS`),
 otherwise the installer offers only a passphrase and the run fails rather than
 installing with a weaker factor than asked.
 
-The release gate, `os/dev/test-installer-cycle.sh`, drives the same installer
+The release check, `os/dev/test-installer-cycle.sh`, drives the same installer
 actions over the same console, from a medium customised the way Tilo Imager
 writes it, and continues into first-login OOBE and the desktop.

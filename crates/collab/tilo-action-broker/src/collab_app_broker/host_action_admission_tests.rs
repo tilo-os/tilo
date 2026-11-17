@@ -66,7 +66,7 @@ impl crate::services::LocalPersonServices for ClosedDevice {
 tilo_test_env::scenario! {
     fn host_action_admission_is_signed_and_durable;
 
-    phase configured_native_seat_never_admits_an_unsigned_actor_label;
+    phase configured_local_person_never_admits_an_unsigned_actor_label;
     {
         let (state, _) = AppBrokerState::test_state(
             None,
@@ -95,7 +95,7 @@ tilo_test_env::scenario! {
         assert!(state.completed_invocations.lock().unwrap().is_empty());
     }
 
-    phase configured_certificates_without_a_native_seat_never_admit_unsigned_owners;
+    phase configured_certificates_without_a_local_person_never_admit_unsigned_owners;
     {
         let (state, _) = AppBrokerState::test_state(
             None,

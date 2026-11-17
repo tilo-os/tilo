@@ -180,7 +180,7 @@ pub fn tilo_install_bin() -> String {
     tilo_install_bin_from(package_store::dev_env::dev_override(INSTALL_BIN_ENV))
 }
 
-/// [`tilo_install_bin`] given the override the build's gate let through.
+/// [`tilo_install_bin`] given the override the build's check let through.
 fn tilo_install_bin_from(allowed_override: Option<std::ffi::OsString>) -> String {
     allowed_override
         .and_then(|value| value.into_string().ok())
@@ -1322,8 +1322,8 @@ mod tests {
         {
             {
                 use package_store::dev_env::dev_override_from;
-                let gated = dev_override_from(false, INSTALL_BIN_ENV, Some("/tmp/evil-install".into()));
-                assert_eq!(tilo_install_bin_from(gated), installed_install_bin());
+                let guarded = dev_override_from(false, INSTALL_BIN_ENV, Some("/tmp/evil-install".into()));
+                assert_eq!(tilo_install_bin_from(guarded), installed_install_bin());
                 let honoured =
                     dev_override_from(true, INSTALL_BIN_ENV, Some("/dev/tilo-install".into()));
                 assert_eq!(tilo_install_bin_from(honoured), "/dev/tilo-install");

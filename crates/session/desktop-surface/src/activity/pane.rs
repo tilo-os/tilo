@@ -425,7 +425,7 @@ pub struct WorkspaceActivityPane {
     /// Exact addresses exposed by a painted catch-up page, partitioned before workspace switches.
     /// Never infer visibility from the index's heads.
     viewed_changes: HashMap<WorkspaceId, BTreeSet<WorkspaceHistoryId>>,
-    /// Private causal baseline captured when this device leaves a workspace. Wall time gates the
+    /// Private causal baseline captured when this device leaves a workspace. Wall time checks the
     /// presentation; the frontier decides which changes actually happened during the absence.
     departures: HashMap<WorkspaceId, WorkspaceDeparture>,
     away_digest: ActivityDigest,

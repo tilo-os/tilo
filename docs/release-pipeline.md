@@ -40,7 +40,7 @@ set it published, and the other architecture's set is published by a dispatch on
 of it. An image never installs from another architecture's set, and never signs one that
 is not published.
 
-## Fast validation versus release gates
+## Fast validation versus release checks
 
 Pull requests use the cheapest lane that proves the affected boundary:
 
@@ -55,7 +55,7 @@ Pull requests use the cheapest lane that proves the affected boundary:
   runtime, built from the pinned CEF distribution in the image build.
 - Installer changes retain affected-package checks. Relevant protected `main`
   pushes also publish signed native Installer prereleases on all six existing
-  platform/architecture lanes, subject to the exact-source qualification gates.
+  platform/architecture lanes, subject to the exact-source qualification checks.
   Main reuses reviewed, signed published media; it does not build media or OS
   images. Stable tags retain distribution and website promotion. Manual runs
   default to Linux x86_64; tags, automatic main publication or `full_native`
@@ -224,12 +224,12 @@ keys into an OCI layout, without credentials.
 ## Dev VM disks
 
 `tools/ci/publish/os-dev-publish.sh image` publishes main's dev image for one architecture,
-the dev channel, once `tools/ci/publish/os-dev-gate.sh` passed on it: the dev image (os/Containerfile.dev) on the
-OS image of the same commit. The gate is what a dev device needs, checked on the path a device
+the dev channel, once `tools/ci/publish/os-dev-check.sh` passed on it: the dev image (os/Containerfile.dev) on the
+OS image of the same commit. The check is what a dev device needs, checked on the path a device
 takes: the dev disk published last boots, stages the image with bootc and applies it live,
 restarts into it to a greeter that takes input with its boot assessment passed, and takes the
 next update live. A device falls back by itself from an image that does not boot, so the heavier
-`tools/ci/publish/os-acceptance.sh` (devices, the desktop's journeys, the splash) gates a
+`tools/ci/publish/os-acceptance.sh` (devices, the desktop's journeys, the splash) checks a
 release without holding back the dev channel. It boots overlays of the disk
 `tools/ci/publish/os-dev-disk.sh` installed (a 64 GiB sparse disk, `os/dev/build-image.sh`,
 never booted itself), which `os-dev-publish.sh disk` publishes once it passed. The OS image goes to

@@ -983,7 +983,7 @@ mod tests {
             }
         }
 
-        phase backend_selection_is_gated_and_never_simulates_writes;
+        phase backend_selection_is_guarded_and_never_simulates_writes;
         {
             #[cfg(not(feature = "host-media-writer"))]
             {

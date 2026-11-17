@@ -711,7 +711,7 @@ mod owner_commit_tests {
                 );
                 assert!(
                     subscriber.try_recv().is_err(),
-                    "current membership must gate fanout after owner await"
+                    "current membership must check fanout after owner await"
                 );
                 assert!(
                     f.owner.status().generation > before.generation,

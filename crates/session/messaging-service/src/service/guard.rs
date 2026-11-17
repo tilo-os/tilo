@@ -1,4 +1,4 @@
-//! The one gate every running account checks before and after each I/O:
+//! The one check every running account checks before and after each I/O:
 //! the account is not retired, its owner is still admitted, its grant still
 //! holds, and every route goes through the person's current records.
 
@@ -14,14 +14,14 @@ use tilo_messaging_protocol::supervisor::{AccountAuthority, AccountSupervisor};
 use super::identity::{Credential, Identity, service_name};
 use super::records::CurrentAuthority;
 
-pub(crate) struct Gate {
+pub(crate) struct AccountGuard {
     pub(crate) identity: Identity,
     pub(crate) credential: Credential,
     authority: CurrentAuthority,
     stopped: AtomicBool,
 }
 
-impl Gate {
+impl AccountGuard {
     /// # Errors
     /// The grant belongs to another owner.
     pub(crate) fn new(
@@ -73,7 +73,7 @@ impl Gate {
     }
 }
 
-impl SignalAuthority for Gate {
+impl SignalAuthority for AccountGuard {
     fn check_account(&self) -> Result<(), SendError> {
         self.check()?;
         self.authority.check_account()?;
@@ -94,7 +94,7 @@ impl SignalAuthority for Gate {
     }
 }
 
-impl ExternalAuthority for Gate {
+impl ExternalAuthority for AccountGuard {
     fn authorize(&self, route: &Route) -> Result<Authorization, SendError> {
         SignalAuthority::authorize(self, route)
     }
@@ -103,32 +103,32 @@ impl ExternalAuthority for Gate {
     }
 }
 
-impl AccountAuthority for Gate {
+impl AccountAuthority for AccountGuard {
     fn check(&self) -> Result<(), SendError> {
-        Gate::check(self)
+        AccountGuard::check(self)
     }
 }
 
-impl tilo_messaging_protocol::sms_runtime::SimAuthority for Gate {
+impl tilo_messaging_protocol::sms_runtime::SimAuthority for AccountGuard {
     fn check(&self) -> Result<(), tilo_messaging_protocol::Error> {
-        Gate::check(self).map_err(|_| tilo_messaging_protocol::Error::WrongAccount)
+        AccountGuard::check(self).map_err(|_| tilo_messaging_protocol::Error::WrongAccount)
     }
 }
 
 /// A running account of any service, as the service keeps it.
 pub(crate) trait Running: Send + Sync {
-    fn gate(&self) -> &Arc<Gate>;
+    fn guard(&self) -> &Arc<AccountGuard>;
     fn supervisor(&self) -> &Arc<AccountSupervisor>;
     fn client(&self) -> MessagingClient {
         self.supervisor().client()
     }
     fn state(&self) -> AccountState {
         use tilo_messaging::MessagingHost as _;
-        self.supervisor().account_state(&self.gate().account())
+        self.supervisor().account_state(&self.guard().account())
     }
     /// Stop the account: it fails every check from now on and reads locked.
     fn retire(&self) {
-        self.gate().stop();
+        self.guard().stop();
         let _ = self.supervisor().unavailable(AccountState::Locked);
     }
 }

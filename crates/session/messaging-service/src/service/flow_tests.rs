@@ -12,7 +12,7 @@ use tilo_messaging_protocol::supervisor::AccountSupervisor;
 use super::{Flow, Order, Provider};
 use crate::link::{Handler, Responder};
 use crate::service::Service;
-use crate::service::gate::{Gate, Running};
+use crate::service::guard::{AccountGuard, Running};
 use crate::service::identity::{Credential, Custody, Identity};
 use crate::session;
 
@@ -123,12 +123,12 @@ fn rig() -> Rig {
 }
 
 struct Started {
-    gate: Arc<Gate>,
+    guard: Arc<AccountGuard>,
     supervisor: Arc<AccountSupervisor>,
 }
 impl Running for Started {
-    fn gate(&self) -> &Arc<Gate> {
-        &self.gate
+    fn guard(&self) -> &Arc<AccountGuard> {
+        &self.guard
     }
     fn supervisor(&self) -> &Arc<AccountSupervisor> {
         &self.supervisor

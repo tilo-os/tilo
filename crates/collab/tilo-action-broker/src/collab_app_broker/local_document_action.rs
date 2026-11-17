@@ -388,7 +388,7 @@ pub(super) fn admit(
         // app, group or resource into authenticated caller/target facts.
         let invocation = tilo_actions::InvocationId(request.invocation);
         // No confirmation is synthesized from a report. Actions requiring it
-        // fail closed at the same policy gate as ordinary invocation.
+        // fail closed at the same policy check as ordinary invocation.
         let staged = state
             .admit_invocation_from_offered_owned(
                 peer,

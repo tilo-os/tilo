@@ -13,6 +13,10 @@ pub mod environment_socket;
 /// connection is.
 #[cfg(unix)]
 pub mod launch_handoff;
+/// Holds a child until the host that started it has recorded
+/// its launch, so it can never reach the broker before it is attested.
+#[cfg(unix)]
+pub mod launch_hold;
 pub mod local_socket;
 /// The messages that travel over a connected socket: Unix sockets and the
 /// descriptors they carry, so Linux only, like the clients that use it.
@@ -21,10 +25,6 @@ pub mod message;
 pub mod origin_connector;
 pub mod pending_connection;
 pub mod process_binding;
-/// The gate that holds a child until the host that started it has recorded
-/// its launch, so it can never reach the broker before it is attested.
-#[cfg(unix)]
-pub mod registration_gate;
 #[cfg(unix)]
 pub mod request_rendezvous;
 pub mod retained_role;
@@ -81,7 +81,7 @@ pub enum NotAvailable {
 }
 
 /// True iff we appear to be running inside a Tilo session. Heuristic only —
-/// apps must NOT use this as an authorisation gate; try the relevant
+/// apps must NOT use this as an authorisation check; try the relevant
 /// service client and react to [`NotAvailable`] instead. Intended for
 /// telemetry, boot-time toggles, and friendly first-run messaging.
 pub fn is_tilo_native() -> bool {

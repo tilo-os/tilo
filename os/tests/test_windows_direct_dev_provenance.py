@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""The developer CI gate must bind image bytes to a real successful producer."""
+"""The developer CI check must bind image bytes to a real successful producer."""
 import hashlib
 import importlib.util
 import json

@@ -299,8 +299,8 @@ fn a_shared_document_not_on_this_device_opens_once_it_arrives() {
     assert!(app.pending_open.is_some(), "the arrived document opens");
     drain_until(&mut app, |app| app.pending_open.is_none());
     if matches!(
-        pdfium_gate(app.raster_active(), require_pdfium()),
-        PdfiumGate::Skip
+        pdfium_check(app.raster_active(), require_pdfium()),
+        PdfiumCheck::Skip
     ) {
         return;
     }
@@ -2689,13 +2689,13 @@ pub(super) fn open_settled(path: impl AsRef<std::path::Path>) -> Option<PdfApp> 
     let path = path.as_ref();
     let mut app = PdfApp::open(path);
     drain_until(&mut app, |app| app.pending_open.is_none());
-    match pdfium_gate(app.raster_active(), require_pdfium()) {
-        PdfiumGate::Run => Some(app),
-        PdfiumGate::Fail => panic!(
+    match pdfium_check(app.raster_active(), require_pdfium()) {
+        PdfiumCheck::Run => Some(app),
+        PdfiumCheck::Fail => panic!(
             "TILO_REQUIRE_PDFIUM is set and there is {NO_PDFIUM} ({:?})",
             app.load_error
         ),
-        PdfiumGate::Skip => {
+        PdfiumCheck::Skip => {
             eprintln!(
                 "SKIPPING a pdfium-backend test on {}: {NO_PDFIUM}. The \
                  raster text layer, save-back and page-editing paths went \
@@ -2805,17 +2805,17 @@ pub(super) fn save_settled(app: &mut PdfApp, out: &std::path::Path) -> bool {
 }
 
 #[derive(Debug, PartialEq, Eq)]
-enum PdfiumGate {
+enum PdfiumCheck {
     Run,
     Skip,
     Fail,
 }
 
-fn pdfium_gate(has_raster: bool, required: bool) -> PdfiumGate {
+fn pdfium_check(has_raster: bool, required: bool) -> PdfiumCheck {
     match (has_raster, required) {
-        (true, _) => PdfiumGate::Run,
-        (false, true) => PdfiumGate::Fail,
-        (false, false) => PdfiumGate::Skip,
+        (true, _) => PdfiumCheck::Run,
+        (false, true) => PdfiumCheck::Fail,
+        (false, false) => PdfiumCheck::Skip,
     }
 }
 
@@ -2825,19 +2825,19 @@ fn require_pdfium() -> bool {
 
 #[serial(pdfium)]
 #[test]
-fn raster_open_is_gated_measured_and_budgeted_on_the_first_frame() {
+fn raster_open_is_guarded_measured_and_budgeted_on_the_first_frame() {
     eprintln!("phase a_missing_pdfium_skips_unless_it_was_required");
     {
-        assert_eq!(pdfium_gate(true, false), PdfiumGate::Run);
-        assert_eq!(pdfium_gate(true, true), PdfiumGate::Run);
+        assert_eq!(pdfium_check(true, false), PdfiumCheck::Run);
+        assert_eq!(pdfium_check(true, true), PdfiumCheck::Run);
         assert_eq!(
-            pdfium_gate(false, false),
-            PdfiumGate::Skip,
+            pdfium_check(false, false),
+            PdfiumCheck::Skip,
             "with no backend and no demand for one, say so and stand down"
         );
         assert_eq!(
-            pdfium_gate(false, true),
-            PdfiumGate::Fail,
+            pdfium_check(false, true),
+            PdfiumCheck::Fail,
             "TILO_REQUIRE_PDFIUM has to turn the absence back into a failure, \
              or the skip has no floor under it"
         );
@@ -2848,10 +2848,10 @@ fn raster_open_is_gated_measured_and_budgeted_on_the_first_frame() {
         let t = ui::time::now();
         let loaded = crate::source::open(std::path::Path::new(SAMPLE_PDF), &ContentStore::memory());
         let open_ms = t.elapsed().as_secs_f64() * 1000.0;
-        match pdfium_gate(loaded.is_ok(), require_pdfium()) {
-            PdfiumGate::Run => {}
-            PdfiumGate::Fail => panic!("TILO_REQUIRE_PDFIUM is set and there is {NO_PDFIUM}"),
-            PdfiumGate::Skip => {
+        match pdfium_check(loaded.is_ok(), require_pdfium()) {
+            PdfiumCheck::Run => {}
+            PdfiumCheck::Fail => panic!("TILO_REQUIRE_PDFIUM is set and there is {NO_PDFIUM}"),
+            PdfiumCheck::Skip => {
                 eprintln!("SKIPPING the pdfium open/render measurement: {NO_PDFIUM}.");
                 break 'phase;
             }
@@ -3245,10 +3245,10 @@ fn zoomed_pages_draw_from_reusable_worker_tiles_matching_full_renders() {
     eprintln!("phase a_tile_matches_the_same_region_of_a_whole_page_render");
     'phase: {
         let loaded = crate::source::open(std::path::Path::new(LATIN_PDF), &ContentStore::memory());
-        match pdfium_gate(loaded.is_ok(), require_pdfium()) {
-            PdfiumGate::Run => {}
-            PdfiumGate::Fail => panic!("TILO_REQUIRE_PDFIUM is set and there is {NO_PDFIUM}"),
-            PdfiumGate::Skip => {
+        match pdfium_check(loaded.is_ok(), require_pdfium()) {
+            PdfiumCheck::Run => {}
+            PdfiumCheck::Fail => panic!("TILO_REQUIRE_PDFIUM is set and there is {NO_PDFIUM}"),
+            PdfiumCheck::Skip => {
                 eprintln!("SKIPPING the tile-versus-page render check: {NO_PDFIUM}");
                 break 'phase;
             }

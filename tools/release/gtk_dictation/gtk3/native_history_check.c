@@ -44,7 +44,7 @@ static void insert (void)
   gtk_editable_insert_text (GTK_EDITABLE (entry), "!", 1, &position);
   g_assert_cmpstr (gtk_entry_get_text (GTK_ENTRY (entry)), ==, "alpha beta! gamma");
 }
-static gboolean gate (gpointer unused)
+static gboolean check (gpointer unused)
 {
   AtkObject *object;
   AtkAction *action;
@@ -68,7 +68,7 @@ static gboolean gate (gpointer unused)
   g_object_set (entry, "enable-undo", TRUE, NULL);
   baseline (); insert (); g_assert_false (flag ("can-undo"));
   g_assert_false (atk_action_do_action (action, 1));
-  g_object_set (entry, "history-owner", "so.tilo.NativeHistoryGate", NULL);
+  g_object_set (entry, "history-owner", "so.tilo.NativeHistoryCheck", NULL);
   g_assert_true (flag ("history-registered")); g_assert_true (flag ("history-available"));
   g_assert_cmpint (atk_action_get_n_actions (action), ==, 3);
   g_assert_cmpstr (atk_action_get_name (action, 1), ==, "undo");
@@ -76,7 +76,7 @@ static gboolean gate (gpointer unused)
       baseline ();
       before_commit = g_object_ref (gtk_entry_get_buffer (GTK_ENTRY (entry)));
       awaiting_commit = TRUE;
-      g_print ("GTK3_NATIVE_GATE_READY_IM_REPLACEMENT\n");
+      g_print ("GTK3_NATIVE_CHECK_READY_IM_REPLACEMENT\n");
       return G_SOURCE_CONTINUE;
     }
   if (!g_str_equal (gtk_entry_get_text (GTK_ENTRY (entry)), "alpha ! gamma"))
@@ -127,7 +127,7 @@ static gboolean gate (gpointer unused)
   g_assert_false (gtk_bindings_activate (G_OBJECT (entry), GDK_KEY_z, GDK_CONTROL_MASK));
   g_print ("PASS unregistered, readonly, insensitive, protected, focus and intercepted history refusal\n");
   g_clear_object (&before_commit);
-  g_print ("GTK3_NATIVE_ATK_GATE_COMPLETE\n");
+  g_print ("GTK3_NATIVE_ATK_CHECK_COMPLETE\n");
   g_application_quit (G_APPLICATION (application));
   return G_SOURCE_REMOVE;
 }
@@ -144,11 +144,11 @@ static void activate (GtkApplication *app, gpointer unused)
   gtk_box_pack_start (GTK_BOX (box), other, TRUE, TRUE, 0);
   gtk_widget_show_all (window); gtk_widget_grab_focus (entry);
   deadline = g_get_monotonic_time () + 10 * G_TIME_SPAN_SECOND;
-  g_timeout_add (20, gate, NULL);
+  g_timeout_add (20, check, NULL);
 }
 int main (int argc, char **argv)
 {
-  GtkApplication *app = gtk_application_new ("so.tilo.NativeHistoryGate", G_APPLICATION_NON_UNIQUE);
+  GtkApplication *app = gtk_application_new ("so.tilo.NativeHistoryCheck", G_APPLICATION_NON_UNIQUE);
   int status;
   g_signal_connect (app, "activate", G_CALLBACK (activate), NULL);
   status = g_application_run (G_APPLICATION (app), argc, argv);

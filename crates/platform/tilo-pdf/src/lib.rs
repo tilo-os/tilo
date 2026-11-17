@@ -237,7 +237,7 @@ fn sandbox_required() -> bool {
     std::env::var_os(REQUIRE_SANDBOX_ENV).is_some_and(|v| !v.is_empty())
 }
 
-/// The gate for tests whose assertions need the sandboxed helper itself — its
+/// The check for tests whose assertions need the sandboxed helper itself — its
 /// confinement, or the pinned fonts compiled into it — rather than any engine.
 /// Tests that only need documents opened use [`Engine::shared`].
 ///
@@ -247,15 +247,15 @@ fn sandbox_required() -> bool {
 ///
 /// When the host cannot confine the helper and [`REQUIRE_SANDBOX_ENV`] is set:
 /// the environment promised a sandbox.
-pub fn sandboxed_for_test(engine: Result<Engine>, what: &str) -> HelperGate {
+pub fn sandboxed_for_test(engine: Result<Engine>, what: &str) -> HelperCheck {
     match engine {
-        Ok(engine) if engine.is_sandboxed() => HelperGate::Sandboxed(engine),
+        Ok(engine) if engine.is_sandboxed() => HelperCheck::Sandboxed(engine),
         Ok(_) => {
             eprintln!(
                 "SKIPPING {what}: the PDF engine here is not the sandboxed helper \
                  (none is built next to this binary, or this host cannot confine it)"
             );
-            HelperGate::StandDown
+            HelperCheck::StandDown
         }
         Err(Error::Unconfined(reason)) => {
             #[cfg(unix)]
@@ -267,9 +267,9 @@ pub fn sandboxed_for_test(engine: Result<Engine>, what: &str) -> HelperGate {
                 "SKIPPING {what}: this host cannot confine the PDF helper ({reason}); \
                  set {REQUIRE_SANDBOX_ENV} to make this a failure"
             );
-            HelperGate::StandDown
+            HelperCheck::StandDown
         }
-        Err(e) => HelperGate::Failed(e),
+        Err(e) => HelperCheck::Failed(e),
     }
 }
 
@@ -359,7 +359,7 @@ impl PagePreview {
 }
 
 #[derive(Debug)]
-pub enum HelperGate {
+pub enum HelperCheck {
     Sandboxed(Engine),
     StandDown,
     Failed(Error),

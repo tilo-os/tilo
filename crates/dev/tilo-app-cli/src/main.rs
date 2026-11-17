@@ -486,7 +486,7 @@ struct LintScope {
     #[arg(long)]
     lint: bool,
 
-    /// The repository gate: every app, app model crate and portable SDK crate
+    /// The repository check: every app, app model crate and portable SDK crate
     /// in the workspace containing PATH (or the current directory), counted
     /// against `tools/policy/app_portability_baseline.toml`.
     #[arg(long, requires = "lint")]
@@ -2584,21 +2584,21 @@ fn check_platforms(requested: &[CheckPlatformArg]) -> Vec<tilo_app_cli::PackageP
 type CheckStage<'a> = (&'static str, &'static str, &'a dyn Fn() -> Result<()>);
 
 fn lint_workspace(start: &Path, lints: &LintScope) -> Result<Value> {
-    let gate = tilo_app_cli::portability::gate(start)?;
+    let check = tilo_app_cli::portability::check(start)?;
     if lints.print_baseline {
-        print!("{}", gate.baseline_table());
-        return Ok(json!({"baseline": gate.baseline_table()}));
+        print!("{}", check.baseline_table());
+        return Ok(json!({"baseline": check.baseline_table()}));
     }
     if let Some(packages) = &lints.findings {
-        print!("{}", gate.render_sites(packages));
-        return Ok(json!({"findings": gate.render_sites(packages)}));
+        print!("{}", check.render_sites(packages));
+        return Ok(json!({"findings": check.render_sites(packages)}));
     }
-    let reports: Vec<Value> = gate
+    let reports: Vec<Value> = check
         .apps()
         .iter()
         .map(tilo_app_cli::portability::PortabilityReport::to_json)
         .collect();
-    let mut failures = gate.print_failures();
+    let mut failures = check.print_failures();
     let apps = tilo_app_cli::portability::workspace_apps(start)?;
     let mut contracts = Vec::new();
     for app in &apps {
@@ -3545,7 +3545,7 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        /// Responsive acceptance covers shape, copy, type and contrast, and the PNG gate rejects blank or
+        /// Responsive acceptance covers shape, copy, type and contrast, and the PNG check rejects blank or
         /// wrong-sized frames.
         fn responsive_acceptance_covers_the_layout_and_rejects_bad_frames;
 
@@ -3579,7 +3579,7 @@ mod tests {
             assert_eq!(runs[3].shot_theme, Some("high-contrast"));
         }
 
-        phase responsive_png_gate_rejects_blank_or_wrong_sized_frames;
+        phase responsive_png_check_rejects_blank_or_wrong_sized_frames;
         {
             let dir = tempfile::tempdir().expect("temporary screenshots");
             let blank_path = dir.path().join("blank-phone.png");

@@ -405,7 +405,7 @@ impl Apps {
         self.state.borrow_mut().broker = broker;
     }
 
-    /// Hand the app action `target` to the app that publishes it, as the person at this seat: the
+    /// Hand the app action `target` to the app that publishes it, as the person at this device: the
     /// broker starts the app when it is closed, waits for it to publish the action and delivers the
     /// call on its own runtime.
     fn deliver(

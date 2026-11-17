@@ -131,7 +131,7 @@ mod inner {
     use super::{HandoffIdentity, SourceState, Zeroizing, io};
 
     /// No endpoint can be bound on this host, so this value is never created;
-    /// the methods exist so the journey compiles without a target gate.
+    /// the methods exist so the journey compiles without a target check.
     pub(super) struct Handoff {
         identity: HandoffIdentity,
         key: Zeroizing<String>,

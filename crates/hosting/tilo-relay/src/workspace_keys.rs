@@ -31,7 +31,7 @@ use key_group::VaultKey;
 use neighbour_wire::NeighbourMsg;
 use tilo_action_broker::workspace_keys::{
     GovernancePark, GovernancePump, GovernanceTransport, InboundGovernance, KeyDir, KeyDirectory,
-    KeyProvider, KeysConfig, NoGates, SharedKeys, WorkspaceKeys,
+    KeyProvider, KeysConfig, NoSealChecks, SharedKeys, WorkspaceKeys,
 };
 use tilo_desktop_model::WorkspaceId;
 use tilo_peer_state::StatePeer;
@@ -89,7 +89,7 @@ impl KeyService {
                 role: tilo_action_broker::workspace_keys::KeyRole::Committer,
             },
             Box::new(directory.clone()),
-            Arc::new(NoGates),
+            Arc::new(NoSealChecks),
         )?;
         let link = Link::new(directory);
         let park = Arc::clone(&link.park);

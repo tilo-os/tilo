@@ -12,7 +12,7 @@
 //! - [`stream`] — the non-blocking worker driving [`backend`] off the UI thread.
 //! - [`audio`] — `GStreamer` `playbin` output + live position query (`audio`
 //!   feature).
-//! - [`lyrics`] — LRC parsing + a bundled sample library, plus a feature-gated
+//! - [`lyrics`] — LRC parsing + a bundled sample library, plus a feature-dependent
 //!   async lrclib fetch worker (`live` or `lyrics` feature).
 //! - [`resource`] — the library's verbs as the framework resource and the
 //!   app [`MusicShell`]: canonical shared library state, collaboration,

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Advance the landing page only after every native artifact and package-manager
-# promotion gate has succeeded.
+# promotion check has succeeded.
 set -euo pipefail
 
 : "${GITHUB_SERVER_URL:?missing Forgejo server URL}"
@@ -193,7 +193,7 @@ npm --prefix "$work/site" run build
 
 # The manifest is the release-origin contract. Refuse to publish a manifest a
 # site build ignores: that would turn every attractive download action into an
-# authentication-gated or dead link even though its own tests passed.
+# authentication-guarded or dead link even though its own tests passed.
 # Verify the actual rendered release surface independently of the site's own
 # tests. A simultaneous site-test regression must not let promotion silently
 # drop one supported architecture, format, trust anchor, or package-manager

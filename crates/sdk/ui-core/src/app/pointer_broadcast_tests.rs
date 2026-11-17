@@ -3,7 +3,7 @@ use super::*;
 tilo_test_env::scenario! {
     fn broadcasts_are_throttled_merged_and_scoped;
 
-    phase pointer_broadcast_throttle_gates_by_gap_and_resets_on_scope;
+    phase pointer_broadcast_throttle_checks_by_gap_and_resets_on_scope;
     {
         {
             let now = crate::time::now();

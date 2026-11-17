@@ -1128,7 +1128,7 @@ mod tests {
 
     struct HeldServer {
         base: String,
-        gate: std::sync::Arc<(std::sync::Mutex<bool>, std::sync::Condvar)>,
+        check: std::sync::Arc<(std::sync::Mutex<bool>, std::sync::Condvar)>,
     }
 
     impl HeldServer {
@@ -1136,15 +1136,15 @@ mod tests {
             use std::io::{Read, Write};
             let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
             let port = listener.local_addr().unwrap().port();
-            let gate =
+            let check =
                 std::sync::Arc::new((std::sync::Mutex::new(false), std::sync::Condvar::new()));
-            let server_gate = gate.clone();
+            let server_hold = check.clone();
             std::thread::spawn(move || {
                 for stream in listener.incoming() {
                     let Ok(mut stream) = stream else { continue };
                     let mut buf = [0u8; 1024];
                     let _ = stream.read(&mut buf);
-                    let (released, wake) = &*server_gate;
+                    let (released, wake) = &*server_hold;
                     let mut open = released.lock().unwrap();
                     while !*open {
                         open = wake.wait(open).unwrap();
@@ -1161,12 +1161,12 @@ mod tests {
             });
             Self {
                 base: format!("http://127.0.0.1:{port}"),
-                gate,
+                check,
             }
         }
 
         fn release(&self) {
-            let (released, wake) = &*self.gate;
+            let (released, wake) = &*self.check;
             *released.lock().unwrap() = true;
             wake.notify_all();
         }

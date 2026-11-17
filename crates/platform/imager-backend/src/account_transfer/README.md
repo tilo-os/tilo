@@ -119,7 +119,7 @@ Common application authentication limits:
   Pinned librespot supports reusable `Credentials` caches, but Tilo's current
   native playback consumer accepts only MusicStreaming OAuth and separately
   verifies catalogue/playback Web API identities. Cache import remains unsupported
-  until a typed reusable-session adapter can satisfy that identity gate.
+  until a typed reusable-session adapter can satisfy that identity check.
 - Browser profiles: selected bookmarks, history and folder structure have
   separate source parsing and Browser import actions. Whole-profile preservation
   does not establish a login. Session import supports specific source formats;
@@ -294,7 +294,7 @@ before identity/account writes; a newer staged importer is not consumer proof.
 The verifier checks the actual credential helper and signed SDK-linked probe.
 Fresh legacy grants need no protected protocol requirement. Desktop distribution
 receipt publication and pre-write raw/USB target admission still need separate
-qualification; the installed consumer gate must not be mistaken for those proofs.
+qualification; the installed consumer check must not be mistaken for those proofs.
 
 
 ## Detected Spotify profiles

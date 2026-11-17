@@ -316,13 +316,13 @@ fn portable_review_trap_confines_tab_shift_tab_and_spatial_focus() {
 }
 
 /// A retained modal with explicit native Widget focus/modal contracts.
-struct Gate {
+struct Hold {
     content: Column,
     open: Rc<Cell<bool>>,
     traps: bool,
     delivered: Rc<Cell<usize>>,
 }
-impl Widget for Gate {
+impl Widget for Hold {
     crate::testing::delegate_widget_methods!(content: sync, apply_layout);
     fn build_layout(
         &mut self,
@@ -388,7 +388,7 @@ impl Widget for Gate {
         true
     }
     fn name(&self) -> &'static str {
-        "gate"
+        "hold"
     }
     fn get_rect(&self) -> Rect {
         self.content.get_rect()
@@ -403,13 +403,13 @@ impl Widget for Gate {
 #[test]
 fn portable_review_modal_enter_leave_restores_semantic_focus() {
     let open = Rc::new(Cell::new(false));
-    let gate = Gate {
+    let hold = Hold {
         content: Column::new().push(Box::new(Button::new("inside", "Inside"))),
         open: open.clone(),
         traps: true,
         delivered: Rc::default(),
     };
-    let mut frame = behind_background(gate);
+    let mut frame = behind_background(hold);
     frame
         .perform_named("background", &crate::a11y::Action::Focus)
         .unwrap();
@@ -438,7 +438,7 @@ impl Widget for FocusAsked {
 fn untrapped_frames_skip_the_focus_walk_and_a_trap_still_engages_at_once() {
     let asked = Rc::new(Cell::new(0));
     let open = Rc::new(Cell::new(false));
-    let gate = Gate {
+    let hold = Hold {
         content: Column::new().push(Box::new(Button::new("inside", "Inside"))),
         open: open.clone(),
         traps: true,
@@ -450,7 +450,7 @@ fn untrapped_frames_skip_the_focus_walk_and_a_trap_still_engages_at_once() {
             .push(Box::new(FocusAsked {
                 asked: asked.clone(),
             }))
-            .push(Box::new(gate)),
+            .push(Box::new(hold)),
     ));
     frame
         .perform_named("background", &crate::a11y::Action::Focus)
@@ -468,7 +468,7 @@ fn untrapped_frames_skip_the_focus_walk_and_a_trap_still_engages_at_once() {
         0,
         "untrapped idle and scroll frames walk no focus order, as the live App between rebuilds"
     );
-    // The gate opens without a structure change, so no rebuild announces it.
+    // The hold is released without a structure change, so no rebuild announces it.
     open.set(true);
     frame.relayout();
     assert!(
@@ -486,13 +486,13 @@ fn untrapped_frames_skip_the_focus_walk_and_a_trap_still_engages_at_once() {
 #[test]
 fn portable_review_modal_owning_keyboard_receives_tab_and_alt_arrow() {
     let delivered = Rc::new(Cell::new(0));
-    let gate = Gate {
+    let hold = Hold {
         content: Column::new().push(Box::new(Button::new("inside", "Inside"))),
         open: Rc::new(Cell::new(true)),
         traps: false,
         delivered: delivered.clone(),
     };
-    let mut frame = behind_background(gate);
+    let mut frame = behind_background(hold);
     frame
         .perform_named("inside", &crate::a11y::Action::Focus)
         .unwrap();
@@ -513,13 +513,13 @@ fn portable_review_modal_owning_keyboard_receives_tab_and_alt_arrow() {
 #[test]
 fn portable_review_empty_trap_forwards_unhandled_tab_without_background_focus() {
     let delivered = Rc::new(Cell::new(0));
-    let gate = Gate {
+    let hold = Hold {
         content: Column::new(),
         open: Rc::new(Cell::new(true)),
         traps: true,
         delivered: delivered.clone(),
     };
-    let mut frame = behind_background(gate);
+    let mut frame = behind_background(hold);
     frame.key("Tab");
     assert_eq!(
         delivered.get(),

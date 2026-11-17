@@ -148,7 +148,7 @@ tilo_test_env::scenario! {
             World {
                 second_window: Some("doc-2"),
                 settle_after: Some(Duration::from_millis(10)),
-                settle_gate: 3,
+                settle_hold: 3,
                 ..World::default()
             },
             vec![
@@ -198,7 +198,7 @@ tilo_test_env::scenario! {
             "post, write a heading, then type under it and confirm in Chat",
             World {
                 settle_after: Some(Duration::from_millis(10)),
-                settle_gate: 2,
+                settle_hold: 2,
                 ..World::default()
             },
             vec![

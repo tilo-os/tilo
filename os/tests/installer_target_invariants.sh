@@ -633,7 +633,7 @@ fi
 if bash "$repo_root/os/tests/live_installer_service_invariants.sh"; then
   ok "durable-identity services stay quiet only on disposable installer media"
 else
-  bad "a durable-identity service has an incorrect live-installer gate"
+  bad "a durable-identity service has an incorrect live-installer check"
 fi
 
 exit "$fail"

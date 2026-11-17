@@ -211,3 +211,13 @@ paths = [
     "crates/sdk/ui-core/src/webview/page/tests.rs",
     "tools/android/mediation/README.md",
 ]
+
+[[allow]]
+reason = "A logic gate in a chip design."
+words = ["gate"]
+paths = ["apps/chip-design/*"]
+
+[[allow]]
+reason = "Game and studio names in save-game locations."
+words = ["gate"]
+paths = ["crates/platform/imager-backend/src/setup/source_tree/catalog.rs"]

@@ -1693,7 +1693,7 @@ mod tests {
         /// The offline developer transport: what it delivers and what it refuses.
         fn offline_developer_fetch_keeps_the_signed_identity_and_refuses_what_it_cannot_verify;
 
-        phase offline_developer_fetch_uses_signed_identity_and_existing_hash_gate;
+        phase offline_developer_fetch_uses_signed_identity_and_existing_hash_check;
         {
             let bytes = b"actual offline fixture";
             let dir = tempfile::tempdir().unwrap();

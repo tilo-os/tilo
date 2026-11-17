@@ -85,7 +85,7 @@ tests() {
 
 # In CI, a build of named packages resolves every member's features as the whole workspace does,
 # its tests' features included (tools/ci/workspace_unify.py), so jobs testing different packages
-# share each member's unit, and a test target a feature gates is a target of the run. That build
+# share each member's unit, and a test target a feature checks is a target of the run. That build
 # compiles every member, so outside CI (a developer's `cargo test -p NAME` on one incremental
 # target) an edit would rebuild every package that depends on the edited one; there the named
 # packages build alone.

@@ -21,7 +21,7 @@ pub use capture_settings::capture_appearance;
 #[cfg(feature = "native")]
 mod capture;
 #[cfg(feature = "native")]
-use capture::{capture_directory, capture_font_gate, first_frame};
+use capture::{capture_directory, capture_font_check, first_frame};
 #[cfg(feature = "native")]
 mod window_join;
 #[cfg(feature = "native")]
@@ -553,7 +553,7 @@ struct RecoveryParts {
 }
 
 // SAFETY: every access to `parts` (shared or exclusive, including drop) is
-// gated on the current thread being `owner`, the thread that created them.
+// held on the current thread being `owner`, the thread that created them.
 // On any other thread the owners are neither read, cloned nor dropped, so
 // their non-atomic reference counts are only ever touched by one thread.
 #[allow(
@@ -848,7 +848,7 @@ fn run_parsed(
     } else {
         None
     };
-    capture_font_gate(&args)?;
+    capture_font_check(&args)?;
     if args.first_frame {
         return first_frame(spec, &args);
     }
@@ -2309,14 +2309,14 @@ mod tests {
             .put(automerge::ROOT, "body", "existing before component factory")
             .unwrap();
         history.commit();
-        let (release, gate) = tokio::sync::oneshot::channel();
+        let (release, hold) = tokio::sync::oneshot::channel();
         *RECHECK.lock().unwrap() = Some(release);
         let (manager, joined) =
-            crate::collaboration::CollaborationManager::native_initial_fixture_gated_for_test(
+            crate::collaboration::CollaborationManager::native_initial_fixture_held_for_test(
                 probe::APP,
                 workspace,
                 history.save(),
-                gate,
+                hold,
             );
         let spec = LaunchSpec::from_definition(probe::runner_probe_definition())
             .component_host(prepare)

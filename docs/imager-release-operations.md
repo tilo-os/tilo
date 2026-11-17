@@ -77,7 +77,7 @@ or cloud credential on the native fleet.
 ## Automatic main downloads
 
 `Release / Tilo Installer` builds all six native Linux, Windows and macOS lanes
-on relevant `main` pushes, after the existing exact-source Desktop catalog gate.
+on relevant `main` pushes, after the existing exact-source Desktop catalog check.
 Linux retains signed capture qualification, AppImage runtime and installed
 Flatpak checks; Windows requires Authenticode-signed native packages; macOS
 requires signed and notarized packages. Missing packages or unavailable subjects
@@ -331,7 +331,7 @@ newline-terminated `NAME=value` per line:
   supported.
 - Site: for the `site` platform, write a 5–15 minute Forgejo token as the
   complete raw output. Give its bot write access only to `tilo/site`. After all
-  native and package-index gates pass, the workflow updates only
+  native and package-index checks pass, the workflow updates only
   `src/data/imager-release.json`, including its exact public `releaseRoot`, runs
   the site's release contract and full production build, and pushes that
   exact-tag change to `main`. The manifest's download entries are derived from
@@ -408,7 +408,7 @@ Protected manual `main` publication uses the native large-disk x86-64 and ARM64
 fleet with QEMU's TCG fallback; version tags remain reserved for the dedicated
 KVM/DRI release runners. Both routes keep the same reproducibility, encrypted
 install/boot, signature, SBOM, SLSA provenance, and two-architecture promotion
-gates.
+checks.
 Dispatch `Release / Tilo Installer` manually on that commit with `full_native` enabled.
 That run does not sign or publish, but proves every native label and packaged UI.
 Only after it is green should a maintainer create a protected semantic tag such
@@ -548,7 +548,7 @@ installation cycles:
    `tilo-target-policy-<ARCH>.diagnostic.tar`; it checks the bundle shape but
    neither signatures nor image authority, and it never writes a catalog
    fragment. A rehearsal can therefore inspect diagnostic bytes without
-   populating an empty catalog or passing a release gate.
+   populating an empty catalog or passing a release check.
 
 Why a Forgejo package on `code.tilo.so` rather than a release attachment:
 the Imager accepts internal manifests from that origin only

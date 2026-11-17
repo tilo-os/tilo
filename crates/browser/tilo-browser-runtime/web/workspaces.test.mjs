@@ -196,7 +196,7 @@ test('the own desktop opens for a browser some host let in, and asks no entry', 
   try {
     const none = {getItem: () => null};
     const kept = {getItem: () => JSON.stringify({'https://elsewhere.example': {origin: 'https://elsewhere.example', workspace: 'R', userPublicKey: '11'.repeat(32)}})};
-    assert.equal(await ownDesktopOpen(null, {memberships: none}), true, 'no home: nothing to gate');
+    assert.equal(await ownDesktopOpen(null, {memberships: none}), true, 'no home: nothing to check');
     assert.equal(await ownDesktopOpen({...commons, admission: undefined}, {memberships: none}), true);
     assert.equal(await ownDesktopOpen(commons, {memberships: none}), false, 'no host let it in yet: the entry first');
     assert.equal(await ownDesktopOpen(commons, {memberships: kept}), true, 'a member keeps theirs');

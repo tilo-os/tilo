@@ -253,7 +253,7 @@ pub struct Produce<'a> {
 /// Measure the installed account consumers into a receipt.
 #[allow(
     clippy::too_many_lines,
-    reason = "one linear contract: each step gates the next"
+    reason = "one linear contract: each step checks the next"
 )]
 pub fn produce(run: Produce<'_>) -> io::Result<Value> {
     let Produce {

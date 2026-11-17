@@ -44,10 +44,10 @@ https://code.tilo.so --groups <group>` on the records it wrote to `/target/perf/
 `compare.py`'s `--accept` takes this run's values as
 the new baseline start after an intended change (from main only); and
 `--synthetic` with `--synthetic-factor` multiplies a run's values to prove
-the gate. A 1.25 factor passes as pending in the first run of a series and fails
+the check. A 1.25 factor passes as pending in the first run of a series and fails
 in the second. Synthetic records never enter a real baseline, and `fetch` leaves
 them out (it says how many on stderr; `--synthetic` prints them too): their
-values are multiplied on purpose and their `regression` verdicts are the gate
+values are multiplied on purpose and their `regression` verdicts are the check
 test, not a measurement.
 
 The installed desktop's groups, `boot`, `session`, `idle`, `memory`, `disk` and `app`, and
@@ -125,7 +125,7 @@ To add a benchmark (a KPI group):
    line, and calls
    `python3 tools/perf/record.py emit --kpi ... --unit ... --samples-file ... --env-json env.json`,
    or a function in `tools/perf/adapters.py` parses the output it already
-   prints, as `fs-gate` does for the tilo-fs gate's `PERF` lines. Make
+   prints, as `fs-check` does for the tilo-fs check's `PERF` lines. Make
    `env.json` with `record.py env --profile ... --renderer ... --virtualization
    ... --runner ...`. State the environment truthfully: llvmpipe, TCG or a dev
    build is a different environment from GPU, KVM or release, and is never
@@ -142,7 +142,7 @@ To add a benchmark (a KPI group):
    measured reason. A listed KPI that stops reporting fails the run.
 5. Run the group with `tools/ci/perf-scheduled.sh <group>` from your tree; only main writes to the store.
 
-Pull requests may gate only on deterministic, runner-independent counters
+Pull requests may check only on deterministic, runner-independent counters
 (bytes, allocation counts, raster pixels), only when the measured paths change,
 and following `tools/web/wasm_size_ratchet.py`. Wall-clock KPIs belong in
 this lane.

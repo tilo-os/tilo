@@ -18,7 +18,7 @@
 #
 # A budget is a measurement plus `headroom`, rounded up to 64 KiB (a count to
 # 64). Budgets only decrease. Intended growth adds raises/<change>.toml, one
-# file per change; when the runtime shrinks, both gates print the lower budget
+# file per change; when the runtime shrinks, both checks print the lower budget
 # to commit here. docs/measurements/runtime-size.md has the steps.
 headroom = 0.01
 architectures = ["x86_64", "aarch64"]
@@ -33,7 +33,7 @@ apps_without_media = ["calculator", "clocks", "notes", "totp", "weather"]
 # few enough symbol lookups for relocation to take under 3 ms. Every app loads
 # a DT_NEEDED library, so none of needed_absent belongs there: media libraries
 # are for the apps that play media, and the runtime loads them on first use
-# (tools/ci/runtime-dylib-lazy-link.py, #4020); the gates fail on one. The
+# (tools/ci/runtime-dylib-lazy-link.py, #4020); the checks fail on one. The
 # other targets are reported when not met; the budgets below are what fails.
 # Targets only tighten.
 [targets]

@@ -538,11 +538,11 @@ pub struct CompatibilityService<R, B, E, V> {
     executor: E,
     vm: V,
     session: HostSession,
-    capsule_gate: Mutex<()>,
+    capsule_lock: Mutex<()>,
     /// Setup/removal is a mutation transaction. It does not block ordinary
     /// application launches, but two managers cannot concurrently replace or
     /// retire the same private prefix.
-    installation_gate: Mutex<()>,
+    installation_lock: Mutex<()>,
 }
 
 impl<R, B, E, V> CompatibilityService<R, B, E, V>
@@ -571,8 +571,8 @@ where
             executor,
             vm,
             session,
-            capsule_gate: Mutex::new(()),
-            installation_gate: Mutex::new(()),
+            capsule_lock: Mutex::new(()),
+            installation_lock: Mutex::new(()),
         })
     }
 
@@ -641,7 +641,7 @@ where
         program: CapsuleProgram,
     ) -> Result<(), ServiceError> {
         let _guard = self
-            .capsule_gate
+            .capsule_lock
             .lock()
             .map_err(|_| ServiceError::StateLock)?;
         self.store.register_program(capsule_id, program)?;
@@ -678,7 +678,7 @@ where
         // while a Windows application is alive: unrelated launches continue.
         let (capsule, program) = {
             let _guard = self
-                .capsule_gate
+                .capsule_lock
                 .lock()
                 .map_err(|_| ServiceError::StateLock)?;
             let capsule = self.store.ensure_for_plan(&route)?;
@@ -836,7 +836,7 @@ where
             return Err(ServiceError::VmInstallConfirmationMismatch);
         }
         let _mutation = self
-            .installation_gate
+            .installation_lock
             .lock()
             .map_err(|_| ServiceError::StateLock)?;
         self.install_inspected(
@@ -916,7 +916,7 @@ where
         validate_launch_id("capsule id", capsule_id)?;
         validate_launch_id("workspace id", workspace_id)?;
         let _mutation = self
-            .installation_gate
+            .installation_lock
             .lock()
             .map_err(|_| ServiceError::StateLock)?;
         let state = self
@@ -955,7 +955,7 @@ where
         validate_launch_id("capsule id", capsule_id)?;
         validate_launch_id("workspace id", workspace_id)?;
         let _mutation = self
-            .installation_gate
+            .installation_lock
             .lock()
             .map_err(|_| ServiceError::StateLock)?;
         let state = self
@@ -1000,7 +1000,7 @@ where
     pub fn delete_capsule(&self, capsule_id: &str) -> Result<(), ServiceError> {
         validate_launch_id("capsule id", capsule_id)?;
         let _mutation = self
-            .installation_gate
+            .installation_lock
             .lock()
             .map_err(|_| ServiceError::StateLock)?;
         let state = self
@@ -1021,7 +1021,7 @@ where
         validate_launch_id("capsule id", capsule_id)?;
         validate_launch_id("program id", program_id)?;
         let _mutation = self
-            .installation_gate
+            .installation_lock
             .lock()
             .map_err(|_| ServiceError::StateLock)?;
         let mut state = self
@@ -1054,7 +1054,7 @@ where
         validate_launch_id("capsule id", capsule_id)?;
         validate_launch_id("workspace id", workspace_id)?;
         let _mutation = self
-            .installation_gate
+            .installation_lock
             .lock()
             .map_err(|_| ServiceError::StateLock)?;
         let mut state = self

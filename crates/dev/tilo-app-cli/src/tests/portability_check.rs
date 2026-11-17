@@ -1,10 +1,10 @@
-//! The repository's app portability gate: every app, app model crate and
+//! The repository's app portability check: every app, app model crate and
 //! portable SDK crate counted against the shrink-only baseline.
 
 use super::*;
 
 /// A workspace with one platform-specific app, its baseline written from the
-/// gate's own table.
+/// check's own table.
 fn baselined_workspace(root: &Path) {
     std::fs::write(
         root.join("Cargo.toml"),
@@ -83,16 +83,16 @@ fn web_featured_workspace(root: &Path, declared: bool) {
 }
 
 #[test]
-fn the_gate_counts_only_the_code_an_apps_web_build_compiles() {
+fn the_check_counts_only_the_code_an_apps_web_build_compiles() {
     let root = tempfile::tempdir().unwrap();
     web_featured_workspace(root.path(), true);
-    let gate = portability::gate(root.path()).unwrap();
-    assert!(gate.passed(), "{}", gate.render());
+    let check = portability::check(root.path()).unwrap();
+    assert!(check.passed(), "{}", check.render());
 
     web_featured_workspace(root.path(), false);
-    let gate = portability::gate(root.path()).unwrap();
-    let grown = gate.render();
-    assert!(!gate.passed(), "{grown}");
+    let check = portability::check(root.path()).unwrap();
+    let grown = check.render();
+    assert!(!check.passed(), "{grown}");
     assert!(
         grown.contains("app portability FAILED: platform code in an app that runs everywhere"),
         "{grown}"
@@ -100,13 +100,13 @@ fn the_gate_counts_only_the_code_an_apps_web_build_compiles() {
 }
 
 #[test]
-fn the_portability_gate_counts_every_app_against_its_shrink_only_baseline() {
+fn the_portability_check_counts_every_app_against_its_shrink_only_baseline() {
     let root = tempfile::tempdir().unwrap();
     baselined_workspace(root.path());
-    let gate = portability::gate(root.path()).unwrap();
+    let check = portability::check(root.path()).unwrap();
 
-    let grown = gate.render();
-    assert!(!gate.passed(), "{grown}");
+    let grown = check.render();
+    assert!(!check.passed(), "{grown}");
     assert!(
         grown.contains(
             "app portability FAILED: platform code grew\n  apps.serial: 1 R2 finding(s); \
@@ -115,14 +115,15 @@ fn the_portability_gate_counts_every_app_against_its_shrink_only_baseline() {
         "{grown}"
     );
 
-    write_baseline(root.path(), &gate.baseline_table());
-    let gate = portability::gate(root.path()).unwrap();
-    assert!(gate.passed(), "{}", gate.render());
+    write_baseline(root.path(), &check.baseline_table());
+    let check = portability::check(root.path()).unwrap();
+    assert!(check.passed(), "{}", check.render());
     assert!(
-        gate.render()
+        check
+            .render()
             .starts_with("app portability OK (1 baselined app site(s) in 1 app(s); 0 in the SDK's"),
         "{}",
-        gate.render()
+        check.render()
     );
 
     let app = root.path().join("apps/serial");
@@ -132,19 +133,20 @@ fn the_portability_gate_counts_every_app_against_its_shrink_only_baseline() {
         format!("{source}pub fn fd() -> std::os::fd::RawFd {{ 0 }}\n"),
     )
     .unwrap();
-    let gate = portability::gate(root.path()).unwrap();
-    assert!(!gate.passed());
+    let check = portability::check(root.path()).unwrap();
+    assert!(!check.passed());
     assert!(
-        gate.render()
+        check
+            .render()
             .contains("apps.serial: 2 R2 finding(s), baseline allows 1"),
         "{}",
-        gate.render()
+        check.render()
     );
 
     std::fs::write(app.join("src/lib.rs"), "pub fn run() {}\n").unwrap();
-    let gate = portability::gate(root.path()).unwrap();
-    let fallen = gate.render();
-    assert!(!gate.passed(), "{fallen}");
+    let check = portability::check(root.path()).unwrap();
+    let fallen = check.render();
+    assert!(!check.passed(), "{fallen}");
     assert!(
         fallen.contains("counts fell; lock the improvement in\n  apps.serial: R2 fell from 1 to 0"),
         "{fallen}"
@@ -158,12 +160,12 @@ fn the_portability_gate_counts_every_app_against_its_shrink_only_baseline() {
 
 #[test]
 fn the_workspace_holds_no_more_platform_code_than_its_baseline_allows() {
-    let gate = portability::gate(Path::new(env!("CARGO_MANIFEST_DIR"))).unwrap();
-    assert!(gate.passed(), "{}", gate.render());
+    let check = portability::check(Path::new(env!("CARGO_MANIFEST_DIR"))).unwrap();
+    assert!(check.passed(), "{}", check.render());
     assert!(
-        gate.render().starts_with("app portability OK ("),
+        check.render().starts_with("app portability OK ("),
         "{}",
-        gate.render()
+        check.render()
     );
-    assert!(gate.apps().len() >= 50, "{} apps", gate.apps().len());
+    assert!(check.apps().len() >= 50, "{} apps", check.apps().len());
 }

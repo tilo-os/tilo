@@ -307,8 +307,8 @@ fn start_lounge(
 }
 
 /// A deployment moved onto this image starts on the volume the workspace service
-/// left: the same workspace, its owner, and the people it took in keep their
-/// seats across that first start.
+/// left: the same workspace, its owner, and the people it took in stay members
+/// across that first start.
 #[test]
 fn a_volume_a_workspace_service_left_keeps_its_workspace_and_people() {
     let scratch = tempfile::tempdir().unwrap();
@@ -362,7 +362,7 @@ fn a_volume_a_workspace_service_left_keeps_its_workspace_and_people() {
     else {
         panic!("no presence announced")
     };
-    assert_eq!(members, 1, "the person who joined keeps their seat");
+    assert_eq!(members, 1, "the person who joined stays a member");
     workspace.stop();
 }
 

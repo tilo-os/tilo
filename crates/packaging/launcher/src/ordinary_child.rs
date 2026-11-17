@@ -240,7 +240,7 @@ pub struct OwnedOrdinaryChild {
     child: Child,
     pidfd: OwnedFd,
     namespace: File,
-    gate: Option<UnixStream>,
+    check: Option<UnixStream>,
     control: UnixStream,
     remote: Option<UnixStream>,
     digest: [u8; 32],
@@ -318,7 +318,7 @@ impl OwnedOrdinaryChild {
         if same(&own_namespace, &namespace(target.pid())?)? {
             return Err(denied());
         }
-        let (gate, wait) = UnixStream::pair()?;
+        let (check, wait) = UnixStream::pair()?;
         let (control, remote) = UnixStream::pair()?;
         let mut cmd = Command::new(format!("/proc/self/fd/{}", executable.as_raw_fd()));
         cmd.arg0(&command.program)
@@ -376,7 +376,7 @@ impl OwnedOrdinaryChild {
             child,
             pidfd,
             namespace: child_namespace,
-            gate: Some(gate),
+            check: Some(check),
             control,
             remote: Some(remote),
             digest,
@@ -436,7 +436,7 @@ impl OwnedOrdinaryChild {
         stream.write_all(&self.digest)?;
         tagged_send(stream, 90, self.pidfd.as_fd())?;
         tagged_send(stream, 91, self.namespace.as_fd())?;
-        tagged_send(stream, 92, self.gate.as_ref().ok_or_else(denied)?.as_fd())?;
+        tagged_send(stream, 92, self.check.as_ref().ok_or_else(denied)?.as_fd())?;
         tagged_send(
             stream,
             93,
@@ -449,7 +449,7 @@ impl OwnedOrdinaryChild {
         )?;
         tagged_send(stream, 95, self.remote.as_ref().ok_or_else(denied)?.as_fd())?;
         tagged_send(stream, 96, root_namespace.as_fd())?;
-        self.gate.take();
+        self.check.take();
         self.child.stdout.take();
         self.child.stderr.take();
         self.remote.take();
@@ -623,14 +623,14 @@ mod tests {
         };
         let observed = pidfd.try_clone().unwrap();
         let (control, remote) = UnixStream::pair().unwrap();
-        let (gate, _wait) = UnixStream::pair().unwrap();
+        let (check, _wait) = UnixStream::pair().unwrap();
         let namespace = namespace(child.id()).unwrap();
         (
             OwnedOrdinaryChild {
                 child,
                 pidfd,
                 namespace,
-                gate: Some(gate),
+                check: Some(check),
                 control,
                 remote: None,
                 digest: [0; 32],

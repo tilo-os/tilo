@@ -1,7 +1,7 @@
 //! The selector accepts a board release only through the pinned key's exact
 //! digest signature, binding provenance and current freshness; its commands
 //! are bounded; its credentials stay private; and `tilo-verified-update`
-//! activates only what the selector and gate verified.
+//! activates only what the selector and check verified.
 #![allow(
     clippy::unwrap_used,
     clippy::indexing_slicing,
@@ -483,15 +483,15 @@ fn updater_uses_exact_switch_and_verifies_before_activation() {
         "bootc",
         &format!("printf 'bootc %s\\n' \"$*\" >>'{}'\n", calls.display()),
     );
-    let gate = script(
-        "gate",
+    let check = script(
+        "check",
         &format!(
             r#"if [ "$1" = --trusted-time ]; then printf '1000000000000\n'; exit 0; fi
 [ "$1" = --successor ] && [ "$2" = '{}' ] && [ "$3" = 2 ]
 [ "$4" = 2000 ] && [ -e "/proc/self/fd/$5" ]
 if flock -n "$6" true; then echo 'parent lock lost' >&2; exit 1; fi
-printf 'gate\n' >>'{}'
-[ "${{REFUSE_GATE:-0}}" != 1 ]
+printf 'check\n' >>'{}'
+[ "${{REFUSE_CHECK:-0}}" != 1 ]
 "#,
             digest(),
             calls.display()
@@ -510,11 +510,11 @@ printf 'gate\n' >>'{}'
             .arg("--quiet")
             .env("TILO_IMAGE_TRUST_BOOTC", &bootc)
             .env("TILO_IMAGE_TRUST_CHANNEL", &channel)
-            .env("TILO_IMAGE_TRUST_GATE", &gate)
+            .env("TILO_IMAGE_TRUST_CHECK", &check)
             .env("TILO_IMAGE_TRUST_SUCCESSOR", &successor)
             .env("TILO_IMAGE_TRUST_UPDATE_LOCK", root.join("update.lock"))
             .env("TILO_IMAGE_TRUST_DIR", root.join("trust"))
-            .env("REFUSE_GATE", if refuse { "1" } else { "0" })
+            .env("REFUSE_CHECK", if refuse { "1" } else { "0" })
             .output_locked()
             .unwrap()
     };
@@ -532,7 +532,7 @@ printf 'gate\n' >>'{}'
                 "bootc switch --download-only --quiet {REPOSITORY}@{}",
                 digest()
             ),
-            "gate".to_owned(),
+            "check".to_owned(),
             "bootc switch --from-downloaded --quiet".to_owned(),
         ]
     );

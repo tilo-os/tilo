@@ -23,7 +23,7 @@ pub const PAYLOAD_PARAM: &str = "PAYLOAD_DIR";
 pub const RUNTIME_PARAM: &str = "RUNTIME_DIR";
 pub const CONTAINER_PARAM: &str = "CONTAINER_DIR";
 pub const DARWIN_CACHE_PARAM: &str = "DARWIN_CACHE_DIR";
-pub const GATE_PORT_PARAM: &str = "NET_GATE_PORT";
+pub const PROXY_PORT_PARAM: &str = "EGRESS_PROXY_PORT";
 pub const READ_PARAM_PREFIX: &str = "READ_";
 /// The sandbox-extension class the runtime's chooser issues for a picked path (App Sandbox's
 /// user-selected read-write).
@@ -251,13 +251,13 @@ impl Builder {
     fn network(&mut self, network: &SeatbeltNetwork) {
         match network {
             SeatbeltNetwork::Denied => {}
-            SeatbeltNetwork::Gate(port) => {
+            SeatbeltNetwork::Proxy(port) => {
                 self.params
-                    .push((GATE_PORT_PARAM.to_string(), port.to_string()));
+                    .push((PROXY_PORT_PARAM.to_string(), port.to_string()));
                 self.text
                     .push_str("(allow system-socket (socket-domain AF_INET AF_INET6))\n");
                 self.rule(&format!(
-                    "(allow network-outbound (remote ip (string-append \"localhost:\" (param \"{GATE_PORT_PARAM}\"))))"
+                    "(allow network-outbound (remote ip (string-append \"localhost:\" (param \"{PROXY_PORT_PARAM}\"))))"
                 ));
             }
             SeatbeltNetwork::Unrestricted => {
@@ -353,7 +353,7 @@ mod tests {
         {
             for network in [
                 SeatbeltNetwork::Denied,
-                SeatbeltNetwork::Gate(9050),
+                SeatbeltNetwork::Proxy(9050),
                 SeatbeltNetwork::Unrestricted,
             ] {
                 let p = policy(network);
@@ -421,7 +421,7 @@ mod tests {
         {
             for network in [
                 SeatbeltNetwork::Denied,
-                SeatbeltNetwork::Gate(9050),
+                SeatbeltNetwork::Proxy(9050),
                 SeatbeltNetwork::Unrestricted,
             ] {
                 let p = policy(network);
@@ -472,8 +472,8 @@ mod tests {
             assert!(!offline.text.contains("AF_INET"));
             assert!(!offline.text.contains("(system-network)"));
 
-            let gated = render(&policy(SeatbeltNetwork::Gate(9050)));
-            let outbound: Vec<&str> = gated
+            let proxied = render(&policy(SeatbeltNetwork::Proxy(9050)));
+            let outbound: Vec<&str> = proxied
                 .text
                 .lines()
                 .filter(|l| l.contains("network"))
@@ -482,12 +482,12 @@ mod tests {
             assert_eq!(
                 outbound,
                 [
-                    "(allow network-outbound (remote ip (string-append \"localhost:\" (param \"NET_GATE_PORT\"))))"
+                    "(allow network-outbound (remote ip (string-append \"localhost:\" (param \"EGRESS_PROXY_PORT\"))))"
                 ]
             );
-            assert_eq!(param(&gated, GATE_PORT_PARAM), "9050");
-            assert!(!gated.text.contains("(system-network)"));
-            assert!(!gated.text.contains("network-bind"));
+            assert_eq!(param(&proxied, PROXY_PORT_PARAM), "9050");
+            assert!(!proxied.text.contains("(system-network)"));
+            assert!(!proxied.text.contains("network-bind"));
 
             let open = render(&policy(SeatbeltNetwork::Unrestricted));
             assert!(open.text.contains("(system-network)"));

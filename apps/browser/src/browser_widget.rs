@@ -392,7 +392,7 @@ struct CompositionKey {
     clippy::struct_excessive_bools,
     reason = "each bool is an independent, unrelated flag (bootstrap/headless \
               mode, engine-reported nav state, settings-pane visibility, dirty \
-              gates); grouping them into enums would not express any real \
+              checks); grouping them into enums would not express any real \
               invariant between them and would touch every read/write site \
               across this file"
 )]
@@ -517,7 +517,7 @@ pub struct BrowserWidget {
     swallow_address_release: bool,
     load_error: Option<String>,
     /// A locally rejected address must outlive any late event from an earlier
-    /// engine navigation. `WebView` events carry no request id, so this gate is
+    /// engine navigation. `WebView` events carry no request id, so this check is
     /// deliberately owned by the chrome and cleared only when the user starts
     /// a fresh, allowed navigation.
     address_error_active: bool,

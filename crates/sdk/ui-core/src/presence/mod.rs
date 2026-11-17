@@ -478,12 +478,12 @@ pub struct PresenceCtx {
     presence_marks: std::cell::RefCell<Vec<PresenceMark>>,
     /// The authority the subtree being drawn holds, scoped by whoever hands
     /// it one (a host, a bound component) through [`Self::with_permissions`]
-    /// and read by gated widgets through [`Self::permits`]. `None` gates
+    /// and read by guarded widgets through [`Self::permits`]. `None` checks
     /// nothing.
     permissions: std::cell::RefCell<Option<crate::permissions::PermissionContext>>,
     /// [`crate::permissions::shared_revision`] as the drawing in progress
     /// sees it. A retained drawing made under another revision is stale:
-    /// what a gated widget paints follows permissions that moved with
+    /// what a guarded widget paints follows permissions that moved with
     /// nothing in the tree marking it.
     paint_permissions: std::cell::Cell<u64>,
     /// Each peer's last broadcast [`ViewSubset`](crate::view::ViewSubset) —
@@ -564,7 +564,7 @@ impl PresenceCtx {
         self.viewport.set(prev);
     }
 
-    /// Draw with `permissions` as the authority gated widgets check, then
+    /// Draw with `permissions` as the authority guarded widgets check, then
     /// restore the outer one.
     pub fn with_permissions<R>(
         &self,
@@ -1751,7 +1751,7 @@ impl PresenceCtx {
                 // Derive a typing mark from a caret that advanced under the
                 // same scope, not only from an explicit `Typing` payload —
                 // an agent/SDK peer publishing bare caret moves has no
-                // other way to show what it wrote. Gated on a document
+                // other way to show what it wrote. Depends on a document
                 // change having actually landed, so a caret merely reading
                 // paints nothing.
                 if let Some(prev) = self.caret_for(&key, &uid)

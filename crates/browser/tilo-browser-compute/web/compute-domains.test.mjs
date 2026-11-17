@@ -79,7 +79,7 @@ test('malformed identities and duplicate/out of order chunks fail closed',async(
   }
 });
 test('aborted preparation keeps budget until its yielded copy releases custody',async()=>{
-  let resume;const gate=new Promise(r=>resume=r);const {pool,owner,request}=setup({yieldTask:()=>gate});
+  let resume;const hold=new Promise(r=>resume=r);const {pool,owner,request}=setup({yieldTask:()=>hold});
   const abort=new AbortController(),p=request(owner('a','foreground',abort.signal));const rejected=assert.rejects(p,/closed/);
   abort.abort();await rejected;assert.equal(pool.snapshot().jobs,1);assert.ok(pool.snapshot().managed>0);
   resume();await tick();assert.equal(pool.snapshot().jobs,0);
@@ -92,14 +92,14 @@ test('eight accepted jobs and 32 MiB encoded admission cover queued jobs',async(
   await assert.rejects(request(b),/budget/);b.close();await Promise.all([p,q]);await tick();assert.equal(pool.snapshot().encoded,0);
 });
 test('consumer abort or throw releases only after actual consumer completion',async()=>{
-  const {pool,workers,owner,request}=setup();let release;const gate=new Promise(r=>release=r);const a=owner('a');
-  const p=request(a,{},async()=>{await gate;throw Error('consumer');});const rejected=assert.rejects(p,/closed/);
+  const {pool,workers,owner,request}=setup();let release;const hold=new Promise(r=>release=r);const a=owner('a');
+  const p=request(a,{},async()=>{await hold;throw Error('consumer');});const rejected=assert.rejects(p,/closed/);
   await tick();workers[0].reply();await tick();a.close();await rejected;assert.equal(pool.snapshot().jobs,1);
   release();await tick();assert.equal(pool.snapshot().jobs,0);
 });
 test('managed cap includes simultaneous full worker and page RGBA staging',async()=>{
-  const {pool,workers,owner,request}=setup();let release;const gate=new Promise(r=>release=r);
-  const a=owner('a'),b=owner('b');const p=request(a,{maxDimension:4096},async()=>gate);await tick();workers[0].reply();await tick();
+  const {pool,workers,owner,request}=setup();let release;const hold=new Promise(r=>release=r);
+  const a=owner('a'),b=owner('b');const p=request(a,{maxDimension:4096},async()=>hold);await tick();workers[0].reply();await tick();
   const q=request(b,{maxDimension:4096});b.close();
   try {await assert.rejects(q,/budget/);} finally {release();await p;await tick();}
   assert.equal(pool.snapshot().managed,0);

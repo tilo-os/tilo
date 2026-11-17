@@ -1654,7 +1654,7 @@ impl InstallerApp {
             return;
         }
         // Encryption requires the recovery-key acknowledgement (defense in
-        // depth — the Begin button and Enter both gate on this too).
+        // depth — the Begin button and Enter both check on this too).
         if !self.recovery_ack {
             self.set_status("Confirm you'll save your recovery key first");
             return;

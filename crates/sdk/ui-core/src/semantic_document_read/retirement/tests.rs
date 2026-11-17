@@ -11,7 +11,7 @@ fn owner(domain: &RetirementDomain) -> RetirementOwner {
 }
 
 pub(crate) fn probe(handle: &RetirementHandle) -> Result<MutexGuard<'_, ()>, RetirementError> {
-    let guard = match handle.value.domain.gate.try_lock() {
+    let guard = match handle.value.domain.check.try_lock() {
         Ok(guard) => guard,
         Err(TryLockError::WouldBlock) => return Err(RetirementError::Busy),
         Err(TryLockError::Poisoned(_)) => return Err(RetirementError::Poisoned),
@@ -81,7 +81,7 @@ tilo_test_env::scenario! {
         tilo_test_env::wait_until("the retirement request", || {
             observer.value.marker.requested.load(Ordering::Acquire)
         });
-        // Past its request, the thread blocks only on the gate, or offering a finish that
+        // Past its request, the thread blocks only on the check, or offering a finish that
         // came too early.
         #[cfg(target_os = "linux")]
         wait_until_blocked(thread.expect("the retiring thread's id"));

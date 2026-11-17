@@ -117,7 +117,7 @@ pub async fn start(
         loop {
             // Power and storage only matter to an open's predictions, so they are
             // sampled while files are opened and at the first open after a quiet
-            // interval; an idle mount sleeps. A gate the fresh sample closes
+            // interval; an idle mount sleeps. A check the fresh sample closes
             // cancels what it queued.
             let busy = heuristics.take_opened();
             tokio::select! {

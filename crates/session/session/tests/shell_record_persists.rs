@@ -47,7 +47,7 @@ fn person_dir() -> &'static Path {
 }
 
 /// A headless session showing the shell over the seeded apps, on this device's own state — a device
-/// that holds its workspaces, as a person's own does (`state` is a seated one) — with its
+/// that holds its workspaces, as a person's own does (`state` is set up as one) — with its
 /// MCP server and the test's own program admitted to act as the person: two calls on one test are
 /// two sessions of the same device, as a restart is.
 fn session(root: &Path, state: &Path) -> Session {

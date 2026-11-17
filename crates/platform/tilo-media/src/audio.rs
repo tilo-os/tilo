@@ -7,7 +7,7 @@
 //! go through `wpctl`: the daemon's tools rather than a link to `libpipewire-0.3`,
 //! so the crate builds without `PipeWire` headers. Setting `target.object` on a
 //! stream's id to a device's `object.serial` relinks the stream, and deleting the
-//! key returns it to the default device; `linking.allow-moving-streams` gates it.
+//! key returns it to the default device; `linking.allow-moving-streams` checks it.
 
 #[cfg(not(target_arch = "wasm32"))]
 use std::process::Command;

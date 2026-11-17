@@ -833,7 +833,7 @@ params = []
 
 /// A public workspace prunes the guests who left in one governance change, and
 /// what it kept about how they joined goes with them: their invitations
-/// admit nobody again, and the guest who stayed keeps their seat.
+/// admit nobody again, and the guest who stayed is still a member.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn pruning_removes_idle_guests_in_one_change_and_their_invitations_admit_nobody() {
     let alice = TestUser::fresh("Alice");
@@ -891,15 +891,15 @@ async fn pruning_removes_idle_guests_in_one_change_and_their_invitations_admit_n
         .await
         .unwrap()
         .members;
-    let seated = |person: [u8; 32]| {
+    let is_member = |person: [u8; 32]| {
         members
             .iter()
             .any(|member| member.root() == Some(person) && !member.removed)
     };
-    assert!(!seated(guests[0].0.user_pk) && !seated(guests[1].0.user_pk));
+    assert!(!is_member(guests[0].0.user_pk) && !is_member(guests[1].0.user_pk));
     assert!(
-        seated(guests[2].0.user_pk),
-        "the guest who stayed keeps their seat"
+        is_member(guests[2].0.user_pk),
+        "the guest who stayed is still a member"
     );
 
     let (_, phone, verified, invitation) = &guests[0];

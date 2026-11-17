@@ -109,10 +109,10 @@ descriptor for the reviewed removable block object. The sandbox gets no direct
 escape. The exact same streaming write, signed-source digest, read-back verify,
 profile-tail verify, and hot-unplug identity checks run over that descriptor.
 `package-flatpak.sh` exports against the pinned 25.08 runtime, smoke-loads the
-result in that sandbox as an ABI gate, and emits a signed-release
+result in that sandbox as an ABI check, and emits a signed-release
 `tilo-imager-linux-{x86_64,aarch64}.flatpak` bundle. Release runners must have
 `flatpak-builder` and `org.freedesktop.Sdk//25.08` preinstalled.
-The packaging smoke gate also runs the bundled `lsblk` without a device grant
+The packaging smoke check also runs the bundled `lsblk` without a device grant
 and reconciles its sysfs view with host-side UDisks2 Size, ReadOnly, HintSystem,
 IdUsage, and MountPoints properties. A missing service/property, mismatched
 size, read-only disk, or incomplete partition record rejects that drive.
@@ -128,7 +128,7 @@ macOS uses the platform `hdiutil`.
 Linux release validation executes the AppImage once through its extraction
 compatibility path and, on every FUSE-capable kernel, again through its normal
 embedded runtime. A FUSE-capable runner with a missing or inaccessible
-`/dev/fuse` fails instead of silently weakening the gate. Flatpak validation
+`/dev/fuse` fails instead of silently weakening the check. Flatpak validation
 imports the emitted bundle into a private per-job user installation and runs
 that installed ref against the system `org.freedesktop.Platform//25.08`
 runtime; release runners therefore install both the SDK and Platform runtime

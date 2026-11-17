@@ -40,10 +40,10 @@ pub const RESIDENCY_XATTR: &str = "trusted.tilo.residency";
 /// renamed into place once complete and never captured.
 pub const STAGING_PREFIX: &str = ".tilo-staging-";
 
-/// How a gated file treats writes. Every access is classified on its own: a
+/// How a guarded file treats writes. Every access is classified on its own: a
 /// process that holds the file open read-write and reads it is a reader.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum WriteGate {
+pub enum WriteGuard {
     /// Refuse writes with this errno (`EBUSY` while another device holds the
     /// file's write lease), and refuse opening it for writing, so a program that
     /// falls back to a read-only open when a read-write one fails (`SQLite` does)
@@ -56,7 +56,7 @@ pub enum WriteGate {
 
 pub trait WritePolicy: Send + Sync + 'static {
     /// Called on the first access by a writer of `file` (`(st_dev, st_ino)`) while
-    /// it is gated. `Err(errno)` refuses the access with that errno.
+    /// it is guarded. `Err(errno)` refuses the access with that errno.
     fn admit_writer(&self, file: (u64, u64)) -> Result<(), i32>;
 }
 
@@ -190,7 +190,7 @@ pub struct HydrationStats {
     pub failures: AtomicU64,
     pub passthrough: AtomicU64,
     pub readahead_bytes: AtomicU64,
-    pub gated_denials: AtomicU64,
+    pub guarded_denials: AtomicU64,
     pub timeouts: AtomicU64,
 }
 
@@ -271,7 +271,7 @@ struct Shared {
     group: Group,
     fetcher: Arc<dyn Fetcher>,
     files: Mutex<HashMap<(u64, u64), FileState>>,
-    gates: Mutex<HashMap<(u64, u64), WriteGate>>,
+    checks: Mutex<HashMap<(u64, u64), WriteGuard>>,
     policy: Mutex<Option<Arc<dyn WritePolicy>>>,
     own_fds: Mutex<std::collections::HashSet<i32>>,
     changed: Condvar,
@@ -368,14 +368,14 @@ fn write_all_at(fd: BorrowedFd<'_>, mut data: &[u8], mut offset: u64) -> io::Res
 }
 
 impl Shared {
-    fn gated(&self, key: (u64, u64)) -> Option<WriteGate> {
-        self.gates.lock().ok()?.get(&key).copied()
+    fn guarded(&self, key: (u64, u64)) -> Option<WriteGuard> {
+        self.checks.lock().ok()?.get(&key).copied()
     }
 
-    fn admit(&self, gate: WriteGate, key: (u64, u64)) -> Result<(), i32> {
-        match gate {
-            WriteGate::Deny(errno) => Err(errno),
-            WriteGate::Ask => {
+    fn admit(&self, check: WriteGuard, key: (u64, u64)) -> Result<(), i32> {
+        match check {
+            WriteGuard::Deny(errno) => Err(errno),
+            WriteGuard::Ask => {
                 let policy = self.policy.lock().ok().and_then(|p| p.clone());
                 policy.map_or(Ok(()), |p| p.admit_writer(key))
             }
@@ -402,19 +402,19 @@ impl Shared {
         }
     }
 
-    /// The verdict on opening a gated file: a `Deny` gate refuses opening it for
+    /// The verdict on opening a guarded file: a `Deny` check refuses opening it for
     /// writing. An open that cannot be classified is let through; its first write
     /// is still refused.
     fn admit_open(&self, fd: BorrowedFd<'_>, tid: i32) -> u32 {
         let Ok(key) = key_of(fd) else {
             return fan::FAN_ALLOW;
         };
-        match self.gated(key) {
-            Some(WriteGate::Deny(errno))
+        match self.guarded(key) {
+            Some(WriteGuard::Deny(errno))
                 if !is_own_thread(tid)
                     && crate::access::classify(tid, key) == crate::access::Access::Write =>
             {
-                self.stats.gated_denials.fetch_add(1, Ordering::Relaxed);
+                self.stats.guarded_denials.fetch_add(1, Ordering::Relaxed);
                 fan::deny_errno(errno)
             }
             _ => fan::FAN_ALLOW,
@@ -473,11 +473,11 @@ impl Shared {
         let Ok(key) = key_of(fd) else {
             return fan::FAN_ALLOW;
         };
-        if let Some(gate) = self.gated(key)
+        if let Some(check) = self.guarded(key)
             && self.writes(access.pid, key)
-            && let Err(errno) = self.admit(gate, key)
+            && let Err(errno) = self.admit(check, key)
         {
-            self.stats.gated_denials.fetch_add(1, Ordering::Relaxed);
+            self.stats.guarded_denials.fetch_add(1, Ordering::Relaxed);
             return fan::deny_errno(errno);
         }
         match self.plan(fd, key, access.range) {
@@ -487,8 +487,8 @@ impl Shared {
     }
 
     /// The plan for an event, made on the thread that reads the events, for a
-    /// pre-content event of a file nobody gates. `None` hands the event to a worker
-    /// whole: a gated file's writer may need a lease from a peer.
+    /// pre-content event of a file nobody checks. `None` hands the event to a worker
+    /// whole: a guarded file's writer may need a lease from a peer.
     fn triage(&self, fd: BorrowedFd<'_>, mask: u64, range: Option<(u64, u64)>) -> Option<Plan> {
         if mask & fan::FAN_PRE_ACCESS == 0 {
             return None;
@@ -496,7 +496,7 @@ impl Shared {
         let Ok(key) = key_of(fd) else {
             return Some(Plan::Answer(fan::FAN_ALLOW));
         };
-        if self.gated(key).is_some() {
+        if self.guarded(key).is_some() {
             return None;
         }
         Some(self.plan(fd, key, range))
@@ -787,7 +787,7 @@ impl Shared {
         if resident {
             files.remove(&key);
             drop(files);
-            if self.gated(key).is_none() {
+            if self.guarded(key).is_none() {
                 let _ = self
                     .group
                     .mark_fd(fan::FAN_MARK_REMOVE, fan::FAN_PRE_ACCESS, fd);
@@ -880,7 +880,7 @@ impl Hydrator {
     /// Starts serving. Needs `CAP_SYS_ADMIN` (pre-content groups).
     pub fn start(fetcher: Arc<dyn Fetcher>, cfg: HydratorConfig) -> io::Result<Self> {
         let event_flags = u32::try_from(libc::O_RDWR | libc::O_LARGEFILE).unwrap_or(2);
-        // Thread ids, so a gated access is classified by the call of the
+        // Thread ids, so a guarded access is classified by the call of the
         // thread that made it.
         let group = Group::new(
             fan::FAN_CLASS_PRE_CONTENT
@@ -899,7 +899,7 @@ impl Hydrator {
             group,
             fetcher,
             files: Mutex::new(HashMap::new()),
-            gates: Mutex::new(HashMap::new()),
+            checks: Mutex::new(HashMap::new()),
             policy: Mutex::new(None),
             own_fds: Mutex::new(std::collections::HashSet::new()),
             changed: Condvar::new(),
@@ -1094,8 +1094,8 @@ impl Hydrator {
     /// while another device holds its write lease). Readers keep reading; a process
     /// that has the file open for writing gets `errno` from the access that needs
     /// the bytes, `mmap` included.
-    pub fn gate_writes(&self, path: &Path, errno: i32) -> io::Result<()> {
-        self.gate(path, WriteGate::Deny(errno)).map(|_| ())
+    pub fn check_writes(&self, path: &Path, errno: i32) -> io::Result<()> {
+        self.check(path, WriteGuard::Deny(errno)).map(|_| ())
     }
 
     pub fn set_write_policy(&self, policy: Arc<dyn WritePolicy>) {
@@ -1109,20 +1109,20 @@ impl Hydrator {
         Ok((meta.dev(), meta.ino()))
     }
 
-    pub fn gate(&self, path: &Path, gate: WriteGate) -> io::Result<(u64, u64)> {
+    pub fn check(&self, path: &Path, check: WriteGuard) -> io::Result<(u64, u64)> {
         let file = OpenOptions::new()
             .read(true)
             .custom_flags(libc::O_NOFOLLOW)
             .open(path)?;
         let key = key_of(file.as_fd())?;
         self.shared
-            .gates
+            .checks
             .lock()
             .map_err(|_| io::Error::other("hydrator state poisoned"))?
-            .insert(key, gate);
-        let (add, remove) = match gate {
-            WriteGate::Deny(_) => (fan::FAN_PRE_ACCESS | fan::FAN_OPEN_PERM, 0),
-            WriteGate::Ask => (fan::FAN_PRE_ACCESS, fan::FAN_OPEN_PERM),
+            .insert(key, check);
+        let (add, remove) = match check {
+            WriteGuard::Deny(_) => (fan::FAN_PRE_ACCESS | fan::FAN_OPEN_PERM, 0),
+            WriteGuard::Ask => (fan::FAN_PRE_ACCESS, fan::FAN_OPEN_PERM),
         };
         self.shared
             .group
@@ -1144,7 +1144,7 @@ impl Hydrator {
             .open(path)?;
         let key = key_of(file.as_fd())?;
         self.shared
-            .gates
+            .checks
             .lock()
             .map_err(|_| io::Error::other("hydrator state poisoned"))?
             .remove(&key);

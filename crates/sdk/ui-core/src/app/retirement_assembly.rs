@@ -1,4 +1,4 @@
-//! Inner ownership during callback-bearing App assembly. No gate is held here.
+//! Inner ownership during callback-bearing App assembly. No check is held here.
 #[cfg(all(any(windows, target_os = "linux"), feature = "native"))]
 use super::native_runner;
 use super::{

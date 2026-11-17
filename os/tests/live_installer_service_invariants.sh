@@ -53,12 +53,12 @@ else
   bad 'an installed-image path can retain tilo.install and disable normal services'
 fi
 
-# Never broaden the gate to similarly named or mutable markers.
+# Never broaden the check to similarly named or mutable markers.
 if grep -Rqs 'ConditionKernelCommandLine=.*tilo\.installer' \
   "${units[@]/#/$repo/}"; then
   bad 'a unit uses the wrong tilo.installer marker'
 else
-  ok 'all service gates use the sealed bare tilo.install marker'
+  ok 'all service checks use the sealed bare tilo.install marker'
 fi
 
 exit "$fail"

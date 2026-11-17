@@ -13,7 +13,7 @@ use std::process::Command;
 use tilo_test_env::SpawnUnderEnvLock as _;
 
 use launcher::capabilities::CapabilityPlan;
-use launcher::netgate::{EgressDecision, EgressPolicy};
+use launcher::egress_proxy::{EgressDecision, EgressPolicy};
 use launcher_macos::policy::prepare_container;
 use launcher_macos::{
     CodeSignature, LaunchRequest, MacLaunchMode, SeatbeltReason, TrustRequirement, inspect, launch,
@@ -394,41 +394,41 @@ fn network_follows_the_egress_decision() {
     assert_eq!(exit_code(&online), OK, "unrestricted egress was blocked");
 
     // A filesystem socket the user owns (an `ssh-agent`, say) stays closed
-    // even with an unrestricted network; only the gate is ever reachable.
+    // even with an unrestricted network; only the proxy is ever reachable.
     let agent = f.root.join("agent.sock");
     let _agent = UnixListener::bind(&agent).unwrap();
     let mut to_agent = request(&f, "unix", &agent);
     to_agent.egress = EgressDecision::Unrestricted;
     assert_eq!(exit_code(&to_agent), REFUSED, "a user socket was reachable");
 
-    // A host allowlist: the launcher's gate is the only way out, through the
+    // A host allowlist: the launcher's proxy is the only way out, through the
     // proxy environment, and it carries only the granted hosts.
     let filtered = EgressDecision::Filtered(EgressPolicy::from_grants(["localhost"]));
-    let mut tcp_gated = request_with(&f, &f.probe, "tcp", port.clone());
-    tcp_gated.egress = filtered.clone();
+    let mut tcp_proxied = request_with(&f, &f.probe, "tcp", port.clone());
+    tcp_proxied.egress = filtered.clone();
     assert_eq!(
-        exit_code(&tcp_gated),
+        exit_code(&tcp_proxied),
         REFUSED,
-        "filtered egress bypassed the gate"
+        "filtered egress bypassed the proxy"
     );
-    let through_gate = |target: String| {
+    let through_proxy = |target: String| {
         let mut req = request_with(&f, &f.probe, "proxy", OsString::from(target));
         req.egress = filtered.clone();
         exit_code(&req)
     };
     let port = port.to_str().unwrap();
     assert_eq!(
-        through_gate(format!("localhost:{port}")),
+        through_proxy(format!("localhost:{port}")),
         OK,
-        "a granted host was unreachable through the gate"
+        "a granted host was unreachable through the proxy"
     );
     assert_eq!(
-        through_gate(format!("127.0.0.1:{port}")),
+        through_proxy(format!("127.0.0.1:{port}")),
         REFUSED,
         "an address literal satisfied a hostname grant"
     );
     assert_eq!(
-        through_gate("example.com:443".to_string()),
+        through_proxy("example.com:443".to_string()),
         REFUSED,
         "an ungranted host was reachable"
     );

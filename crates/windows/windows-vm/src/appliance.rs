@@ -203,7 +203,7 @@ where
     C: CapabilityBroker,
     L: RemoteAppLauncher,
 {
-    /// Returns the provisioned state which gates normal application launches.
+    /// Returns the provisioned state which checks normal application launches.
     ///
     /// This deliberately does not boot the guest or attach a viewer.  The
     /// Windows appliance is a fallback resource, so a manager refresh must

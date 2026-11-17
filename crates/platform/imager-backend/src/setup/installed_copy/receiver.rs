@@ -1,4 +1,4 @@
-//! Target-owner archive continuation on the authenticated installed-copy gate.
+//! Target-owner archive continuation on the authenticated installed-copy check.
 //! The receive grant, rather than a mutable receipt or synthetic setup, owns
 //! the operation and the live channel throughout review and adoption.
 use super::AuthenticatedCopyReceive;

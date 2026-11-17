@@ -2,7 +2,7 @@
 //! each capture reserves the most a native save may produce before it runs,
 //! and keeps only what the save produced for as long as the capture lives.
 //!
-//! The budget is a queue, not a gate: a read that finds it held waits its
+//! The budget is a queue, not a check: a read that finds it held waits its
 //! turn ([`Budget::wait`]), served in order as reservations are released or
 //! shrink. Running out of workspace is load, never a refusal.
 use runtime_collab::committed_document::{

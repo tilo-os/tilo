@@ -23,7 +23,7 @@
 //! ## Authority
 //!
 //! A denied operation is **absent** from [`offers`](Catalogue::offers), not marked unavailable
-//! in it. The question asked is the shell's own gate: `Write` on
+//! in it. The question asked is the shell's own check: `Write` on
 //! `(app, action)`, resolved against the agent's capability set and denied
 //! unless something explicitly permits. It runs again at dispatch, because a
 //! survey is a snapshot and acting on a stale one must not happen.
@@ -343,10 +343,10 @@ pub struct ResourceFacts {
 pub struct Catalogue {
     /// Everything the agent may perform. Denied is absent, as in [`offers`](Self::offers).
     pub offers: Vec<Offer>,
-    /// Every resource the workspace's apps publish, gate or no gate: showing a
+    /// Every resource the workspace's apps publish, check or no check: showing a
     /// resource is non-destructive and needs no permission, acting on one
     /// does — and the only way to ask for a fact is to name an address that
-    /// already passed the gate to be in [`Self::offers`].
+    /// already passed the check to be in [`Self::offers`].
     pub facts: Vec<ResourceFacts>,
     /// The namespaces of the apps the workspace is actually holding, read off
     /// the held replicas rather than inferred from [`Self::offers`]: an app

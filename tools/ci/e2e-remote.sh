@@ -25,7 +25,7 @@ work=/var/tmp/e2e-remote
 # share once it ends: a file held open on /target's virtio-fs share can turn EBADF mid-run.
 outputs=${CARGO_TARGET_DIR:-/target}/e2e-remote
 out=$work/out
-gate=/target/publish/os-dev-disk/$arch/disk
+check=/target/publish/os-dev-disk/$arch/disk
 tilo_vm=/target/tilo-vm-bin/tilo-vm
 run_user=acceptance
 phase() { echo "e2e-remote: $1 at ${SECONDS}s"; }
@@ -45,13 +45,13 @@ python3 os/dev/probe-kvm.py "$arch" || {
 rm -rf "$work" "$outputs"
 mkdir -p "$work" "$out" "$outputs"
 
-disk=$gate/disk.qcow2
-[[ -s $disk && -s $gate/image-digest ]] \
-  || { echo "no installed dev disk in $gate: the check needs os-dev-disk-$arch" >&2; exit 1; }
+disk=$check/disk.qcow2
+[[ -s $disk && -s $check/image-digest ]] \
+  || { echo "no installed dev disk in $check: the check needs os-dev-disk-$arch" >&2; exit 1; }
 [[ -x $tilo_vm ]] || { echo "no $tilo_vm: the check needs tilo-vm-binary-$arch" >&2; exit 1; }
 install -m 0755 "$tilo_vm" /usr/local/bin/tilo-vm
 commit=${TILO_ACCEPTANCE_COMMIT:-$(git rev-parse HEAD)}
-echo "boxes from ${commit:0:12}'s dev image $(cat "$gate/image-digest")"
+echo "boxes from ${commit:0:12}'s dev image $(cat "$check/image-digest")"
 
 # The installed disk is never booted: A's disk and C's are qcow2 overlays of it that the session
 # user owns (B's is A's branch).

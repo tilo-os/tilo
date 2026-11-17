@@ -60,7 +60,7 @@ tilo-action-policy = { path = "../../collab/action-policy" }
 # settles who reads each one.
 tilo-workspace-keys = { path = "../../collab/workspace-keys" }
 key-group = { path = "../../collab/key-group" }
-# The channel state and ingress gates a workspace's sealed records are held to, as the broker keeps
+# The channel state and ingress checks a workspace's sealed records are held to, as the broker keeps
 # them on every host.
 tilo-broker-core = { path = "../../collab/broker-core" }
 # The vault's master key: the platform secret store, or the sealed file store a headless machine

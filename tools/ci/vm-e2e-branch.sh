@@ -16,7 +16,7 @@ set -euo pipefail
 arch=x86_64
 work=/var/tmp/e2e-branch
 reports=/target/e2e-branch
-gate=/target/publish/os-dev-disk/$arch/disk
+check=/target/publish/os-dev-disk/$arch/disk
 tilo_vm=/target/tilo-vm-bin/tilo-vm
 run_user=acceptance
 phase() { echo "e2e-branch: $1 at ${SECONDS}s"; }
@@ -32,13 +32,13 @@ python3 os/dev/probe-kvm.py "$arch" || {
 
 rm -rf "$work" "$reports"
 mkdir -p "$work" "$reports"
-disk=$gate/disk.qcow2
-[[ -s $disk && -s $gate/image-digest ]] \
-  || { echo "no installed dev disk in $gate: the check needs os-dev-disk-$arch" >&2; exit 1; }
+disk=$check/disk.qcow2
+[[ -s $disk && -s $check/image-digest ]] \
+  || { echo "no installed dev disk in $check: the check needs os-dev-disk-$arch" >&2; exit 1; }
 [[ -x $tilo_vm ]] || { echo "no $tilo_vm: the check needs tilo-vm-binary-$arch" >&2; exit 1; }
 commit=${TILO_ACCEPTANCE_COMMIT:-$(git rev-parse HEAD)}
 install -m 0755 "$tilo_vm" /usr/local/bin/tilo-vm
-echo "branching a box of ${commit:0:12}'s dev image $(cat "$gate/image-digest")"
+echo "branching a box of ${commit:0:12}'s dev image $(cat "$check/image-digest")"
 
 # The installed disk is never booted: box's disk is a qcow2 overlay of it the session user owns.
 base="$work/tilo-dev-${commit:0:9}.qcow2"

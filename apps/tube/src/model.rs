@@ -1047,7 +1047,7 @@ mod tests {
             }
         }
 
-        phase dearrow_toggles_gate_titles_and_thumbnails;
+        phase dearrow_toggles_check_titles_and_thumbnails;
         {
             {
                 let mut s = Settings::default();
@@ -1057,7 +1057,7 @@ mod tests {
                 s.dearrow_enabled = false;
                 assert!(
                     !s.dearrow_titles_on() && !s.dearrow_thumbs_on(),
-                    "master gates both"
+                    "master checks both"
                 );
             }
             {

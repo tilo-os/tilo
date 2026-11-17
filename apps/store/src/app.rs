@@ -411,7 +411,7 @@ fn store_owner() -> ui::attention::Owner {
 #[allow(
     clippy::struct_excessive_bools,
     reason = "each bool is an independent, unrelated flag (host flatpak \
-              availability, a layout-rebuild gate, a pending worker action, \
+              availability, a layout-rebuild check, a pending worker action, \
               and which of the remotes and trust pages is open); \
               grouping them into enums would not express any real invariant \
               between them and would touch sync/draw/handle_event call sites \
@@ -4834,7 +4834,7 @@ mod tests {
             {
                 let mut app = seeded_app();
                 // "Term" only matches Terminal — Notes contains "te" but not
-                // "term", so the substring gate drops it.
+                // "term", so the substring check drops it.
                 app.set_query("Term".into());
                 let visible = app.visible_items();
                 assert_eq!(visible.len(), 1);

@@ -125,7 +125,7 @@ pub fn run(command: Command, host_desktop: bool) -> std::process::ExitCode {
     }
 }
 
-/// Prove the identity this device holds verifies, as a release gate runs it on an installed
+/// Prove the identity this device holds verifies, as a release check runs it on an installed
 /// machine.
 fn verify_only(identity_dir: &Path, paths: &IdentityPaths) -> std::process::ExitCode {
     use std::process::ExitCode;

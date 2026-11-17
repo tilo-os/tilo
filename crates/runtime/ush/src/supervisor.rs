@@ -579,7 +579,7 @@ pub enum ServeResponse {
 }
 
 /// Decide one request: the environment record it names (`None` for the
-/// default). Pure, so the gate can be tested without a pty.
+/// default). Pure, so the check can be tested without a pty.
 pub fn decide_serve(req: &ServeRequest) -> Result<Option<String>, String> {
     let ServeRequest::OpenSession { target, .. } = req else {
         return Err("not a session request".into());
@@ -587,7 +587,7 @@ pub fn decide_serve(req: &ServeRequest) -> Result<Option<String>, String> {
     match target {
         Target::Host => Err(
             "not available as an environment: the host target (your own login shell) \
-             is decided by the host gate"
+             is decided by the host check"
                 .into(),
         ),
         Target::Environment { record: None, .. } => Ok(None),

@@ -14,7 +14,7 @@ which is what tests and local comparisons use:
     python3 tools/perf/store.py list https://code.tilo.so tilo
     python3 tools/perf/store.py fetch https://code.tilo.so tilo > history.jsonl
 
-`fetch` prints measurements only. A gate test's records (`compare.py
+`fetch` prints measurements only. A check test's records (`compare.py
 --synthetic`, tagged `meta.synthetic_series`) hold values multiplied on
 purpose, so `fetch` leaves them out and says how many it left out on stderr;
 `--synthetic` prints them too. compare.py reads `history()`, which keeps them:
@@ -136,7 +136,7 @@ def history(store: LocalStore | PackageStore, months: list[str]) -> list[record.
 
 
 def synthetic(item: record.Record) -> bool:
-    """A gate test's record (`compare.py --synthetic`), not a measurement."""
+    """A check test's record (`compare.py --synthetic`), not a measurement."""
     return item.meta.get("synthetic_series") is not None
 
 
@@ -150,7 +150,7 @@ def main(argv: list[str] | None = None) -> int:
         command.add_argument("--months", type=int, default=LOOKBACK_MONTHS)
         if name == "fetch":
             command.add_argument("--synthetic", action="store_true",
-                                 help="also print gate-test records (meta.synthetic_series), whose values are multiplied")
+                                 help="also print check-test records (meta.synthetic_series), whose values are multiplied")
     args = parser.parse_args(argv)
     store = open_store(args.store, args.owner)
     months = months_back(datetime.datetime.now(datetime.timezone.utc), args.months)
@@ -163,7 +163,7 @@ def main(argv: list[str] | None = None) -> int:
         for item in shown:
             print(item.to_json())
         if len(shown) < len(records):
-            print(f"store.py: omitted {len(records) - len(shown)} synthetic gate-test records "
+            print(f"store.py: omitted {len(records) - len(shown)} synthetic check-test records "
                   "(meta.synthetic_series); --synthetic includes them", file=sys.stderr)
     return 0
 

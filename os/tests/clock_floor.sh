@@ -10,20 +10,20 @@ trap 'rm -rf "$work"' EXIT
 
 fail() { echo "clock_floor: $*" >&2; exit 1; }
 
-# A stand-in for the image-trust gate: prints the time in the file, or
+# A stand-in for the image-trust check: prints the time in the file, or
 # refuses like an unsynchronised chrony.
-gate="$work/trusted-time"
-cat >"$gate" <<'GATE'
+check="$work/trusted-time"
+cat >"$check" <<'CHECK'
 #!/usr/bin/env bash
 [ "$1" = --trusted-time ] || exit 2
 [ -s "$TRUSTED_NOW_FILE" ] || exit 1
 cat "$TRUSTED_NOW_FILE"
-GATE
-chmod +x "$gate"
+CHECK
+chmod +x "$check"
 now_file="$work/now"
 floor="$work/var/lib/systemd/timesync/clock"
 run() {
-  TILO_CLOCK_FLOOR="$floor" TILO_CLOCK_FLOOR_TRUSTED_TIME="$gate" \
+  TILO_CLOCK_FLOOR="$floor" TILO_CLOCK_FLOOR_TRUSTED_TIME="$check" \
     TRUSTED_NOW_FILE="$now_file" bash "$script"
 }
 

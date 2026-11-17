@@ -781,13 +781,13 @@ fn a_stalled_vault_never_holds_the_window() {
     vault.try_save().expect("the vault is saved");
     let read = AccountsRead::of(&root);
     let config = root.path().expect("an explicit root");
-    let gate = crate::stall::Stall::new();
+    let hold = crate::stall::Stall::new();
     let window = {
         let id = id.clone();
         std::thread::spawn(move || {
             ui::rt::mark_ui_thread();
-            let stalled = Arc::clone(&gate);
-            let root = AccountRoot::at(config).with_vault_gate(move || {
+            let stalled = Arc::clone(&hold);
+            let root = AccountRoot::at(config).with_vault_hold(move || {
                 stalled.wait();
             });
             let dir = AccountDirectory::load_in(&root);
@@ -800,9 +800,9 @@ fn a_stalled_vault_never_holds_the_window() {
             });
             let check = pane.connection_check(id.as_str());
             let _ = pane.poll();
-            // The vault answers nothing until the gate opens below:
+            // The vault answers nothing until the hold is released below:
             // clicks answered while it is held did not wait for it.
-            gate.assert_held("the clicks");
+            hold.assert_held("the clicks");
             assert!(check.is_ok(), "the check reads the vault on its worker");
             assert!(
                 removed.borrow().is_none(),
@@ -814,7 +814,7 @@ fn a_stalled_vault_never_holds_the_window() {
                 "the account is kept until the vault took its removal"
             );
 
-            gate.release();
+            hold.release();
             let deadline = tilo_test_env::hang_deadline();
             while removed.borrow().is_none() || !pane.lane.is_idle() {
                 assert!(Instant::now() < deadline, "the removal lands");
@@ -871,11 +871,11 @@ fn a_stalled_vault_never_holds_the_mail_grant_status() {
         .expect("the grant is sealed");
     let read = AccountsRead::of(&root);
     let config = root.path().expect("an explicit root");
-    let gate = crate::stall::Stall::new();
+    let hold = crate::stall::Stall::new();
     // A window that waited on the vault would sit until the stall gives up,
     // which `assert_held` reports.
-    let stalled = std::sync::Arc::clone(&gate);
-    let root = AccountRoot::at(config).with_vault_gate(move || {
+    let stalled = std::sync::Arc::clone(&hold);
+    let root = AccountRoot::at(config).with_vault_hold(move || {
         stalled.wait();
     });
     let dir = AccountDirectory::load_in(&root);
@@ -887,7 +887,7 @@ fn a_stalled_vault_never_holds_the_mail_grant_status() {
 
     let mut app = window_showing(pane);
     let shown = shows_granted(&mut app);
-    gate.assert_held("composing the accounts");
+    hold.assert_held("composing the accounts");
     assert!(!shown, "the grant is not known before the vault answers");
     assert!(
         app.with_widget::<crate::window::Inspected, _>(|settings| {
@@ -897,7 +897,7 @@ fn a_stalled_vault_never_holds_the_mail_grant_status() {
         "the pane keeps polling while the vault is out"
     );
 
-    gate.release();
+    hold.release();
     let deadline = tilo_test_env::hang_deadline();
     while !shows_granted(&mut app) {
         assert!(Instant::now() < deadline, "the grant is shown");

@@ -2486,11 +2486,11 @@ fn generic_floating_ids_to_dismiss(
 }
 
 #[cfg(feature = "native")]
-fn completed_primary_frame_gates(
-    gates: &std::collections::HashMap<String, Option<u64>>,
+fn completed_primary_frame_checks(
+    checks: &std::collections::HashMap<String, Option<u64>>,
     last_presented: u64,
 ) -> Vec<String> {
-    gates
+    checks
         .iter()
         .filter_map(|(id, required)| {
             required
@@ -2574,7 +2574,7 @@ fn render_retry_deadline(outcome: FrameOutcome, now: Instant) -> Option<Instant>
 #[cfg(test)]
 mod generic_floating_activity_tests {
     use super::{
-        completed_primary_frame_gates, generic_floating_ids_to_dismiss,
+        completed_primary_frame_checks, generic_floating_ids_to_dismiss,
         native_floating_logical_size,
     };
     use crate::floating_surface::FloatingSurfacePresentation;
@@ -2615,14 +2615,14 @@ mod generic_floating_activity_tests {
         }
 
         {
-            let gates = HashMap::from([
+            let checks = HashMap::from([
                 ("waiting".to_string(), None),
                 ("next".to_string(), Some(12)),
                 ("later".to_string(), Some(13)),
             ]);
-            assert!(completed_primary_frame_gates(&gates, 11).is_empty());
+            assert!(completed_primary_frame_checks(&checks, 11).is_empty());
             assert_eq!(
-                completed_primary_frame_gates(&gates, 12),
+                completed_primary_frame_checks(&checks, 12),
                 vec!["next".to_string()]
             );
         }

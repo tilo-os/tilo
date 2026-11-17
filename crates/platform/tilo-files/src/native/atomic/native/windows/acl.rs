@@ -164,7 +164,7 @@ pub(super) fn validate_private(file: &File, principal: &Principal) -> io::Result
     validate_private_security(file, principal)
 }
 
-// Share the security admission without relaxing the regular-file kind/link gate.
+// Share the security admission without relaxing the regular-file kind/link check.
 pub(super) fn validate_private_security(file: &File, principal: &Principal) -> io::Result<()> {
     let mut raw = ptr::null_mut();
     let mut owner = ptr::null_mut();

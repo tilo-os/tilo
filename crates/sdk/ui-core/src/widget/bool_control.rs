@@ -489,8 +489,8 @@ macro_rules! bool_control_widget_methods {
         fn provide<'a>(&'a self, request: &mut crate::widget::capability::Request<'a, '_>) {
             if request.wants::<dyn crate::widget::controls::ActionControls>() {
                 request.provide::<dyn crate::widget::controls::ActionControls>(self);
-            } else if request.wants::<dyn crate::permissions::capability::PermissionGated>() {
-                request.provide::<dyn crate::permissions::capability::PermissionGated>(self);
+            } else if request.wants::<dyn crate::permissions::capability::PermissionGuarded>() {
+                request.provide::<dyn crate::permissions::capability::PermissionGuarded>(self);
             } else if request.wants::<dyn crate::presence::capability::PublishesPresence>() {
                 request.provide::<dyn crate::presence::capability::PublishesPresence>(self);
             } else if self.control.view_resource.is_none() {
@@ -507,8 +507,8 @@ macro_rules! bool_control_widget_methods {
         ) {
             if request.wants::<dyn crate::widget::controls::ActionControls>() {
                 request.provide::<dyn crate::widget::controls::ActionControls>(self);
-            } else if request.wants::<dyn crate::permissions::capability::PermissionGated>() {
-                request.provide::<dyn crate::permissions::capability::PermissionGated>(self);
+            } else if request.wants::<dyn crate::permissions::capability::PermissionGuarded>() {
+                request.provide::<dyn crate::permissions::capability::PermissionGuarded>(self);
             } else if request.wants::<dyn crate::presence::capability::PublishesPresence>() {
                 request.provide::<dyn crate::presence::capability::PublishesPresence>(self);
             } else if self.control.view_resource.is_none() {
@@ -575,7 +575,7 @@ macro_rules! bool_control_capabilities {
             }
         }
 
-        impl crate::permissions::capability::PermissionGated for $ty {
+        impl crate::permissions::capability::PermissionGuarded for $ty {
             fn permission_scope(&self) -> Option<crate::permissions::PermissionScope> {
                 self.control.permission_scope.clone()
             }

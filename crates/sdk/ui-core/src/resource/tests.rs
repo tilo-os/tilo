@@ -1273,7 +1273,7 @@ tilo_test_env::scenario! {
     // Every window of a workspace-record app is its own process on the workspace's
     // one notebook, and a relaunch overlaps the instance still exiting: the
     // workspace's own document opens for all of them at once, and again after
-    // the first closes, instead of failing on the writer's gate.
+    // the first closes, instead of failing on the writer's check.
     {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().join("state");

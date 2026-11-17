@@ -43,16 +43,16 @@ fn options(state: Option<std::path::PathBuf>) -> Options {
     }
 }
 
-/// The person at this device, as the session's own seat reads it.
+/// The person at this device, as the session's own identity reads it.
 fn person() -> String {
     tilo_session::identity::own_person(&options(None))
 }
 
 /// A session of `person` 's: the device's layout is a workspace's layout, so it is one that holds
 /// its workspaces.
-fn session_as(seat: &str) -> Session {
+fn session_as(person: &str) -> Session {
     crate::common::headless(Options {
-        person: seat.to_owned(),
+        person: person.to_owned(),
         state: None,
         collab: false,
         ..Options::default()

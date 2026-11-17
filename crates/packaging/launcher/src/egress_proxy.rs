@@ -1,7 +1,7 @@
 //! Per-host egress filtering for a sandboxed app.
 //!
-//! The namespace stays empty and the only way out is a socket the gate holds on the
-//! host side, so an app that ignores the gate is offline, not unfiltered. The gate
+//! The namespace stays empty and the only way out is a socket the proxy holds on the
+//! host side, so an app that ignores the proxy is offline, not unfiltered. The proxy
 //! matches the name in the request against the allowlist and resolves per connection:
 //! no address is pinned, an address literal never matches a hostname entry, and
 //! device-local addresses are dropped after resolution unless the allowlist names them
@@ -20,22 +20,22 @@ use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::UnixStream;
 use tokio::sync::{Semaphore, oneshot};
 
-/// How long a client gets for each read and write of the handshake, and how long the gate waits on an
+/// How long a client gets for each read and write of the handshake, and how long the proxy waits on an
 /// upstream `connect`.
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(30);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 
-/// How many connections one gate, or one relay, carries at once.
+/// How many connections one proxy, or one relay, carries at once.
 pub const MAX_CONNECTIONS: usize = 256;
 
 /// The loopback port the in-sandbox relay listens on.
 pub const RELAY_PORT: u16 = 9050;
 
-/// Where the gate socket is bind-mounted inside the sandbox.
-pub const SANDBOX_GATE_PATH: &str = "/run/tilo/net/gate.sock";
+/// Where the proxy socket is bind-mounted inside the sandbox.
+pub const SANDBOX_PROXY_PATH: &str = "/run/tilo/net/proxy.sock";
 
-/// Host-side path the gate listens on.
-pub fn gate_socket_path(runtime: &Path, launcher_pid: u32) -> PathBuf {
+/// Host-side path the proxy listens on.
+pub fn proxy_socket_path(runtime: &Path, launcher_pid: u32) -> PathBuf {
     runtime.join(format!("tilo/net/{launcher_pid}.sock"))
 }
 
@@ -44,9 +44,9 @@ pub fn gate_socket_path(runtime: &Path, launcher_pid: u32) -> PathBuf {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EgressDecision {
     Blocked,
-    /// Unrestricted outbound access — `--share-net`, no gate.
+    /// Unrestricted outbound access — `--share-net`, no proxy.
     Unrestricted,
-    /// A specific set of hosts: the namespace stays empty and a gate carries the traffic.
+    /// A specific set of hosts: the namespace stays empty and a proxy carries the traffic.
     Filtered(EgressPolicy),
 }
 
@@ -110,7 +110,7 @@ impl EgressDecision {
 }
 
 /// What outbound access a policy alone amounts to: nothing, everything (`*`, which for an app is
-/// `--share-net`), or a gate.
+/// `--share-net`), or a proxy.
 fn decision_of(policy: EgressPolicy) -> EgressDecision {
     match policy {
         EgressPolicy::Any => EgressDecision::Unrestricted,
@@ -119,16 +119,16 @@ fn decision_of(policy: EgressPolicy) -> EgressDecision {
     }
 }
 
-/// Counts of what the gate decided, so a test can assert on the decision the production path actually
+/// Counts of what the proxy decided, so a test can assert on the decision the production path actually
 /// took rather than on argv.
 #[derive(Debug, Default)]
-pub struct GateStats {
+pub struct ProxyStats {
     pub allowed: AtomicU64,
     pub denied: AtomicU64,
     pub failed: AtomicU64,
 }
 
-impl GateStats {
+impl ProxyStats {
     pub fn allowed(&self) -> u64 {
         self.allowed.load(Ordering::Relaxed)
     }
@@ -140,17 +140,17 @@ impl GateStats {
     }
 }
 
-/// Errors from [`NetGate::start`].
+/// Errors from [`EgressProxy::start`].
 #[derive(Debug, thiserror::Error)]
-pub enum GateError {
-    #[error("creating the gate socket directory {path}: {source}")]
+pub enum ProxyError {
+    #[error("creating the proxy socket directory {path}: {source}")]
     Mkdir {
         path: PathBuf,
         #[source]
         source: io::Error,
     },
     #[error(
-        "binding the egress gate socket at {path}: {source}. The app was granted access to \
+        "binding the egress proxy socket at {path}: {source}. The app was granted access to \
          specific hosts, which can only be enforced by brokering its traffic through this \
          socket; without it the sandbox would have to be given unrestricted network access \
          instead, which is not what was granted."
@@ -160,22 +160,22 @@ pub enum GateError {
         #[source]
         source: io::Error,
     },
-    #[error("starting the runtime that serves the egress gate: {0}")]
+    #[error("starting the runtime that serves the egress proxy: {0}")]
     Runtime(#[source] io::Error),
 }
 
-/// A running gate.
+/// A running proxy.
 #[derive(Debug)]
-pub struct NetGate {
+pub struct EgressProxy {
     socket_path: PathBuf,
-    stats: Arc<GateStats>,
+    stats: Arc<ProxyStats>,
     /// Dropping this sender ends the accept loop, which closes the listener.
     _stop: oneshot::Sender<()>,
 }
 
-impl NetGate {
+impl EgressProxy {
     /// Bind `socket_path` and serve SOCKS5 against `policy` until dropped.
-    pub fn start(socket_path: &Path, policy: EgressPolicy) -> Result<NetGate, GateError> {
+    pub fn start(socket_path: &Path, policy: EgressPolicy) -> Result<EgressProxy, ProxyError> {
         Self::start_limited(socket_path, policy, MAX_CONNECTIONS)
     }
 
@@ -183,9 +183,9 @@ impl NetGate {
         socket_path: &Path,
         policy: EgressPolicy,
         max_connections: usize,
-    ) -> Result<NetGate, GateError> {
+    ) -> Result<EgressProxy, ProxyError> {
         if let Some(parent) = socket_path.parent() {
-            std::fs::create_dir_all(parent).map_err(|source| GateError::Mkdir {
+            std::fs::create_dir_all(parent).map_err(|source| ProxyError::Mkdir {
                 path: parent.to_path_buf(),
                 source,
             })?;
@@ -193,13 +193,13 @@ impl NetGate {
         // A socket left behind by a crashed launcher would make bind() fail with EADDRINUSE.
         let _ = std::fs::remove_file(socket_path);
 
-        let bind_error = |source| GateError::Bind {
+        let bind_error = |source| ProxyError::Bind {
             path: socket_path.to_path_buf(),
             source,
         };
         let listener = std::os::unix::net::UnixListener::bind(socket_path).map_err(bind_error)?;
         listener.set_nonblocking(true).map_err(bind_error)?;
-        let runtime = egress_runtime().map_err(GateError::Runtime)?;
+        let runtime = egress_runtime().map_err(ProxyError::Runtime)?;
         let listener = {
             let _entered = runtime.enter();
             tokio::net::UnixListener::from_std(listener).map_err(bind_error)?
@@ -208,11 +208,11 @@ impl NetGate {
         tracing::info!(
             socket = %socket_path.display(),
             hosts = ?policy.describe(),
-            "egress gate listening; the sandbox netns stays empty and this socket is its \
+            "egress proxy listening; the sandbox netns stays empty and this socket is its \
              only route out"
         );
-        let (stats, stop) = serve_gate(runtime, listener, policy, max_connections);
-        Ok(NetGate {
+        let (stats, stop) = serve_proxy(runtime, listener, policy, max_connections);
+        Ok(EgressProxy {
             socket_path: socket_path.to_path_buf(),
             stats,
             _stop: stop,
@@ -223,45 +223,45 @@ impl NetGate {
         &self.socket_path
     }
 
-    pub fn stats(&self) -> &Arc<GateStats> {
+    pub fn stats(&self) -> &Arc<ProxyStats> {
         &self.stats
     }
 }
 
-impl Drop for NetGate {
+impl Drop for EgressProxy {
     fn drop(&mut self) {
         // `_stop` is dropped right after this, which ends the accept loop.
         let _ = std::fs::remove_file(&self.socket_path);
     }
 }
 
-/// A gate on a loopback TCP port, for a host with no network namespace to leave empty (macOS): there
+/// A proxy on a loopback TCP port, for a host with no network namespace to leave empty (macOS): there
 /// the sandbox profile admits connections to this one port, and the proxy environment names it.
 #[derive(Debug)]
-pub struct LoopbackGate {
+pub struct LoopbackProxy {
     addr: SocketAddr,
-    stats: Arc<GateStats>,
+    stats: Arc<ProxyStats>,
     _stop: oneshot::Sender<()>,
 }
 
-impl LoopbackGate {
+impl LoopbackProxy {
     /// Bind a free port on `127.0.0.1` and serve `policy` on it until dropped.
-    pub fn start(policy: EgressPolicy) -> Result<LoopbackGate, GateError> {
-        let bind_error = |source| GateError::Bind {
+    pub fn start(policy: EgressPolicy) -> Result<LoopbackProxy, ProxyError> {
+        let bind_error = |source| ProxyError::Bind {
             path: PathBuf::from("127.0.0.1:0"),
             source,
         };
         let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).map_err(bind_error)?;
         let addr = listener.local_addr().map_err(bind_error)?;
         listener.set_nonblocking(true).map_err(bind_error)?;
-        let runtime = egress_runtime().map_err(GateError::Runtime)?;
+        let runtime = egress_runtime().map_err(ProxyError::Runtime)?;
         let listener = {
             let _entered = runtime.enter();
             tokio::net::TcpListener::from_std(listener).map_err(bind_error)?
         };
-        tracing::info!(%addr, hosts = ?policy.describe(), "loopback egress gate listening");
-        let (stats, stop) = serve_gate(runtime, listener, policy, MAX_CONNECTIONS);
-        Ok(LoopbackGate {
+        tracing::info!(%addr, hosts = ?policy.describe(), "loopback egress proxy listening");
+        let (stats, stop) = serve_proxy(runtime, listener, policy, MAX_CONNECTIONS);
+        Ok(LoopbackProxy {
             addr,
             stats,
             _stop: stop,
@@ -272,24 +272,24 @@ impl LoopbackGate {
         self.addr
     }
 
-    pub fn stats(&self) -> &Arc<GateStats> {
+    pub fn stats(&self) -> &Arc<ProxyStats> {
         &self.stats
     }
 }
 
 /// Serve every connection `listener` accepts against `policy` on `runtime`, until the returned sender
 /// is dropped.
-fn serve_gate<L>(
+fn serve_proxy<L>(
     runtime: &tokio::runtime::Handle,
     listener: L,
     policy: EgressPolicy,
     max_connections: usize,
-) -> (Arc<GateStats>, oneshot::Sender<()>)
+) -> (Arc<ProxyStats>, oneshot::Sender<()>)
 where
     L: Acceptor,
     L::Conn: AsyncRead + AsyncWrite + Unpin,
 {
-    let stats = Arc::new(GateStats::default());
+    let stats = Arc::new(ProxyStats::default());
     let (stop, stopped) = oneshot::channel();
     let policy = Arc::new(policy);
     let served = Arc::clone(&stats);
@@ -302,7 +302,7 @@ where
             let stats = Arc::clone(&served);
             async move {
                 if let Err(e) = serve_connection(client, &policy, &stats).await {
-                    tracing::debug!(error = %e, "egress gate connection ended");
+                    tracing::debug!(error = %e, "egress proxy connection ended");
                 }
             }
         },
@@ -310,7 +310,7 @@ where
     (stats, stop)
 }
 
-/// The proxy environment that sends an ordinary HTTP client through a gate listening on
+/// The proxy environment that sends an ordinary HTTP client through a proxy listening on
 /// `127.0.0.1:port`.
 pub fn proxy_env(port: u16) -> Vec<(&'static str, String)> {
     let http = format!("http://127.0.0.1:{port}");
@@ -326,13 +326,13 @@ pub fn proxy_env(port: u16) -> Vec<(&'static str, String)> {
         .collect()
 }
 
-/// The runtime every egress relay in this process serves on — each [`NetGate`], and other confined
+/// The runtime every egress relay in this process serves on — each [`EgressProxy`], and other confined
 /// transports built on [`connect_upstream_async`].
 pub fn egress_runtime() -> io::Result<&'static tokio::runtime::Handle> {
     static RUNTIME: OnceLock<Result<tokio::runtime::Runtime, String>> = OnceLock::new();
     RUNTIME
         .get_or_init(|| {
-            tilo_rt::daemon("netgate")
+            tilo_rt::daemon("egress_proxy")
                 .workers(2)
                 .build()
                 .map_err(|e| e.to_string())
@@ -529,7 +529,7 @@ pub fn detect_protocol(first_byte: u8) -> Protocol {
     }
 }
 
-/// The largest HTTP proxy request head the gate reads before giving up.
+/// The largest HTTP proxy request head the proxy reads before giving up.
 const MAX_HTTP_HEAD: usize = 16 * 1024;
 
 /// Bound one handshake read or write by [`HANDSHAKE_TIMEOUT`].
@@ -657,7 +657,7 @@ fn head_text(head: Vec<u8>) -> io::Result<String> {
 async fn serve_connection<C: AsyncRead + AsyncWrite + Unpin>(
     mut client: C,
     policy: &EgressPolicy,
-    stats: &GateStats,
+    stats: &ProxyStats,
 ) -> io::Result<()> {
     let mut handshake = Handshake {
         client: &mut client,
@@ -692,7 +692,7 @@ async fn serve_connection<C: AsyncRead + AsyncWrite + Unpin>(
 async fn open_socks5<C: AsyncRead + AsyncWrite + Unpin>(
     handshake: &mut Handshake<'_, C>,
     policy: &EgressPolicy,
-    stats: &GateStats,
+    stats: &ProxyStats,
 ) -> io::Result<Option<tokio::net::TcpStream>> {
     handshake
         .run(|exchange: &mut Exchange<'_>| socks5_greet(exchange))
@@ -807,7 +807,7 @@ fn split_host_port(authority: &str, default_port: u16) -> Option<(String, u16)> 
 async fn open_http<C: AsyncRead + AsyncWrite + Unpin>(
     handshake: &mut Handshake<'_, C>,
     policy: &EgressPolicy,
-    stats: &GateStats,
+    stats: &ProxyStats,
 ) -> io::Result<Option<tokio::net::TcpStream>> {
     const BAD_GATEWAY: &[u8] =
         b"HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
@@ -939,36 +939,36 @@ pub async fn connect_upstream_async(
     Err(last)
 }
 
-/// The in-sandbox relay: accept on loopback, carry each connection to the gate socket verbatim.
-pub fn run_relay(gate_socket: &Path, port: u16) -> io::Result<()> {
+/// The in-sandbox relay: accept on loopback, carry each connection to the proxy socket verbatim.
+pub fn run_relay(proxy_socket: &Path, port: u16) -> io::Result<()> {
     serve_relay(
         std::net::TcpListener::bind(("127.0.0.1", port))?,
-        gate_socket,
+        proxy_socket,
     )
 }
 
 /// Serve the relay on an already bound `listener`, so a caller can connect as soon as this is called.
-pub fn serve_relay(listener: std::net::TcpListener, gate_socket: &Path) -> io::Result<()> {
-    serve_relay_limited(listener, gate_socket, MAX_CONNECTIONS)
+pub fn serve_relay(listener: std::net::TcpListener, proxy_socket: &Path) -> io::Result<()> {
+    serve_relay_limited(listener, proxy_socket, MAX_CONNECTIONS)
 }
 
 fn serve_relay_limited(
     listener: std::net::TcpListener,
-    gate_socket: &Path,
+    proxy_socket: &Path,
     max_connections: usize,
 ) -> io::Result<()> {
     listener.set_nonblocking(true)?;
-    let gate: Arc<Path> = Arc::from(gate_socket);
-    tilo_rt::daemon("netgate-relay")
+    let proxy: Arc<Path> = Arc::from(proxy_socket);
+    tilo_rt::daemon("egress_proxy-relay")
         .workers(1)
         .run(async move {
             let listener = tokio::net::TcpListener::from_std(listener)?;
             // Never sent: the relay serves until the sandbox is torn down.
             let (_forever, stop) = oneshot::channel();
             accept_bounded(listener, max_connections, stop, move |mut tcp| {
-                let gate = Arc::clone(&gate);
+                let proxy = Arc::clone(&proxy);
                 async move {
-                    let Ok(mut unix) = UnixStream::connect(&*gate).await else {
+                    let Ok(mut unix) = UnixStream::connect(&*proxy).await else {
                         return;
                     };
                     let _ = tokio::io::copy_bidirectional(&mut tcp, &mut unix).await;
@@ -1118,9 +1118,9 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        fn the_gate_speaks_socks5_and_http_proxy_to_its_clients;
+        fn the_proxy_speaks_socks5_and_http_proxy_to_its_clients;
 
-        phase the_proxy_environment_names_the_gate_for_every_client_convention;
+        phase the_proxy_environment_names_the_proxy_for_every_client_convention;
         {
             let env = proxy_env(9050);
             let get = |name: &str| {
@@ -1359,7 +1359,7 @@ mod tests {
             assert_eq!(decision, EgressDecision::Unrestricted);
             assert!(decision.shares_host_network());
             assert_eq!(EgressPolicy::from_grants(["*"]), EgressPolicy::Any);
-            // A gate standing in for `*` is not stricter than the `--share-net` it stands in for.
+            // A proxy standing in for `*` is not stricter than the `--share-net` it stands in for.
             assert!(EgressPolicy::Any.permits_device_local("localhost"));
         }
 
@@ -1446,7 +1446,7 @@ mod tests {
                 let exact = EgressPolicy::from_grants(["localhost"]);
                 assert!(exact.permits_device_local("localhost"));
 
-                // A wildcard allowlist becomes `--share-net`, so the gate is not stricter than the sandbox
+                // A wildcard allowlist becomes `--share-net`, so the proxy is not stricter than the sandbox
                 // it stands in for.
                 assert!(EgressPolicy::from_grants(["*"]).permits_device_local("localhost"));
 
@@ -1515,25 +1515,25 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        fn the_gate_tunnels_what_is_granted_within_its_bounds;
+        fn the_proxy_tunnels_what_is_granted_within_its_bounds;
 
-        phase the_gate_relay_bounds_its_resources_and_forwards_early_bytes;
+        phase the_proxy_relay_bounds_its_resources_and_forwards_early_bytes;
         {
             {
                 // 108 bytes including the NUL.
-                let p = gate_socket_path(Path::new("/run/user/1000"), 4_194_304);
+                let p = proxy_socket_path(Path::new("/run/user/1000"), 4_194_304);
                 assert!(
                     p.as_os_str().len() < 100,
-                    "gate socket path {p:?} is too long for sun_path"
+                    "proxy socket path {p:?} is too long for sun_path"
                 );
-                assert!(SANDBOX_GATE_PATH.len() < 100);
+                assert!(SANDBOX_PROXY_PATH.len() < 100);
             }
             {
                 let dir = tempfile::tempdir().unwrap();
-                let socket = dir.path().join("gate.sock");
+                let socket = dir.path().join("proxy.sock");
                 let service = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
                 let port = service.local_addr().unwrap().port();
-                let gate = NetGate::start_limited(&socket, EgressPolicy::from_grants(["localhost"]), 1)
+                let proxy = EgressProxy::start_limited(&socket, EgressPolicy::from_grants(["localhost"]), 1)
                     .unwrap();
 
                 // The one slot: a tunnel that stays open.
@@ -1544,7 +1544,7 @@ mod tests {
                 assert_eq!(socks_connect_localhost(&mut first, port), reply::SUCCESS);
                 let (held, _) = service.accept().unwrap();
 
-                // The kernel queues a second client, and the gate leaves it there
+                // The kernel queues a second client, and the proxy leaves it there
                 // (`at_the_limit_the_accept_loop_waits_for_a_free_slot`).
                 let mut second = std::os::unix::net::UnixStream::connect(&socket).unwrap();
                 second.write_all(&[0x05, 0x01, 0x00]).unwrap();
@@ -1557,12 +1557,12 @@ mod tests {
                 let mut greeting = [0u8; 2];
                 second.read_exact(&mut greeting).unwrap();
                 assert_eq!(greeting, [0x05, 0x00]);
-                assert_eq!(gate.stats().allowed(), 1);
+                assert_eq!(proxy.stats().allowed(), 1);
             }
             {
                 let dir = tempfile::tempdir().unwrap();
-                let socket = dir.path().join("gate.sock");
-                // A stand-in gate that echoes, one thread per connection.
+                let socket = dir.path().join("proxy.sock");
+                // A stand-in proxy that echoes, one thread per connection.
                 let echo = std::os::unix::net::UnixListener::bind(&socket).unwrap();
                 std::thread::spawn(move || {
                     for stream in echo.incoming() {
@@ -1598,10 +1598,10 @@ mod tests {
             }
             {
                 let dir = tempfile::tempdir().unwrap();
-                let socket = dir.path().join("gate.sock");
+                let socket = dir.path().join("proxy.sock");
                 let service = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
                 let port = service.local_addr().unwrap().port();
-                let _gate = NetGate::start(&socket, EgressPolicy::from_grants(["localhost"])).unwrap();
+                let _proxy = EgressProxy::start(&socket, EgressPolicy::from_grants(["localhost"])).unwrap();
 
                 let mut all = vec![0x05, 0x01, 0x00, 0x05, 0x01, 0x00, 0x03, 9];
                 all.extend_from_slice(b"localhost");
@@ -1628,7 +1628,7 @@ mod tests {
             }
         }
 
-        phase the_loopback_gate_tunnels_granted_hosts_and_refuses_the_rest;
+        phase the_loopback_proxy_tunnels_granted_hosts_and_refuses_the_rest;
         {
             let service = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
             let port = service.local_addr().unwrap().port();
@@ -1637,10 +1637,10 @@ mod tests {
                     let _ = s.write_all(b"LOCAL-SERVICE");
                 }
             });
-            let gate = LoopbackGate::start(EgressPolicy::from_grants(["localhost"])).unwrap();
-            assert!(gate.local_addr().ip().is_loopback());
+            let proxy = LoopbackProxy::start(EgressPolicy::from_grants(["localhost"])).unwrap();
+            assert!(proxy.local_addr().ip().is_loopback());
             let connect = |target: &str| {
-                let mut client = TcpStream::connect(gate.local_addr()).unwrap();
+                let mut client = TcpStream::connect(proxy.local_addr()).unwrap();
                 client
                     .set_read_timeout(Some(tilo_test_env::hang_bound()))
                     .unwrap();
@@ -1659,7 +1659,7 @@ mod tests {
             );
             let refused = connect(&format!("127.0.0.1:{port}"));
             assert!(refused.starts_with("HTTP/1.1 502"), "{refused}");
-            assert_eq!((gate.stats().allowed(), gate.stats().denied()), (1, 1));
+            assert_eq!((proxy.stats().allowed(), proxy.stats().denied()), (1, 1));
         }
 
         phase at_the_limit_the_accept_loop_waits_for_a_free_slot;
@@ -1709,7 +1709,7 @@ mod tests {
         }
     }
 
-    /// SOCKS5 CONNECT to `localhost:port` through the gate at `socket`; returns the reply code.
+    /// SOCKS5 CONNECT to `localhost:port` through the proxy at `socket`; returns the reply code.
     fn socks_connect_localhost(stream: &mut std::os::unix::net::UnixStream, port: u16) -> u8 {
         stream.write_all(&[0x05, 0x01, 0x00]).unwrap();
         let mut greeting = [0u8; 2];

@@ -2201,7 +2201,7 @@ impl Widget for Button {
     crate::provides!(
         dyn crate::widget::controls::ActionControls,
         dyn crate::resources::PublishesResources,
-        dyn crate::permissions::capability::PermissionGated,
+        dyn crate::permissions::capability::PermissionGuarded,
         dyn crate::presence::capability::PublishesPresence,
         dyn crate::widget::ResourceOperations
     );
@@ -2383,7 +2383,7 @@ impl Widget for Button {
         // it applies none: a second layer would dim a disabled face twice.
         if !self.dirty && moment.settled && !self.face.is_empty() {
             self.face.append(out_scene, out_transform, self.rect);
-            crate::widget::draw_gate_and_peer_focus(
+            crate::widget::draw_permission_scrim_and_peer_focus(
                 self,
                 out_scene,
                 out_transform,
@@ -2412,7 +2412,7 @@ impl Widget for Button {
             );
             self.painted_hit = None;
             self.face.append(out_scene, out_transform, self.rect);
-            crate::widget::draw_gate_and_peer_focus(
+            crate::widget::draw_permission_scrim_and_peer_focus(
                 self,
                 out_scene,
                 out_transform,
@@ -2443,7 +2443,13 @@ impl Widget for Button {
         }
         self.painted_hit = hit.map(|hit| Affine::translate(-self.rect.origin().to_vec2()) * hit);
         self.face.append(out_scene, out_transform, self.rect);
-        crate::widget::draw_gate_and_peer_focus(self, out_scene, out_transform, theme, presence);
+        crate::widget::draw_permission_scrim_and_peer_focus(
+            self,
+            out_scene,
+            out_transform,
+            theme,
+            presence,
+        );
     }
 
     fn needs_redraw(&self) -> bool {
@@ -2731,7 +2737,7 @@ impl crate::presence::capability::PublishesPresence for Button {
     }
 }
 
-impl crate::permissions::capability::PermissionGated for Button {
+impl crate::permissions::capability::PermissionGuarded for Button {
     fn permission_scope(&self) -> Option<PermissionScope> {
         self.permission_scope.clone()
     }

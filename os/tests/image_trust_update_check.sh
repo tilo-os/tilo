@@ -2,7 +2,7 @@
 set -euo pipefail
 
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-gate="$repo/os/usr/libexec/tilo-image-trust-staged"
+check="$repo/os/usr/libexec/tilo-image-trust-staged"
 deployment="$repo/os/usr/libexec/tilo-deployment"
 update_policy_unit="$repo/os/usr/lib/systemd/system/tilo-update-policy@.service"
 deployment_update_unit="$repo/os/usr/lib/systemd/system/tilo-deployment-update.service"
@@ -52,8 +52,8 @@ for resource_policy in \
     exit 1
   }
 done
-grep -Fq 'tilo-image-trust parse-bootc-status' "$gate"
-if grep -Eq 'python(3)?' "$gate"; then
+grep -Fq 'tilo-image-trust parse-bootc-status' "$check"
+if grep -Eq 'python(3)?' "$check"; then
   echo 'staged image trust still delegates authority parsing to Python' >&2
   exit 1
 fi
@@ -164,13 +164,13 @@ cat >"$work/bin/chronyc" <<'EOF'
 #!/usr/bin/env bash
 [[ $* == '-n waitsync 1 0.1' && ${TILO_TEST_CHRONY_UNSYNC:-0} != 1 ]]
 EOF
-cat >"$work/bin/image-trust-gate" <<'EOF'
+cat >"$work/bin/image-trust-check" <<'EOF'
 #!/usr/bin/env bash
-exec bash "$TILO_TEST_GATE_SOURCE" "$@"
+exec bash "$TILO_TEST_CHECK_SOURCE" "$@"
 EOF
 chmod +x "$work/bin/"*
 
-run_gate() {
+run_check() {
   PATH="$work/bin:$PATH" TILO_IMAGE_TRUST_DIR="$work/trust" \
     TILO_IMAGE_TRUST_OWNER_UID="$(id -u)" \
     TILO_IMAGE_TRUST_BOOT="$work/boot" TILO_IMAGE_TRUST_BOOTC="$work/bin/bootc" \
@@ -193,17 +193,17 @@ run_update() {
     TILO_IMAGE_TRUST_UPDATE_LOCK="${TILO_IMAGE_TRUST_UPDATE_LOCK:-$work/update.lock}" \
     TILO_IMAGE_TRUST_SUCCESSOR="$work/bin/successor" \
     TILO_IMAGE_TRUST_CHANNEL="$work/bin/channel" \
-    TILO_IMAGE_TRUST_GATE="$work/bin/image-trust-gate" \
+    TILO_IMAGE_TRUST_CHECK="$work/bin/image-trust-check" \
     TILO_IMAGE_TRUST_LOCAL_NOTICE="$work/local-image-notice" \
-    TILO_TEST_GATE_SOURCE="$repo/os/usr/libexec/tilo-image-trust-staged" \
+    TILO_TEST_CHECK_SOURCE="$repo/os/usr/libexec/tilo-image-trust-staged" \
     TILO_TEST_DIGEST="$digest" TILO_TEST_VERITY="${TILO_TEST_VERITY_OVERRIDE-$verity}" \
     TILO_TEST_BOOTC_CALLS="$work/bootc.calls" TILO_TEST_VERIFY_ARGS="$work/verify.args" \
     bash "$repo/os/usr/libexec/tilo-verified-update" "$@"
 }
 
-# No marker means the official Cosign-only policy remains active and this gate
+# No marker means the official Cosign-only policy remains active and this check
 # performs no owner-chain work.
-run_gate
+run_check
 test ! -e "$work/verify.args"
 run_update --quiet
 grep -Fqx 'upgrade --quiet' "$work/bootc.calls"
@@ -273,17 +273,17 @@ printf 'armed\n' >"$work/trust/required"
 touch "$work/trust/root.pub" \
   "$work/trust/revocations.bin" "$work/trust/endorsement.bin"
 chmod 0600 "$work/trust/"*
-run_gate --require-staged >/dev/null
+run_check --require-staged >/dev/null
 grep -Fq "verify-and-record $work/trust/root.pub $work/trust/revocations.bin $work/trust/endorsement.bin sha256:$digest 42" "$work/verify.args"
 grep -Fq "$work/trust/generation.state $work/trust/time.state" "$work/verify.args"
 
-if TILO_TEST_CHRONY_UNSYNC=1 run_gate --require-staged >/dev/null 2>&1; then
+if TILO_TEST_CHRONY_UNSYNC=1 run_check --require-staged >/dev/null 2>&1; then
   echo 'unsynchronized RTC was accepted as trusted endorsement time' >&2
   exit 1
 fi
 cp "$work/chrony.conf" "$work/chrony.conf.valid"
 printf 'server attacker.invalid iburst\n' >>"$work/chrony.conf"
-if run_gate --require-staged >/dev/null 2>&1; then
+if run_check --require-staged >/dev/null 2>&1; then
   echo 'unauthenticated runtime time source was accepted for image trust' >&2
   exit 1
 fi
@@ -293,7 +293,7 @@ chmod 0644 "$work/chrony.conf"
 # Signed successor metadata must match the ACTUAL staged digest and UKI,
 # remain fresh after download, and renew only before exact owner verification.
 expires=$(( $(date +%s) + 600 ))
-run_gate --successor "sha256:$digest" 42 "$expires" 8 "$work/update.lock" >/dev/null
+run_check --successor "sha256:$digest" 42 "$expires" 8 "$work/update.lock" >/dev/null
 grep -Fq "renew-under-update-lock $work/trust /var/lib/tilo/device-private/keypair.bin sha256:$digest 42" "$work/verify.args.renew"
 grep -Fq "verify-and-record $work/trust/root.pub" "$work/verify.args"
 rm "$work/verify.args.renew"
@@ -304,18 +304,18 @@ for invalid in expired generation digest; do
     generation) selected_generation=43 ;;
     digest) selected_digest="sha256:$(printf 'f%.0s' {1..64})" ;;
   esac
-  if run_gate --successor "$selected_digest" "$selected_generation" "$selected_expiry" 8 "$work/update.lock" >/dev/null 2>&1; then
+  if run_check --successor "$selected_digest" "$selected_generation" "$selected_expiry" 8 "$work/update.lock" >/dev/null 2>&1; then
     echo "invalid successor $invalid was accepted" >&2
     exit 1
   fi
   [ ! -e "$work/verify.args.renew" ]
 done
-if TILO_TEST_REJECT_RENEWAL=1 run_gate --successor "sha256:$digest" 42 "$expires" 8 "$work/update.lock" >/dev/null 2>&1; then
+if TILO_TEST_REJECT_RENEWAL=1 run_check --successor "sha256:$digest" 42 "$expires" 8 "$work/update.lock" >/dev/null 2>&1; then
   echo 'refused owner renewal was activated' >&2
   exit 1
 fi
 rm "$work/verify.args.renew"
-if TILO_TEST_CHRONY_UNSYNC=1 run_gate --trusted-time >/dev/null 2>&1; then
+if TILO_TEST_CHRONY_UNSYNC=1 run_check --trusted-time >/dev/null 2>&1; then
   echo 'successor discovery used unauthenticated time' >&2
   exit 1
 fi
@@ -330,7 +330,7 @@ sed -n '1p' "$work/bootc.calls" | grep -Fqx 'upgrade --download-only --quiet'
 sed -n '2p' "$work/bootc.calls" | grep -Fqx 'upgrade --from-downloaded --apply --quiet'
 rm -f "$work/bootc.calls"
 
-# With owner trust armed a channel switch is gated like an upgrade.
+# With owner trust armed a channel switch is guarded like an upgrade.
 TILO_TEST_CHANNEL_NEXT=registry.tilo.so/tilo/tilo-vm:main-1a2b3c4-ci-x86_64 run_update --quiet >/dev/null
 sed -n '1p' "$work/bootc.calls" | grep -Fqx 'switch --download-only --quiet registry.tilo.so/tilo/tilo-vm:main-1a2b3c4-ci-x86_64'
 sed -n '2p' "$work/bootc.calls" | grep -Fqx 'switch --from-downloaded --quiet'
@@ -348,65 +348,65 @@ fi
 grep -Fqx 'upgrade --download-only --quiet' "$work/bootc.calls"
 [ "$(wc -l <"$work/bootc.calls")" -eq 1 ]
 
-if TILO_TEST_BAD_STATUS=1 run_gate >/dev/null 2>&1; then
-  echo 'malformed bootc status bypassed the configured owner trust gate' >&2
+if TILO_TEST_BAD_STATUS=1 run_check >/dev/null 2>&1; then
+  echo 'malformed bootc status bypassed the configured owner trust check' >&2
   exit 1
 fi
-if TILO_TEST_HUGE_STATUS=1 run_gate >/dev/null 2>&1; then
+if TILO_TEST_HUGE_STATUS=1 run_check >/dev/null 2>&1; then
   echo 'oversized bootc status bypassed the bounded trust parser' >&2
   exit 1
 fi
-if TILO_TEST_HUGE_CMDLINE=1 run_gate --require-staged >/dev/null 2>&1; then
+if TILO_TEST_HUGE_CMDLINE=1 run_check --require-staged >/dev/null 2>&1; then
   echo 'oversized UKI command line bypassed the bounded trust parser' >&2
   exit 1
 fi
-if TILO_TEST_VERITY_OVERRIDE= run_gate --require-staged >/dev/null 2>&1; then
+if TILO_TEST_VERITY_OVERRIDE= run_check --require-staged >/dev/null 2>&1; then
   echo 'missing staged composefs digest bypassed owner trust' >&2
   exit 1
 fi
 
-if TILO_TEST_REJECT=1 run_gate --require-staged >/dev/null 2>&1; then
+if TILO_TEST_REJECT=1 run_check --require-staged >/dev/null 2>&1; then
   echo 'rejected owner image endorsement was accepted' >&2
   exit 1
 fi
 
 if TILO_TEST_UKI_CMDLINE="composefs=sha512:$verity composefs=sha512:$verity tilo.generation=42" \
-    run_gate --require-staged >/dev/null 2>&1; then
+    run_check --require-staged >/dev/null 2>&1; then
   echo 'duplicate composefs arguments bypassed staged-image binding' >&2
   exit 1
 fi
 if TILO_TEST_UKI_CMDLINE="composefs=sha512:$verity tilo.generation=42 tilo.generation=43" \
-    run_gate --require-staged >/dev/null 2>&1; then
+    run_check --require-staged >/dev/null 2>&1; then
   echo 'duplicate generation arguments bypassed staged-image binding' >&2
   exit 1
 fi
 ln "$work/boot/EFI/Linux/bootc/staged.efi" "$work/boot/EFI/Linux/bootc/staged-alias.efi"
-if run_gate --require-staged >/dev/null 2>&1; then
+if run_check --require-staged >/dev/null 2>&1; then
   echo 'multiply-linked staged UKI bypassed image trust' >&2
   exit 1
 fi
 rm "$work/boot/EFI/Linux/bootc/staged-alias.efi"
 chmod 0666 "$work/boot/EFI/Linux/bootc/staged.efi"
-if run_gate --require-staged >/dev/null 2>&1; then
+if run_check --require-staged >/dev/null 2>&1; then
   echo 'group/world-writable staged UKI bypassed image trust' >&2
   exit 1
 fi
 chmod 0644 "$work/boot/EFI/Linux/bootc/staged.efi"
 chmod 0777 "$work/boot"
-if run_gate --require-staged >/dev/null 2>&1; then
+if run_check --require-staged >/dev/null 2>&1; then
   echo 'unsafe boot-store permissions bypassed image trust' >&2
   exit 1
 fi
 chmod 0755 "$work/boot"
 chmod 0775 "$work/boot/EFI/Linux"
-if run_gate --require-staged >/dev/null 2>&1; then
+if run_check --require-staged >/dev/null 2>&1; then
   echo 'writable UKI parent directory bypassed image trust' >&2
   exit 1
 fi
 chmod 0755 "$work/boot/EFI/Linux"
 mv "$work/boot/EFI/Linux/bootc" "$work/escaped-bootc"
 ln -s "$work/escaped-bootc" "$work/boot/EFI/Linux/bootc"
-if run_gate --require-staged >/dev/null 2>&1; then
+if run_check --require-staged >/dev/null 2>&1; then
   echo 'staged UKI escaping through a parent symlink bypassed image trust' >&2
   exit 1
 fi
@@ -429,7 +429,7 @@ printf 'armed\n' >"$work/trust/required"
 chmod 0600 "$work/trust/required"
 
 chmod 0755 "$work/trust"
-if run_gate --require-staged >/dev/null 2>&1; then
+if run_check --require-staged >/dev/null 2>&1; then
   echo 'owner image trust accepted an insecure trust directory' >&2
   exit 1
 fi

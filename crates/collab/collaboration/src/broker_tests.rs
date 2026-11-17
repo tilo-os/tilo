@@ -56,20 +56,20 @@ fn key_schedule(manager: &CollaborationManager) -> KeyScheduleSeen {
 /// How often the shovel found a queued document mutation's route not
 /// publishable so far: read before the step that queues the mutation.
 #[cfg(test)]
-fn publication_gate_waits(state: &BridgeState) -> usize {
-    state.publication_gate_waits.load(Ordering::Acquire)
+fn publication_hold_waits(state: &BridgeState) -> usize {
+    state.publication_hold_waits.load(Ordering::Acquire)
 }
 
 /// Wait until the shovel has seen a queued document mutation find its
-/// route not publishable since `before` ([`publication_gate_waits`]):
-/// the mutation is held at the gate until the route changes. Read after
+/// route not publishable since `before` ([`publication_hold_waits`]):
+/// the mutation is held until the route changes. Read after
 /// the mutation was queued, the count may already hold its one wait,
 /// which then sleeps to its deadline without counting again.
 #[cfg(test)]
-fn wait_held_at_publication_gate(state: &BridgeState, before: usize) {
+fn wait_held_at_publication(state: &BridgeState, before: usize) {
     tilo_test_env::wait_until(
-        "the queued mutation to wait at the publication gate",
-        || state.publication_gate_waits.load(Ordering::Acquire) > before,
+        "the queued mutation to wait at the publication hold",
+        || state.publication_hold_waits.load(Ordering::Acquire) > before,
     );
 }
 
@@ -123,10 +123,10 @@ pub struct FixtureChanges {
 
 #[derive(Default)]
 pub struct Captures {
-    /// Hold each next local document report until its gate opens, as a
-    /// host waiting on the app's directory does; ungated ones are answered
+    /// Hold each next local document report until its hold is released, as a
+    /// host waiting on the app's directory does; free ones are answered
     /// at once. Every report is refused: the fixture admits none.
-    pub admit_gates: std::collections::VecDeque<tokio::sync::oneshot::Receiver<()>>,
+    pub admit_holds: std::collections::VecDeque<tokio::sync::oneshot::Receiver<()>>,
     pub admits_asked: usize,
     /// How long after it is asked for the op stream hands out each op.
     pub op_stream_delay: Option<Duration>,
@@ -140,8 +140,8 @@ pub struct Captures {
     pub invocations: std::collections::VecDeque<runtime_collab::Invocation>,
     pub received_invocations: usize,
     pub invocation_execution: Option<Result<bool, String>>,
-    pub committed_recheck_gate: Option<tokio::sync::oneshot::Receiver<()>>,
-    pub committed_ack_gate: Option<(mpsc::Sender<()>, tokio::sync::oneshot::Receiver<()>)>,
+    pub committed_recheck_hold: Option<tokio::sync::oneshot::Receiver<()>>,
+    pub committed_ack_hold: Option<(mpsc::Sender<()>, tokio::sync::oneshot::Receiver<()>)>,
     pub committed_private_binding: Option<u64>,
     pub committed_ack_failure: Option<String>,
     pub committed_ack_reply: Option<runtime_collab::committed_document::Reply>,
@@ -174,10 +174,10 @@ pub struct Captures {
     /// these changes when they fit, otherwise exactly as the `Open` it
     /// stands for.
     pub committed_changes: Option<FixtureChanges>,
-    /// Hold each next join until its gate opens, as a starved broker
+    /// Hold each next join until its hold is released, as a starved broker
     /// does.
-    pub join_gates: std::collections::VecDeque<tokio::sync::oneshot::Receiver<()>>,
-    /// Refuse every ungated join, as a broker does for a revoked peer.
+    pub join_holds: std::collections::VecDeque<tokio::sync::oneshot::Receiver<()>>,
+    /// Refuse every free join, as a broker does for a revoked peer.
     pub join_refusal: Option<String>,
     /// The workspace's status as the broker reports it, or why the broker
     /// cannot be asked; without it the host refuses to say.
@@ -190,7 +190,7 @@ pub struct Captures {
     pub media_pending_consent: bool,
     pub media_joined: bool,
     pub media_stops: usize,
-    pub media_gates: std::collections::VecDeque<tokio::sync::oneshot::Receiver<()>>,
+    pub media_holds: std::collections::VecDeque<tokio::sync::oneshot::Receiver<()>>,
     /// Lose the connection on the next document commit: the peer may or
     /// may not have kept the change, an unknown outcome.
     pub fail_document: bool,
@@ -198,7 +198,7 @@ pub struct Captures {
     /// take the change answers: a definite error, not a lost call.
     pub refuse_documents: usize,
     pub refused_documents: usize,
-    pub document_gates: std::collections::VecDeque<DocumentSendGate>,
+    pub document_holds: std::collections::VecDeque<DocumentSendHold>,
     /// Refuse every non-terminal invocation update, and lose the
     /// connection on the first terminal one, whose delivery is then
     /// unknown.
@@ -253,7 +253,7 @@ pub struct Captures {
     >,
 }
 
-pub struct DocumentSendGate {
+pub struct DocumentSendHold {
     entered: mpsc::Sender<()>,
     release: tokio::sync::oneshot::Receiver<Result<(), String>>,
 }
@@ -261,7 +261,7 @@ pub struct DocumentSendGate {
 impl Captures {
     /// Hold the next document commit: it says when it is entered, and is
     /// answered with what is sent (dropping the sender answers `Err`).
-    pub fn gate_document(
+    pub fn hold_document(
         &mut self,
     ) -> (
         mpsc::Receiver<()>,
@@ -269,7 +269,7 @@ impl Captures {
     ) {
         let (entered, observed) = mpsc::channel();
         let (release, receiver) = tokio::sync::oneshot::channel();
-        self.document_gates.push_back(DocumentSendGate {
+        self.document_holds.push_back(DocumentSendHold {
             entered,
             release: receiver,
         });
@@ -409,23 +409,23 @@ fn committed_answer(
                 _ => return Err("fixture read continuation refused".into()),
             },
         };
-        let gate = if matches!(reply, Read::Unchanged { .. }) {
-            captures.committed_recheck_gate.take()
+        let hold = if matches!(reply, Read::Unchanged { .. }) {
+            captures.committed_recheck_hold.take()
         } else if matches!(reply, Read::Cancelled) {
-            captures.committed_ack_gate.take().map(|(entered, gate)| {
+            captures.committed_ack_hold.take().map(|(entered, hold)| {
                 entered.send(()).unwrap();
-                gate
+                hold
             })
         } else {
             None
         };
-        Ok((encode(reply)?, gate))
+        Ok((encode(reply)?, hold))
     })();
     Box::pin(async move {
-        let (reply, gate) = result?;
-        if let Some(gate) = gate {
-            gate.await
-                .map_err(|_| "fixture recheck gate dropped".to_owned())?;
+        let (reply, hold) = result?;
+        if let Some(hold) = hold {
+            hold.await
+                .map_err(|_| "fixture recheck hold dropped".to_owned())?;
         }
         Ok(reply)
     })
@@ -467,7 +467,7 @@ impl Feed {
 /// calls from `broker`'s seeds and records them in its captures.
 struct FakeHost {
     broker: FakeBroker,
-    join_gate: Option<HostJoinGate>,
+    join_hold: Option<HostJoinHold>,
     frames: tokio_mpsc::UnboundedSender<HostFrame>,
     channels: RefCell<HashMap<Handle, Rc<FakeChannel>>>,
     subscriptions: RefCell<HashMap<u64, (Handle, tokio::task::AbortHandle)>>,
@@ -493,7 +493,7 @@ where
     clippy::future_not_send,
     reason = "the fake host keeps its channels in `Rc`s on the `LocalSet` it serves on"
 )]
-async fn serve_fake_host<S>(stream: S, broker: FakeBroker, join_gate: Option<HostJoinGate>)
+async fn serve_fake_host<S>(stream: S, broker: FakeBroker, join_hold: Option<HostJoinHold>)
 where
     S: AsyncRead + AsyncWrite + 'static,
 {
@@ -501,7 +501,7 @@ where
     let (frames, mut outgoing) = tokio_mpsc::unbounded_channel();
     let host = Rc::new(FakeHost {
         broker,
-        join_gate,
+        join_hold,
         frames,
         channels: RefCell::default(),
         subscriptions: RefCell::default(),
@@ -896,14 +896,14 @@ impl FakeHost {
                 }))
             }
             Operation::Admit { .. } => {
-                let gate = {
+                let hold = {
                     let mut captures = self.captures();
                     captures.admits_asked += 1;
-                    captures.admit_gates.pop_front()
+                    captures.admit_holds.pop_front()
                 };
                 Box::pin(async move {
-                    if let Some(gate) = gate {
-                        let _ = gate.await;
+                    if let Some(hold) = hold {
+                        let _ = hold.await;
                     }
                     Err("the fixture admits no reports".into())
                 })
@@ -913,10 +913,10 @@ impl FakeHost {
     }
 
     fn join(self: &Rc<Self>, join: wire::Join) -> FakeAnswer {
-        let gate = self
-            .join_gate
+        let hold = self
+            .join_hold
             .as_ref()
-            .map(|gate| gate.attempt(&join.channel));
+            .map(|hold| hold.attempt(&join.channel));
         let mut captures = self.captures();
         captures
             .joined
@@ -924,7 +924,7 @@ impl FakeHost {
         captures
             .joined_resource_types
             .push(join.resource_type.clone().unwrap_or_default());
-        let held = captures.join_gates.pop_front();
+        let held = captures.join_holds.pop_front();
         if held.is_none()
             && let Some(error) = captures.join_refusal.clone()
         {
@@ -933,12 +933,12 @@ impl FakeHost {
         drop(captures);
         let host = Rc::clone(self);
         Box::pin(async move {
-            if let Some(gate) = gate {
-                gate.await?;
+            if let Some(hold) = hold {
+                hold.await?;
             }
             if let Some(held) = held {
                 held.await
-                    .map_err(|_| "fixture join gate dropped".to_owned())?;
+                    .map_err(|_| "fixture join hold dropped".to_owned())?;
             }
             let handle = Handle(host.next_handle.get());
             host.next_handle.set(handle.0 + 1);
@@ -1085,12 +1085,12 @@ impl FakeHost {
             return answered(Err("so.tilo.chat named no kind for a new record".into()));
         }
         captures.signed_ops.push(postcard::to_stdvec(op).unwrap());
-        if let Some(gate) = captures.document_gates.pop_front() {
-            gate.entered.send(()).unwrap();
+        if let Some(hold) = captures.document_holds.pop_front() {
+            hold.entered.send(()).unwrap();
             return Box::pin(async move {
-                gate.release
+                hold.release
                     .await
-                    .map_err(|_| "document gate dropped".to_owned())?
+                    .map_err(|_| "document hold dropped".to_owned())?
                     .map(|()| Reply::Done)
             });
         }
@@ -1178,7 +1178,7 @@ impl FakeHost {
             Err(error) => return answered(Err(error.to_string())),
         };
         assert!(request.dispatch_valid());
-        let gate = {
+        let hold = {
             let mut captures = self.captures();
             if captures.media_active_fixture {
                 use runtime_collab::native_media::Command;
@@ -1200,12 +1200,12 @@ impl FakeHost {
                 }
             }
             captures.media_commands.push(request);
-            captures.media_gates.pop_front()
+            captures.media_holds.pop_front()
         };
         Box::pin(async move {
-            if let Some(gate) = gate {
-                gate.await
-                    .map_err(|_| "native media gate dropped".to_owned())?;
+            if let Some(hold) = hold {
+                hold.await
+                    .map_err(|_| "native media hold dropped".to_owned())?;
             }
             Ok(Reply::Answer(
                 runtime_collab::native_media::Snapshot::unavailable()
@@ -1722,7 +1722,7 @@ tilo_test_env::scenario! {
         let (stop_tx, stop_rx) = mpsc::channel();
         let calls = Arc::new(AtomicUsize::new(0));
         let (connector, release) =
-            host_join_gate_connector(false, calls.clone(), attempt_tx, stop_tx, || {});
+            host_join_hold_connector(false, calls.clone(), attempt_tx, stop_tx, || {});
         let cluster_id = Uuid::new_v4();
         let result = CollaborationManager::for_route_host_blocking(
             connector,
@@ -1832,7 +1832,7 @@ fn a_primary_join_waits_for_a_late_broker_answer() {
     let (entered_tx, entered_rx) = tokio::sync::oneshot::channel::<()>();
     let (minute_tx, minute_rx) = mpsc::sync_channel(1);
     let (connector, release) =
-        host_join_gate_connector(true, calls.clone(), attempt_tx, stop_tx, move || {
+        host_join_hold_connector(true, calls.clone(), attempt_tx, stop_tx, move || {
             // On the worker's paused clock: a minute once the broker
             // holds the join.
             tokio::task::spawn_local(async move {
@@ -1899,7 +1899,7 @@ fn a_failed_primary_join_reports_its_reason_at_once() {
     let (entered_tx, entered_rx) = tokio::sync::oneshot::channel::<()>();
     let (minute_tx, minute_rx) = mpsc::sync_channel(1);
     let (connector, release) =
-        host_join_gate_connector(true, calls.clone(), attempt_tx, stop_tx, move || {
+        host_join_hold_connector(true, calls.clone(), attempt_tx, stop_tx, move || {
             tokio::task::spawn_local(async move {
                 if entered_rx.await.is_ok() {
                     tokio::time::sleep(Duration::from_secs(60)).await;
@@ -1933,7 +1933,7 @@ fn a_failed_primary_join_reports_its_reason_at_once() {
         Err(runtime_portal::NotAvailable::ConnectionFailed(error)) => {
             assert_eq!(error.kind(), std::io::ErrorKind::ConnectionRefused);
             assert!(
-                error.to_string().contains("fixture gate dropped"),
+                error.to_string().contains("fixture hold dropped"),
                 "the caller hears the broker's reason: {error}"
             );
         }
@@ -1952,19 +1952,19 @@ fn a_failed_primary_join_reports_its_reason_at_once() {
 
 // The successful fake host, changing only its join answer: the delayed
 // case joins as it does once released.
-struct HostJoinGate {
+struct HostJoinHold {
     release: RefCell<Option<tokio::sync::oneshot::Receiver<()>>>,
     attempted: mpsc::Sender<String>,
     stopped: mpsc::Sender<()>,
 }
 
-impl Drop for HostJoinGate {
+impl Drop for HostJoinHold {
     fn drop(&mut self) {
         let _ = self.stopped.send(());
     }
 }
 
-impl HostJoinGate {
+impl HostJoinHold {
     /// Hold the join of `route` until released; refuse it at once when
     /// nothing will release it.
     fn attempt(&self, route: &str) -> Pin<Box<dyn Future<Output = Result<(), String>>>> {
@@ -1974,7 +1974,7 @@ impl HostJoinGate {
             release
                 .ok_or("fixture primary join refused")?
                 .await
-                .map_err(|_| "fixture gate dropped".to_owned())
+                .map_err(|_| "fixture hold dropped".to_owned())
         })
     }
 }
@@ -1996,7 +1996,7 @@ impl Drop for HostJoinRelease {
 }
 
 /// `on_worker` runs on the manager's worker as it connects.
-fn host_join_gate_connector(
+fn host_join_hold_connector(
     delayed: bool,
     calls: Arc<AtomicUsize>,
     attempted: mpsc::Sender<String>,
@@ -2016,20 +2016,20 @@ fn host_join_gate_connector(
         // own thread, so it ends only when the manager closes the
         // connection, never because the manager's worker ended.
         thread::Builder::new()
-            .name("ui-collab-test-join-gate".into())
+            .name("ui-collab-test-join-hold".into())
             .spawn(move || {
                 let runtime = tokio::runtime::Builder::new_current_thread()
                     .enable_all()
                     .build()
                     .unwrap();
-                let gate = HostJoinGate {
+                let hold = HostJoinHold {
                     release: RefCell::new(delayed.then_some(wait)),
                     attempted,
                     stopped,
                 };
                 LocalSet::new().block_on(
                     &runtime,
-                    serve_fake_host(server, FakeBroker::default(), Some(gate)),
+                    serve_fake_host(server, FakeBroker::default(), Some(hold)),
                 );
             })
             .unwrap();
@@ -2320,11 +2320,11 @@ fn session_owner_commit_sdk_terminal_failure_disconnects_before_next_request() {
 #[cfg(unix)]
 fn document_publication_receipt_waits_for_primary_and_routed_rpc_completion() {
     let captures = Arc::new(std::sync::Mutex::new(Captures::default()));
-    let mut gates = Vec::new();
+    let mut holds = Vec::new();
     for _ in 0..2 {
-        let (observed, release) = captures.lock().unwrap().gate_document();
+        let (observed, release) = captures.lock().unwrap().hold_document();
         // Dropping the sender on unwind releases the fake RPC with Err.
-        gates.push((observed, release));
+        holds.push((observed, release));
     }
     let broker = FakeBroker {
         captures,
@@ -2361,14 +2361,14 @@ fn document_publication_receipt_waits_for_primary_and_routed_rpc_completion() {
             .is_ok()
     );
     let second = manager.begin_document_publication_barrier().unwrap();
-    let mut gates = gates.into_iter();
-    let (entered, release) = gates.next().unwrap();
-    tilo_test_env::recv("the gated document RPC", &entered);
+    let mut holds = holds.into_iter();
+    let (entered, release) = holds.next().unwrap();
+    tilo_test_env::recv("the held document RPC", &entered);
     assert_eq!(first.try_complete(), Ok(None));
     assert_eq!(second.try_complete(), Ok(None));
     release.send(Ok(())).unwrap();
-    let (entered, release) = gates.next().unwrap();
-    tilo_test_env::recv("the gated document RPC", &entered);
+    let (entered, release) = holds.next().unwrap();
+    tilo_test_env::recv("the held document RPC", &entered);
     // The second RPC can only begin after the first marker has resolved.
     assert_eq!(first.wait(Some(Instant::now())), Ok(()));
     assert_eq!(second.try_complete(), Ok(None));
@@ -3434,7 +3434,7 @@ fn document_publication_certified_signing_refusal_never_reports_success() {
     let ready = broker_state(&manager)
         .document_reads
         .close_for_test(&route.channel_id());
-    let before = publication_gate_waits(&broker_state(&manager));
+    let before = publication_hold_waits(&broker_state(&manager));
     assert!(
         manager
             .try_send_to_route(
@@ -3444,7 +3444,7 @@ fn document_publication_certified_signing_refusal_never_reports_success() {
             .is_ok()
     );
     let pending = manager.begin_document_publication_barrier().unwrap();
-    wait_held_at_publication_gate(&broker_state(&manager), before);
+    wait_held_at_publication(&broker_state(&manager), before);
     assert_eq!(
         pending.try_complete(),
         Ok(None),
@@ -3475,9 +3475,9 @@ fn document_publication_certified_signing_refusal_never_reports_success() {
 
 #[test]
 #[cfg(unix)]
-fn committed_queued_publication_retains_payload_and_credits_until_gate_reopens() {
+fn committed_queued_publication_retains_payload_and_credits_until_released() {
     let captures = Arc::new(std::sync::Mutex::new(Captures::default()));
-    let (observed, release) = captures.lock().unwrap().gate_document();
+    let (observed, release) = captures.lock().unwrap().hold_document();
     let broker = FakeBroker {
         captures,
         ..FakeBroker::default()
@@ -3485,7 +3485,7 @@ fn committed_queued_publication_retains_payload_and_credits_until_gate_reopens()
     let (fd, captures, thread) = stand_up_fake_broker(broker);
     let mut manager = CollaborationManager::from_sdk_fd_for_test(fd, "worker", Uuid::new_v4());
     assert!(manager.send(CollabRequest::document_incremental(b"first".to_vec())));
-    tilo_test_env::recv("the gated document RPC", &observed);
+    tilo_test_env::recv("the held document RPC", &observed);
     assert!(manager.send(CollabRequest::document_incremental(
         b"retained original".to_vec()
     )));
@@ -3493,12 +3493,12 @@ fn committed_queued_publication_retains_payload_and_credits_until_gate_reopens()
     let key = manager.primary_route().unwrap().route.channel_id();
     let ready = state.document_reads.close_for_test(&key);
     let receipt = manager.begin_document_publication_barrier().unwrap();
-    let before = publication_gate_waits(&state);
+    let before = publication_hold_waits(&state);
     release.send(Ok(())).unwrap();
     tilo_test_env::wait_until("`captures.lock().unwrap().signed_ops.len() == 1`", || {
         captures.lock().unwrap().signed_ops.len() == 1
     });
-    wait_held_at_publication_gate(&state, before);
+    wait_held_at_publication(&state, before);
     assert_eq!(
         receipt.try_complete(),
         Ok(None),
@@ -3533,7 +3533,7 @@ fn committed_queued_publication_invalidation_is_terminal() {
 #[cfg(unix)]
 fn queued_publication_terminal_case(invalidate: bool) {
     let captures = Arc::new(std::sync::Mutex::new(Captures::default()));
-    let (observed, release) = captures.lock().unwrap().gate_document();
+    let (observed, release) = captures.lock().unwrap().hold_document();
     let broker = FakeBroker {
         captures,
         ..FakeBroker::default()
@@ -3541,7 +3541,7 @@ fn queued_publication_terminal_case(invalidate: bool) {
     let (fd, captures, thread) = stand_up_fake_broker(broker);
     let mut manager = CollaborationManager::from_sdk_fd_for_test(fd, "worker", Uuid::new_v4());
     assert!(manager.send(CollabRequest::document_incremental(b"first".to_vec())));
-    tilo_test_env::recv("the gated document RPC", &observed);
+    tilo_test_env::recv("the held document RPC", &observed);
     assert!(manager.send(CollabRequest::document_incremental(b"must replay".to_vec())));
     let state = broker_state(&manager);
     let ready = state
@@ -3654,7 +3654,7 @@ fn a_record_route_not_open_in_time_holds_back_only_that_record() {
 #[cfg(unix)]
 fn a_refused_document_rpc_fails_the_barrier_without_closing() {
     let captures = Arc::new(std::sync::Mutex::new(Captures::default()));
-    let (observed, release) = captures.lock().unwrap().gate_document();
+    let (observed, release) = captures.lock().unwrap().hold_document();
     let broker = FakeBroker {
         captures,
         ..FakeBroker::default()
@@ -3662,7 +3662,7 @@ fn a_refused_document_rpc_fails_the_barrier_without_closing() {
     let (fd, _, thread) = stand_up_fake_broker(broker);
     let mut manager = CollaborationManager::from_sdk_fd_for_test(fd, "worker", Uuid::new_v4());
     assert!(manager.send(CollabRequest::document_incremental(b"failed".to_vec())));
-    tilo_test_env::recv("the gated document RPC", &observed);
+    tilo_test_env::recv("the held document RPC", &observed);
     let receipt = manager.begin_document_publication_barrier().unwrap();
     release.send(Err("document RPC refused".into())).unwrap();
     let error = receipt
@@ -4045,7 +4045,7 @@ fn report_capture(invocation: u128) -> crate::local_document_action::CapturedAct
 #[test]
 fn a_waiting_document_holds_back_no_report_but_the_outcome_after_it() {
     let captures = Arc::new(std::sync::Mutex::new(Captures::default()));
-    let (held, release) = captures.lock().unwrap().gate_document();
+    let (held, release) = captures.lock().unwrap().hold_document();
     let (fd, captures, worker) = stand_up_fake_broker(FakeBroker {
         captures,
         ..FakeBroker::default()
@@ -4115,7 +4115,7 @@ fn a_waiting_document_holds_back_no_report_but_the_outcome_after_it() {
 fn a_waiting_local_document_report_holds_back_nothing_behind_it() {
     let captures = Arc::new(std::sync::Mutex::new(Captures::default()));
     let (release, held) = tokio::sync::oneshot::channel();
-    captures.lock().unwrap().admit_gates.push_back(held);
+    captures.lock().unwrap().admit_holds.push_back(held);
     let (fd, captures, worker) = stand_up_fake_broker(FakeBroker {
         captures,
         ..FakeBroker::default()

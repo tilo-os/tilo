@@ -264,7 +264,7 @@ struct Socket {
 
 /// Who a socket serves.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum Gate {
+enum Audience {
     /// The developer's own socket: whoever the developer started it for.
     Dev,
     /// The owner's socket: this account's own programs, and only theirs.
@@ -285,14 +285,14 @@ pub(crate) struct Scope {
 /// was admitted for.
 #[derive(Clone)]
 struct Context {
-    gate: Gate,
+    who: Audience,
     scope: Option<Arc<Scope>>,
 }
 
 impl Context {
-    /// A connection of the socket `gate` serves: no app narrower than it.
-    const fn at(gate: Gate) -> Self {
-        Self { gate, scope: None }
+    /// A connection of the socket `who` serves: no app narrower than it.
+    const fn at(who: Audience) -> Self {
+        Self { who, scope: None }
     }
 }
 
@@ -505,18 +505,18 @@ impl Op {
     }
 }
 
-/// Whether the socket at `gate` answers `op` : the one place the protocol's ops are divided between
+/// Whether the socket at `who` answers `op` : the one place the protocol's ops are divided between
 /// the APIs.
-fn served(gate: Gate, op: Op) -> bool {
-    match gate {
-        Gate::Dev => true,
-        Gate::Owner | Gate::App => op.owner_serves(),
+fn served(who: Audience, op: Op) -> bool {
+    match who {
+        Audience::Dev => true,
+        Audience::Owner | Audience::App => op.owner_serves(),
     }
 }
 
 /// The answer an API gives what it does not serve.
-fn not_this_api(gate: Gate, op: Op) -> Json {
-    let _ = gate;
+fn not_this_api(who: Audience, op: Op) -> Json {
+    let _ = who;
     refusal(
         "not_permitted",
         &format!(
@@ -531,12 +531,12 @@ fn not_this_api(gate: Gate, op: Op) -> Json {
     )
 }
 
-/// The answer for an `op` the protocol does not answer at all, naming the ones the socket `gate`
+/// The answer for an `op` the protocol does not answer at all, naming the ones the socket `who`
 /// serves.
 fn unsupported(ctx: &Context, request: &Json) -> Json {
     let answers = Op::ALL
         .iter()
-        .filter(|op| served(ctx.gate, **op))
+        .filter(|op| served(ctx.who, **op))
         .map(|op| format!("`{}`", op.name()))
         .collect::<Vec<_>>()
         .join(", ");
@@ -579,14 +579,14 @@ impl Control {
             changes: Arc::clone(&changes),
         });
         let mut sockets = Vec::new();
-        for (path, gate) in [
-            (options.test_control.as_deref(), Gate::Dev),
-            (options.admin_control.as_deref(), Gate::Owner),
+        for (path, who) in [
+            (options.test_control.as_deref(), Audience::Dev),
+            (options.admin_control.as_deref(), Audience::Owner),
         ] {
             let Some(path) = path else {
                 continue;
             };
-            match Socket::open(path, gate, Arc::clone(&shared)) {
+            match Socket::open(path, who, Arc::clone(&shared)) {
                 Ok(socket) => {
                     tracing::info!(path = %path.display(), "control: serving a socket");
                     sockets.push(socket);
@@ -721,18 +721,18 @@ impl Control {
 }
 
 impl Socket {
-    /// Listen at `path` for this account alone; `gate` is who is served there. Connections are
+    /// Listen at `path` for this account alone; `who` is served there. Connections are
     /// accepted on a thread of the socket's own as they arrive, each read on a thread of its own:
     /// what a program asks of the actions is answered there, never after a pass of the loop, and
     /// what it asks of the loop wakes the loop itself.
-    fn open(path: &Path, gate: Gate, shared: Arc<Shared>) -> io::Result<Self> {
+    fn open(path: &Path, who: Audience, shared: Arc<Shared>) -> io::Result<Self> {
         let listener = mcp_server::bind_private(path)?;
         let stopped = Arc::new(AtomicBool::new(false));
         let stop = Arc::clone(&stopped);
         let at = path.to_path_buf();
         std::thread::Builder::new()
             .name("tilo-control-accept".into())
-            .spawn(move || accept(&listener, &at, gate, &shared, &stop))?;
+            .spawn(move || accept(&listener, &at, who, &shared, &stop))?;
         Ok(Self {
             path: path.to_path_buf(),
             stopped,
@@ -744,7 +744,7 @@ impl Socket {
 fn accept(
     listener: &UnixListener,
     path: &Path,
-    gate: Gate,
+    who: Audience,
     shared: &Arc<Shared>,
     stopped: &AtomicBool,
 ) {
@@ -759,7 +759,7 @@ fn accept(
                 continue;
             }
         };
-        if gate == Gate::Owner
+        if who == Audience::Owner
             && let Err(refusal) =
                 mcp_server::identify(&stream).and_then(|(_, peer)| mcp_server::peer_decision(&peer))
         {
@@ -768,7 +768,7 @@ fn accept(
             continue;
         }
         let shared = Arc::clone(shared);
-        let ctx = Context::at(gate);
+        let ctx = Context::at(who);
         let spawned = std::thread::Builder::new()
             .name("tilo-control".into())
             .spawn(move || serve_connection(stream, &ctx, &shared, None));
@@ -839,7 +839,7 @@ pub(crate) fn serve_app(
     shared: &Shared,
 ) {
     let ctx = Context {
-        gate: Gate::App,
+        who: Audience::App,
         scope: Some(Arc::new(Scope { app, workspace })),
     };
     serve_connection(stream, &ctx, shared, Some(first));
@@ -850,7 +850,7 @@ pub(crate) fn serve_app(
 type Writer = Arc<Mutex<UnixStream>>;
 
 /// Read `stream` 's requests one line at a time, answer each, and write its answer, until the
-/// client closes it or the session ends. `gate` is the socket it came in on: an op that socket does
+/// client closes it or the session ends. `who` is the socket it came in on: an op that socket does
 /// not serve is refused here, before it reaches anything ([`served`]).
 fn serve_connection(stream: UnixStream, ctx: &Context, shared: &Shared, first: Option<String>) {
     if let Err(error) = stream.set_nonblocking(false) {
@@ -882,7 +882,7 @@ fn serve_connection(stream: UnixStream, ctx: &Context, shared: &Shared, first: O
             Err(error) => refusal("parse_error", &error.to_string()),
             Ok(request) => match Op::of(&request) {
                 None => unsupported(ctx, &request),
-                Some(op) if !served(ctx.gate, op) => not_this_api(ctx.gate, op),
+                Some(op) if !served(ctx.who, op) => not_this_api(ctx.who, op),
                 Some(op) => match asked_here(op, &request, &writer, &mut watching, ctx, shared) {
                     Some(answer) => answer,
                     // The loop answers every request it takes; a session that ends drops it
@@ -1170,7 +1170,7 @@ fn asked_of_shell(
             .read(|tree| state::workspace_hosts(tree, session, ctx)),
         Op::Windows => {
             // Nothing shows a window while the screen is locked.
-            let rows = if ctx.gate != Gate::Dev && session.locked {
+            let rows = if ctx.who != Audience::Dev && session.locked {
                 Vec::new()
             } else {
                 // Where each window is drawn, read off the frame's own layout: a row says what a
@@ -1888,7 +1888,7 @@ fn decode_cursor(token: &str) -> Option<(String, Vec<u8>)> {
 /// person at the device could run, and a locked desktop runs nothing. `confirmed` stands for the
 /// person's own answer to an action that asks first, as pressing Allow in its prompt does.
 fn actions_invoke(request: &Json, actions: &Actions, ctx: &Context) -> Json {
-    if ctx.gate != Gate::Dev && actions.locked() {
+    if ctx.who != Audience::Dev && actions.locked() {
         return refusal(
             "locked",
             "the session is locked; unlock it at the device, then invoke again",
@@ -2646,9 +2646,9 @@ mod tests {
             ];
             for op in Op::ALL {
                 let served_there = owner.contains(&op);
-                assert!(served(Gate::Dev, op), "a development socket answers {op:?}");
+                assert!(served(Audience::Dev, op), "a development socket answers {op:?}");
                 assert_eq!(
-                    served(Gate::Owner, op),
+                    served(Audience::Owner, op),
                     served_there,
                     "the owner's shared and {op:?}"
                 );
@@ -2755,12 +2755,12 @@ mod tests {
             };
             // Unlocked, the owner's shared sees the session as the development socket does.
             assert_eq!(
-                owner_shown(Gate::Owner, dump(false)),
+                owner_shown(Audience::Owner, dump(false)),
                 dump(false),
                 "an unlocked session is shown whole"
             );
             // Locked, it learns that the screen is locked, and nothing of what the lock covers.
-            let locked = owner_shown(Gate::Owner, dump(true));
+            let locked = owner_shown(Audience::Owner, dump(true));
             assert_eq!(locked["state"]["chrome"]["session_locked"], true);
             assert_eq!(locked["state"]["workspace_tree"], Json::Null);
             assert_eq!(locked["state"]["held_workspaces"], json!([]));
@@ -2774,10 +2774,10 @@ mod tests {
                 json!({"quick_settings": false, "overview": false})
             );
             // A development socket sees the session it drives, locked or not.
-            assert_eq!(owner_shown(Gate::Dev, dump(true)), dump(true));
+            assert_eq!(owner_shown(Audience::Dev, dump(true)), dump(true));
             // An app reads its own workspace of the session, and nothing of what the session shares.
             let app = Context {
-                gate: Gate::Dev,
+                who: Audience::Dev,
                 scope: Some(Arc::new(Scope {
                     app: "so.tilo.notes".to_owned(),
                     workspace: "workspace-1".to_owned(),

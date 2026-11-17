@@ -78,7 +78,7 @@ RUN --mount=type=bind,source=tools/ci/shstk-mark.py,target=/tmp/shstk-mark.py,ro
 
 # CI-only workflow tooling. nodejs: actions/checkout. ripgrep, time, yt-dlp:
 # workflow and measurement tools (tools/ci/measure.sh needs GNU time). Qt
-# examples and LibreOffice are installed by the path-gated legacy-app E2E.
+# examples and LibreOffice are installed by the path-guarded legacy-app E2E.
 RUN dnf install -y \
       nodejs \
       ripgrep time yt-dlp \

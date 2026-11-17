@@ -40,7 +40,7 @@ use tilo_lock::MutexRecover as _;
 pub struct FsTransportIdentity {
     credentials: PeerCredentials,
     revocations: Arc<RwLock<RevocationList>>,
-    gate: crate::transport_gate::TransportGate,
+    check: crate::transport_switch::TransportSwitch,
     certified_peers: Arc<RwLock<std::collections::HashMap<IdentityKey, AuthenticatedFsPeer>>>,
 }
 
@@ -50,14 +50,17 @@ impl FsTransportIdentity {
         Self {
             credentials,
             revocations,
-            gate: crate::transport_gate::TransportGate::default(),
+            check: crate::transport_switch::TransportSwitch::default(),
             certified_peers: Arc::new(RwLock::new(std::collections::HashMap::new())),
         }
     }
 
     #[must_use]
-    pub fn with_transport_gate(mut self, gate: crate::transport_gate::TransportGate) -> Self {
-        self.gate = gate;
+    pub fn with_transport_switch(
+        mut self,
+        check: crate::transport_switch::TransportSwitch,
+    ) -> Self {
+        self.check = check;
         self
     }
 

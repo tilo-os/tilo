@@ -412,7 +412,7 @@ impl Widget for Container {
 
     crate::provides!(
         dyn crate::widget::controls::ActionControls,
-        dyn crate::permissions::capability::PermissionGated,
+        dyn crate::permissions::capability::PermissionGuarded,
         dyn crate::presence::capability::PublishesPresence
     );
 
@@ -588,7 +588,9 @@ impl Widget for Container {
         let shifts = self.ghosts.shift(None, usize::from(self.child.is_some()));
         self.ghosts.draw(scene, transform, shifts.as_deref());
 
-        crate::widget::draw_gate_and_peer_focus(self, scene, transform, theme, presence);
+        crate::widget::draw_permission_scrim_and_peer_focus(
+            self, scene, transform, theme, presence,
+        );
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
@@ -756,7 +758,7 @@ impl crate::presence::capability::PublishesPresence for Container {
     }
 }
 
-impl crate::permissions::capability::PermissionGated for Container {
+impl crate::permissions::capability::PermissionGuarded for Container {
     fn permission_scope(&self) -> Option<PermissionScope> {
         self.permission_scope.clone()
     }

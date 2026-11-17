@@ -797,7 +797,7 @@ tilo_test_env::scenario! {
                     &descriptor,
                     &app().package_id,
                 );
-                let (gate, revoker) = revocation_gate(&fixture);
+                let (hold, revoker) = revocation_hold(&fixture);
                 fixture
                     .state
                     .journal
@@ -807,7 +807,7 @@ tilo_test_env::scenario! {
                     .unwrap()
                     .as_mut()
                     .unwrap()
-                    .after_admission = Some(gate);
+                    .after_admission = Some(hold);
                 // The live broker services the queued eager invoke on its admission
                 // turn. Run that production dispatch off the invoking thread here;
                 // this transport-free fixture has no accept loop to drain the queue.
@@ -841,13 +841,13 @@ tilo_test_env::scenario! {
 
     phase production_retained_invoke_revoked_during_discovery_never_starts_launcher;
     {
-        let launcher = Arc::new(DiscoveryGate {
+        let launcher = Arc::new(DiscoveryHold {
             launcher: Launcher {
                 calls: AtomicUsize::new(0),
                 fail: false,
             },
             invoking_thread: std::thread::current().id(),
-            gate: std::sync::Mutex::new(None),
+            hold: std::sync::Mutex::new(None),
         });
         let fixture = Fixture::new_certified(HostServices {
             launcher: Some(launcher.clone()),
@@ -880,13 +880,13 @@ tilo_test_env::scenario! {
         fixture.state.launchable.retain(&surface);
         let mut request = parent();
         request.target.provider = crate::collab_app_broker::launchable::launchable_provider(&surface);
-        let (gate, revoker) = revocation_gate(&fixture);
-        *launcher.gate.lock().unwrap() = Some(gate);
+        let (hold, revoker) = revocation_hold(&fixture);
+        *launcher.hold.lock().unwrap() = Some(hold);
         let result = fixture.invoke(&request);
         revoker.join().unwrap();
         assert!(result.is_err());
         assert_eq!(launcher.launcher.calls.load(Ordering::SeqCst), 0);
-        assert!(launcher.gate.lock().unwrap().is_none());
+        assert!(launcher.hold.lock().unwrap().is_none());
         assert!(
             fixture
                 .state
@@ -899,7 +899,7 @@ tilo_test_env::scenario! {
 /// Revoke from another thread while a production invoke worker is stopped at
 /// a real boundary. The shared hang bound makes a missing boundary fail
 /// rather than hang.
-fn revocation_gate(fixture: &Fixture) -> (Box<dyn FnOnce() + Send>, std::thread::JoinHandle<()>) {
+fn revocation_hold(fixture: &Fixture) -> (Box<dyn FnOnce() + Send>, std::thread::JoinHandle<()>) {
     let (entered, waiting) = std::sync::mpsc::sync_channel(0);
     let (release, resume) = std::sync::mpsc::sync_channel(0);
     let authority = fixture.authority.clone();
@@ -908,36 +908,36 @@ fn revocation_gate(fixture: &Fixture) -> (Box<dyn FnOnce() + Send>, std::thread:
     let revoker = std::thread::spawn(move || {
         waiting
             .recv_timeout(timeout)
-            .expect("invoke reached the gate");
+            .expect("invoke reached the hold");
         authority.revoked.store(true, Ordering::SeqCst);
         release.send(()).expect("invoke is still blocked");
     });
-    let gate = Box::new(move || {
+    let hold = Box::new(move || {
         assert_ne!(std::thread::current().id(), invoking_thread);
         entered.send(()).expect("revoker is waiting");
         resume.recv_timeout(timeout).expect("certificate revoked");
     });
-    (gate, revoker)
+    (hold, revoker)
 }
 
 /// Stop installed-application discovery on the actual launch worker, before
 /// the retained action can start a signed launch child.
-struct DiscoveryGate {
+struct DiscoveryHold {
     launcher: Launcher,
     invoking_thread: std::thread::ThreadId,
-    gate: std::sync::Mutex<Option<Box<dyn FnOnce() + Send>>>,
+    hold: std::sync::Mutex<Option<Box<dyn FnOnce() + Send>>>,
 }
 
-impl LauncherServices for DiscoveryGate {
+impl LauncherServices for DiscoveryHold {
     fn attest_process(&self, pid: u32, workspace: &str, app: &str) -> bool {
         self.launcher.attest_process(pid, workspace, app)
     }
 
     fn applications(&self) -> Vec<LaunchableApplication> {
         if std::thread::current().id() != self.invoking_thread {
-            let gate = self.gate.lock().unwrap().take();
-            if let Some(gate) = gate {
-                gate();
+            let hold = self.hold.lock().unwrap().take();
+            if let Some(hold) = hold {
+                hold();
             }
         }
         self.launcher.applications()

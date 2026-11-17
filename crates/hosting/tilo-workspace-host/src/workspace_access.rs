@@ -480,7 +480,7 @@ impl<'a> WorkspaceFacts<'a> {
 }
 
 /// Whether the workspace lists `peer` for `op`: steps 4 to 6 of the rule, with
-/// no certificate, agent, cross-user, seat or same-owner question. Only for
+/// no certificate, agent, cross-user, local-person or same-owner question. Only for
 /// a recipient check that has no relay trust at hand; everything else asks
 /// [`decide`].
 pub(crate) fn listed(

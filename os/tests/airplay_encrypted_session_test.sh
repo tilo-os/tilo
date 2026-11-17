@@ -11,7 +11,7 @@ containerfile="$repo/os/Containerfile"
 test -x "$script"
 test -f "$containerfile"
 
-# Assembly must keep the script and must not treat its runtime as an install gate.
+# Assembly must keep the script and must not treat its runtime as an install check.
 grep -Fq 'COPY os/tests/airplay-encrypted-session.sh /usr/libexec/tilo/airplay-encrypted-session-test.sh' \
   "$containerfile"
 grep -Fq 'Optional AirPlay media acceptance runs against the assembled image separately.' \

@@ -1,4 +1,4 @@
-//! Closed commands on the existing authenticated root receive gate. No stdin,
+//! Closed commands on the existing authenticated root receive check. No stdin,
 //! public socket, UI-only action or caller-provided grant enters this controller.
 use super::{AuthenticatedCopyReceive, receiver::InstalledCopyReceiveSession};
 use serde::{Deserialize, Serialize};
@@ -82,7 +82,7 @@ fn prepare(session: &mut InstalledCopyReceiveSession) -> io::Result<()> {
     }
     Ok(())
 }
-/// The parent's real gate mints the grant and links its EOF/owner fence to
+/// The parent's real check mints the grant and links its EOF/owner fence to
 /// `cancel`. Unresolved promotion custody keeps this exact child alive.
 pub(super) fn run(grant: AuthenticatedCopyReceive, cancel: Arc<AtomicBool>) -> io::Result<()> {
     let mut session = InstalledCopyReceiveSession::review(grant, cancel)?;

@@ -6,7 +6,7 @@ use crate::store::document_sync::Reach;
 
 use super::{
     Arc, Envelope, FanoutStamp, HashMap, Invariant, ReplayCatchup, StateDelivery, StateSession,
-    StateSource, Subscriber, WorkspaceOperation, gated_checkpoint_channel, live_audience, mpsc,
+    StateSource, Subscriber, WorkspaceOperation, guarded_checkpoint_channel, live_audience, mpsc,
     workspace_access,
 };
 
@@ -57,7 +57,7 @@ impl<'a> LiveFrame<'a> {
         // as checkpoints alone, which no delta before them covers.
         let payloads = &**runtime.store.payloads();
         let checkpoint_channel = (!host)
-            .then(|| gated_checkpoint_channel(payloads, envelope, source))
+            .then(|| guarded_checkpoint_channel(payloads, envelope, source))
             .flatten();
         let audience = live_audience(runtime, envelope);
         let asks_admission = match &**envelope {

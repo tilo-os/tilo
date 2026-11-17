@@ -416,7 +416,7 @@ What a host relies on. A tilolang app that misses a budget is a bug in the runti
   seeding allocated). `--budgets` holds the records to the budgets on the
   machine it runs on (open p95 300 ms; keystroke, press and peer p95 2 ms; scroll p50 1 ms; no
   idle wakeups, at 10k items; memory 60 MiB at 1k) and fails when one is over: a recorded local
-  check, since times depend on the machine. `tests/budgets.rs` gates on the work each scenario
+  check, since times depend on the machine. `tests/budgets.rs` waits for the work each scenario
   records instead (see "Counted, not timed" below).
 - **Where it stands** (release, aarch64, 10k items, 20 samples, p95; the runtime's share, the
   bench drives no window). notes: open 48 ms, keystroke 0.48 ms, peer edit 0.29 ms, scroll p50

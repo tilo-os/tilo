@@ -4,8 +4,8 @@
 Each adapter reads what a benchmark already prints and emits records through
 `record.from_samples`. A benchmark that writes records itself needs no adapter.
 
-- `fs-gate LOG...`: the tilo-fs latency benchmarks
-  (`crates/system/fs/tests/performance_timing.rs`, `TILO_FS_PERF_GATE=1`) print
+- `fs-check LOG...`: the tilo-fs latency benchmarks
+  (`crates/system/fs/tests/performance_timing.rs`, `TILO_FS_PERF_CHECK=1`) print
   `PERF <name>: <x> ms (SLO <= <y> ms)` per scenario, and its heap footprint
   test (`crates/system/fs/tests/document_media_footprint.rs`) prints the same
   shape in `MiB`. Each log is one run; repeated runs become the samples of
@@ -86,7 +86,7 @@ Each adapter reads what a benchmark already prints and emits records through
   and an unthrottled page.
 Usage:
 
-    python3 tools/perf/adapters.py fs-gate --env-json env.json run-*.log >> results.jsonl
+    python3 tools/perf/adapters.py fs-check --env-json env.json run-*.log >> results.jsonl
     python3 tools/perf/adapters.py tapp-sizes --env-json env.json entries.json >> results.jsonl
     python3 tools/perf/adapters.py runtime-sizes --env-json env.json runtime.json >> results.jsonl
     python3 tools/perf/adapters.py framework-open --env-json env.json framework-open.log >> results.jsonl
@@ -119,32 +119,32 @@ import tapp_size_ratchet  # noqa: E402
 
 # Searched, not anchored: with --nocapture, libtest's "test NAME ... " prefix can
 # share the line with the test's first stderr line when both streams are merged.
-FS_GATE_LINE = re.compile(r"(?:^|\s)PERF (?P<name>[a-z0-9][a-z0-9-]*): (?P<value>[0-9.]+) (?P<unit>ms|MiB) "
+FS_CHECK_LINE = re.compile(r"(?:^|\s)PERF (?P<name>[a-z0-9][a-z0-9-]*): (?P<value>[0-9.]+) (?P<unit>ms|MiB) "
                           r"\(SLO <= [0-9.]+ (?P=unit)\)$")
 
 
-def fs_gate(logs: list[str], env: dict[str, Any]) -> list[record.Record]:
-    """Records for the scenarios of one or more tilo-fs gate runs."""
+def fs_check(logs: list[str], env: dict[str, Any]) -> list[record.Record]:
+    """Records for the scenarios of one or more tilo-fs check runs."""
     samples: dict[str, list[float]] = {}
     units: dict[str, str] = {}
     for log in logs:
         seen = set()
         for line in log.splitlines():
-            match = FS_GATE_LINE.search(line.strip())
+            match = FS_CHECK_LINE.search(line.strip())
             if match is None:
                 continue
             name = match.group("name")
             if name in seen:
-                raise ValueError(f"fs gate scenario {name} printed twice in one run")
+                raise ValueError(f"fs check scenario {name} printed twice in one run")
             seen.add(name)
             if units.setdefault(name, match.group("unit")) != match.group("unit"):
-                raise ValueError(f"fs gate scenario {name} printed in both {units[name]} and {match.group('unit')}")
+                raise ValueError(f"fs check scenario {name} printed in both {units[name]} and {match.group('unit')}")
             samples.setdefault(name, []).append(float(match.group("value")))
     if not samples:
-        raise ValueError("no `PERF <name>: <x> ms (SLO <= <y> ms)` lines: did the gate run with TILO_FS_PERF_GATE=1?")
+        raise ValueError("no `PERF <name>: <x> ms (SLO <= <y> ms)` lines: did the check run with TILO_FS_PERF_CHECK=1?")
     counts = {name: len(values) for name, values in samples.items()}
     if len(set(counts.values())) != 1:
-        raise ValueError(f"fs gate scenarios ran unequal times: {counts}")
+        raise ValueError(f"fs check scenarios ran unequal times: {counts}")
     meta = {**env.get("meta", {}), "runs": str(len(logs))}
     base = {name: value for name, value in env.items() if name != "meta"}
     return [record.from_samples(f"fs.{name}", units[name], values, meta=meta, **base)
@@ -553,9 +553,9 @@ def browser_qualification(report: dict[str, Any], env: dict[str, Any],
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     commands = parser.add_subparsers(dest="command", required=True)
-    gate = commands.add_parser("fs-gate", help="records from tilo-fs performance gate logs")
-    gate.add_argument("--env-json", required=True, type=Path)
-    gate.add_argument("logs", nargs="+", type=Path)
+    check = commands.add_parser("fs-check", help="records from tilo-fs performance check logs")
+    check.add_argument("--env-json", required=True, type=Path)
+    check.add_argument("logs", nargs="+", type=Path)
     sizes = commands.add_parser("tapp-sizes", help="records from the registry entries index")
     sizes.add_argument("--env-json", required=True, type=Path)
     sizes.add_argument("entries", type=Path)
@@ -597,8 +597,8 @@ def main(argv: list[str] | None = None) -> int:
                     print(f"{item.kpi}: p50 ${item.p50:.6f}, max ${item.max:.6f} "
                           f"({item.meta['members_per_vm']} members per VM, "
                           f"bound by {item.meta['binding']})", file=sys.stderr)
-        elif args.command == "fs-gate":
-            records = fs_gate([path.read_text(encoding="utf-8", errors="replace") for path in args.logs], env)
+        elif args.command == "fs-check":
+            records = fs_check([path.read_text(encoding="utf-8", errors="replace") for path in args.logs], env)
         elif args.command == "runtime-sizes":
             records = runtime_sizes(json.loads(args.measurements.read_text(encoding="utf-8")), env)
         elif args.command == "framework-open":

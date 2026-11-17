@@ -2,7 +2,7 @@
 //!
 //! The tree is the bulk of every status and the host mirrors it into the
 //! accessibility DOM. Unchanged trees (pointer frames) are omitted; while
-//! typing the tree changes on every key, so this gate additionally throttles
+//! typing the tree changes on every key, so this check additionally throttles
 //! content-only changes to one delivery per window, with a deadline wake so
 //! the final tree always reaches the host within the window. Changes assistive
 //! technology must see at once are never throttled: keyboard focus moving,
@@ -48,7 +48,7 @@ pub(crate) const AFTER_FRAME: std::time::Duration = std::time::Duration::from_mi
 pub(crate) enum SemanticsDecision {
     /// The host already holds this exact tree.
     Unchanged,
-    /// Include the tree or the patch to it (see [`SemanticsGate::text`]);
+    /// Include the tree or the patch to it (see [`SemanticsPublisher::text`]);
     /// `forced` is true when a focus, structure, IME or host request
     /// bypassed the window.
     Deliver { forced: bool },
@@ -85,7 +85,7 @@ pub(crate) fn tree_wait(
     })
 }
 
-pub(crate) struct SemanticsGate {
+pub(crate) struct SemanticsPublisher {
     schedule: PublicationSchedule,
     /// The status members of the last delivery: the whole tree, or a patch.
     text: Vec<u8>,
@@ -106,7 +106,7 @@ pub(crate) struct SemanticsGate {
     wheel_at: Option<ui::time::Instant>,
 }
 
-impl SemanticsGate {
+impl SemanticsPublisher {
     pub(crate) fn new(window: std::time::Duration) -> Self {
         Self {
             schedule: PublicationSchedule::new(window),
@@ -476,8 +476,8 @@ mod tests {
             height: 16,
         }
     }
-    fn window() -> SemanticsGate {
-        SemanticsGate::new(Duration::from_millis(100))
+    fn window() -> SemanticsPublisher {
+        SemanticsPublisher::new(Duration::from_millis(100))
     }
 
     tilo_test_env::scenario! {
@@ -485,140 +485,140 @@ mod tests {
             clippy::arithmetic_side_effects,
             reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
         )]
-        fn the_semantics_gate_delivers_a_tree_when_it_is_due;
+        fn the_semantics_publisher_delivers_a_tree_when_it_is_due;
 
         phase a_presented_frame_leaves_its_tree_to_a_task_after_it;
         {
             let t0 = ui::time::Instant::now();
             let ms = |n: u64| t0 + Duration::from_millis(n);
-            let mut gate = window();
+            let mut check = window();
             // The first tree goes with the first frame.
-            assert!(!gate.after_frame(None, ms(0)));
-            gate.decide(tree(&["a"], 0), None, ms(0));
+            assert!(!check.after_frame(None, ms(0)));
+            check.decide(tree(&["a"], 0), None, ms(0));
             // A keystroke inside the window: one tree at its end, however many
             // frames the keys present before it.
-            assert!(gate.after_frame(None, ms(20)));
-            assert_eq!(gate.due(), Some(ms(100)));
-            assert!(gate.after_frame(None, ms(60)));
-            assert_eq!(gate.due(), Some(ms(100)));
+            assert!(check.after_frame(None, ms(20)));
+            assert_eq!(check.due(), Some(ms(100)));
+            assert!(check.after_frame(None, ms(60)));
+            assert_eq!(check.due(), Some(ms(100)));
             assert_eq!(
-                gate.decide(tree(&["ab"], 0), None, ms(100)),
+                check.decide(tree(&["ab"], 0), None, ms(100)),
                 SemanticsDecision::Deliver { forced: false }
             );
             // Past the window, the tree is built right after the frame, in a
             // task of its own.
-            assert!(gate.after_frame(None, ms(300)));
-            assert_eq!(gate.due(), Some(ms(300) + AFTER_FRAME));
-            gate.decide(tree(&["abc"], 0), None, ms(301));
+            assert!(check.after_frame(None, ms(300)));
+            assert_eq!(check.due(), Some(ms(300) + AFTER_FRAME));
+            check.decide(tree(&["abc"], 0), None, ms(301));
             // The IME line moving, or the host asking, does not wait for the
             // window.
-            assert!(gate.after_frame(Some(&ime(0, 40)), ms(320)));
-            assert_eq!(gate.due(), Some(ms(320) + AFTER_FRAME));
-            gate.decide(tree(&["abc"], 0), Some(&ime(0, 40)), ms(321));
-            gate.request();
-            assert!(gate.after_frame(Some(&ime(0, 40)), ms(330)));
-            assert_eq!(gate.due(), Some(ms(330) + AFTER_FRAME));
+            assert!(check.after_frame(Some(&ime(0, 40)), ms(320)));
+            assert_eq!(check.due(), Some(ms(320) + AFTER_FRAME));
+            check.decide(tree(&["abc"], 0), Some(&ime(0, 40)), ms(321));
+            check.request();
+            assert!(check.after_frame(Some(&ime(0, 40)), ms(330)));
+            assert_eq!(check.due(), Some(ms(330) + AFTER_FRAME));
         }
 
         phase a_moved_frame_waits_unbuilt_for_the_window_or_a_window_from_now;
         {
             let t0 = ui::time::Instant::now();
-            let mut gate = window();
+            let mut check = window();
             // Nothing delivered yet: the first tree is always built.
-            assert!(!gate.defer_unbuilt(None, t0));
+            assert!(!check.defer_unbuilt(None, t0));
             assert_eq!(
-                gate.decide(tree(&["a"], 0), None, t0),
+                check.decide(tree(&["a"], 0), None, t0),
                 SemanticsDecision::Deliver { forced: true }
             );
-            assert!(gate.defer_unbuilt(None, t0 + Duration::from_millis(10)));
-            assert_eq!(gate.due(), Some(t0 + Duration::from_millis(100)));
+            assert!(check.defer_unbuilt(None, t0 + Duration::from_millis(10)));
+            assert_eq!(check.due(), Some(t0 + Duration::from_millis(100)));
             // An IME line that moved needs the tree at once.
-            assert!(!gate.defer_unbuilt(Some(&ime(0, 40)), t0 + Duration::from_millis(20)));
+            assert!(!check.defer_unbuilt(Some(&ime(0, 40)), t0 + Duration::from_millis(20)));
             // So does a host request.
-            gate.request();
-            assert!(!gate.defer_unbuilt(None, t0 + Duration::from_millis(30)));
+            check.request();
+            assert!(!check.defer_unbuilt(None, t0 + Duration::from_millis(30)));
             assert_eq!(
-                gate.decide(tree(&["b"], 0), None, t0 + Duration::from_millis(30)),
+                check.decide(tree(&["b"], 0), None, t0 + Duration::from_millis(30)),
                 SemanticsDecision::Deliver { forced: true }
             );
             // Past the window it waits a whole window from now, and later moved
             // frames keep that instant.
-            assert!(gate.defer_unbuilt(None, t0 + Duration::from_millis(200)));
-            assert_eq!(gate.due(), Some(t0 + Duration::from_millis(300)));
-            assert!(gate.defer_unbuilt(None, t0 + Duration::from_millis(250)));
-            assert_eq!(gate.due(), Some(t0 + Duration::from_millis(300)));
-            assert!(!gate.would_defer_unbuilt(t0 + Duration::from_millis(300)));
-            assert!(!gate.defer_unbuilt(None, t0 + Duration::from_millis(300)));
+            assert!(check.defer_unbuilt(None, t0 + Duration::from_millis(200)));
+            assert_eq!(check.due(), Some(t0 + Duration::from_millis(300)));
+            assert!(check.defer_unbuilt(None, t0 + Duration::from_millis(250)));
+            assert_eq!(check.due(), Some(t0 + Duration::from_millis(300)));
+            assert!(!check.would_defer_unbuilt(t0 + Duration::from_millis(300)));
+            assert!(!check.defer_unbuilt(None, t0 + Duration::from_millis(300)));
         }
 
         phase a_frame_that_laid_nothing_out_needs_no_tree_unless_one_is_due;
         {
             let t0 = ui::time::Instant::now();
             let ms = |n: u64| t0 + Duration::from_millis(n);
-            let mut gate = window();
+            let mut check = window();
             // Nothing delivered yet: the first tree is always built.
-            assert!(!gate.unchanged_unbuilt(None, ms(0)));
-            gate.decide(tree(&["a"], 0), None, ms(0));
+            assert!(!check.unchanged_unbuilt(None, ms(0)));
+            check.decide(tree(&["a"], 0), None, ms(0));
             // Long after, a frame that laid nothing out schedules nothing.
-            assert!(gate.unchanged_unbuilt(None, ms(500)));
-            assert_eq!(gate.due(), None);
+            assert!(check.unchanged_unbuilt(None, ms(500)));
+            assert_eq!(check.due(), None);
             // An IME line that moved needs the tree.
-            assert!(!gate.unchanged_unbuilt(Some(&ime(0, 40)), ms(510)));
-            assert!(gate.defer_unbuilt(None, ms(520)));
-            assert!(gate.unchanged_unbuilt(None, ms(600)));
-            assert!(!gate.unchanged_unbuilt(None, ms(620)));
+            assert!(!check.unchanged_unbuilt(Some(&ime(0, 40)), ms(510)));
+            assert!(check.defer_unbuilt(None, ms(520)));
+            assert!(check.unchanged_unbuilt(None, ms(600)));
+            assert!(!check.unchanged_unbuilt(None, ms(620)));
             // A host request needs the tree.
-            gate.decide(tree(&["b"], 0), None, ms(620));
-            gate.request();
-            assert!(!gate.unchanged_unbuilt(None, ms(630)));
+            check.decide(tree(&["b"], 0), None, ms(620));
+            check.request();
+            assert!(!check.unchanged_unbuilt(None, ms(630)));
         }
 
-        phase the_first_tree_and_unchanged_trees_follow_the_hash_gate;
+        phase the_first_tree_and_unchanged_trees_follow_the_hash_check;
         {
             let t0 = ui::time::Instant::now();
-            let mut gate = window();
+            let mut check = window();
             assert_eq!(
-                gate.decide(tree(&["a", ""], 0), None, t0),
+                check.decide(tree(&["a", ""], 0), None, t0),
                 SemanticsDecision::Deliver { forced: true }
             );
             let whole = format!(
                 "\"semanticsSeq\":1,\"semantics\":{}",
                 serde_json::to_string(&tree(&["a", ""], 0)).unwrap()
             );
-            assert_eq!(gate.text(), whole.as_bytes());
+            assert_eq!(check.text(), whole.as_bytes());
             assert_eq!(
-                gate.decide(tree(&["a", ""], 0), None, t0 + Duration::from_millis(10)),
+                check.decide(tree(&["a", ""], 0), None, t0 + Duration::from_millis(10)),
                 SemanticsDecision::Unchanged
             );
-            assert_eq!(gate.due(), None);
+            assert_eq!(check.due(), None);
         }
 
         phase content_only_changes_inside_the_window_defer_to_the_deadline_and_the_final_tree_is_delivered;
         {
             let t0 = ui::time::Instant::now();
             let ms = |n: u64| t0 + Duration::from_millis(n);
-            let mut gate = window();
+            let mut check = window();
             assert_eq!(
-                gate.decide(tree(&["a", ""], 0), Some(&ime(10, 20)), ms(0)),
+                check.decide(tree(&["a", ""], 0), Some(&ime(10, 20)), ms(0)),
                 SemanticsDecision::Deliver { forced: true }
             );
             // Typing: the value and the caret's horizontal position change every key.
             assert_eq!(
-                gate.decide(tree(&["ab", ""], 0), Some(&ime(18, 20)), ms(30)),
+                check.decide(tree(&["ab", ""], 0), Some(&ime(18, 20)), ms(30)),
                 SemanticsDecision::Deferred(ms(100))
             );
-            assert_eq!(gate.due(), Some(ms(100)));
+            assert_eq!(check.due(), Some(ms(100)));
             assert_eq!(
-                gate.decide(tree(&["abc", ""], 0), Some(&ime(26, 20)), ms(60)),
+                check.decide(tree(&["abc", ""], 0), Some(&ime(26, 20)), ms(60)),
                 SemanticsDecision::Deferred(ms(100))
             );
             assert_eq!(
-                gate.decide(tree(&["abcd", ""], 0), Some(&ime(34, 20)), ms(100)),
+                check.decide(tree(&["abcd", ""], 0), Some(&ime(34, 20)), ms(100)),
                 SemanticsDecision::Deliver { forced: false }
             );
             // After the first tree, a delivery is the patch to the last one: the
             // edited field alone.
-            let patch = std::str::from_utf8(gate.text()).unwrap();
+            let patch = std::str::from_utf8(check.text()).unwrap();
             // Read as the page reads it: the members, in whatever order the
             // build's JSON writer puts them.
             let members: serde_json::Value = serde_json::from_str(&format!("{{{patch}}}")).unwrap();
@@ -639,14 +639,14 @@ mod tests {
             assert!(head["ops"][0]["own"].is_object(), "{patch}");
             assert!(patch.contains(r#""value":"abcd""#), "{patch}");
             assert!(!patch.contains("TextInput[1]"), "{patch}");
-            assert_eq!(gate.due(), None);
+            assert_eq!(check.due(), None);
             // Once the deadline passes with no further change the deferred tree is still the one that gets sent.
             assert_eq!(
-                gate.decide(tree(&["abcde", ""], 0), Some(&ime(42, 20)), ms(150)),
+                check.decide(tree(&["abcde", ""], 0), Some(&ime(42, 20)), ms(150)),
                 SemanticsDecision::Deferred(ms(200))
             );
             assert_eq!(
-                gate.decide(tree(&["abcde", ""], 0), Some(&ime(42, 20)), ms(200)),
+                check.decide(tree(&["abcde", ""], 0), Some(&ime(42, 20)), ms(200)),
                 SemanticsDecision::Deliver { forced: false }
             );
         }
@@ -655,47 +655,47 @@ mod tests {
         {
             let t0 = ui::time::Instant::now();
             let ms = |n: u64| t0 + Duration::from_millis(n);
-            let mut gate = window();
-            gate.decide(tree(&["a", ""], 0), None, ms(0));
+            let mut check = window();
+            check.decide(tree(&["a", ""], 0), None, ms(0));
             assert_eq!(
-                gate.decide(tree(&["ab", ""], 0), None, ms(30)),
+                check.decide(tree(&["ab", ""], 0), None, ms(30)),
                 SemanticsDecision::Deferred(ms(100))
             );
             assert_eq!(
-                gate.decide(tree(&["a", ""], 0), None, ms(60)),
+                check.decide(tree(&["a", ""], 0), None, ms(60)),
                 SemanticsDecision::Unchanged
             );
-            assert_eq!(gate.due(), None);
+            assert_eq!(check.due(), None);
         }
 
         phase focus_and_structure_changes_are_never_throttled;
         {
             let t0 = ui::time::Instant::now();
             let ms = |n: u64| t0 + Duration::from_millis(n);
-            let mut gate = window();
-            gate.decide(tree(&["a", ""], 0), None, ms(0));
+            let mut check = window();
+            check.decide(tree(&["a", ""], 0), None, ms(0));
             assert_eq!(
-                gate.decide(tree(&["ab", ""], 0), None, ms(20)),
+                check.decide(tree(&["ab", ""], 0), None, ms(20)),
                 SemanticsDecision::Deferred(ms(100))
             );
             // Focus moves to the second field: delivered at once, and the window restarts.
             assert_eq!(
-                gate.decide(tree(&["ab", ""], 1), None, ms(40)),
+                check.decide(tree(&["ab", ""], 1), None, ms(40)),
                 SemanticsDecision::Deliver { forced: true }
             );
-            assert_eq!(gate.due(), None);
+            assert_eq!(check.due(), None);
             assert_eq!(
-                gate.decide(tree(&["ab", "x"], 1), None, ms(60)),
+                check.decide(tree(&["ab", "x"], 1), None, ms(60)),
                 SemanticsDecision::Deferred(ms(140))
             );
             // A node appears (Enter creates a line): delivered at once.
             assert_eq!(
-                gate.decide(tree(&["ab", "x", ""], 1), None, ms(80)),
+                check.decide(tree(&["ab", "x", ""], 1), None, ms(80)),
                 SemanticsDecision::Deliver { forced: true }
             );
             // A node disappears: delivered at once.
             assert_eq!(
-                gate.decide(tree(&["ab", "x"], 1), None, ms(90)),
+                check.decide(tree(&["ab", "x"], 1), None, ms(90)),
                 SemanticsDecision::Deliver { forced: true }
             );
         }
@@ -704,24 +704,24 @@ mod tests {
         {
             let t0 = ui::time::Instant::now();
             let ms = |n: u64| t0 + Duration::from_millis(n);
-            let mut gate = window();
-            gate.decide(tree(&["a", ""], 0), Some(&ime(10, 20)), ms(0));
+            let mut check = window();
+            check.decide(tree(&["a", ""], 0), Some(&ime(10, 20)), ms(0));
             assert_eq!(
-                gate.decide(tree(&["ab", ""], 0), Some(&ime(18, 20)), ms(20)),
+                check.decide(tree(&["ab", ""], 0), Some(&ime(18, 20)), ms(20)),
                 SemanticsDecision::Deferred(ms(100))
             );
             assert_eq!(
-                gate.decide(tree(&["abc", ""], 0), Some(&ime(0, 36)), ms(40)),
+                check.decide(tree(&["abc", ""], 0), Some(&ime(0, 36)), ms(40)),
                 SemanticsDecision::Deliver { forced: true }
             );
             // The IME window disappearing (editor blur) with an unchanged tree needs no resend.
             assert_eq!(
-                gate.decide(tree(&["abc", ""], 0), None, ms(50)),
+                check.decide(tree(&["abc", ""], 0), None, ms(50)),
                 SemanticsDecision::Unchanged
             );
             // But its next content change is delivered at once because the IME state moved.
             assert_eq!(
-                gate.decide(tree(&["abcd", ""], 0), Some(&ime(0, 36)), ms(60)),
+                check.decide(tree(&["abcd", ""], 0), Some(&ime(0, 36)), ms(60)),
                 SemanticsDecision::Deliver { forced: true }
             );
         }
@@ -730,30 +730,30 @@ mod tests {
         {
             let t0 = ui::time::Instant::now();
             let ms = |n: u64| t0 + Duration::from_millis(n);
-            let mut gate = window();
-            gate.decide(tree(&["a"], 0), Some(&ime(10, 200)), ms(0));
+            let mut check = window();
+            check.decide(tree(&["a"], 0), Some(&ime(10, 200)), ms(0));
             // A wheel scrolls the note under the caret: its line moves on screen
             // on every frame, but nothing about it changed for a reader, and the
             // tree waits until the wheel rests, past the window.
             for (step, at) in [10, 50, 90, 130].into_iter().enumerate() {
-                gate.note_input(&wheel(), ms(at));
+                check.note_input(&wheel(), ms(at));
                 let y = 200 - 40 * u32::try_from(step + 1).unwrap();
                 assert!(
-                    gate.defer_unbuilt(Some(&ime(10, y)), ms(at)),
+                    check.defer_unbuilt(Some(&ime(10, y)), ms(at)),
                     "a scrolled frame waits for the wheel to rest"
                 );
             }
-            assert_eq!(gate.due(), Some(ms(130) + SCROLL_REST));
+            assert_eq!(check.due(), Some(ms(130) + SCROLL_REST));
             assert_eq!(
-                gate.decide(tree(&["a"], 0), Some(&ime(10, 40)), ms(130) + SCROLL_REST),
+                check.decide(tree(&["a"], 0), Some(&ime(10, 40)), ms(130) + SCROLL_REST),
                 SemanticsDecision::Unchanged
             );
             // A key moves the caret to another line: a reader hears it at once.
-            gate.note_input(
+            check.note_input(
                 &ui::synthetic_input::named_key(ui::winit::keyboard::NamedKey::ArrowDown),
                 ms(300),
             );
-            assert!(!gate.defer_unbuilt(Some(&ime(10, 56)), ms(300)));
+            assert!(!check.defer_unbuilt(Some(&ime(10, 56)), ms(300)));
         }
 
         phase a_long_scroll_delivers_now_and_then_and_focus_moving_at_once;
@@ -761,13 +761,13 @@ mod tests {
             let t0 = ui::time::Instant::now();
             let ms = |n: u64| t0 + Duration::from_millis(n);
             let longest = u64::try_from(SCROLL_LONGEST.as_millis()).unwrap();
-            let mut gate = window();
-            gate.decide(tree(&["a", ""], 0), None, ms(0));
+            let mut check = window();
+            check.decide(tree(&["a", ""], 0), None, ms(0));
             // Content the scroll brings on screen is a structure change: it waits
             // with the scroll instead of going out on every frame.
-            gate.note_input(&wheel(), ms(20));
+            check.note_input(&wheel(), ms(20));
             assert_eq!(
-                gate.decide(tree(&["a", "", "c"], 0), None, ms(20)),
+                check.decide(tree(&["a", "", "c"], 0), None, ms(20)),
                 SemanticsDecision::Deferred(ms(20) + SCROLL_REST)
             );
             // The wheel keeps turning: the tree waits, but never longer than the
@@ -775,18 +775,18 @@ mod tests {
             let mut at = 20;
             while at + 16 < longest {
                 at += 16;
-                gate.note_input(&wheel(), ms(at));
-                assert!(gate.defer_unbuilt(None, ms(at)));
+                check.note_input(&wheel(), ms(at));
+                assert!(check.defer_unbuilt(None, ms(at)));
             }
-            assert_eq!(gate.due(), Some(ms(longest)));
+            assert_eq!(check.due(), Some(ms(longest)));
             assert_eq!(
-                gate.decide(tree(&["a", "", "c"], 0), None, ms(longest)),
+                check.decide(tree(&["a", "", "c"], 0), None, ms(longest)),
                 SemanticsDecision::Deliver { forced: true }
             );
             // Focus moving mid-scroll is heard at once.
-            gate.note_input(&wheel(), ms(longest + 16));
+            check.note_input(&wheel(), ms(longest + 16));
             assert_eq!(
-                gate.decide(tree(&["a", "", "c"], 1), None, ms(longest + 16)),
+                check.decide(tree(&["a", "", "c"], 1), None, ms(longest + 16)),
                 SemanticsDecision::Deliver { forced: true }
             );
         }
@@ -795,31 +795,31 @@ mod tests {
         {
             let t0 = ui::time::Instant::now();
             let ms = |n: u64| t0 + Duration::from_millis(n);
-            let mut gate = window();
-            gate.decide(tree(&["a", ""], 0), None, ms(0));
+            let mut check = window();
+            check.decide(tree(&["a", ""], 0), None, ms(0));
             assert_eq!(
-                gate.decide(tree(&["a", ""], 0), None, ms(10)),
+                check.decide(tree(&["a", ""], 0), None, ms(10)),
                 SemanticsDecision::Unchanged
             );
-            gate.request();
+            check.request();
             assert_eq!(
-                gate.decide(tree(&["a", ""], 0), None, ms(20)),
+                check.decide(tree(&["a", ""], 0), None, ms(20)),
                 SemanticsDecision::Deliver { forced: true }
             );
             assert_eq!(
-                gate.decide(tree(&["a", ""], 0), None, ms(30)),
+                check.decide(tree(&["a", ""], 0), None, ms(30)),
                 SemanticsDecision::Unchanged
             );
             assert_eq!(
-                gate.decide(tree(&["ab", ""], 0), None, ms(40)),
+                check.decide(tree(&["ab", ""], 0), None, ms(40)),
                 SemanticsDecision::Deferred(ms(120))
             );
-            gate.request();
+            check.request();
             assert_eq!(
-                gate.decide(tree(&["abc", ""], 0), None, ms(50)),
+                check.decide(tree(&["abc", ""], 0), None, ms(50)),
                 SemanticsDecision::Deliver { forced: true }
             );
-            assert_eq!(gate.due(), None);
+            assert_eq!(check.due(), None);
         }
 
         phase a_tree_past_its_deadline_is_published_whatever_the_frame_before_it_did;
@@ -837,32 +837,32 @@ mod tests {
             assert_eq!(tree_wait(Some(ms(10)), ms(9)), Some(TreeWait::Wake(ms(10))));
             // With nothing waiting, nothing is delivered or woken for.
             assert_eq!(tree_wait(None, ms(10)), None);
-            // The gate leaves a presented frame's tree for its deadline, and the
+            // The check leaves a presented frame's tree for its deadline, and the
             // deadline alone carries it: the status is read from the screen the
             // frame drew, not from a frame that would have to come first.
-            let mut gate = window();
-            gate.decide(tree(&["a", ""], 0), None, ms(0));
-            assert!(gate.after_frame(None, ms(20)));
-            let due = gate.due().expect("the tree waits for the window's end");
+            let mut check = window();
+            check.decide(tree(&["a", ""], 0), None, ms(0));
+            assert!(check.after_frame(None, ms(20)));
+            let due = check.due().expect("the tree waits for the window's end");
             assert_eq!(tree_wait(Some(due), due), Some(TreeWait::Publish));
             assert_eq!(
-                gate.decide(tree(&["ab", ""], 0), None, due),
+                check.decide(tree(&["ab", ""], 0), None, due),
                 SemanticsDecision::Deliver { forced: false }
             );
-            assert_eq!(gate.due(), None);
+            assert_eq!(check.due(), None);
         }
 
         phase a_zero_window_delivers_every_changed_tree;
         {
             let t0 = ui::time::Instant::now();
-            let mut gate = SemanticsGate::new(Duration::ZERO);
-            gate.decide(tree(&["a", ""], 0), None, t0);
+            let mut check = SemanticsPublisher::new(Duration::ZERO);
+            check.decide(tree(&["a", ""], 0), None, t0);
             assert_eq!(
-                gate.decide(tree(&["ab", ""], 0), None, t0),
+                check.decide(tree(&["ab", ""], 0), None, t0),
                 SemanticsDecision::Deliver { forced: false }
             );
             assert_eq!(
-                gate.decide(tree(&["abc", ""], 0), None, t0),
+                check.decide(tree(&["abc", ""], 0), None, t0),
                 SemanticsDecision::Deliver { forced: false }
             );
         }

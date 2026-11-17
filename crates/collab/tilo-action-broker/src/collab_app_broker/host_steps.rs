@@ -139,7 +139,7 @@ impl AppBrokerState {
         let (workspace, policy, now) = self
             .current_framework_authority(caller, origin, workspace_id)
             .map_err(abandon)?;
-        // One answer covers both gates of this exact host invocation.
+        // One answer covers both checks of this exact host invocation.
         let witnessed = self.consume_answer(
             request.confirmation.as_ref(),
             &self.witness_binding(policy.member(), workspace_id, request),

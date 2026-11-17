@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Exercise the actual shared admission gate used by the image workflow."""
+"""Exercise the actual shared admission check used by the image workflow."""
 import os
 from pathlib import Path
 import subprocess
@@ -24,7 +24,7 @@ class AdmissionTests(unittest.TestCase):
         self.assertEqual(cohort("", "75222"), "")
         self.assertLessEqual(len(cohort("a" * 110, "9" * 20) + "-orangepi-3b-v2-1"), 128)
 
-    def run_gate(self, **changes):
+    def run_check(self, **changes):
         env = dict(os.environ, GITHUB_REF="refs/heads/main", GITHUB_EVENT_NAME="workflow_call",
                    BUILD_MODE="dev", HARDWARE_PROFILE="generic",
                    FEX_PAYLOAD_CANDIDATE=FEX, WINDOWS_GUEST_CANDIDATE=GUEST)
@@ -32,8 +32,8 @@ class AdmissionTests(unittest.TestCase):
         return subprocess.run(["bash", str(SCRIPT)], env=env, capture_output=True).returncode
 
     def test_dev_and_existing_lenovo_dispatch(self):
-        self.assertEqual(self.run_gate(), 0)
-        self.assertEqual(self.run_gate(GITHUB_EVENT_NAME="workflow_dispatch", BUILD_MODE="release",
+        self.assertEqual(self.run_check(), 0)
+        self.assertEqual(self.run_check(GITHUB_EVENT_NAME="workflow_dispatch", BUILD_MODE="release",
                                       HARDWARE_PROFILE="lenovo-83ed"), 0)
 
     def test_refusal(self):
@@ -42,7 +42,7 @@ class AdmissionTests(unittest.TestCase):
                         {"FEX_PAYLOAD_CANDIDATE": "registry.tilo.so/tilo/fex:latest"},
                         {"GITHUB_EVENT_NAME": "workflow_dispatch", "BUILD_MODE": "release"}):
             with self.subTest(changes=changes):
-                self.assertNotEqual(self.run_gate(**changes), 0)
+                self.assertNotEqual(self.run_check(**changes), 0)
 
 
 if __name__ == "__main__":

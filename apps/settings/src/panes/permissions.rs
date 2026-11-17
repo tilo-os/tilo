@@ -1384,8 +1384,8 @@ mod tests {
     #[test]
     fn a_stalled_device_read_never_holds_privacy_and_security() {
         ui::i18n::I18nManager::init("en-US");
-        let gate = crate::stall::Stall::new();
-        let stalled = Arc::clone(&gate);
+        let check = crate::stall::Stall::new();
+        let stalled = Arc::clone(&check);
         crate::area::replace_in_next_window(move |_| {
             PermissionsArea::over(Arc::new(StalledReader(stalled)))
         });
@@ -1396,7 +1396,7 @@ mod tests {
         app.harness()
             .poll_frame()
             .expect("the window draws its next frame");
-        gate.assert_held("opening the pane");
+        check.assert_held("opening the pane");
         let frame = app.harness().inspection_json().unwrap();
         assert!(frame.contains(&t("perm-reading")), "{frame}");
         assert!(!frame.contains(&t("perm-firewall-firewalld")), "{frame}");
@@ -1404,7 +1404,7 @@ mod tests {
         assert!(!frame.contains(&t("perm-unavailable-title")), "{frame}");
         assert!(!frame.contains(&t("perm-desktop-control")), "{frame}");
 
-        gate.release();
+        check.release();
         assert!(
             app.harness()
                 .wait_until(tilo_test_env::hang_bound(), |harness| harness

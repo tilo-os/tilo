@@ -4,7 +4,7 @@
 //! compositor's frame loop) never names a path itself. When it leases or
 //! reads a key the store has not opened for it, the store's own thread does
 //! every path operation an opener would (creating the directory, opening it
-//! and its gate and lock files, checking they are the ones at those paths,
+//! and its check and lock files, checking they are the ones at those paths,
 //! and reading the stored bytes, writer identity and load hint) and hands
 //! the open descriptors and the bytes back. Until then the caller is told
 //! [`SeamError::Opening`]; its wake ([`durable_store::waiting::wake`]) is
@@ -26,7 +26,7 @@ use durable_store::{ReadyWake, StorageKey, StoreError as SeamError, Stored, Writ
 use super::{
     Files, Shared, Target, keep_hint, lock, read_hint_in, read_stored, seam_to_store, target_in,
 };
-use crate::{CANONICAL_GATE, LOCK_FILE, StoreError, io_err, open_directory, same_file};
+use crate::{CANONICAL_LOCK, LOCK_FILE, StoreError, io_err, open_directory, same_file};
 
 /// What a caller is about to do with a key, which decides what is opened
 /// for it.
@@ -218,10 +218,10 @@ fn open_document(directory: &Path, access: Access) -> Result<Files, StoreError> 
     })?;
     let handle =
         open_directory(directory, false).map_err(|e| io_err("opening state directory", e))?;
-    let gate_path = directory.join(CANONICAL_GATE);
-    let gate = advisory_lock::open_lock_file(&gate_path)
-        .map_err(|e| io_err(format!("opening gate {}", gate_path.display()), e))?;
-    for (opened, path) in [(&handle, directory), (&gate, gate_path.as_path())] {
+    let lock_path = directory.join(CANONICAL_LOCK);
+    let check = advisory_lock::open_lock_file(&lock_path)
+        .map_err(|e| io_err(format!("opening check {}", lock_path.display()), e))?;
+    for (opened, path) in [(&handle, directory), (&check, lock_path.as_path())] {
         if !same_file(opened, path) {
             return Err(StoreError::SourceChanged {
                 path: path.to_path_buf(),
@@ -240,7 +240,7 @@ fn open_document(directory: &Path, access: Access) -> Result<Files, StoreError> 
     };
     Ok(Files {
         directory: Some((directory.to_path_buf(), handle)),
-        gate,
+        check,
         writer_lock,
     })
 }
@@ -250,12 +250,12 @@ fn open_view(path: &Path) -> Result<Files, StoreError> {
         tilo_files::native::create_dir_all(parent)
             .map_err(|e| io_err("creating view directory", e))?;
     }
-    let gate_path = path.with_extension("lock");
-    let gate = advisory_lock::open_lock_file(&gate_path)
-        .map_err(|e| io_err(format!("opening gate {}", gate_path.display()), e))?;
+    let lock_path = path.with_extension("lock");
+    let check = advisory_lock::open_lock_file(&lock_path)
+        .map_err(|e| io_err(format!("opening check {}", lock_path.display()), e))?;
     Ok(Files {
         directory: None,
-        gate,
+        check,
         writer_lock: None,
     })
 }

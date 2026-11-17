@@ -102,7 +102,7 @@ pub struct EvictionReport {
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct CachePolicy {
     /// Fetch predicted files ahead of their open. Network, battery and disk
-    /// gates still apply when this is on.
+    /// checks still apply when this is on.
     pub prefetch: bool,
     /// Bytes of fetched content to keep; `None` is the daemon's default, a
     /// share of the disk that holds the cache. Pinned content and content

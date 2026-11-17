@@ -200,12 +200,12 @@ tilo_test_env::scenario! {
 
     phase a_request_the_helper_has_not_picked_up_reads_as_starting;
     {
-        let (release, gate) = channel::channel::<()>();
-        let gate = Mutex::new(gate);
+        let (release, hold) = channel::channel::<()>();
+        let hold = Mutex::new(hold);
         let mut pane = pane_with(None, Arc::new(RecordingRebooter::default())).with_codec_pack(
             Arc::new(CodecPackStatus::default),
             Arc::new(move |_| {
-                let _ = gate.lock().unwrap().recv();
+                let _ = hold.lock().unwrap().recv();
                 Ok(())
             }),
         );
@@ -530,19 +530,19 @@ tilo_test_env::scenario! {
         {
             let _cfg = crate::prefs::test_env::ConfigGuard::new();
             let control = Arc::new(FakeControl::new(None, None));
-            let release = control.gate_checks();
+            let release = control.hold_checks();
             let mut pane = pane_with_control(Arc::clone(&control));
             pane.poll();
             pane.run(UpdatesEffect::CheckForUpdates, None);
             // The check is held until released below: were `sync` to wait for
-            // it, this call would only return once the gate timed out.
+            // it, this call would only return once the hold timed out.
             pane.poll();
             assert!(pane.check_pending, "the check runs off the UI thread");
             assert_eq!(pane.prefs().last_checked, "Never");
             release.send(()).unwrap();
             settle(&mut pane, |pane| pane.check_pending);
             assert!(
-                !control.gate_timed_out(),
+                !control.hold_timed_out(),
                 "sync blocked on the update check"
             );
             assert_eq!(pane.prefs().last_checked, "CHECKED-NOW");
@@ -566,7 +566,7 @@ tilo_test_env::scenario! {
         {
             let _cfg = crate::prefs::test_env::ConfigGuard::new();
             let control = Arc::new(FakeControl::new(None, None));
-            let release = control.gate_refreshes();
+            let release = control.hold_refreshes();
             let mut pane = pane_with_control(Arc::clone(&control));
             pane.poll();
             pane.run(UpdatesEffect::RefreshFirmware, None);
@@ -575,7 +575,7 @@ tilo_test_env::scenario! {
             release.send(()).unwrap();
             settle(&mut pane, |pane| pane.firmware_refresh_pending);
             assert!(
-                !control.gate_timed_out(),
+                !control.hold_timed_out(),
                 "sync blocked on the firmware refresh"
             );
             assert_eq!(pane.firmware_updates, Ok(Vec::new()));
@@ -599,7 +599,7 @@ tilo_test_env::scenario! {
         {
             let _cfg = crate::prefs::test_env::ConfigGuard::new();
             let control = Arc::new(FakeControl::new(None, None));
-            let release = control.gate_checks();
+            let release = control.hold_checks();
             let mut pane = pane_with_control(Arc::clone(&control));
             pane.poll();
             pane.run(UpdatesEffect::CheckForUpdates, None);
@@ -833,7 +833,7 @@ tilo_test_env::scenario! {
 /// Drive the host's polling until `pending` clears. The bound is a hang
 /// guard for a worker that never reports, not a performance budget.
 fn settle(pane: &mut UpdatesModel, pending: impl Fn(&UpdatesModel) -> bool) {
-    let deadline = ui::time::now() + GATE_TIMEOUT;
+    let deadline = ui::time::now() + HOLD_TIMEOUT;
     loop {
         pane.poll();
         if !pending(pane) {
@@ -854,15 +854,15 @@ struct FakeControl {
     target: Mutex<Option<String>>,
     set_fails: bool,
     rollback_fails: bool,
-    check_gate: Mutex<Option<channel::Receiver<()>>>,
+    check_hold: Mutex<Option<channel::Receiver<()>>>,
     check_fails: bool,
-    refresh_gate: Mutex<Option<channel::Receiver<()>>>,
+    refresh_hold: Mutex<Option<channel::Receiver<()>>>,
     refresh_fails: Mutex<bool>,
     check_calls: Mutex<u32>,
-    gate_timed_out: std::sync::atomic::AtomicBool,
+    hold_timed_out: std::sync::atomic::AtomicBool,
 }
 
-const GATE_TIMEOUT: Duration = Duration::from_secs(30);
+const HOLD_TIMEOUT: Duration = Duration::from_secs(30);
 
 impl FakeControl {
     fn new(timer: Option<bool>, target: Option<&str>) -> Self {
@@ -873,12 +873,12 @@ impl FakeControl {
             target: Mutex::new(target.map(str::to_string)),
             set_fails: false,
             rollback_fails: false,
-            check_gate: Mutex::new(None),
+            check_hold: Mutex::new(None),
             check_fails: false,
-            refresh_gate: Mutex::new(None),
+            refresh_hold: Mutex::new(None),
             refresh_fails: Mutex::new(false),
             check_calls: Mutex::new(0),
-            gate_timed_out: std::sync::atomic::AtomicBool::new(false),
+            hold_timed_out: std::sync::atomic::AtomicBool::new(false),
         }
     }
     fn failing_set(mut self) -> Self {
@@ -894,27 +894,27 @@ impl FakeControl {
         self
     }
     /// Hold every update check until the returned sender releases it.
-    fn gate_checks(&self) -> channel::Sender<()> {
-        let (release, gate) = channel::channel();
-        *self.check_gate.lock().unwrap() = Some(gate);
+    fn hold_checks(&self) -> channel::Sender<()> {
+        let (release, hold) = channel::channel();
+        *self.check_hold.lock().unwrap() = Some(hold);
         release
     }
     /// Hold every firmware refresh until the returned sender releases it.
-    fn gate_refreshes(&self) -> channel::Sender<()> {
-        let (release, gate) = channel::channel();
-        *self.refresh_gate.lock().unwrap() = Some(gate);
+    fn hold_refreshes(&self) -> channel::Sender<()> {
+        let (release, hold) = channel::channel();
+        *self.refresh_hold.lock().unwrap() = Some(hold);
         release
     }
-    fn wait_at(&self, gate: &Mutex<Option<channel::Receiver<()>>>) {
-        if let Some(gate) = gate.lock().unwrap().as_ref()
-            && gate.recv_timeout(GATE_TIMEOUT).is_err()
+    fn wait_at(&self, hold: &Mutex<Option<channel::Receiver<()>>>) {
+        if let Some(hold) = hold.lock().unwrap().as_ref()
+            && hold.recv_timeout(HOLD_TIMEOUT).is_err()
         {
-            self.gate_timed_out
+            self.hold_timed_out
                 .store(true, std::sync::atomic::Ordering::SeqCst);
         }
     }
-    fn gate_timed_out(&self) -> bool {
-        self.gate_timed_out
+    fn hold_timed_out(&self) -> bool {
+        self.hold_timed_out
             .load(std::sync::atomic::Ordering::SeqCst)
     }
     fn set_refresh_fails(&self, fails: bool) {
@@ -953,7 +953,7 @@ impl UpdateControl for FakeControl {
     fn check_now(&self) -> Result<(), String> {
         crate::device_read::off_ui_thread();
         *self.check_calls.lock().unwrap() += 1;
-        self.wait_at(&self.check_gate);
+        self.wait_at(&self.check_hold);
         if self.check_fails {
             Err("update check failed".into())
         } else {
@@ -971,7 +971,7 @@ impl UpdateControl for FakeControl {
         String,
     > {
         crate::device_read::off_ui_thread();
-        self.wait_at(&self.refresh_gate);
+        self.wait_at(&self.refresh_hold);
         if *self.refresh_fails.lock().unwrap() {
             Err("firmware refresh failed".into())
         } else {
@@ -1100,25 +1100,25 @@ fn effects_reach_the_model_and_report_how_they_end() {
     assert!(frame.contains("Tilo 2026.07"), "{frame}");
 }
 
-/// A control whose every call waits for its gate to open: a device that
-/// takes as long as it likes. The gate gives up after ten seconds so a
+/// A control whose every call waits for its hold to open: a device that
+/// takes as long as it likes. The hold gives up after ten seconds so a
 /// broken test ends.
-struct GatedControl {
-    gate: Arc<crate::stall::Stall>,
+struct HeldControl {
+    hold: Arc<crate::stall::Stall>,
     timer: Mutex<Option<bool>>,
     target: Mutex<Option<String>>,
     set_calls: Mutex<Vec<bool>>,
     rollbacks: Mutex<u32>,
 }
 
-impl GatedControl {
+impl HeldControl {
     fn pass(&self) {
         crate::device_read::off_ui_thread();
-        self.gate.wait();
+        self.hold.wait();
     }
 }
 
-impl UpdateControl for GatedControl {
+impl UpdateControl for HeldControl {
     fn timer_enabled(&self) -> Option<bool> {
         self.pass();
         *self.timer.lock().unwrap()
@@ -1152,9 +1152,9 @@ fn a_stalled_update_control_never_holds_the_window() {
 
     ui::i18n::I18nManager::init("en-US");
     let mut app = TestApp::<SettingsShell>::new().unwrap();
-    let gate = crate::stall::Stall::new();
-    let control = Arc::new(GatedControl {
-        gate: Arc::clone(&gate),
+    let hold = crate::stall::Stall::new();
+    let control = Arc::new(HeldControl {
+        hold: Arc::clone(&hold),
         timer: Mutex::new(Some(true)),
         target: Mutex::new(Some("tilo:gen41".into())),
         set_calls: Mutex::new(Vec::new()),
@@ -1217,7 +1217,7 @@ fn a_stalled_update_control_never_holds_the_window() {
     );
     assert!(control.set_calls.lock().unwrap().is_empty());
 
-    gate.release();
+    hold.release();
     assert!(
         app.harness()
             .wait_until(ui::time::Duration::from_secs(30), |harness| {
@@ -1230,7 +1230,7 @@ fn a_stalled_update_control_never_holds_the_window() {
     );
     assert_eq!(*control.set_calls.lock().unwrap(), vec![false]);
 
-    gate.hold();
+    hold.hold();
     let clicked = std::time::Instant::now();
     model.borrow_mut().run(UpdatesEffect::RollBack, None);
     app.harness()
@@ -1244,7 +1244,7 @@ fn a_stalled_update_control_never_holds_the_window() {
     assert_eq!(model.borrow().notice(), None);
     assert_eq!(model.borrow().rollback_target(), Some("tilo:gen41"));
 
-    gate.release();
+    hold.release();
     assert!(
         app.harness()
             .wait_until(ui::time::Duration::from_secs(30), |_| model

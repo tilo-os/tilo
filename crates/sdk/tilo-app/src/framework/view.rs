@@ -182,7 +182,7 @@ pub struct ViewCx<R: Resource, T: 'static = <R as Resource>::State> {
     pub(crate) updaters: Updaters<R>,
     /// The row of an [`Each`] this scope builds, whose readers run while it
     /// is mounted; `None` outside a row.
-    pub(crate) gate: Option<super::reactive::Gate>,
+    pub(crate) row_mount: Option<super::reactive::RowMount>,
     pub(crate) action_bindings: Actions<R>,
     pub(crate) item: Option<Id>,
     /// Where this scope's value sits in the record: the root, or the item a
@@ -231,7 +231,7 @@ impl<R: Resource> ViewCx<R> {
             },
             focus: Rc::new(|state| Some(state)),
             updaters: Updaters::new(),
-            gate: None,
+            row_mount: None,
             action_bindings: Actions::new(app, published),
             item: None,
             path: Some(Vec::new()),
@@ -495,7 +495,7 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
         let mut last = initial.clone();
         self.updaters.push(
             self.alive.clone(),
-            self.gate.clone(),
+            self.row_mount.clone(),
             reads,
             Box::new(move |state| {
                 let next = read(state);
@@ -624,8 +624,8 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
     /// unless the bound one refines it ([`tilo_resource::bind_declaration`]).
     pub fn bind_declarations(&self, bind: impl Fn(&R::State) -> Vec<ActionDecl<R>> + 'static) {
         // The published tree reads what `bind` captured, mounted row or not.
-        if let Some(gate) = &self.gate {
-            gate.read_while_unmounted();
+        if let Some(row_mount) = &self.row_mount {
+            row_mount.read_while_unmounted();
         }
         self.bindings.push(self.alive.clone(), Box::new(bind));
     }
@@ -788,7 +788,7 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
         let env = self.env.clone();
         let focus = Rc::clone(&self.focus);
         let updaters = self.updaters.clone();
-        let gate = self.gate.clone();
+        let row_mount = self.row_mount.clone();
         let action_bindings = self.action_bindings.clone();
         let item = self.item.clone();
         let path = self.path.clone();
@@ -799,7 +799,7 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
             env: env.living(alive),
             focus: Rc::clone(&focus),
             updaters: updaters.clone(),
-            gate: gate.clone(),
+            row_mount: row_mount.clone(),
             action_bindings: action_bindings.clone(),
             item: item.clone(),
             path: path.clone(),
@@ -901,8 +901,8 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
         let status: StatusSource = Rc::default();
         // The handler and the status the resource publishes read the scope's
         // local state, mounted row or not.
-        if let Some(gate) = &self.gate {
-            gate.read_while_unmounted();
+        if let Some(row_mount) = &self.row_mount {
+            row_mount.read_while_unmounted();
         }
         // Captures and History still describe the controls they draw. Only
         // execution needs a live environment; publication is inert metadata.
@@ -995,7 +995,7 @@ impl<R: Resource, T: Model + 'static> ViewCx<R, T> {
         let mark = Rc::clone(&stale);
         self.updaters.push(
             self.alive.clone(),
-            self.gate.clone(),
+            self.row_mount.clone(),
             located.clone().map_or(Reads::Always, Reads::Members),
             Box::new(move |_| mark.set(true)),
         );
@@ -1014,7 +1014,7 @@ impl<R: Resource, T: Model + 'static> ViewCx<R, T> {
             stale,
             self.updaters.clone(),
             Box::new(
-                move |id: &Id, alive: &Rc<()>, gate: &super::reactive::Gate| {
+                move |id: &Id, alive: &Rc<()>, row_mount: &super::reactive::RowMount| {
                     let parent = Rc::clone(&parent_focus);
                     let items = Rc::clone(&items);
                     let key = id.clone();
@@ -1030,7 +1030,7 @@ impl<R: Resource, T: Model + 'static> ViewCx<R, T> {
                         env: env.living(alive),
                         focus,
                         updaters: updaters.clone(),
-                        gate: Some(gate.clone()),
+                        row_mount: Some(row_mount.clone()),
                         action_bindings: action_bindings.clone(),
                         item: Some(id.clone()),
                         path,

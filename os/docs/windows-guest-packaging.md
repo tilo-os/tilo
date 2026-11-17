@@ -4,7 +4,7 @@ This is a build contract, not a promoted release artifact. No guest snapshot or
 buildroot digest has been selected here, and these new recipes have not yet been
 built. DXVK prefix activation/native DLL overrides are still required before OS
 integration. Full Wine/Proton, graphics, sandbox and hardware acceptance remain
-separate gates.
+separate checks.
 
 ## Complete transaction, empty filesystem
 
@@ -116,7 +116,7 @@ development signing identities, not release trust or execution acceptance.
 
 After installation, the build executes the guest's native x86-64 Python standard
 library import check and `localedef` generation of `en_US.UTF-8`. It then
-runs `validate-windows-guest.py`. That gate requires both Wine/server ELF widths,
+runs `validate-windows-guest.py`. That check requires both Wine/server ELF widths,
 Python, locale helpers and sources, both graphics loader/driver widths, and
 D3D8/D3D9/D3D10Core/D3D11/DXGI DXVK DLLs as correctly matched PE32 and PE32+ files.
 

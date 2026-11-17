@@ -1282,8 +1282,8 @@ mod tests {
     #[test]
     fn a_stalled_timedated_never_holds_the_window() {
         ui::i18n::I18nManager::init("en-US");
-        let gate = crate::stall::Stall::new();
-        let stalled = Arc::clone(&gate);
+        let check = crate::stall::Stall::new();
+        let stalled = Arc::clone(&check);
         crate::area::replace_in_next_window(move |_| {
             TimeDateArea::over(Arc::new(StalledClock(stalled)))
         });
@@ -1293,12 +1293,12 @@ mod tests {
         app.harness()
             .poll_frame()
             .expect("the window draws its next frame");
-        gate.assert_held("opening the pane");
+        check.assert_held("opening the pane");
         let frame = app.harness().inspection_json().unwrap();
         assert!(frame.contains(&t("time-reading")), "{frame}");
         assert!(!frame.contains(SAMPLE_ZONE_NAME), "{frame}");
 
-        gate.release();
+        check.release();
         assert!(
             app.harness()
                 .wait_until(tilo_test_env::hang_bound(), |harness| harness

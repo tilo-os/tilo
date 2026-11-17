@@ -993,7 +993,7 @@ mod tests {
             assert!(migration.poll());
             let cleanup = migration.status()["cleanup_result"].clone();
             // Simulate only the existing actor's next access callback after its
-            // already-tested RO gate. This does not construct a source grant.
+            // already-tested RO check. This does not construct a source grant.
             migration.original_copy = None;
             migration.access = Some(crate::retained::Request {
                 operation: stage.clone(),

@@ -120,7 +120,7 @@ pub(super) fn run(arguments: impl Iterator<Item = OsString>) -> io::Result<()> {
 struct CleanupObservation {
     writer: UnixStream,
     subject: runtime_collab::retained_retirement::Subject,
-    _gate: super::retained_consumer_lease::RetirementGate,
+    _check: super::retained_consumer_lease::RetirementCheck,
 }
 fn run_current(
     arguments: impl Iterator<Item = OsString>,
@@ -302,20 +302,20 @@ fn run_reviewed(
         export?;
         lease.lock().map_err(|_| refused())?.check(cancel)?;
         fence.observed_consumer()?;
-        let mut gate = None;
+        let mut check = None;
         let outcome = RetainedConsumerLease::supervise(
             &lease,
             cancel,
             Duration::from_secs(5),
             bootstrap,
             reviewed_slot,
-            &mut gate,
+            &mut check,
         );
-        if let Some(gate) = gate {
+        if let Some(check) = check {
             *terminal = Some(CleanupObservation {
                 writer: cleanup,
                 subject: cleanup_subject,
-                _gate: gate,
+                _check: check,
             });
         }
         outcome

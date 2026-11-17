@@ -1235,16 +1235,16 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase a_gate_may_read_state_the_content_writes_elsewhere;
+    phase a_check_may_read_state_the_content_writes_elsewhere;
     {
         let _settled = crate::motion::testing::settled();
         let valid = Rc::new(Cell::new(false));
         let (saved, save) = counter();
-        let gate = Rc::clone(&valid);
+        let check = Rc::clone(&valid);
         let mut d = ModalDialog::new("Back up vault", TestContent)
             .primary_action("Choose file…", save)
             .secondary_action("Cancel", || {})
-            .primary_enabled_if(move |_| gate.get())
+            .primary_enabled_if(move |_| check.get())
             .open(true);
         lay_out(&mut d, WINDOW, &Theme::dark());
         present(&mut d, WINDOW, &Theme::dark());
@@ -1265,7 +1265,7 @@ tilo_test_env::scenario! {
         assert_eq!(saved.get(), 1);
     }
 
-    phase a_disabled_or_gated_primary_action_is_inert_and_announced;
+    phase a_disabled_or_guarded_primary_action_is_inert_and_announced;
     {
         let _settled = crate::motion::testing::settled();
         let (fired, fire) = counter();
@@ -1294,13 +1294,13 @@ tilo_test_env::scenario! {
             Some("Erase 2 partitions")
         );
 
-        let mut gated = ModalDialog::new("Erase disk", crate::widget::PromptBody::new("Name", "sdb"))
+        let mut guarded = ModalDialog::new("Erase disk", crate::widget::PromptBody::new("Name", "sdb"))
             .primary_action("Erase", || {})
             .primary_enabled_if(|body| body.value() == "sdb")
             .open(true);
-        assert!(!gated.primary_enabled());
-        gated.content_mut().set_value("sdb");
-        assert!(gated.primary_enabled());
+        assert!(!guarded.primary_enabled());
+        guarded.content_mut().set_value("sdb");
+        assert!(guarded.primary_enabled());
     }
 
     phase an_open_list_in_the_content_takes_the_press_before_the_scrim;

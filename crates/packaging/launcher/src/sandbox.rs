@@ -614,7 +614,7 @@ pub fn build_bwrap_argv_for_entry(
     push_clean_environment(&mut argv);
 
     // Network namespace is shared ONLY for unrestricted access (host network, or a `*` grant) —
-    // anything more specific keeps the empty namespace and uses the egress gate, since `--share-net`
+    // anything more specific keeps the empty namespace and uses the egress proxy, since `--share-net`
     // is all-or-nothing.
     argv.push("--unshare-all".to_string());
     if egress_decision(manifest, capabilities).shares_host_network() {
@@ -742,51 +742,51 @@ pub fn build_bwrap_argv_for_entry(
 pub fn egress_decision(
     manifest: &ManifestView,
     capabilities: &CapabilityPlan,
-) -> crate::netgate::EgressDecision {
-    let decision = crate::netgate::EgressDecision::resolve(
+) -> crate::egress_proxy::EgressDecision {
+    let decision = crate::egress_proxy::EgressDecision::resolve(
         &manifest.sandbox.net.mode,
         &manifest.sandbox.net.hosts,
         &capabilities.net_hosts,
     );
-    // Applied here, not at the gate: the namespace decision and the gate must come from the same
+    // Applied here, not at the check: the namespace decision and the check must come from the same
     // answer, or the app gets an empty namespace with nothing to reach through it.
-    if matches!(decision, crate::netgate::EgressDecision::Filtered(_))
-        && package_store::dev_env::dev_override(crate::dev_env::NET_GATE_ENV)
+    if matches!(decision, crate::egress_proxy::EgressDecision::Filtered(_))
+        && package_store::dev_env::dev_override(crate::dev_env::EGRESS_PROXY_ENV)
             .is_some_and(|v| v == "off")
     {
         tracing::warn!(
-            hosts = ?decision.policy().map(super::netgate::EgressPolicy::describe),
+            hosts = ?decision.policy().map(super::egress_proxy::EgressPolicy::describe),
             "{}=off: launching with UNRESTRICTED outbound network access even though this app \
              was granted specific hosts. Per-host filtering is NOT enforced for this launch.",
-            crate::run::NET_GATE_ENV,
+            crate::run::EGRESS_PROXY_ENV,
         );
-        return crate::netgate::EgressDecision::Unrestricted;
+        return crate::egress_proxy::EgressDecision::Unrestricted;
     }
     decision
 }
 
-/// Where the egress gate socket is on each side of the sandbox boundary, and the loopback port the
+/// Where the egress proxy socket is on each side of the sandbox boundary, and the loopback port the
 /// in-sandbox relay serves.
 #[derive(Debug, Clone)]
-pub struct NetGateBind {
+pub struct EgressProxyBind {
     pub host_socket: PathBuf,
     pub sandbox_socket: PathBuf,
     /// Loopback port the relay listens on inside the sandbox.
     pub port: u16,
 }
 
-/// Wire the egress gate into the sandbox: socket + env vars for an ordinary HTTP client
-/// ([`crate::netgate::proxy_env`]), pointed at the in-sandbox relay.
-pub fn push_net_gate(argv: &mut Vec<String>, bind: &NetGateBind) {
+/// Wire the egress proxy into the sandbox: socket + env vars for an ordinary HTTP client
+/// ([`crate::egress_proxy::proxy_env`]), pointed at the in-sandbox relay.
+pub fn push_egress_proxy(argv: &mut Vec<String>, bind: &EgressProxyBind) {
     push_bind(argv, "--bind", &bind.host_socket, &bind.sandbox_socket);
-    for (var, value) in crate::netgate::proxy_env(bind.port) {
+    for (var, value) in crate::egress_proxy::proxy_env(bind.port) {
         argv.push("--setenv".to_string());
         argv.push(var.to_string());
         argv.push(value);
     }
-    // Convenience for an app that speaks to the gate directly instead of via the loopback relay.
+    // Convenience for an app that speaks to the check directly instead of via the loopback relay.
     argv.push("--setenv".to_string());
-    argv.push("TILO_NET_GATE".to_string());
+    argv.push("TILO_EGRESS_PROXY".to_string());
     argv.push(bind.sandbox_socket.display().to_string());
 }
 
@@ -1491,7 +1491,7 @@ mod tests {
                 let mut env = tilo_test_env::ScopedEnv::new();
                 env.set("TILO_PROFILE_PRESENTATION", value)
                     .set("TILO_NATIVE_SCENARIO", "/private/input.json")
-                    .set("TILO_NATIVE_INPUT_GATE", "private-approval")
+                    .set("TILO_NATIVE_INPUT_APPROVAL", "private-approval")
                     .set("TILO_PROFILE_OUT", "/private/log")
                     .set("VELLO_GPU_DISPATCH_TIMESTAMPS", value)
                     .set("VELLO_GPU_TIMESTAMPS", value)
@@ -1519,7 +1519,7 @@ mod tests {
                 }
                 for key in [
                     "TILO_NATIVE_SCENARIO",
-                    "TILO_NATIVE_INPUT_GATE",
+                    "TILO_NATIVE_INPUT_APPROVAL",
                     "TILO_PROFILE_OUT",
                 ] {
                     assert_eq!(
@@ -2693,7 +2693,7 @@ mod tests {
             }
         }
 
-        phase network_capabilities_decide_namespace_and_egress_gate;
+        phase network_capabilities_decide_namespace_and_egress_proxy;
         {
             {
                 // The manifest says net.mode = "off": without a capability the sandbox keeps the empty
@@ -2729,7 +2729,7 @@ mod tests {
                  equivalence between `github.com` and `*` is the bug this closes: {argv:?}"
                 );
 
-                // And the grant does reach a mechanism now: the gate decision comes from the same manifest
+                // And the grant does reach a mechanism now: the check decision comes from the same manifest
                 // + capability pair that built the argv above.
                 let plan =
                     CapabilityPlan::for_app_with("so.tilo.mail", &caps, Some(1_000), |_| Vec::new());
@@ -2744,24 +2744,24 @@ mod tests {
                 );
             }
             {
-                let bind = NetGateBind {
+                let bind = EgressProxyBind {
                     host_socket: PathBuf::from("/run/user/1000/tilo/net/7.sock"),
-                    sandbox_socket: PathBuf::from(crate::netgate::SANDBOX_GATE_PATH),
-                    port: crate::netgate::RELAY_PORT,
+                    sandbox_socket: PathBuf::from(crate::egress_proxy::SANDBOX_PROXY_PATH),
+                    port: crate::egress_proxy::RELAY_PORT,
                 };
                 let mut argv = Vec::new();
-                push_net_gate(&mut argv, &bind);
+                push_egress_proxy(&mut argv, &bind);
 
                 assert!(
                     argv.windows(3).any(|w| w[0] == "--bind"
                         && w[1] == "/run/user/1000/tilo/net/7.sock"
-                        && w[2] == crate::netgate::SANDBOX_GATE_PATH),
-                    "the gate socket must be bound read-write: connect(2) on a pathname socket is a \
+                        && w[2] == crate::egress_proxy::SANDBOX_PROXY_PATH),
+                    "the check socket must be bound read-write: connect(2) on a pathname socket is a \
                  write and a --ro-bind surfaces as EACCES: {argv:?}"
                 );
-                // socks5h, not socks5: the `h` sends the hostname to the gate instead of resolving it
+                // socks5h, not socks5: the `h` sends the hostname to the check instead of resolving it
                 // locally, which the sandbox cannot do.
-                let socks = format!("socks5h://127.0.0.1:{}", crate::netgate::RELAY_PORT);
+                let socks = format!("socks5h://127.0.0.1:{}", crate::egress_proxy::RELAY_PORT);
                 for var in ["ALL_PROXY", "all_proxy"] {
                     assert!(
                         argv.windows(3)
@@ -2771,7 +2771,7 @@ mod tests {
                 }
                 // And the HTTP form works without an opt-in feature — an app whose HTTP library lacks
                 // SOCKS support reads only these.
-                let http = format!("http://127.0.0.1:{}", crate::netgate::RELAY_PORT);
+                let http = format!("http://127.0.0.1:{}", crate::egress_proxy::RELAY_PORT);
                 for var in ["HTTP_PROXY", "http_proxy", "HTTPS_PROXY", "https_proxy"] {
                     assert!(
                         argv.windows(3)

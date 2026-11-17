@@ -35,18 +35,18 @@ pub(in super::super) async fn test_stream(
     Vec<Response>,
     PlanTiming,
 ) {
-    test_stream_gated(body, protocol, piece, (legacy, deltas), None).await
+    test_stream_held(body, protocol, piece, (legacy, deltas), None).await
 }
 
-// A gate makes the provider withhold the rest of the turn until an actual
+// A hold makes the provider withhold the rest of the turn until an actual
 // gateway preview arrives. Event ordering in a fully buffered reply cannot
 // prove that a caller sees progress while generation is still running.
-async fn test_stream_gated(
+async fn test_stream_held(
     body: Vec<u8>,
     protocol: ProviderProtocol,
     piece: usize,
     options: (bool, bool),
-    gate: Option<usize>,
+    hold: Option<usize>,
 ) -> (
     Result<CompletionResponse, String>,
     Vec<Response>,
@@ -56,14 +56,14 @@ async fn test_stream_gated(
     let (preview_tx, preview_rx) = std::sync::mpsc::channel::<Response>();
     let preview_rx = Mutex::new(preview_rx);
     let served = Responder::serve(move |peer| {
-        let split = gate.unwrap_or(body.len());
+        let split = hold.unwrap_or(body.len());
         let _ = peer.write(
             b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n",
         );
         for bytes in body[..split].chunks(piece) {
             let _ = peer.write(bytes);
         }
-        if gate.is_some() {
+        if hold.is_some() {
             let preview = preview_rx
                 .lock()
                 .unwrap()
@@ -284,7 +284,7 @@ async fn chat_argument_previews_arrive_while_provider_is_still_generating() {
         }
         body += &chunk(&json!({}), &json!("tool_calls"));
         body += "data: [DONE]\n\n";
-        let (result, frames, _) = test_stream_gated(
+        let (result, frames, _) = test_stream_held(
             body.into_bytes(),
             ProviderProtocol::OpenAiCompatible,
             1,
@@ -326,7 +326,7 @@ async fn visible_argument_previews_never_authorize_an_unfinished_call() {
         }}]}),
         &json!(null),
     );
-    let (result, frames, _) = test_stream_gated(
+    let (result, frames, _) = test_stream_held(
         prefix.clone().into_bytes(),
         ProviderProtocol::OpenAiCompatible,
         1,

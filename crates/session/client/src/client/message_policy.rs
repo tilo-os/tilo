@@ -1,15 +1,15 @@
-//! The gate every message from another member passes: the workspace it arrived in decides, by its
+//! The check every message from another member passes: the workspace it arrived in decides, by its
 //! own policy, what the member may say there.
-//! The table of what each message is lives in [`crate::gate`]; here is where the question is asked
+//! The table of what each message is lives in [`crate::message_policy`]; here is where the question is asked
 //! — with the sender's person, the workspaces the session shows, and each workspace's policy — and
 //! what a refusal says.
 
-use crate::gate::{self, WorkspaceAction};
+use crate::message_policy::{self, WorkspaceAction};
 use crate::network::Event;
 
 use super::Client;
 
-/// The shell a session shows, as the gate reads it: its workspaces' policies hold every
+/// The shell a session shows, as the check reads it: its workspaces' policies hold every
 /// message from another member to what the workspace grants them.
 pub trait Shell {
     /// Whether the workspace `workspace` of this shell lets `person` do `required` at `now` (Unix
@@ -20,7 +20,7 @@ pub trait Shell {
 impl Client {
     /// Why `event`'s message is refused by the workspace it arrived in: `None` when it is admitted,
     /// and when nothing here decides — a client that takes part as nobody, or a message that is no
-    /// workspace's traffic ([`gate::required_workspace_action`]).
+    /// workspace's traffic ([`check::required_workspace_action`]).
     pub(crate) fn refusal(&self, event: &Event) -> Option<String> {
         let Event::Msg { ws, peer, msg } = event else {
             return None;
@@ -28,7 +28,7 @@ impl Client {
         // A session whose device no person certified is a member of no workspace's governance: a
         // stand-in client has no policy to be held to.
         self.person()?;
-        let required: WorkspaceAction = gate::required_workspace_action(msg)?;
+        let required: WorkspaceAction = message_policy::required_workspace_action(msg)?;
         if *peer == self.publisher() {
             return None;
         }

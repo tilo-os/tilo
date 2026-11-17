@@ -18,7 +18,7 @@
 //! widens.
 //!
 //! Every enforcer reads this grammar through [`EgressPolicy`]: the
-//! launcher's gate (apps, Windows capsules, the Windows guest relay) and
+//! launcher's check (apps, Windows capsules, the Windows guest relay) and
 //! `tilo-egress`'s DNS stub (environments, builds). They differ in backend
 //! only.
 
@@ -296,9 +296,9 @@ impl EgressPolicy {
     /// May a connection to `host` land on an address of *this device*?
     /// Only when a grant names that host exactly, or the policy is `*`.
     ///
-    /// This is the launcher gate's question. For an app, `*` is
+    /// This is the launcher check's question. For an app, `*` is
     /// `--share-net`, which reaches the device's loopback like any other
-    /// process, and a gate standing in for it must not be stricter. The DNS
+    /// process, and a check standing in for it must not be stricter. The DNS
     /// stub of `tilo-egress` answers its own question
     /// (`tilo_egress::policy::admissible`): an environment's `*` keeps a
     /// namespace of its own, whose loopback is not the device's.

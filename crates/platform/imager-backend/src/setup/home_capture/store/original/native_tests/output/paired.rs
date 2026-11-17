@@ -1,5 +1,5 @@
 //! The paired positive requires genuine root admission and actual unprivileged
-//! consumers. It intentionally fails while the release Flatpak gate remains shut.
+//! consumers. It intentionally fails while the release Flatpak check remains shut.
 use super::*;
 use crate::setup::{
     flatpak_transfer::{

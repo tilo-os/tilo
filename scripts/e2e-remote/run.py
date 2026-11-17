@@ -17,12 +17,12 @@ What a person does, on real booted boxes (tools/ci/e2e-remote.sh makes the host)
 4. With B's "Accept agents from my other devices" off and nobody at B, the agent is not
    admitted; the person approving B's sheet admits it; their Stop on B ends A's connection.
 5. With the setting on (turned on through its own action), the agent is let in on B without a
-   question: it lists B's apps, opens Notes and makes a note there, seated on B's shell with
+   question: it lists B's apps, opens Notes and makes a note there, registered in B's shell with
    A's device beside its name (its whole key and its label as the server caps it) and with no
    environment. Its step `terminal#run`, which asks first, is still put to B's person on the
    run's sheet, who allows it once, and the command then runs.
 6. With B's second setting "Let them act without asking" on as well, a new connection of the
-   agent (a seat of its own, under another key) does the same work, `terminal#run` and all,
+   agent (a session of its own, under another key) does the same work, `terminal#run` and all,
    with no sheet ever up on B. That the step is asked with the second setting off is step 5,
    in the same run, just before.
 7. Two agents on two machines work in one Browser tab on B at once: B's person opens the
@@ -40,7 +40,7 @@ What a person does, on real booted boxes (tools/ci/e2e-remote.sh makes the host)
    as well as a name: D does not list B (step 10).
 9. In B's tab, each agent that came from another machine is recorded with its device beside
    its name: the device B's server verified it came from, by its whole key and its name, in the
-   tab's record and in who set each field. B's own agent is recorded with none. B's shell seats
+   tab's record and in who set each field. B's own agent is recorded with none. B's shell registers
    each of them the same way: an agent from another machine with that machine's key and label,
    B's own with neither, and none of them with an environment.
 10. The person's third device lists the second among their devices (`tilo_devices`), as the
@@ -207,7 +207,7 @@ class Run:
         self.results: list[Result] = []
         # The agents from other machines as B's tab named them, with their devices.
         self.tab_actors: list[dict] = []
-        # B's shell while the agents worked in its tab: each agent's machine and what was seated.
+        # B's shell while the agents worked in its tab: each agent's machine and what was registered.
         self.tab_sessions: list[dict] = []
         # Whether the third device D was made, for the step that asks what it lists.
         self.third_made = False
@@ -529,7 +529,7 @@ class Run:
                       lambda res: self.unanswered(a, b, res, facts), "E05")
             self.step("E07", "Approving B's sheet admits it; B's Stop ends A's connection",
                       lambda res: self.approve_and_stop(a, b, res, facts), "E05")
-            self.step("E08", "With only B's first setting on, the agent is let in unasked and seated "
+            self.step("E08", "With only B's first setting on, the agent is let in unasked and registered "
                              "with A's device (key and capped label) and no environment; its "
                              "terminal#run is put to B's person, allowed once, and runs",
                       lambda res: self.work(a, b, res, facts), "E05")
@@ -754,7 +754,7 @@ class Run:
         if not gone:
             raise Failed("B's question stayed up after the agent left")
         if self.agent_sessions(b):
-            raise Failed(f"an agent is seated on B: {self.agent_sessions(b)}")
+            raise Failed(f"an agent is registered on B: {self.agent_sessions(b)}")
 
     def approve_and_stop(self, a: Box, b: Box, res: Result, facts: dict) -> None:
         ready = f"$HOME/{GUEST_DIR}/stop-ready"
@@ -764,7 +764,7 @@ class Run:
         sessions = wait_until(lambda: [s for s in self.agent_sessions(b) if s.get("stoppable")], 60, 1.0)
         res.facts["sessions"] = sessions
         if not sessions:
-            raise Failed("B seats no agent after its person allowed it")
+            raise Failed("B registers no agent after its person allowed it")
         agent = sessions[0]["key"]
         if not wait_until(lambda: "yes" in a.vm.exec(f'test -e "{ready}" && echo yes || echo no'), 120, 1.0):
             raise Failed("the agent never got through its first calls on B")
@@ -776,7 +776,7 @@ class Run:
         if last not in (None,) and not (isinstance(last, dict) and "error" in last):
             raise Failed(f"A's connection did not end after B's Stop: {t.get('after_stop')}")
         if [s for s in self.agent_sessions(b) if s.get("stoppable")]:
-            raise Failed(f"B still seats the agent after its Stop: {self.agent_sessions(b)}")
+            raise Failed(f"B still registers the agent after its Stop: {self.agent_sessions(b)}")
 
     def unasked(self, res: Result, names: list[str]) -> None:
         """Nobody sits at B and both its settings are on, so no sheet may be up on it: neither
@@ -808,7 +808,7 @@ class Run:
         res.facts["sessions"] = sessions
         if not sessions:
             names = [t.get("name") for t in self.targets(b)]
-            raise Failed("B seats no agent although its setting lets the person's devices in; "
+            raise Failed("B registers no agent although its setting lets the person's devices in; "
                          f"its screen names {names}")
 
         def there(path: str) -> bool:
@@ -861,7 +861,7 @@ class Run:
                          f"setting off: {before}")
         self.no_sheet_before(b)
         if wait_until(lambda: not [s for s in self.agent_sessions(b) if s.get("stoppable")], 60, 1.0) is None:
-            raise Failed(f"E08's agent is still seated on B: {self.agent_sessions(b)}")
+            raise Failed(f"E08's agent is still registered on B: {self.agent_sessions(b)}")
         res.facts["setting"] = self.set_accept(b, True)
         res.facts["unasked"] = self.set_unasked(b, True)
         ready, go, asking = (f"$HOME/{GUEST_DIR}/work-ready", f"$HOME/{GUEST_DIR}/work-go",
@@ -902,7 +902,7 @@ class Run:
         # Each MCP connection is an agent session of its own: this one is not E08's.
         res.facts["sessions_of"] = {"E08": before["session"], "E08b": session.get("key")}
         if not session.get("key") or session.get("key") == before["session"]:
-            raise Failed(f"B seats E08b's connection under E08's key {before['session']!r}: {session}")
+            raise Failed(f"B registers E08b's connection under E08's key {before['session']!r}: {session}")
 
     def no_sheet_before(self, b: Box) -> None:
         # What an earlier agent asked is withdrawn once it is gone: no sheet stands on B before
@@ -912,7 +912,7 @@ class Run:
             raise Failed(f"a question about an agent that left still stands on B's shell: {names}")
 
     def check_work(self, a: Box, b: Box, res: Result, t: dict, sessions: list, title: str) -> dict:
-        """What the agent from A did on B, and how B's shell seats it: under a name, with A's
+        """What the agent from A did on B, and how B's shell registers it: under a name, with A's
         whole key and A's label as the server caps it beside the name, and with no environment.
         Its session."""
         for key in ("initialize", "devices", "apps", "open_notes", "run_command", "new_note",
@@ -929,8 +929,8 @@ class Run:
         if not (isinstance(ran, dict) and (ran.get("result") or {}).get("isError") is False):
             raise Failed(f"the agent's terminal#run did not go through on B: {ran}")
         if not sessions:
-            raise Failed("B seats no agent")
-        # B's shell seats the agent under the name it shows the client by (its clientInfo name, then
+            raise Failed("B registers no agent")
+        # B's shell registers the agent under the name it shows the client by (its clientInfo name, then
         # its number) and says beside the name the device it came from, as B's server verified it:
         # A's whole key and A's label as the server caps it. The session's key names the agent
         # session, which says nothing of a device. It came in by B's server, by no environment.
@@ -940,16 +940,16 @@ class Run:
             if field_name not in session:
                 raise Failed(f"B's shell lists the agent without its {field_name!r}: {session}")
         if not str(session.get("name") or "").startswith(CLIENT_SHOWN):
-            raise Failed(f"B seats the agent under the name {session.get('name')!r}, not as "
+            raise Failed(f"B registers the agent under the name {session.get('name')!r}, not as "
                          f"{CLIENT_SHOWN!r}: {session}")
         if len(this.get("device", "")) != 64 or session.get("device") != this.get("device"):
-            raise Failed(f"B seats the agent as one from the device {session.get('device')!r}, not "
+            raise Failed(f"B registers the agent as one from the device {session.get('device')!r}, not "
                          f"from A's ({this.get('device')!r}): {session}")
         if (session.get("device_name") or "") != capped(this.get("label") or ""):
             raise Failed(f"B calls the device its agent came from {session.get('device_name')!r}, "
                          f"not {capped(this.get('label') or '')!r} as A's label reads: {session}")
         if session.get("environment") or session.get("environment_id"):
-            raise Failed(f"B seats the agent from A as one of an environment: {session}")
+            raise Failed(f"B registers the agent from A as one of an environment: {session}")
         windows = b.vm.raw({"op": "windows"})
         res.facts["b_windows"] = windows
         if "so.tilo.notes" not in json.dumps(windows):
@@ -1145,7 +1145,7 @@ class Run:
                                  f"{json.dumps(held, ensure_ascii=False)[:600]}")
             sessions = [s for s in self.agent_sessions(b) if s.get("stoppable")]
             res.facts["sessions"] = sessions
-            # Every agent is in B's tab now: how B's shell seats each of them is E12's to judge.
+            # Every agent is in B's tab now: how B's shell registers each of them is E12's to judge.
             self.tab_sessions.append({
                 "parties": [{"who": party.box.letter.upper(), "remote": party.remote,
                              "device": (party.box.identity.get("this_device") or {}).get("device", ""),
@@ -1232,7 +1232,7 @@ class Run:
         whole key, as that machine's own identity names it, and its label as B's server caps it.
         B's own agent is recorded and reviewed with no device. The record's device is the one
         the change it made was invoked with (`/invoker/device`): the tab takes no entry whose
-        device is not that (apps/browser/src/page_record.rs). B's shell seats them the same way
+        device is not that (apps/browser/src/page_record.rs). B's shell registers them the same way
         while they work, none of them as an agent of an environment."""
         res.facts["actors"] = self.tab_actors
         res.facts["sessions"] = self.tab_sessions
@@ -1246,18 +1246,18 @@ class Run:
                 if missing:
                     raise Failed(f"B's shell lists an agent without {missing}: {session}")
                 if session.get("environment") or session.get("environment_id"):
-                    raise Failed(f"B's shell seats an agent in its tab as one of an environment: {session}")
+                    raise Failed(f"B's shell registers an agent in its tab as one of an environment: {session}")
                 if not session.get("device") and session.get("device_name"):
                     raise Failed(f"B's shell names a device for an agent that came from none: {session}")
             for party in held["parties"]:
                 who, device = party["who"], party["device"]
                 if not party["remote"]:
                     if not [s for s in sessions if not s.get("device") and not s.get("device_name")]:
-                        raise Failed(f"B's shell seats its own agent ({who}) with a device: {sessions}")
+                        raise Failed(f"B's shell registers its own agent ({who}) with a device: {sessions}")
                     continue
                 theirs = [s for s in sessions if len(device) == 64 and s.get("device") == device]
                 if not theirs:
-                    raise Failed(f"B's shell seats no agent from {who}'s device {device}: {sessions}")
+                    raise Failed(f"B's shell registers no agent from {who}'s device {device}: {sessions}")
                 if any((s.get("device_name") or "") != capped(party["label"]) for s in theirs):
                     raise Failed(f"B's shell calls {who}'s device other than "
                                  f"{capped(party['label'])!r}: {theirs}")
@@ -2329,12 +2329,12 @@ class Run:
         said = json.dumps(t)
         if "someone else" not in said and "refus" not in said.lower():
             raise Failed(f"C was not told B's server refused it: {said[:1500]}")
-        # B's shell says of each agent it seats which device it came from: none came from C's.
+        # B's shell says of each agent it registers which device it came from: none came from C's.
         from_c = (sc.get("this_device") or {}).get("device", "")
         if len(from_c) != 64:
             raise Failed(f"C's identity names no device: {sc}")
         if [s for s in self.agent_sessions(b) if s.get("stoppable") and s.get("device") == from_c]:
-            raise Failed(f"B seats C's agent: {self.agent_sessions(b)}")
+            raise Failed(f"B registers C's agent: {self.agent_sessions(b)}")
 
 
 def _found(value, key: str) -> list:

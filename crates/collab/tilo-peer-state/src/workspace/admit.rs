@@ -24,7 +24,7 @@ pub enum Standing {
     Member { person: [u8; 32], foreign: bool },
     /// The receiver's transport decided this sender may change the workspace before
     /// it delivered the batch, and the receiver has no roster entry of its own to
-    /// decide it again (the shell's network gate, `peer_workspace_allows`). Every
+    /// decide it again (the shell's network check, `peer_workspace_allows`). Every
     /// other check still applies.
     TransportAuthorized,
 }

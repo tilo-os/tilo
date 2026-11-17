@@ -3,7 +3,7 @@
 //! device fabric, the transfers between their devices, and the roster the bar draws.
 //!
 //! The member itself is `tilo_session_client::Client`, which every host links. [`Client`] here
-//! is that client plus this desktop's host. The endpoint keeps number 0's directory behind a gate
+//! is that client plus this desktop's host. The endpoint keeps number 0's directory behind a check
 //! and its relays held back ([`tilo_endpoint_reachability`]): a desktop with nobody else in its
 //! workspaces publishes nothing and keeps no relay.
 
@@ -33,9 +33,9 @@ use tilo_live::live_session::Heard;
 use tilo_relay_protocol::live::{LiveFrame, OpsFrame};
 use tilo_session_client::client::Host;
 #[cfg(target_os = "linux")]
-use tilo_session_client::client::Shell as GateShell;
+use tilo_session_client::client::Shell as PolicyShell;
 #[cfg(target_os = "linux")]
-use tilo_session_client::gate::WorkspaceAction;
+use tilo_session_client::message_policy::WorkspaceAction;
 use tilo_session_client::{Client as SessionClient, Device, OwnPresence, Transport};
 #[cfg(target_os = "linux")]
 use tilo_session_client::{Cmd, Enrolled, Event, Outbox, SayPresence, Topic};
@@ -1264,7 +1264,7 @@ impl Host for Hosting {
     }
 }
 
-/// The session a session shows, as the workspace gate reads it.
+/// The session a session shows, as the workspace check reads it.
 /// A page's host: the roster, over the transport the page brings.
 #[cfg(not(target_os = "linux"))]
 impl Host for Hosting {
@@ -1275,15 +1275,16 @@ impl Host for Hosting {
 }
 
 #[cfg(target_os = "linux")]
-struct Gate {
+struct MessagePolicy {
     session: DesktopHandle,
 }
 
 #[cfg(target_os = "linux")]
-impl GateShell for Gate {
+impl PolicyShell for MessagePolicy {
     fn allows(&self, workspace: &str, person: &str, required: &WorkspaceAction, now: u64) -> bool {
-        self.session
-            .read(|tree| tilo_session_client::gate::allows(tree, workspace, person, required, now))
+        self.session.read(|tree| {
+            tilo_session_client::message_policy::allows(tree, workspace, person, required, now)
+        })
     }
 }
 
@@ -1865,11 +1866,11 @@ impl Client {
         }
     }
 
-    /// Hand the workspace gate the session this session shows: whose workspaces' policies hold every
+    /// Hand the workspace check the session this session shows: whose workspaces' policies hold every
     /// member's messages to what the workspace grants them.
     #[cfg(target_os = "linux")]
     pub fn attach_shell(&self, session: DesktopHandle) {
-        self.inner.attach_shell(Rc::new(Gate {
+        self.inner.attach_shell(Rc::new(MessagePolicy {
             session: session.clone(),
         }));
         *self.hosting.local.session.borrow_mut() = Some(session);

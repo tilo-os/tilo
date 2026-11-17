@@ -488,7 +488,7 @@ route-bound signed metadata and relay opaque MLS payloads byte-for-byte, while
 exact route's `KeyGroup`. The crypto layer now supplies vault-key-sealed
 atomic OpenMLS state, signed revision-bound governance frames, a durable
 targeted Welcome/commit/removal journal, partial-failure rollback, and a
-snapshot-acknowledged plaintext gate. The session now has a broker-internal,
+snapshot-acknowledged plaintext check. The session now has a broker-internal,
 handle-only workspace authority transaction with idempotency and crash recovery
 tying those primitives to role admission/revocation. Production broker startup
 installs the Secret Service provider with no automatic file-key fallback; a sealed owner-only
@@ -855,9 +855,9 @@ and `crates/runtime/tilo-identity-host/src/broker.rs::tests::identity_service_wi
 
 `docs/app-model/sandbox.md:162-172` describes DNS-layer filtering that direct-IP connections bypass.
 The code has no DNS proxy — `dns-only` resolves to `EgressDecision::Blocked`
-(`crates/packaging/launcher/src/netgate.rs:241`) and address literals arrive as
+(`crates/packaging/launcher/src/egress_proxy.rs:241`) and address literals arrive as
 `Destination::Addr` and are matched as literals, pinned by the test
-`an_address_literal_never_matches_a_hostname_grant` (`netgate.rs:1112`).
+`an_address_literal_never_matches_a_hostname_grant` (`egress_proxy.rs:1112`).
 
 The code is correct; the document is stale. Recorded because a stale doc describing a weaker
 mechanism is how a strong one gets "simplified" later.
@@ -865,12 +865,12 @@ mechanism is how a strong one gets "simplified" later.
 **Resolved.** `docs/app-model/sandbox.md` now says an address literal never satisfies a hostname
 grant and describes no DNS filtering. The test is now the phase
 `an_address_literal_never_matches_a_hostname_grant` of
-`grants_narrow_but_never_widen_the_manifest_allowlist` in `netgate.rs`.
+`grants_narrow_but_never_widen_the_manifest_allowlist` in `egress_proxy.rs`.
 
 ## P2-5 — `tilo-security-audit` cannot fail
 
 `os/usr/libexec/tilo-security-audit` exits 0 unconditionally (`:5`, `:86`) and the unit sets
-`SuccessExitStatus=0 1`. It reports; it never gates a boot. Its image-signing check greps
+`SuccessExitStatus=0 1`. It reports; it never checks a boot. Its image-signing check greps
 `policy.json` for the string `sigstoreSigned` (`:63-67`) rather than verifying anything.
 
 **Resolved.** Required-invariant failures now accumulate and return a non-zero
@@ -1071,7 +1071,7 @@ draws with the CPU rasterizer onto KMS. libinput gives it touch, and it shows it
 on-screen keyboard. The toolkit's own screen reader speaks through `tilo-tts`. A
 `tilo-comforts` header token carries the device's sign-in comforts, and Ctrl +
 Super + Enter or both volume keys turn speech on. The initramfs size and the time
-to first frame are gated.
+to first frame are guarded.
 
 **Status in source:** the Plymouth sign-in layout this describes is removed. The
 sign-in screen in the initramfs is the greeter in boot mode
@@ -1115,9 +1115,9 @@ These are load-bearing and correct. Changing them requires understanding why the
   *"send the guest another invite"* becomes a way to re-point them at an attacker.
 - `crates/session/session/src/:1078-1084` — a role **is** the verb on the membership capability, not a
   separately stored field, so the two cannot drift.
-- `crates/packaging/launcher/src/netgate.rs` — egress is fail-closed: if the gate cannot start the
+- `crates/packaging/launcher/src/egress_proxy.rs` — egress is fail-closed: if the check cannot start the
   launch is refused, not downgraded.
 - `crates/collab/collab-types/src/caps/net.rs` (`host_covers`) — `host_covers` is shared by the grant model and the
-  egress gate specifically so the two interpretations cannot diverge.
+  egress proxy specifically so the two interpretations cannot diverge.
 - `docs/app-model/trust.md:218` — package revocation is re-read at every launch; there is no
   "trust the install-time verification forever" cache.

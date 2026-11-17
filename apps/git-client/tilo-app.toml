@@ -1,7 +1,7 @@
 # Git — Tilo application manifest.
 #
 # Fetch/pull/push over https+ssh to arbitrary remotes with no feature
-# gate, so `mode = "host"`.
+# check, so `mode = "host"`.
 #
 # Beyond the system read profile it needs, as consented capabilities:
 # read+write on the working copy AND its ancestors —

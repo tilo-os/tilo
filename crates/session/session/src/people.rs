@@ -72,7 +72,7 @@ pub enum PeopleAsk {
     /// app, as following them brings it forward once.
     GoTo { who: String },
     /// Ask this of the agent of `client`, whose card stands for the member `who` (by its presence
-    /// key): an agent this device seats is stopped here, anything else through its card in Console.
+    /// key): an agent this device started is stopped here, anything else through its card in Console.
     Agent {
         who: String,
         client: String,

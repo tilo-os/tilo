@@ -27,12 +27,12 @@ const PREFETCH_QUEUE_CAPACITY: usize = 32;
 pub const DEFAULT_MAX_QUEUED_PREDICTIVE_BYTES: u64 = 128 * 1024 * 1024;
 
 /// Runtime policy supplied by the system's network, power and storage-pressure
-/// monitors. A false gate cancels queued/running speculation; foreground reads
+/// monitors. A false check cancels queued/running speculation; foreground reads
 /// are deliberately outside this policy.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[allow(
     clippy::struct_excessive_bools,
-    reason = "independent runtime gates are the policy's public contract"
+    reason = "independent runtime checks are the policy's public contract"
 )]
 pub struct PredictivePolicy {
     pub enabled: bool,
@@ -206,7 +206,7 @@ impl Heuristics {
         self.activity.notified().await;
     }
 
-    /// Replace the system's speculative policy. Tightening any gate
+    /// Replace the system's speculative policy. Tightening any check
     /// invalidates every queued/running prediction; reopening policy starts
     /// with a fresh generation and never resurrects stale hints.
     pub fn set_policy(&self, policy: PredictivePolicy) {
@@ -217,7 +217,7 @@ impl Heuristics {
 
     /// The person's switch for prediction, from Settings: off cancels what
     /// is queued or running and admits nothing more, whatever the system's
-    /// gates say; on leaves those gates in charge.
+    /// checks say; on leaves those checks in charge.
     pub fn set_prefetch_enabled(&self, enabled: bool) {
         {
             let mut inputs = self.inputs.lock_recover();
@@ -320,7 +320,7 @@ mod tests {
     use iroh::protocol::Router;
 
     #[test]
-    fn speculation_is_gated_and_budgeted() {
+    fn speculation_is_guarded_and_budgeted() {
         {
             let base = PredictivePolicy::default();
             for policy in [
@@ -367,7 +367,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn the_persons_switch_overrides_the_system_gates() {
+    async fn the_persons_switch_overrides_the_system_checks() {
         let endpoint = Endpoint::builder(presets::Minimal)
             .bind_addr((std::net::Ipv4Addr::LOCALHOST, 0))
             .unwrap()
@@ -402,7 +402,7 @@ mod tests {
         });
         assert!(
             heuristics.prefetch_enabled() && !heuristics.policy().network_allows,
-            "the switch leaves the system's gates in charge"
+            "the switch leaves the system's checks in charge"
         );
         drop(heuristics);
         endpoint.close().await;

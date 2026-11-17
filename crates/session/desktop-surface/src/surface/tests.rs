@@ -2326,7 +2326,7 @@ fn a_windows_own_icon_is_on_its_tab() {
     assert_eq!(magenta(&frame), 0, "and gone when the window's icon is");
 }
 
-/// A two-finger sideways swipe as the gate's browser sends it: seven wheel
+/// A two-finger sideways swipe as the hold's browser sends it: seven wheel
 /// events, a trackpad's lead-in and tail, 96 px over the whole gesture.
 const BRIEF_SWIPE: [f64; 7] = [6.0, 12.0, 18.0, 24.0, 18.0, 12.0, 6.0];
 

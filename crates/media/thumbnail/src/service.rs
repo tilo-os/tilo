@@ -727,14 +727,14 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let cache = ThumbCache::open(dir.path()).unwrap();
         let svc = ThumbnailService::with_bounds(cache, 1, 64, 4, 1024);
-        let (release, gate) = mpsc::channel::<()>();
+        let (release, check) = mpsc::channel::<()>();
         let (started_tx, started) = mpsc::channel::<()>();
         svc.request(ThumbRequest::load(
-            ThumbKey::of_bytes(b"gate", 64),
+            ThumbKey::of_bytes(b"check", 64),
             FileCategory::Image,
             move || {
                 started_tx.send(()).unwrap();
-                gate.recv().ok();
+                check.recv().ok();
                 None
             },
         ));
@@ -897,7 +897,7 @@ mod tests {
             )
             .is_loading()
         );
-        assert_eq!(svc.pending(), 3, "gate + two queued, not three queued");
+        assert_eq!(svc.pending(), 3, "check + two queued, not three queued");
         release.send(()).unwrap();
         svc.block_until_idle(SETTLE);
         let ran: Vec<String> = order.try_iter().collect();

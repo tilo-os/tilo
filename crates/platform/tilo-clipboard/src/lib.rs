@@ -21,7 +21,7 @@
 //! clipboard, and logs that once. `arboard` is kept only for X11: its Wayland path
 //! needs `zwlr_data_control_manager_v1`, a clipboard-manager protocol Tilo
 //! withholds from sandboxed apps because it exposes every selection on the seat
-//! with no focus check. The Wayland backend's `wl_data_device` is focus-gated.
+//! with no focus check. The Wayland backend's `wl_data_device` is focus-guarded.
 
 use std::sync::{Mutex, OnceLock};
 

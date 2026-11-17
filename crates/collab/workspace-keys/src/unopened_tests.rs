@@ -37,7 +37,7 @@ fn late_readers_service(dir: &Path, directory: &LateReaders) -> WorkspaceKeys {
             role: crate::KeyRole::Committer,
         },
         Box::new(directory.clone()),
-        Arc::new(Gates::default()),
+        Arc::new(SealChecks::default()),
     )
     .unwrap()
 }

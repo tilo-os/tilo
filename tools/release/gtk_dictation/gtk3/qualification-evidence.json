@@ -7,7 +7,7 @@
   "qualified_previous_patch": {
     "patch_sha256": "7b73dd68ea20246a996dc0d9e01b7c9404e3f8209981ac9c6237d9feaddf9e7a",
     "gtk_library_sha256": "2dd848d65757deb0eff37e44ba823a02a0ea7a2bca6dca39d22c42aa8e442c36",
-    "native_atk_gate": {
+    "native_atk_check": {
       "complete": true,
       "log_sha256": "6f37569339a927a71004bcd6565d98e6f7e7ad907bea3ae5533403ee5eb1a7a2",
       "selection_restored": true,
@@ -64,7 +64,7 @@
       "required_handled": false,
       "log_sha256": "27a5aff04d2b8f5aed3b214adf6dda428424eeb39c5e43205ee2af92ddc15be7",
       "library_sha256": "2dd848d65757deb0eff37e44ba823a02a0ea7a2bca6dca39d22c42aa8e442c36",
-      "gate_binary_sha256": "6ee07e93c800c14ad164e3feb9d74803289eff8b9f5fa0b2c7f2a20d9efed6c6"
+      "check_binary_sha256": "6ee07e93c800c14ad164e3feb9d74803289eff8b9f5fa0b2c7f2a20d9efed6c6"
     },
     "native_compile": {
       "complete": true,
@@ -73,7 +73,7 @@
       "old_qualification_outputs_preserved": true,
       "log_sha256": "58699ae9239409f5f91c0ef907ef3ebdad86764623c38d86415d7cbd52f28844",
       "gtk_library_sha256": "f149394dd72b69b756c42d028119dbb54cd789f83e5df5aac7dc3bcf397579f7",
-      "native_gate_sha256": "054904786cdfcc920940d2e66a08687ebfe15b2f471fbd39de22e365eb1447a5"
+      "native_check_sha256": "054904786cdfcc920940d2e66a08687ebfe15b2f471fbd39de22e365eb1447a5"
     },
     "native_green": {
       "complete": true,

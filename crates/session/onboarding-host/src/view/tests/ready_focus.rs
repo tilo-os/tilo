@@ -19,7 +19,7 @@ tilo_test_env::scenario! {
     fn the_ready_screen_and_the_short_steps_fit_their_panel_with_named_stops;
 
     phase the_ready_screen_keyboard_stops_are_named;
-    // The ready screen at the size of the virtual machines the release gates
+    // The ready screen at the size of the virtual machines the release holds
     // boot (1280×800): its page fits, so Tab has one stop, Continue to desktop,
     // and it is named. (When the page overflowed by a line its unnamed scroll
     // region was a second stop, and Tab from the action landed there.)
@@ -64,7 +64,7 @@ tilo_test_env::scenario! {
 
     phase the_short_setup_steps_fit_without_scrolling;
     // The steps of a first setup whose copy is short fit their panel without
-    // scrolling, at the gates' 1280×800 and at 800×600: a scroll region on a
+    // scrolling, at the holds' 1280×800 and at 800×600: a scroll region on a
     // page that has one action to take is a stop that scrolls nothing. The
     // backup step is a form whose fields bring themselves into view, and its
     // page may scroll.

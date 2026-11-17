@@ -1025,13 +1025,13 @@ async fn replica_workspace(
     let ticket = Ticket::decode(&bundle.ticket).context("decode home-peer ticket")?;
     std::fs::create_dir_all(&bundle.cache_dir)?;
 
-    let (transport_gate, _transport_gate_task) = fs::transport_gate::spawn_from_env()?;
+    let (transport_switch, _transport_switch_task) = fs::transport_switch::spawn_from_env()?;
     let paths = identity_paths();
     let certified = load_certified_mount_identity_once_valid(&paths).await?;
     let revocations = Arc::new(RwLock::new(load_revocation_list(&paths)?));
     let (device, credentials) = certified.into_parts();
     let transport_identity = FsTransportIdentity::new(credentials.clone(), revocations)
-        .with_transport_gate(transport_gate);
+        .with_transport_switch(transport_switch);
     let governor = credentials.user_public_key();
     let authority = WorkspaceAuthority::open(
         bundle.cache_dir.join("workspace-authority.bin"),
@@ -1251,7 +1251,7 @@ async fn serve(
         blob_sock,
         session_link,
     } = sockets;
-    let (transport_gate, _transport_gate_task) = fs::transport_gate::spawn_from_env()?;
+    let (transport_switch, _transport_switch_task) = fs::transport_switch::spawn_from_env()?;
     let np = namespace_path(cache_dir.as_deref());
     let thumb_dir = thumb_path(cache_dir.as_deref());
     let availability = open_availability(cache_dir.as_deref())?;
@@ -1263,7 +1263,7 @@ async fn serve(
     let share_issuer = load_workspace_share_issuer(&paths, &credentials)?;
     let transport_identity =
         FsTransportIdentity::new(credentials.clone(), Arc::clone(&revocations))
-            .with_transport_gate(transport_gate);
+            .with_transport_switch(transport_switch);
     let history_actor = fs_protocol::FileActor {
         person: collab_types::Ed25519PublicKey(credentials.user_public_key()),
         device: collab_types::Ed25519PublicKey(credentials.device_public_key()),
@@ -1521,7 +1521,7 @@ async fn mount(
         blob_sock,
         session_link,
     } = sockets;
-    let (transport_gate, _transport_gate_task) = fs::transport_gate::spawn_from_env()?;
+    let (transport_switch, _transport_switch_task) = fs::transport_switch::spawn_from_env()?;
     let ticket = Ticket::decode(&ticket)?;
     if let Some(cache_dir) = &cache_dir {
         save_workspace_ticket(cache_dir, &ticket)?;
@@ -1535,7 +1535,7 @@ async fn mount(
     let revocations = Arc::new(RwLock::new(load_revocation_list(&paths)?));
     let (device, credentials) = certified.into_parts();
     let transport_identity = FsTransportIdentity::new(credentials.clone(), revocations)
-        .with_transport_gate(transport_gate);
+        .with_transport_switch(transport_switch);
     let history_actor = fs_protocol::FileActor {
         person: collab_types::Ed25519PublicKey(credentials.user_public_key()),
         device: collab_types::Ed25519PublicKey(credentials.device_public_key()),

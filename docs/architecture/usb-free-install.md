@@ -167,8 +167,8 @@ it must never be fabricated to enter the native Windows route. The current
 prepared-setup staging artifact is Linux-only.
 
 Opening this review records intent, not installability: the native host probe,
-architecture-specific internal release catalog and product release gate must
-all pass before installation is offered. The review does not enable the gate
+architecture-specific internal release catalog and product release check must
+all pass before installation is offered. The review does not enable the check
 or qualify a Windows device.
 
 The helper never trusts the request for authority:
@@ -405,7 +405,7 @@ Any mismatch leaves the partitions untouched and logs why.
   mode. The destructive round trip needs a Windows guest image on a KVM runner.
   Until that exists, Windows support stays **unverified**.
 
-The product gate in `setup/view.rs` enables Full Tilo only when all of the
+The product check in `setup/view.rs` enables Full Tilo only when all of the
 following hold: the probe passes, the catalog contains an internal release for
 the host architecture, and the build was produced with `TILO_IMAGER_INTERNAL_INSTALL=1`,
 which is set only by release jobs whose round trip passed. Development builds can

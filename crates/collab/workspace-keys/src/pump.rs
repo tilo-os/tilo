@@ -155,7 +155,7 @@ impl GovernancePump {
 mod tests {
     use super::*;
     use crate::encryption::{InboundGovernance, KeyAccess, KeyDir, KeysConfig, WorkspaceKeys};
-    use crate::gates::Gates;
+    use crate::seal_checks::SealChecks;
     use crate::testing::{Announcements, Directory, Endpoint, Policy, Workspace, key};
     use key_group::VaultKey;
 
@@ -201,7 +201,7 @@ mod tests {
                 role: crate::KeyRole::Committer,
             },
             Box::new(Directory::new(Policy::default())),
-            Arc::new(Gates::default()),
+            Arc::new(SealChecks::default()),
         )
         .unwrap();
         let park = GovernancePark::new();
@@ -316,7 +316,7 @@ mod tests {
                     role: crate::KeyRole::Committer,
                 },
                 Box::new(Directory::new(policy.clone())),
-                Arc::new(Gates::default()),
+                Arc::new(SealChecks::default()),
             )
             .unwrap();
             (service, Endpoint::join(&workspace, workspace_id, id))

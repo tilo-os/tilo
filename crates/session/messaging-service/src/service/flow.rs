@@ -21,7 +21,7 @@ use tilo_messaging::{
 use tilo_messaging_protocol::journal::Owner;
 
 use super::Service;
-use super::gate::Running;
+use super::guard::Running;
 use super::identity::{Credential, Grant, Identity, Permission, credential_scope, service_name};
 use crate::wire::EnrollmentView;
 

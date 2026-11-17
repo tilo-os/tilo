@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use compat_catalogue::{Architecture, LaunchPlan, Layer, Runner};
 use launcher::capabilities::CapabilityPlan;
 use launcher::gpu::{IcdSearch, select_for_node};
-use launcher::sandbox::NetGateBind;
+use launcher::sandbox::EgressProxyBind;
 use launcher::seccomp::SeccompProfile;
 use thiserror::Error;
 
@@ -376,12 +376,12 @@ impl NetworkShape {
             return Self::Offline;
         }
         // The decision an app's grants get, with no manifest to add: `*` is
-        // the host network, named hosts a gate, and grants that are not hosts
+        // the host network, named hosts a proxy, and grants that are not hosts
         // in the one grammar (IP literals) nothing.
-        match launcher::netgate::EgressDecision::resolve("off", &[], &capabilities.net_hosts) {
-            launcher::netgate::EgressDecision::Blocked => Self::Offline,
-            launcher::netgate::EgressDecision::Unrestricted => Self::Unrestricted,
-            launcher::netgate::EgressDecision::Filtered(_) => Self::Filtered,
+        match launcher::egress_proxy::EgressDecision::resolve("off", &[], &capabilities.net_hosts) {
+            launcher::egress_proxy::EgressDecision::Blocked => Self::Offline,
+            launcher::egress_proxy::EgressDecision::Unrestricted => Self::Unrestricted,
+            launcher::egress_proxy::EgressDecision::Filtered(_) => Self::Filtered,
         }
     }
 }
@@ -397,7 +397,7 @@ pub struct ResourceRequest<'a> {
 pub struct LaunchLease {
     pub id: String,
     pub audio: Vec<AudioBinding>,
-    pub net_gate: Option<NetGateBind>,
+    pub egress_proxy: Option<EgressProxyBind>,
 }
 
 impl LaunchLease {
@@ -406,7 +406,7 @@ impl LaunchLease {
         Self {
             id: id.into(),
             audio: Vec::new(),
-            net_gate: None,
+            egress_proxy: None,
         }
     }
 
@@ -433,18 +433,18 @@ impl LaunchLease {
                 return Err(PlanError::DuplicateAudioProtocol);
             }
         }
-        match (network, self.net_gate.as_ref()) {
-            (NetworkShape::Filtered, Some(gate)) => {
-                if !gate.host_socket.starts_with(&root)
-                    || gate.sandbox_socket != Path::new("/run/tilo/network/gate.sock")
-                    || gate.port < 1024
+        match (network, self.egress_proxy.as_ref()) {
+            (NetworkShape::Filtered, Some(proxy)) => {
+                if !proxy.host_socket.starts_with(&root)
+                    || proxy.sandbox_socket != Path::new("/run/tilo/network/proxy.sock")
+                    || proxy.port < 1024
                 {
-                    return Err(PlanError::ResourceEscalation("network gate"));
+                    return Err(PlanError::ResourceEscalation("egress proxy"));
                 }
             }
-            (NetworkShape::Filtered, None) => return Err(PlanError::MissingNetworkGate),
+            (NetworkShape::Filtered, None) => return Err(PlanError::MissingEgressProxy),
             (NetworkShape::Offline | NetworkShape::Unrestricted, Some(_)) => {
-                return Err(PlanError::UnexpectedNetworkGate);
+                return Err(PlanError::UnexpectedEgressProxy);
             }
             (NetworkShape::Offline | NetworkShape::Unrestricted, None) => {}
         }
@@ -647,9 +647,9 @@ impl<'a, R: RuntimeRegistry> SandboxPlanner<'a, R> {
         }
         landlock_read.extend(gpu.manifest_files());
         push_audio(&mut argv, lease, self.session.uid, &mut landlock_write);
-        if let Some(gate) = &lease.net_gate {
-            launcher::sandbox::push_net_gate(&mut argv, gate);
-            landlock_write.push(gate.sandbox_socket.clone());
+        if let Some(proxy) = &lease.egress_proxy {
+            launcher::sandbox::push_egress_proxy(&mut argv, proxy);
+            landlock_write.push(proxy.sandbox_socket.clone());
         }
 
         push_fixed_environment(&mut argv, capsule, route)?;
@@ -676,15 +676,15 @@ impl<'a, R: RuntimeRegistry> SandboxPlanner<'a, R> {
         match network {
             NetworkShape::Offline => argv.push("--net-restricted".to_string()),
             NetworkShape::Filtered => {
-                let gate = lease
-                    .net_gate
+                let proxy = lease
+                    .egress_proxy
                     .as_ref()
-                    .ok_or(PlanError::MissingNetworkGate)?;
+                    .ok_or(PlanError::MissingEgressProxy)?;
                 argv.extend([
-                    "--net-gate".to_string(),
-                    gate.sandbox_socket.display().to_string(),
-                    "--net-gate-port".to_string(),
-                    gate.port.to_string(),
+                    "--net-proxy".to_string(),
+                    proxy.sandbox_socket.display().to_string(),
+                    "--net-proxy-port".to_string(),
+                    proxy.port.to_string(),
                 ]);
             }
             NetworkShape::Unrestricted => {}
@@ -1021,10 +1021,10 @@ pub enum PlanError {
     ResourceEscalation(&'static str),
     #[error("resource broker returned the same audio protocol twice")]
     DuplicateAudioProtocol,
-    #[error("filtered network launch has no Tilo egress gate")]
-    MissingNetworkGate,
-    #[error("offline or unrestricted launch unexpectedly has a network gate")]
-    UnexpectedNetworkGate,
+    #[error("filtered network launch has no Tilo egress proxy")]
+    MissingEgressProxy,
+    #[error("offline or unrestricted launch unexpectedly has a egress proxy")]
+    UnexpectedEgressProxy,
     #[error("Proton route has no UMU recipe")]
     MissingProtonRecipe,
     #[error("catalogue environment variable {0:?} is not allow-listed")]
@@ -1884,7 +1884,7 @@ mod tests {
                         input_enabled: true,
                     },
                 ],
-                net_gate: None,
+                egress_proxy: None,
             };
             let command = planner
                 .plan(&route, &state, &program, &capabilities, "workspace", &lease)

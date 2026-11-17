@@ -82,7 +82,7 @@ type            = "gui"
 splash-segments = ["bin/file-explorer[0x0:0x400000]"]
 splash-budget   = 250
 
-# External-client certification for the installed-image release gate. The
+# External-client certification for the installed-image release check. The
 # generic harness finds this signed manifest in the app store, launches this
 # payload, and performs the named action through the real AT-SPI D-Bus bus.
 [accessibility.atspi_acceptance]

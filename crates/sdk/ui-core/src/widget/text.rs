@@ -824,7 +824,7 @@ impl Widget for Text {
     }
 
     crate::provides!(
-        dyn crate::permissions::capability::PermissionGated,
+        dyn crate::permissions::capability::PermissionGuarded,
         dyn crate::presence::capability::PublishesPresence
     );
 
@@ -1102,7 +1102,9 @@ impl Widget for Text {
             }
         }
         self.face.append(scene, transform, self.rect);
-        crate::widget::draw_gate_and_peer_focus(self, scene, transform, theme, presence);
+        crate::widget::draw_permission_scrim_and_peer_focus(
+            self, scene, transform, theme, presence,
+        );
     }
 
     fn name(&self) -> &'static str {
@@ -1173,7 +1175,7 @@ impl crate::presence::capability::PublishesPresence for Text {
     }
 }
 
-impl crate::permissions::capability::PermissionGated for Text {
+impl crate::permissions::capability::PermissionGuarded for Text {
     fn permission_scope(&self) -> Option<PermissionScope> {
         self.permission_scope.clone()
     }

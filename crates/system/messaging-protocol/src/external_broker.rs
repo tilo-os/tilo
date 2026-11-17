@@ -170,7 +170,7 @@ impl NativeAdapter for crate::sms_runtime::SmsRuntime {
         })
     }
 }
-/// Current certified caller, account lease and reviewed provider identity gate.
+/// Current certified caller, account lease and reviewed provider identity check.
 /// The publisher must hold exclusive credential/SIM authority across adapter I/O.
 pub trait ExternalAuthority: Send + Sync {
     /// # Errors
@@ -198,7 +198,7 @@ pub struct ExternalBroker {
 impl ExternalBroker {
     /// Assemble an already linked native adapter using existing OS custody.
     /// The host supplies the authenticated provider handle and current grant
-    /// gate. This path never connects to an ambient service or creates keys.
+    /// check. This path never connects to an ambient service or creates keys.
     /// Run on the account supervisor's worker, not the rendering thread.
     pub fn open_system(
         root: &std::path::Path,

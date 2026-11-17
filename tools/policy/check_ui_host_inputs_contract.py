@@ -77,7 +77,7 @@ COMMENT = re.compile(r"(?m)//.*$")
 
 
 def production_source(text: str) -> str:
-    """Drop comments and every item or block gated on `cfg(test)`."""
+    """Drop comments and every item or block depending on `cfg(test)`."""
     return blank_test_items(COMMENT.sub(lambda m: " " * len(m.group()), text))
 
 

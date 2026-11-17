@@ -5,7 +5,7 @@ boundary contracts. It currently provides:
 
 - deterministic catalogue resolution;
 - persistent isolated Wine/UMU capsule state and registered-program lookup;
-- a fixed Bubblewrap, Landlock, network-gate, Wayland, and GPU plan;
+- a fixed Bubblewrap, Landlock, network-check, Wayland, and GPU plan;
 - a no-shell Bubblewrap executor with the Tilo seccomp baseline for Wine;
 - a trait boundary to the singleton `windows-vm` appliance;
 - explainable status DTOs for the Windows Apps UI;
@@ -23,7 +23,7 @@ launch; the client cannot supply grants, executable or host paths, runner
 settings, or VM intent. The manager uses an empty unavailable state when the
 optional service is absent, while sample applications remain screenshot-only.
 
-Filtered network access uses the existing Tilo egress gate. Audio uses a
+Filtered network access uses the existing Tilo egress proxy. Audio uses a
 private, short-lived PipeWire graph per launch. The graph contains no device
 discovery: its output tunnel is the only playback path, and its input tunnel
 is created only after the compositor has granted `Device("microphone")`.

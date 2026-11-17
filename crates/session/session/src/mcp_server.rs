@@ -1,7 +1,7 @@
 //! The session's MCP server: how agents reach the action API. `$XDG_RUNTIME_DIR/tilo-session/agent.sock`
 //! (0600, in the session's 0700 directory) is where a program of this login reaches this desktop's
 //! actions as an agent, never as the person. Framing is newline-delimited MCP JSON-RPC
-//! ([`tilo_mcp::session_api`]). Three gates stand between a connection and the desktop: its
+//! ([`tilo_mcp::session_api`]). Three checks stand between a connection and the desktop: its
 //! peer must be this session's own account in this session's namespaces; the person must allow it,
 //! on the sheet the question opens ([`Questions`]); and the broker then serves it as the person's
 //! agent member for that client. Each connection is one agent session
@@ -1063,7 +1063,7 @@ enum Memory {
     Always,
 }
 
-/// Whether the agent `remembered` is the program the agent `seated` is an instance of. An answer
+/// Whether the agent `remembered` is the program the agent `connected` is an instance of. An answer
 /// is remembered for the program by the id its client proposed (`claude-code`), and what the answer
 /// admits is that program at this device, as an instance of its own (`claude-code@host#2`): its own
 /// id begins with the one remembered, at a place or an instance of it.
@@ -1767,7 +1767,7 @@ type Answered =
 /// How many answered session steps a connection remembers.
 const ANSWERED_KEPT: usize = 256;
 
-/// The broker as an admitted client's API: every call passes the gate as the agent or person
+/// The broker as an admitted client's API: every call passes the check as the agent or person
 /// and workspace the connection was admitted for, and the session's own actions are among what
 /// the same broker publishes.
 #[derive(Clone)]
@@ -2046,8 +2046,8 @@ impl Host {
             return Pending::ready(Err(ActionHostError::Unavailable { reason }));
         }
         // This device's own sockets, and a desktop with no broker at all, reach the session's own
-        // actions on the loop: the broker is the gate for a caller on another's word, and the
-        // person at this seat is nobody's delegate.
+        // actions on the loop: the broker is the check for a caller on another's word, and the
+        // person at this device is nobody's delegate.
         let own = request.target.provider == wire_provider();
         let person = caller.acting().is_person();
         // An agent works in one workspace: a shell window of another is not its to read or act on,
@@ -2168,7 +2168,7 @@ impl Host {
     }
 
     /// The session's own action `request` names, carried out on the loop's pass as `actor` (the
-    /// person at this seat, or an agent reading): where the layout and the windows are.
+    /// person at this device, or an agent reading): where the layout and the windows are.
     fn invoke_step_at(
         &self,
         actor: tilo_actions::Actor,

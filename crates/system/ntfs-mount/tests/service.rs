@@ -232,7 +232,7 @@ fn consent(mode: Mode, remember: bool) -> Option<Consent> {
 
 tilo_test_env::scenario! {
     /// The service over its socket, each case on its own server, socket and grant store.
-    fn consent_gated_service;
+    fn consent_guarded_service;
 
     phase the_windows_partition_is_asked_about_once_then_opens_lazily;
     {

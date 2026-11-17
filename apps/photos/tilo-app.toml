@@ -72,7 +72,7 @@ splash-segments = ["bin/photos[0x0:0x400000]"]
 splash-budget   = 250
 
 # The installed-image acceptance client discovers these controls through the
-# real AT-SPI D-Bus endpoint. Photos opens on the library, and the gate runs on
+# real AT-SPI D-Bus endpoint. Photos opens on the library, and the check runs on
 # a freshly installed profile whose library holds no photographs, so the
 # library's empty state is read out on open. Activating Favorites must replace
 # it with the Favorites surface, whose own empty state only that view shows, so

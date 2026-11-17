@@ -146,7 +146,7 @@ class StagingTests(unittest.TestCase):
             with self.assertRaises(ValueError): s.receive(self.packet, self.work, self.bridge)
             self.assertFalse((self.work / 'operator-ready').exists())
         restart_fixture(self)
-        with self.subTest(phase="existing_gate_is_not_overwritten"):
+        with self.subTest(phase="existing_check_is_not_overwritten"):
             receipt = s.receive(self.packet, self.work, self.bridge)
             (self.work / 'operator-ready').write_bytes(b'existing')
             with self.assertRaises(OSError): s.release(receipt, self.work)

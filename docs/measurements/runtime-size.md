@@ -19,7 +19,7 @@ runtime bundle tools (`os/scripts/collect-runtime-dependencies.py`,
 `verify-runtime-bundle-closure.sh`) ship and verify those libraries like
 `DT_NEEDED` ones. A library of `[targets] needed_absent` in the runtime's
 `DT_NEEDED`, in what every app loads with it, or in what a built app of
-`apps_without_media` loads at exec fails the build gate; if the runtime starts
+`apps_without_media` loads at exec fails the build check; if the runtime starts
 reading a GLib or GStreamer *variable*, the link itself fails, since nothing can
 provide one before the library loads.
 
@@ -45,7 +45,7 @@ run = 90210                  # the Release / apps run that measured the growth
 bytes = 4194304
 ```
 
-When the runtime shrinks, both gates print the lower budget to commit.
+When the runtime shrinks, both checks print the lower budget to commit.
 
 What the runtime may carry is a rule of its own. It holds the SDK and crates
 several apps share; never an engine only one or two apps use, an OS daemon or other OS-internal crate (the filesystem, the

@@ -150,7 +150,7 @@ impl KeyDirectory for Directory {
 /// someone founds them.
 fn keys(device: u8, vault: u8, admitted: &[u8]) -> (KeyProvider, tempfile::TempDir) {
     let directory = tempfile::tempdir().expect("a directory to keep channel state in");
-    let gates = Arc::new(tilo_broker_core::collab_core::BrokerGates(Arc::new(
+    let checks = Arc::new(tilo_broker_core::collab_core::BrokerSealChecks(Arc::new(
         Mutex::new(BrokerChannels::default()),
     )));
     let encryption = WorkspaceKeys::open(
@@ -165,7 +165,7 @@ fn keys(device: u8, vault: u8, admitted: &[u8]) -> (KeyProvider, tempfile::TempD
         Box::new(Directory {
             admitted: admitted.iter().copied().map(key).collect(),
         }),
-        gates,
+        checks,
     )
     .expect("a channel service");
     let provider = KeyProvider::default();

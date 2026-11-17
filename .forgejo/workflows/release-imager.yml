@@ -1,7 +1,7 @@
 name: Release / Tilo Installer
 
 # Relevant protected-branch pushes publish immutable signed native prereleases.
-# Stable tags retain media, distribution-index and website promotion gates.
+# Stable tags retain media, distribution-index and website promotion checks.
 # Main never builds OS images or installer media; it consumes reviewed catalogs,
 # and a promotion to stable is what requests a prerelease.
 on:
@@ -562,7 +562,7 @@ jobs:
           if [[ -n ${TILO_LENOVO_TARGET_IMAGE:-} ]]; then
             # QEMU virt can boot the generic installer, then validate that it
             # wrote the exact Lenovo target. The board target's Lenovo DTB
-            # cannot boot on QEMU virt; physical boot is a separate gate.
+            # cannot boot on QEMU virt; physical boot is a separate check.
             ./os/dev/test-installer-cycle.sh \
               os/output/installer/qcow2/disk.qcow2 \
               --guided-alongside --install-only \

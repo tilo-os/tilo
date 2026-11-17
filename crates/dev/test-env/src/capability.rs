@@ -402,7 +402,7 @@ mod tests {
     }
 
     scenario! {
-        fn a_capability_gates_a_test_on_what_the_machine_has;
+        fn a_capability_checks_a_test_on_what_the_machine_has;
 
         phase an_available_capability_yields_the_probed_value;
         {
@@ -421,7 +421,7 @@ mod tests {
             assert_eq!(probe_gpu(None), None);
         }
 
-        phase a_boolean_probe_gates_without_a_value;
+        phase a_boolean_probe_checks_without_a_value;
         {
             let mut env = ScopedEnv::new();
             env.remove("TILO_REQUIRE_AUDIO");

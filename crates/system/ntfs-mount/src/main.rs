@@ -1,4 +1,4 @@
-//! `tilo-ntfs-mount`: the consent-gated NTFS mount service.
+//! `tilo-ntfs-mount`: the consent-guarded NTFS mount service.
 
 #[cfg(target_os = "linux")]
 fn main() -> std::process::ExitCode {

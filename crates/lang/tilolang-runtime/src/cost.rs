@@ -232,7 +232,7 @@ impl Costs {
 
 /// Hold an interaction's costs to what they may take. `hold` answers whether `costs` stay
 /// within budget; it is the whole check, in the counts that do not depend on the machine
-/// (`Costs::fuel`, `Costs::calls`, `Costs::reads`), so it can gate on a loaded builder. A
+/// (`Costs::fuel`, `Costs::calls`, `Costs::reads`), so it can check on a loaded builder. A
 /// failure names the interaction, the units that cost the most, and the whole table.
 ///
 /// # Panics

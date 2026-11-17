@@ -6,7 +6,7 @@
 // `systemctl poweroff`, which issue the logind D-Bus actions
 // `org.freedesktop.login1.{suspend,reboot,power-off}` (and the
 // `-multiple-sessions` variants when another session is present). polkit
-// gates those actions.
+// checks those actions.
 //
 // logind's default policy already allows these for an *active* local session
 // (`allow_active = yes`), and greetd's greeter session is normally the

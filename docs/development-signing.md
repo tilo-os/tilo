@@ -505,4 +505,4 @@ trusts tilo/tilo `main` and `v*` tags:
    placeholders to invent beforehand.
 7. Complete installer/media, update/rollback and physical hardware acceptance.
    Confirm a recoverable backup before any destructive installation step.
-   Development signature tests do not remove any of these release gates.
+   Development signature tests do not remove any of these release checks.

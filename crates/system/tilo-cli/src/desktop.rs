@@ -5,7 +5,7 @@
 //! Which socket a request reaches is decided per process, never widened:
 //!
 //! - **The device owner's own login or ssh** reaches the admin socket, with
-//!   their authority at the keyboard, through the same capability gate as
+//!   their authority at the keyboard, through the same capability check as
 //!   the palette.
 //! - **A terminal app, and everything run in it,** is turned away there by
 //!   the desktop (the kernel says it is an app's process), and goes on to the

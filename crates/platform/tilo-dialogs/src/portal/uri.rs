@@ -1,8 +1,8 @@
 //! Original-caller custody for asynchronous desktop URI effects.
-use super::EffectGate;
+use super::EffectCheck;
 use std::sync::mpsc::Receiver;
 
-pub fn open_uri_scoped(uri: String, scope: impl EffectGate) -> Receiver<Result<(), String>> {
+pub fn open_uri_scoped(uri: String, scope: impl EffectCheck) -> Receiver<Result<(), String>> {
     let (sender, receiver) = std::sync::mpsc::channel();
     #[cfg(any(test, feature = "test-support"))]
     let backend = SCOPED_URI_FIXTURE.with(|current| current.borrow().clone());

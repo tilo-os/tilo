@@ -153,18 +153,18 @@ tilo_test_env::scenario! {
             );
         }
         let lease = directory
-            .try_acquire_lease(OsStr::new("gate"), LeaseMode::Exclusive)
+            .try_acquire_lease(OsStr::new("check"), LeaseMode::Exclusive)
             .unwrap();
         assert!(matches!(
-            directory.try_acquire_lease(OsStr::new("gate"), LeaseMode::Shared),
+            directory.try_acquire_lease(OsStr::new("check"), LeaseMode::Shared),
             Err(AcquireError::Busy)
         ));
-        let gate_identity = lease.identity().unwrap();
+        let check_identity = lease.identity().unwrap();
         assert_eq!(
-            gate_identity,
+            check_identity,
             FileIdentity::of(
                 &directory
-                    .open_read(OsStr::new("gate"), Privacy::Inherit)
+                    .open_read(OsStr::new("check"), Privacy::Inherit)
                     .unwrap()
             )
             .unwrap()
@@ -172,7 +172,7 @@ tilo_test_env::scenario! {
         drop(lease);
         assert!(
             directory
-                .try_acquire_lease(OsStr::new("gate"), LeaseMode::Exclusive)
+                .try_acquire_lease(OsStr::new("check"), LeaseMode::Exclusive)
                 .is_ok()
         );
         fs::rename(&path, root.path().join("moved")).unwrap();
@@ -266,7 +266,7 @@ fn held_lease_interoperates_with_legacy_flock_in_real_processes() {
         for shared_child in [false, true] {
             for shared_parent in [false, true] {
                 let root = tempfile::tempdir().unwrap();
-                let path = root.path().join("gate");
+                let path = root.path().join("check");
                 let mut command = Command::new(std::env::current_exe().unwrap());
                 command
                     .args(["--exact", "legacy_flock_child", "--nocapture"])
@@ -297,7 +297,7 @@ fn held_lease_interoperates_with_legacy_flock_in_real_processes() {
                 let directory = StorageDirectory::open(root.path()).unwrap();
                 if native_child {
                     let result = directory.try_acquire_lease(
-                        OsStr::new("gate"),
+                        OsStr::new("check"),
                         if shared_parent {
                             LeaseMode::Shared
                         } else {
@@ -328,7 +328,7 @@ fn held_lease_interoperates_with_legacy_flock_in_real_processes() {
                 assert!(child.0.wait().unwrap().success());
                 assert!(
                     directory
-                        .try_acquire_lease(OsStr::new("gate"), LeaseMode::Exclusive)
+                        .try_acquire_lease(OsStr::new("check"), LeaseMode::Exclusive)
                         .is_ok()
                 );
             }

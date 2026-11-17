@@ -166,7 +166,7 @@ loopback proxy and authenticated launch job for that request; the fixed wrapper
 passes its private proxy URL only through the target process environment. Tilo
 does not mutate the managed user's global WinINet or WinHTTP proxy settings.
 The relay uses the same Tilo name matcher and post-DNS device-local rejection as
-the normal launcher gate. It resolves only after checking the requested name,
+the normal launcher check. It resolves only after checking the requested name,
 so a name grant cannot become an IP-literal bypass or a route to host-local
 services. It supports TCP CONNECT only; no SOCKS, UDP, bridge, or guest NAT is
 introduced. Ending a RAIL process deletes its runtime marker and stops its

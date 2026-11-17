@@ -614,7 +614,7 @@ pub(crate) type Shared = Rc<RefCell<Store>>;
 #[allow(
     clippy::struct_excessive_bools,
     reason = "each bool is an independent flag (fullscreen, validation, paint \
-              gate, capture); grouping them would express no invariant between them"
+              check, capture); grouping them would express no invariant between them"
 )]
 pub(crate) struct Store {
     /// The saved connections as the resource last presented them, plus what

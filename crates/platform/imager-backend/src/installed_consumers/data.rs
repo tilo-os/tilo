@@ -424,7 +424,7 @@ fn native_proof(native: &Value, capability: &Value, facts: &AppsArtifacts) -> io
 
 #[allow(
     clippy::too_many_lines,
-    reason = "one linear contract: each step gates the next"
+    reason = "one linear contract: each step checks the next"
 )]
 pub fn applications(store: &Store, check: bool, runner: &mut Runner<'_>) -> io::Result<Value> {
     let before = apps_artifacts(store)?;

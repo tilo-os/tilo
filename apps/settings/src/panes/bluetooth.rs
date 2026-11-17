@@ -1678,8 +1678,8 @@ mod tests {
 
         let mut app = TestApp::<SettingsShell>::new().unwrap();
         crate::effects::show_pane(&mut app, crate::categories::Category::Bluetooth);
-        let gate = crate::stall::Stall::new();
-        let stalled = Arc::clone(&gate);
+        let check = crate::stall::Stall::new();
+        let stalled = Arc::clone(&check);
         app.with_widget::<crate::window::Inspected, _>(move |settings| {
             crate::panes::bluetooth::area(settings)
                 .unwrap()
@@ -1696,7 +1696,7 @@ mod tests {
         app.harness()
             .poll_frame()
             .expect("the window draws its next frame");
-        gate.assert_held("the click");
+        check.assert_held("the click");
         let frame = app.harness().inspection_json().unwrap();
         assert!(frame.contains(&t("settings-bluetooth-off")), "{frame}");
         assert!(
@@ -1705,7 +1705,7 @@ mod tests {
         );
         assert!(!frame.contains("Porch Radio"), "{frame}");
 
-        gate.release();
+        check.release();
         assert!(
             app.harness()
                 .wait_until(tilo_test_env::hang_bound(), |harness| harness

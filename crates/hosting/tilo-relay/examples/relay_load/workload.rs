@@ -208,14 +208,14 @@ impl Fleet {
         relay: &EndpointAddr,
         relay_device: [u8; 32],
     ) -> anyhow::Result<Vec<Member>> {
-        let mut seats = Vec::new();
+        let mut joins = Vec::new();
         for (workspace_index, workspace) in self.workspaces.iter().enumerate() {
             for member in 0..workspace.members.len() {
-                seats.push((workspace_index, member));
+                joins.push((workspace_index, member));
             }
         }
-        let mut members = Vec::with_capacity(seats.len());
-        for batch in seats.chunks(DIAL_BATCH) {
+        let mut members = Vec::with_capacity(joins.len());
+        for batch in joins.chunks(DIAL_BATCH) {
             let dials: Vec<_> = batch
                 .iter()
                 .map(|&(workspace, member)| {

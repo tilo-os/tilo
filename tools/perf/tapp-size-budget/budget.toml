@@ -14,7 +14,7 @@
 # that adds a few bytes passes, and real growth fails. Budgets only decrease.
 # Intended growth adds raises/<change>.toml, one file per change, so
 # concurrent changes never edit the same line. When an app shrinks, both
-# gates print the lower budget to commit here. docs/measurements/app-package-size.md
+# checks print the lower budget to commit here. docs/measurements/app-package-size.md
 # has the steps.
 #
 # The population is the default collection's apps. The runtime package

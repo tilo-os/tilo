@@ -156,7 +156,7 @@ pub struct ContentStore {
     /// Serializes publication with the legacy selective-GC API.
     mutation: tokio::sync::Mutex<()>,
     /// Exact live set supplied only for an authorized selective sweep.
-    gc: GcGate,
+    gc: GcHold,
     /// Open deferred-durability groups, and whether a write inside one still waits for its database
     /// sync; see [`ContentStore::defer_sync`].
     deferred: std::sync::Mutex<(usize, bool)>,
@@ -210,7 +210,7 @@ impl Drop for ContentStore {
             // which flushed the database before ending the gc task.
             return;
         }
-        let (backend, gate) = (Backend::Fs(store.clone()), self.gc.clone());
+        let (backend, check) = (Backend::Fs(store.clone()), self.gc.clone());
         // Ending a store waits on its database, and a drop may run inside a
         // runtime, so the wait gets a thread of its own. What it waits for
         // belongs to the store; the process does not wait for it.
@@ -223,7 +223,7 @@ impl Drop for ContentStore {
                 else {
                     return;
                 };
-                if let Err(error) = runtime.block_on(stop_store(&backend, &gate)) {
+                if let Err(error) = runtime.block_on(stop_store(&backend, &check)) {
                     tracing::warn!("closing a dropped content store failed: {error}");
                 }
             });
@@ -235,10 +235,10 @@ impl Drop for ContentStore {
 
 /// Flush and close a store's database, then let its background gc task go.
 ///
-/// The task parks in the gate holding a handle of its own, so it outlives every other handle. Closed,
+/// The task parks in the check holding a handle of its own, so it outlives every other handle. Closed,
 /// its next pass runs into the closed store and fails, which ends the task; the last handle goes with
 /// it, the actor ends, and the runtime the actor built shuts down with it.
-async fn stop_store(backend: &Backend, gate: &GcGate) -> Result<()> {
+async fn stop_store(backend: &Backend, check: &GcHold) -> Result<()> {
     let stopped = match backend {
         Backend::Fs(store) => match store.sync_db().await {
             Ok(()) => store.shutdown().await.map_err(anyhow::Error::from),
@@ -246,7 +246,7 @@ async fn stop_store(backend: &Backend, gate: &GcGate) -> Result<()> {
         },
         Backend::Mem(store) => store.shutdown().await.map_err(anyhow::Error::from),
     };
-    gate.close();
+    check.close();
     stopped
 }
 
@@ -385,7 +385,7 @@ impl ContentStore {
         std::fs::create_dir_all(files_dir)?;
         let files = Arc::new(FileArea::open(files_dir, default_budget(files_dir))?);
         let gc_ready = Arc::new(AtomicBool::new(false));
-        let gc = GcGate::default();
+        let gc = GcHold::default();
         let mut options = iroh_blobs::store::fs::options::Options::new(dir);
         options.meta_cache_bytes = META_CACHE_BYTES;
         // Selective eviction is an explicit user action and must not wait for the ordinary
@@ -436,7 +436,7 @@ impl ContentStore {
     }
 
     fn memory_with_files(files: Arc<FileArea>, scratch: Option<tempfile::TempDir>) -> Self {
-        let gc = GcGate::default();
+        let gc = GcHold::default();
         let options = iroh_blobs::store::mem::Options {
             gc_config: Some(gc.config(Duration::from_millis(50), None)),
         };
@@ -492,7 +492,7 @@ impl ContentStore {
             cache: blob_cache(),
             owned_tags: tokio::sync::Mutex::new(()),
             mutation: tokio::sync::Mutex::new(()),
-            gc: GcGate::default(),
+            gc: GcHold::default(),
             deferred: std::sync::Mutex::new((0, false)),
             write_syncs: std::sync::atomic::AtomicU64::new(0),
             read_bytes: std::sync::atomic::AtomicU64::new(0),
@@ -1248,13 +1248,13 @@ const EVICTION_HANG_BOUND: Duration = Duration::from_secs(60);
 /// so the callback's future stays pending until [`Self::authorize`] wakes it, and an idle store costs
 /// nothing.
 #[derive(Clone, Default)]
-struct GcGate {
+struct GcHold {
     live: Arc<RwLock<Option<HashSet<Hash>>>>,
     wake: Arc<tokio::sync::Notify>,
     closed: Arc<AtomicBool>,
 }
 
-impl GcGate {
+impl GcHold {
     fn authorize(&self, live: HashSet<Hash>) {
         *self.live.write_recover() = Some(live);
         self.wake.notify_one();
@@ -1282,9 +1282,9 @@ impl GcGate {
     /// A GC configuration whose passes wait for [`Self::authorize`] and, when `ready` is given, for it to
     /// be set.
     fn config(&self, interval: Duration, ready: Option<Arc<AtomicBool>>) -> GcConfig {
-        let gate = self.clone();
+        let check = self.clone();
         let protect: ProtectCb =
-            Arc::new(move |protected| gate.clone().protect(ready.clone(), protected));
+            Arc::new(move |protected| check.clone().protect(ready.clone(), protected));
         GcConfig {
             interval,
             add_protected: Some(protect),
@@ -1334,9 +1334,9 @@ mod tests {
 
     #[tokio::test]
     async fn idle_gc_waits_for_an_authorized_live_set_instead_of_polling() {
-        let gate = GcGate::default();
+        let check = GcHold::default();
         let ready = Arc::new(AtomicBool::new(false));
-        let config = gate.config(Duration::from_millis(50), Some(Arc::clone(&ready)));
+        let config = check.config(Duration::from_millis(50), Some(Arc::clone(&ready)));
         let protect = config.add_protected.expect("a protect callback");
         let kept = Hash::new(b"kept");
 
@@ -1355,19 +1355,19 @@ mod tests {
         );
 
         // A live set before the store is ready still does not release a pass.
-        gate.authorize(HashSet::from([kept]));
+        check.authorize(HashSet::from([kept]));
         assert!(
             parks(protect(&mut protected)),
             "a pass must not run before the store is ready"
         );
 
         ready.store(true, Ordering::Release);
-        gate.revoke();
+        check.revoke();
         let mut protected = HashSet::new();
         let parked = protect(&mut protected);
         let authorize = async {
             tokio::time::sleep(Duration::from_millis(20)).await;
-            gate.authorize(HashSet::from([kept]));
+            check.authorize(HashSet::from([kept]));
         };
         let (outcome, ()) = tilo_test_env::within("authorizing to wake the parked pass", async {
             tokio::join!(parked, authorize)

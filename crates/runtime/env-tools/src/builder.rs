@@ -300,7 +300,7 @@ impl<S: ToolStore, C: ToolLookup> Builder<S, C> {
         let network = match self.network {
             NetworkChoice::Offline => Network::Offline,
             NetworkChoice::Host => Network::Host,
-            NetworkChoice::Gated => crate::network::gated(self.policy(runtime, tree)?),
+            NetworkChoice::Guarded => crate::network::guarded(self.policy(runtime, tree)?),
         };
         Ok(SandboxOptions {
             dnf_cache: Some(self.state.join("dnf-cache").join(runtime.to_hex())),

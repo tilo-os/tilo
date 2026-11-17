@@ -414,7 +414,7 @@ impl HostedBrowser {
 
     /// Follow what the session's broker admits: an action on the window's page is the page in use,
     /// and the page track's viewers say so too ([`Self::follow`]). `hosted` is where the workspace's
-    /// host is asked about a departure the window holds, and `person` who this seat acts as.
+    /// host is asked about a departure the window holds, and `person` who this device acts as.
     pub(crate) fn watching(
         &mut self,
         broker: Option<&std::sync::Arc<AppBrokerState>>,
@@ -767,7 +767,7 @@ impl HostedBrowser {
         }
     }
 
-    /// Run `request` on the window as the person at this seat: the page action
+    /// Run `request` on the window as the person at this device: the page action
     /// that releases what they allowed, or drops what they did not.
     fn run(&self, request: &InvokeRequest) {
         let (Some(broker), Ok(runtime)) = (self.broker.clone(), tilo_rt::try_app()) else {
@@ -782,7 +782,7 @@ impl HostedBrowser {
         });
     }
 
-    /// Who this seat is, as the session's own actions name it: the person in
+    /// Who this device acts as, as the session's own actions name it: the person in
     /// the workspace the session holds a window of.
     fn caller(&self) -> Caller {
         Caller::local_person(self.person.clone()).in_workspace(self.material.workspace.clone())

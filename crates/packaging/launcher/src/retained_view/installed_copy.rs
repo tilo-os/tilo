@@ -1,8 +1,8 @@
-//! Installed original-copy archives on the existing Shell/root-helper gate. Public
+//! Installed original-copy archives over the existing Shell/root-helper socket. Public
 //! declarations are shape only.
 use super::{
     Arc, AsRawFd, Duration, ExecutingPeer, File, FromRawFd, Handoff, LIMIT, MetadataExt, OwnedFd,
-    RetainedLaunchGate, RootConsumerChannel, RootRole, SEALS, ServiceAuthority,
+    RetainedLaunchAdmission, RootConsumerChannel, RootRole, SEALS, ServiceAuthority,
     ServiceCancellation, UnixStream, Write, check_executing_image, io, own_helper,
     protected_helper, protected_program, receive_fd, receive_json, receive_json_bound, refused,
     send_json,
@@ -454,13 +454,13 @@ impl InstalledCopyIssue {
             .as_deref()
             .ok_or_else(|| refused("installed Copy issue retired"))
     }
-    /// Returns the actual retained gate declaration after reattesting its custody.
+    /// Returns the actual retained launch declaration after reattesting its custody.
     pub fn declaration(&self) -> io::Result<&CopyDeclaration> {
         let custody = self.custody()?;
         custody.check()?;
         Ok(&custody.receipt.declaration)
     }
-    /// Sends bounded expectations and read-only files through this exact gate.
+    /// Sends bounded expectations and read-only files through this exact socket.
     pub fn deliver(&mut self) -> io::Result<()> {
         let custody = self
             .custody
@@ -646,7 +646,7 @@ impl Drop for InstalledCopyIssue {
     }
 }
 
-/// Actual root task + pinned Shell gate, not a deserializable receive grant.
+/// Actual root task + pinned Shell socket, not a deserializable receive grant.
 pub struct ReceivedInstalledCopy {
     role: RootRole,
     stream: UnixStream,
@@ -657,7 +657,7 @@ pub struct ReceivedInstalledCopy {
     cancellation: ServiceCancellation,
     unusable: bool,
 }
-impl RetainedLaunchGate {
+impl RetainedLaunchAdmission {
     /// Refuses unauthenticated root peers, mismatched target owners and invalid archive/secret
     /// evidence; reports cancellation and failed handoff transfers.
     pub fn receive_installed_copy(

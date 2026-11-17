@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Digest and guest-proof binding tests for the physical copy gate."""
+"""Digest and guest-proof binding tests for the physical copy check."""
 
 import hashlib
 import copy
@@ -46,7 +46,7 @@ class ProvenanceTests(unittest.TestCase):
                                             [child], "generic-index")), \
                  patch.object(proof, "verify_ci_image", return_value=signed):
                 with self.assertRaisesRegex(ValueError, "same source revision"):
-                    proof.dual_ci_medium_gate(args, {}, child, "2" * 40)
+                    proof.dual_ci_medium_check(args, {}, child, "2" * 40)
         with self.subTest(phase="index_selects_only_signed_arm64_child"):
             with tempfile.TemporaryDirectory() as directory:
                 root = Path(directory)

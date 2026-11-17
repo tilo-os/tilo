@@ -1122,10 +1122,10 @@ tilo_test_env::scenario! {
     phase a_window_at_rest_syncs_again_when_its_jobs_result_lands;
     {
         use tilo_app::tilo_resource::profiling::observe;
-        let (open, gate) = std::sync::mpsc::channel();
-        *GATE.lock().unwrap() = Some(gate);
-        GATED_COUNT.set(0);
-        let mut app = TestApp::<GatedCounterApp>::new().unwrap();
+        let (open, hold) = std::sync::mpsc::channel();
+        *HOLD.lock().unwrap() = Some(hold);
+        HELD_COUNT.set(0);
+        let mut app = TestApp::<HeldCounterApp>::new().unwrap();
         // While the job works nothing reaches the window: the frames its host
         // runs for something else (its own document, as another window's key
         // would) do not sync it.
@@ -1141,7 +1141,7 @@ tilo_test_env::scenario! {
             0,
             "the window rests while its job works"
         );
-        assert_eq!(GATED_COUNT.get(), 0);
+        assert_eq!(HELD_COUNT.get(), 0);
         // The job finishes on its thread and wakes the window: the next frame
         // syncs it, and the result is taken up there.
         open.send(()).unwrap();
@@ -1151,7 +1151,7 @@ tilo_test_env::scenario! {
                 app.idle();
             });
             landed += window_syncs(&frame);
-            GATED_COUNT.get() == 7
+            HELD_COUNT.get() == 7
         });
         assert!(landed > 0, "the landing synced the window");
     }
@@ -1392,36 +1392,36 @@ impl ResourceApp for HostedCounterApp {
     }
 }
 
-/// What the [`GatedCounterApp`]'s job waits for before it counts: the test
+/// What the [`HeldCounterApp`]'s job waits for before it counts: the test
 /// opens it once the window has rested.
-static GATE: std::sync::Mutex<Option<std::sync::mpsc::Receiver<()>>> = std::sync::Mutex::new(None);
+static HOLD: std::sync::Mutex<Option<std::sync::mpsc::Receiver<()>>> = std::sync::Mutex::new(None);
 
 thread_local! {
-    /// What the gated job counted, as its completion on the window left it.
-    static GATED_COUNT: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+    /// What the held job counted, as its completion on the window left it.
+    static HELD_COUNT: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
 }
 
 /// A window whose job works off the frame until the test lets it finish.
-struct GatedCounterApp;
+struct HeldCounterApp;
 
-impl ResourceApp for GatedCounterApp {
+impl ResourceApp for HeldCounterApp {
     type Resource = Mailbox;
-    const ID: &'static str = "so.tilo.test-gated-counter";
+    const ID: &'static str = "so.tilo.test-held-counter";
     const TITLE: &'static str = "Counter";
 
     fn view(cx: &mut ViewCx<Mailbox>) -> Element {
-        cx.window_jobs::<Counter>().start::<Counter>("gated", |cx| {
+        cx.window_jobs::<Counter>().start::<Counter>("held", |cx| {
             Ok(cx.thread(
                 |_| {
-                    let gate = GATE.lock().unwrap().take();
-                    if let Some(gate) = gate {
-                        let _ = gate.recv();
+                    let hold = HOLD.lock().unwrap().take();
+                    if let Some(hold) = hold {
+                        let _ = hold.recv();
                     }
                     7
                 },
                 |counter: &mut Counter, by: u32, _| {
                     counter.counted = counter.counted.saturating_add(by);
-                    GATED_COUNT.set(counter.counted);
+                    HELD_COUNT.set(counter.counted);
                     Ok(Effected::done())
                 },
             ))

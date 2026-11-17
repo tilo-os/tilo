@@ -473,7 +473,7 @@ pub struct Selected {
 
 /// Refuses outside the development installer VM; returns the verified
 /// development target's selection.
-pub fn gate(host: &dyn Host) -> Result<Selected> {
+pub fn check(host: &dyn Host) -> Result<Selected> {
     let marker = host.marker();
     let flavour = host.flavour();
     require(
@@ -885,7 +885,7 @@ pub fn main(host: &dyn Host, args: &[OsString]) -> ExitCode {
     }
     let path = |name: &str| values.get(name).map(PathBuf::from);
     let outcome = (|| {
-        let selected = gate(host)?;
+        let selected = check(host)?;
         let image_root = path("--image-root").unwrap_or_default();
         if command == "validate-image" {
             image_inputs(host, &image_root).map(|_| None)

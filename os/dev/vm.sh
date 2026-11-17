@@ -152,7 +152,7 @@ cmd_boot() {
     # booted image install onto a fresh disk (encryption tests) without building
     # the installer medium.
     --attach) attach="$2"; shift;;
-    # The release gate's signed validation extension (os/dev/validation-access.sh),
+    # The release check's signed validation extension (os/dev/validation-access.sh),
     # read-only under the serial its unit in the disk copy's /etc binds to.
     --validation-sysext) validation="$2"; shift;;
     *) die "boot: unknown arg $1";; esac; shift; done
@@ -362,7 +362,7 @@ cmd_type() {
   for ((i=0; i<${#s}; i++)); do
     c="${s:$i:1}"
     hmp "sendkey $(char_key "$c") 20" >/dev/null
-    # The installer is intentionally software-rendered in the full-cycle gate;
+    # The installer is intentionally software-rendered in the full-cycle check;
     # under load its event loop can miss the next key if the release gap is only
     # 40 ms.  An 80 ms gap remains quick for credentials while making injected
     # input match a human keyboard reliably.
@@ -519,7 +519,7 @@ GUEST_TESTS=(
   "os/tests/installed_atspi_apps.sh installed-atspi-apps.sh"
   "apps/file-explorer/tests/atspi_smoke.sh files-atspi-smoke.sh"
   "os/tests/collaborative-files-image-contract.sh collaborative-files-image-contract.sh"
-  "os/tests/boot_performance_gate.sh boot-performance-gate.sh"
+  "os/tests/boot_performance_check.sh boot-performance-check.sh"
   "os/tests/h264-boot-check.py h264-boot-check.py"
   "os/tests/input-hotplug-check.sh input-hotplug-check.sh"
   "os/tests/installed-admin-actions.sh installed-admin-actions.sh"

@@ -1117,7 +1117,7 @@ fn device_options(
         // a session inside another desktop's window serves them on a socket of its own, leaving
         // that desktop's alone.
         app_socket: AppSocket::for_machine(machine),
-        // A program of this login asks the person at the seat's MCP server to work in a workspace
+        // A program of this login asks the MCP server of the person at this device to work in a workspace
         // as an agent; a session in another desktop's window serves none.
         mcp_server: owned.then(tilo_session::mcp_server::path).flatten(),
         // A session in another desktop's window dims none of the window's machine: the display it

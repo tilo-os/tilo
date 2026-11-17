@@ -668,7 +668,7 @@ pub fn session_report(root: &Path, previous: bool) -> Value {
     report
 }
 
-/// The render gate's budgets and requirement.
+/// The render check's budgets and requirement.
 #[derive(Clone, Copy, Debug)]
 pub struct RenderBudgets {
     /// Direct GPU scanout must present even if it never started.
@@ -678,11 +678,11 @@ pub struct RenderBudgets {
     /// 95th-percentile microseconds of a painted frame's main-thread work.
     pub frame_work_us: i64,
     /// Median microseconds from a typed key to the frame showing its answer,
-    /// per app; `None` leaves typing ungated.
+    /// per app; `None` leaves typing unguarded.
     pub key_to_present_us: Option<i64>,
     /// Share of direct frames, in percent, that repaired only their damage
     /// or showed a client's own buffer instead of rendering the whole
-    /// output; `None` leaves it ungated.
+    /// output; `None` leaves it unguarded.
     pub min_damage_limited_percent: Option<i64>,
 }
 
@@ -697,7 +697,7 @@ fn int(value: Option<&Value>) -> i64 {
 /// hands frames to the readback presenter until a retry). Frame times stay
 /// within the budgets on every path.
 #[must_use]
-pub fn render_gate(report: &Value, budgets: RenderBudgets) -> Vec<String> {
+pub fn render_check(report: &Value, budgets: RenderBudgets) -> Vec<String> {
     let flight = report.get("flight").cloned().unwrap_or(Value::Null);
     let frames = report.get("frames").cloned().unwrap_or(Value::Null);
     if !flight.get("available").is_some_and(Value::is_true) {

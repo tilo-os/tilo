@@ -189,7 +189,7 @@ fn search_projection_rebuilds_only_for_document_project_or_result_revisions() {
             doc,
             key,
             &base,
-            &format!("fn revision_gate_needle() {{}}\n{base}"),
+            &format!("fn revision_check_needle() {{}}\n{base}"),
         )
         .unwrap();
         app.sync(doc.doc(), &automerge::ROOT);
@@ -200,7 +200,7 @@ fn search_projection_rebuilds_only_for_document_project_or_result_revisions() {
                 &ui::framework::testing::search_source::<crate::project::Project>(
                     app.code_search_entries()
                 ),
-                "revision_gate_needle"
+                "revision_check_needle"
             )
             .iter()
             .any(|hit| hit.kind == crate::search_entries::SYMBOL_KIND)

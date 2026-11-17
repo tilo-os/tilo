@@ -231,10 +231,10 @@ mod tests {
     async fn fixture() -> (
         tempfile::TempDir,
         Host,
-        Arc<super::super::network::tests::Gate>,
+        Arc<super::super::network::tests::Hold>,
     ) {
         let root = required(tempfile::tempdir());
-        let (gate, _, network) = super::super::network::tests::fixture(false, false);
+        let (check, _, network) = super::super::network::tests::fixture(false, false);
         let owner = crate::journal::Owner {
             actor: "11".repeat(32),
             device: "device".into(),
@@ -248,7 +248,7 @@ mod tests {
                 owner,
                 secret_vault::VaultKey::from_bytes([21; 32]),
                 network,
-                gate.clone(),
+                check.clone(),
             )
             .await,
         );
@@ -256,19 +256,19 @@ mod tests {
             root,
             Host {
                 source: bootstrap.client(),
-                authority: gate.clone(),
+                authority: check.clone(),
                 account: ServiceAccount::new("whatsapp", "account-a"),
                 identity: ("123@s.whatsapp.net".into(), Some("456@lid".into())),
                 backend: bootstrap.backend,
                 contact: None,
                 broker: None,
             },
-            gate,
+            check,
         )
     }
     #[tokio::test]
     async fn default_sdk_group_inspection_refuses_unlinked_and_revoked_sessions() {
-        let (_root, host, gate) = fixture().await;
+        let (_root, host, check) = fixture().await;
         assert!(matches!(host.list().await, Err(SendError::Unavailable)));
         assert!(matches!(
             host.read("123@g.us".into()).await,
@@ -298,7 +298,7 @@ mod tests {
             host.history("123@g.us".into()).await,
             Err(SendError::Unavailable)
         ));
-        gate.0.store(false, Ordering::Release);
+        check.0.store(false, Ordering::Release);
         assert!(matches!(host.list().await, Err(SendError::Revoked)));
         assert!(matches!(
             host.read("123@g.us".into()).await,
@@ -317,7 +317,7 @@ mod tests {
     }
     #[tokio::test]
     async fn service_group_membership_cannot_substitute_names_or_another_account_identity() {
-        let (_root, host, _gate) = fixture().await;
+        let (_root, host, _check) = fixture().await;
         let identity = ("123@s.whatsapp.net".into(), Some("456@lid".into()));
         let participant = |jid: &str| GroupParticipant {
             jid: required(jid.parse()),

@@ -251,7 +251,7 @@ const until = async (tab, expression, what, timeout = stepLimit(3), more = null)
 //
 // The events of one gesture go out together, not one acknowledged frame at a
 // time. Chromium answers a dispatched key or press when the page has taken it,
-// and this page's main thread is inside a frame for seconds under the gate: a
+// and this page's main thread is inside a frame for seconds under the check: a
 // driver that waited for each key in turn typed a five-letter query in eight
 // frames, where a person types it in a tenth of a second and the shell reads
 // the whole query on the frame it draws next.
@@ -329,7 +329,7 @@ const presented = tab => tab.evaluate('globalThis.tiloMount?.state()?.frames ?? 
 // offers for it.
 //
 // Every wait here is on what the shell says, never on how many frames it drew.
-// A frame of this page costs seconds under the gate — a megapixel through a
+// A frame of this page costs seconds under the check — a megapixel through a
 // software rasteriser, with the app opened last still compiling its module on
 // the same thread — so a wait that counted frames paid seconds for an answer
 // the shell had already given.
@@ -1294,7 +1294,7 @@ try {
   // adds entries of its own as the person opens and moves between windows
   // (Back goes through Tilo), and the browser navigating on its own would
   // leave this document or step back from the newest entry.
-  const arrivedAt = await a.tab.evaluate(`(() => { globalThis.__gateArrived = true; return navigation.currentEntry.index; })()`);
+  const arrivedAt = await a.tab.evaluate(`(() => { globalThis.__checkArrived = true; return navigation.currentEntry.index; })()`);
 
   // The window menu, from a secondary click in the window's own bar: what the
   // desktop can do to that window, and choosing a row does it. Asked before
@@ -1444,7 +1444,7 @@ try {
       })()`, {timeout: stepLimit(4)}).catch(() => false);
       const marks = await openMarks(a.tab);
       // An open the page's own clock never saw begun or never saw end is not a
-      // fast one: it is no reading, and the gate says so instead of counting a
+      // fast one: it is no reading, and the check says so instead of counting a
       // missing number as zero frames.
       if (!marks.ok) {
         failed(`${application.label} opened, but Enter to its window was not measured (${JSON.stringify(marks)}); an unmeasured open is not a fast one`, a.tab);
@@ -1587,7 +1587,7 @@ try {
     // nothing: the keys a browser leaves to the page. The shell has every app
     // the Lounge offers open by now and presents a frame every several
     // seconds through the software rasteriser, and each answer is a presented
-    // frame: the waits are the ones a search gets everywhere in this gate.
+    // frame: the waits are the ones a search gets everywhere in this check.
     await click(a.tab, SHELL.empty.x, SHELL.empty.y);
     await key(a.tab, 'k', a.command);
     await until(a.tab, '!!globalThis.tiloMount?.state()?.searchOpen', 'the search chord', stepLimit(3));
@@ -1605,7 +1605,7 @@ try {
       scrollY: window.scrollY,
       scrollX: window.scrollX,
       scale: globalThis.visualViewport?.scale ?? 1,
-      sameDocument: globalThis.__gateArrived === true,
+      sameDocument: globalThis.__checkArrived === true,
       entry: navigation.currentEntry.index,
       newest: navigation.entries().length - 1,
       otherDocuments: navigation.entries().slice(${arrivedAt}).filter(entry => !entry.sameDocument).length,

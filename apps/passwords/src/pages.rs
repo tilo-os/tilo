@@ -987,7 +987,7 @@ mod backup_form_tests {
     /// "Choose file…" waits for a long, confirmed password in the shared core, and the
     /// confirmation field says so while it is typed.
     #[test]
-    fn the_backup_form_gates_its_file_choice_and_checks_inline() {
+    fn the_backup_form_guards_its_file_choice_and_checks_inline() {
         let shared: Shared = Rc::new(RefCell::new(Core::demo()));
         let requests: Requests = Rc::default();
         let dialog = backup_dialog(&shared, None, &requests);

@@ -416,7 +416,7 @@ fi
 cleanup_steps+=("run_root losetup -d '$disk'")
 install -d -m 0700 "$tmp/keys"
 # A loop device is not TYPE disk; wrap only that one lsblk query so prepare's
-# whole-disk gate stays exercised.
+# whole-disk check stays exercised.
 mkdir -p "$tmp/bin"
 cat > "$tmp/bin/lsblk" <<SH
 #!/bin/sh

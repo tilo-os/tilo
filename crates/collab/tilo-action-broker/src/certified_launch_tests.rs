@@ -1,5 +1,5 @@
 // Real signed caller, actual private worker RPC publication and original SDK
-// authorizer, with only the host launcher replaced by a bounded recording gate.
+// authorizer, with only the host launcher replaced by a bounded recording check.
 struct CertifiedLaunchCatalog;
 
 impl crate::services::LauncherServices for CertifiedLaunchCatalog {
@@ -28,12 +28,12 @@ impl crate::services::LauncherServices for CertifiedLaunchCatalog {
         _: Option<&str>,
         _: &crate::services::LaunchPlace,
     ) -> Result<(), String> {
-        panic!("the recording launch gate replaces process creation")
+        panic!("the recording launch check replaces process creation")
     }
 }
 
 async fn certified_launch_rig(env: &Environment) -> Rig {
-    // Signed launch children resolve the installed app before the process gate.
+    // Signed launch children resolve the installed app before the process check.
     Rig::with_services(
         env,
         HostServices {
@@ -96,7 +96,7 @@ async fn certified_launch_target(
     provider
 }
 
-fn certified_launch_gate(
+fn certified_launch_check(
     rig: &Rig,
 ) -> (
     std::sync::mpsc::Receiver<()>,
@@ -149,7 +149,7 @@ async fn certified_launch_aliases_preserve_actual_worker_origin_and_original_req
                     let env = Environment::new();
                     let rig = certified_launch_rig(&env).await;
                     let provider = certified_launch_target(&rig, &env, retained, waiting).await;
-                    let (started, release, launches) = certified_launch_gate(&rig);
+                    let (started, release, launches) = certified_launch_check(&rig);
                     let (caller, evidence) = local_host_evidence(&env);
                     let facade = crate::collab_broker::AppActionBroker::from_state_for_test(
                         rig.state.clone(),
@@ -225,7 +225,7 @@ async fn certified_launch_wait_refuses_retirement_certificate_expiry_and_origin_
                     let env = Environment::new();
                     let rig = certified_launch_rig(&env).await;
                     let provider = certified_launch_target(&rig, &env, retained, true).await;
-                    let (started, release, launches) = certified_launch_gate(&rig);
+                    let (started, release, launches) = certified_launch_check(&rig);
                     let (caller, evidence) = local_host_evidence(&env);
                     let facade = crate::collab_broker::AppActionBroker::from_state_for_test(
                         rig.state.clone(),

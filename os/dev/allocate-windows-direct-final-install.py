@@ -294,7 +294,7 @@ def exact_diskpart_shrink(request):
     c = windows_c_and_recovery()
     check_c_state(request, c)
     check_free_space(request, c, state)
-    stage.windows_install_gate()
+    stage.windows_install_check()
     before_ntfs = c_ntfs_size()
     require(before_ntfs <= request["planned_windows_shrink"]["original_size_bytes"],
             "C: NTFS size exceeds reviewed partition")
@@ -421,7 +421,7 @@ def execute(args):
     require(confirmed_protector in c["recovery_protector_ids"],
             "confirmed BitLocker protector is no longer on C:")
     check_free_space(request, c, state)
-    stage.windows_install_gate()
+    stage.windows_install_check()
     if state == "pre-shrink":
         if check_supported_shrink(request):
             shrink = request["planned_windows_shrink"]

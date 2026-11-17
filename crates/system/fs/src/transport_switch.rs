@@ -1,5 +1,5 @@
-//! Owner-authenticated local transport gate for the partition release harness,
-//! enabled by `TILO_FS_TRANSPORT_GATE_SOCKET`.
+//! Owner-authenticated local transport check for the partition release harness,
+//! enabled by `TILO_FS_TRANSPORT_SWITCH_SOCKET`.
 
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
@@ -11,13 +11,13 @@ use std::sync::{
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::UnixListener;
 
-pub const TRANSPORT_GATE_SOCKET_ENV: &str = "TILO_FS_TRANSPORT_GATE_SOCKET";
-pub const TRANSPORT_GATE_INITIAL_ENV: &str = "TILO_FS_TRANSPORT_GATE_INITIAL";
+pub const TRANSPORT_SWITCH_SOCKET_ENV: &str = "TILO_FS_TRANSPORT_SWITCH_SOCKET";
+pub const TRANSPORT_SWITCH_INITIAL_ENV: &str = "TILO_FS_TRANSPORT_SWITCH_INITIAL";
 
 #[derive(Clone, Debug, Default)]
-pub struct TransportGate(Arc<AtomicBool>);
+pub struct TransportSwitch(Arc<AtomicBool>);
 
-impl TransportGate {
+impl TransportSwitch {
     pub fn partitioned(&self) -> bool {
         self.0.load(Ordering::Acquire)
     }
@@ -27,24 +27,24 @@ impl TransportGate {
     }
 }
 
-pub fn spawn_from_env() -> std::io::Result<(TransportGate, Option<tokio::task::JoinHandle<()>>)> {
-    let gate = TransportGate::default();
-    let Some(path) = std::env::var_os(TRANSPORT_GATE_SOCKET_ENV).map(PathBuf::from) else {
-        return Ok((gate, None));
+pub fn spawn_from_env() -> std::io::Result<(TransportSwitch, Option<tokio::task::JoinHandle<()>>)> {
+    let check = TransportSwitch::default();
+    let Some(path) = std::env::var_os(TRANSPORT_SWITCH_SOCKET_ENV).map(PathBuf::from) else {
+        return Ok((check, None));
     };
-    if std::env::var_os(TRANSPORT_GATE_INITIAL_ENV).is_some_and(|value| value == "partitioned") {
-        gate.set_partitioned(true);
+    if std::env::var_os(TRANSPORT_SWITCH_INITIAL_ENV).is_some_and(|value| value == "partitioned") {
+        check.set_partitioned(true);
     }
-    let task = spawn(path, gate.clone())?;
-    Ok((gate, Some(task)))
+    let task = spawn(path, check.clone())?;
+    Ok((check, Some(task)))
 }
 
-fn spawn(path: PathBuf, gate: TransportGate) -> std::io::Result<tokio::task::JoinHandle<()>> {
+fn spawn(path: PathBuf, check: TransportSwitch) -> std::io::Result<tokio::task::JoinHandle<()>> {
     validate_private_parent(&path)?;
     let listener = tilo_files::native::private::bind_socket(&path)?;
     listener.set_nonblocking(true)?;
     let listener = UnixListener::from_std(listener)?;
-    println!("Transport partition gate at {}", path.display());
+    println!("Transport partition check at {}", path.display());
     Ok(tokio::spawn(async move {
         loop {
             let Ok((mut stream, _)) = listener.accept().await else {
@@ -62,14 +62,14 @@ fn spawn(path: PathBuf, gate: TransportGate) -> std::io::Result<tokio::task::Joi
             };
             let response = match command.get(..size).unwrap_or_default() {
                 b"partition\n" => {
-                    gate.set_partitioned(true);
+                    check.set_partitioned(true);
                     b"partitioned\n".as_slice()
                 }
                 b"reconnect\n" => {
-                    gate.set_partitioned(false);
+                    check.set_partitioned(false);
                     b"connected\n".as_slice()
                 }
-                b"status\n" if gate.partitioned() => b"partitioned\n".as_slice(),
+                b"status\n" if check.partitioned() => b"partitioned\n".as_slice(),
                 b"status\n" => b"connected\n".as_slice(),
                 _ => b"invalid\n".as_slice(),
             };
@@ -83,12 +83,12 @@ fn spawn(path: PathBuf, gate: TransportGate) -> std::io::Result<tokio::task::Joi
 fn validate_private_parent(path: &Path) -> std::io::Result<()> {
     let parent = path
         .parent()
-        .ok_or_else(|| std::io::Error::other("gate has no parent"))?;
+        .ok_or_else(|| std::io::Error::other("check has no parent"))?;
     let metadata = std::fs::metadata(parent)?;
     if metadata.permissions().mode() & 0o077 != 0 {
         return Err(std::io::Error::new(
             std::io::ErrorKind::PermissionDenied,
-            "transport gate parent must be owner-only",
+            "transport check parent must be owner-only",
         ));
     }
     Ok(())

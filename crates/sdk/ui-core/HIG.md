@@ -502,7 +502,7 @@ completeness does not exempt a screen from these requirements.
   zero-state, per §4 — never fabricated content), loading and error states are
   designed, not raw.
 - **Motion is purposeful and quiet.** Transitions clarify a change (a panel
-  sliding in, a value settling); they never gate interaction or spin at idle
+  sliding in, a value settling); they never check interaction or spin at idle
   (§6). Reduced-motion is honored.
 - **Interactive things look interactive** and give feedback: hover, press, focus,
   and disabled are all distinct; a control that does nothing yet is a defect
@@ -1374,7 +1374,7 @@ edge kept at full strength, so rest and disabled never look the same.
 | Scroll thumb | `text_tertiary` at rest (a third lighter on a light ground), `text_dim` active stepped to 3:1 on the ground; `metrics.scroll_thumb` thick, centred in its lane | none; a `Scrollable` (or a painted `ScrollRegion`) keeps `metrics.scrollbar_gutter` (thumb plus `s1` each side) free on its trailing edge while its content overflows, and on its bottom edge for a horizontal bar |
 | DataTable header and rules | the region's ground (no fill of its own) | `edge_on(ground)` under the header and, with `.ruled()`, between columns |
 | StatTile, PropertyList, Section | the ground | none: separated by space |
-| MediaCard art | the art | a seated `hairline_on(ground)` inside the art's outline; badges over the art use the floating material |
+| MediaCard art | the art | a `hairline_on(ground)` just inside the art's outline; badges over the art use the floating material |
 | DropZone | the ground | dashed `edge_on(ground)`; your colour only while a drag hovers |
 | TreeView / NavList / VirtualList rows | transparent | none; selection is a lift inside the `s2` inset at `radii.item` (`paint_row_selection`) |
 | ListRow | transparent | as the rows above; separators are inset `edge_on(ground)`, hidden beside the selection |

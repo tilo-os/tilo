@@ -6,17 +6,17 @@
 # assessment (tilo-boot-health) accepts, and from there takes the next update live. As root in a
 # micro-VM step with a /dev/kvm of its own. Nothing here holds a secret or publishes.
 #
-#   os-dev-gate.sh ARCH DEV OUT   DEV: os-dev-image-ARCH's layout; the logs into OUT
+#   os-dev-check.sh ARCH DEV OUT   DEV: os-dev-image-ARCH's layout; the logs into OUT
 #
 # A device falls back by itself from an image that does not reach a working greeter, so a
-# failure the gate misses costs a dev device a reboot, not its data, as long as every published
+# failure the check misses costs a dev device a reboot, not its data, as long as every published
 # image boots and takes the update that fixes it. Installing an image onto a disk is
 # os-dev-disk-ARCH's, which os-acceptance-ARCH boots.
 set -euo pipefail
 . "$(dirname -- "${BASH_SOURCE[0]}")/lib.sh"
 cd "$repo_root"
 
-arch=${1:?usage: os-dev-gate.sh ARCH DEV OUT}
+arch=${1:?usage: os-dev-check.sh ARCH DEV OUT}
 dev=${2:?}
 out=${3:?}
 [[ $(uname -m) == "$arch" ]] || die "the $arch image is checked natively, not on $(uname -m)"
@@ -37,7 +37,7 @@ command -v podman >/dev/null || missing+=(podman skopeo fuse-overlayfs e2fsprogs
 modprobe fuse 2>/dev/null || true
 rm -rf "$out"
 mkdir -p "$out"
-revision=$(git rev-parse --verify HEAD) || die 'the gate names its commit: git = true'
+revision=$(git rev-parse --verify HEAD) || die 'the check names its commit: git = true'
 digest=$(cat "$dev/digest")
 
 # The disk the dev channel published last for ARCH: the newest main-<commit7>-ci version of the
@@ -60,13 +60,13 @@ curl -fsSL --retry 3 -o "$old" "$url"
 
 # The updates, served by a registry on the host, which the guest reaches as 10.0.2.2: this dev
 # image, and the next update, the same image with one file added.
-podman run -d --name tilo-gate-registry -p 127.0.0.1::5000 docker.io/library/registry:2 >/dev/null
-trap 'podman rm -f tilo-gate-registry >/dev/null 2>&1 || true' EXIT
-port=$(podman port tilo-gate-registry 5000/tcp | head -n 1)
+podman run -d --name tilo-check-registry -p 127.0.0.1::5000 docker.io/library/registry:2 >/dev/null
+trap 'podman rm -f tilo-check-registry >/dev/null 2>&1 || true' EXIT
+port=$(podman port tilo-check-registry 5000/tcp | head -n 1)
 port=${port##*:}
 [[ $port =~ ^[0-9]+$ ]] || die 'the update registry has no port'
 for _ in $(seq 30); do curl -fs "http://127.0.0.1:$port/v2/" >/dev/null && break; sleep 1; done
-update=gate-${revision:0:12}
+update=check-${revision:0:12}
 next=live-update-check
 probe=/usr/share/tilo/live-update-probe
 printf 'live update of %s\n' "${revision:0:12}" > "$scratch/probe"
@@ -118,7 +118,7 @@ for node in /dev/dri/renderD*; do
   [[ -c $node && -r $node && -w $node ]] && { TILO_VM_DISPLAY=gl; break; }
 done
 vm=os/dev/vm.sh
-export TILO_RUN=/var/tmp/tilo-dev-gate-$arch TILO_SSH_PORT=2222
+export TILO_RUN=/var/tmp/tilo-dev-check-$arch TILO_SSH_PORT=2222
 export TILO_DISK=$TILO_RUN/disk.qcow2
 rm -rf -- "$TILO_RUN"
 install -d -m 0700 "$TILO_RUN"
@@ -132,15 +132,15 @@ finish() {
   "$vm" stop >/dev/null 2>&1 || true
   cp -f "$TILO_RUN/serial.log" "$out/" 2>/dev/null || true
   rm -rf -- "$TILO_RUN"
-  podman rm -f tilo-gate-registry >/dev/null 2>&1 || true
+  podman rm -f tilo-check-registry >/dev/null 2>&1 || true
   exit "$rc"
 }
 trap finish EXIT
-# The published disk has whatever accounts its publisher made, so the gate signs in as root with
+# The published disk has whatever accounts its publisher made, so the check signs in as root with
 # a key of its own, which QEMU hands the guest as a systemd credential (vm.sh
 # TILO_VM_ROOT_KEY_FILE), on the published disk and on every image it restarts into.
-ssh-keygen -q -t ed25519 -N '' -C tilo-dev-gate -f "$TILO_RUN/gate-key"
-export TILO_VM_ROOT_KEY_FILE=$TILO_RUN/gate-key.pub TILO_SSH_IDENTITY=$TILO_RUN/gate-key TILO_USER=root
+ssh-keygen -q -t ed25519 -N '' -C tilo-dev-check -f "$TILO_RUN/check-key"
+export TILO_VM_ROOT_KEY_FILE=$TILO_RUN/check-key.pub TILO_SSH_IDENTITY=$TILO_RUN/check-key TILO_USER=root
 as_root=
 "$vm" tool qemu-img create -f qcow2 -F qcow2 -b "$old" "$TILO_DISK" >/dev/null
 "$vm" boot "--$TILO_VM_DISPLAY"

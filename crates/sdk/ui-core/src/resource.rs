@@ -2801,7 +2801,7 @@ impl ResourceStore {
         true
     }
 
-    /// Reserve a New identity with its gate and no document/history/writer yet:
+    /// Reserve a New identity with its check and no document/history/writer yet:
     /// the workspace's own records are reserved as shared writers, any other as
     /// its only writer.
     ///

@@ -21,13 +21,13 @@ const MAX_PENDING_RESUMES: usize = 16;
 
 /// Whether one resume may still act on a player, and the lock its player
 /// mutations hold so that revocation is ordered after any in flight.
-struct Gate {
+struct ResumeGuard {
     active: AtomicBool,
     mutation: tokio::sync::Mutex<()>,
 }
 
 #[derive(Clone)]
-pub(super) struct Authority(Arc<Gate>);
+pub(super) struct Authority(Arc<ResumeGuard>);
 
 impl Authority {
     pub(super) fn is_active(&self) -> bool {
@@ -64,7 +64,7 @@ impl Resumes {
         if pending.len() >= MAX_PENDING_RESUMES || pending.contains_key(&request_id) {
             return None;
         }
-        let authority = Authority(Arc::new(Gate {
+        let authority = Authority(Arc::new(ResumeGuard {
             active: AtomicBool::new(true),
             mutation: tokio::sync::Mutex::new(()),
         }));
@@ -364,7 +364,7 @@ mod tests {
             });
             assert!(
                 !early,
-                "cancel must wait for the already-started mutation to leave its gate"
+                "cancel must wait for the already-started mutation to leave its resume_guard"
             );
 
             release_mutation_tx.send(()).unwrap();

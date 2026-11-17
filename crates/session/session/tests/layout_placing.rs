@@ -122,7 +122,7 @@ fn session() -> Session {
     crate::common::headless_on(&[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)], options())
 }
 
-/// The person at this device, as the session's own seat reads it: the identity it holds names them.
+/// The person at this device, as the session's own identity reads it: the identity it holds names them.
 fn person() -> String {
     tilo_session::identity::own_person(&options())
 }

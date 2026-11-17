@@ -232,7 +232,7 @@ fn a_send_lists_the_workspaces_agents_and_people() {
 #[track_caller]
 fn refused_control(session: &mut Session, socket: &std::path::Path, when: &str) {
     for request in [
-        json!({"op": "agent_seat"}),
+        json!({"op": "agent_place"}),
         json!({"op": "pointer_move", "x": 40.0, "y": 24.0}),
         json!({"op": "click_at", "x": 2.0, "y": 2.0}),
         json!({"op": "type", "text": "hello"}),

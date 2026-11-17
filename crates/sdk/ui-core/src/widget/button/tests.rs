@@ -995,7 +995,7 @@ tilo_test_env::scenario! {
         assert_eq!(clicks.load(Ordering::SeqCst), 1);
     }
 
-    phase action_mode_and_availability_gate_mutation_and_callbacks;
+    phase action_mode_and_availability_check_mutation_and_callbacks;
     {
         fn button_test_id_is_stable_constructor_id() {
             let b = Button::new("id", "Save");

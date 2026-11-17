@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
-# Gate a booted installed image on two things a working desktop can hide:
+# Check a booted installed image on two things a working desktop can hide:
 #
 #   * no system unit failed. A failed unit marks the system degraded, and the
 #     rollback confirmation refuses to confirm a degraded generation, so one
 #     unrelated failure quietly leaves every update unconfirmed.
 #   * tilo-rollback-confirm ran and succeeded, and on an enrolled machine it
 #     confirmed the running generation. Its timer fires ten minutes after boot,
-#     so the gate starts it itself when the timer has not got there yet.
+#     so the check starts it itself when the timer has not got there yet.
 #
 # Run as root inside the guest, once the first session has come up:
-#   sudo /usr/libexec/tilo/boot-units-gate.sh
+#   sudo /usr/libexec/tilo/boot-units-check.sh
 #
 # A unit that may legitimately be failed is listed in ALLOWED_FAILED with the
 # reason; the list is empty because none may.

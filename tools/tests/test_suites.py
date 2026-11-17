@@ -121,7 +121,7 @@ class AuditTests(unittest.TestCase):
             return suites.audit(root, sorted(name for name, text in base.items() if text is not None),
                                 suites.parse(manifest))
 
-    def test_a_policy_step_gates_the_suite_it_runs_not_the_files_it_lists(self):
+    def test_a_policy_step_checks_the_suite_it_runs_not_the_files_it_lists(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             (root / "tools/policy").mkdir(parents=True)
@@ -130,9 +130,9 @@ class AuditTests(unittest.TestCase):
             (root / "tools/policy/steps.toml").write_text(
                 '[[step]]\nname = "a"\nlabel = "A"\nrun = "python3 os/tests/ran.py"\n'
                 'inputs = ["os/tests/listed.py"]\n')
-            gated = suites.always_run(root)
-        self.assertIn("os/tests/ran.py", gated)
-        self.assertNotIn("os/tests/listed.py", gated)
+            guarded = suites.always_run(root)
+        self.assertIn("os/tests/ran.py", guarded)
+        self.assertNotIn("os/tests/listed.py", guarded)
 
     def test_classification_audit_accepts_complete_and_rejects_gaps(self):
         with self.subTest(phase='complete classification passes'):
@@ -154,12 +154,12 @@ class AuditTests(unittest.TestCase):
             self.assertTrue(any("gone.sh" in problem and "not a tracked file" in problem for problem in problems))
             problems = self.audit({}, MANIFEST + '[[unrequired]]\nsuite = "os/tests/secure.sh"\nreason = "x"\n')
             self.assertTrue(any("already runs on every change" in problem for problem in problems))
-        with self.subTest(phase='covered entries need a gated referencing suite'):
+        with self.subTest(phase='covered entries need a guarded referencing suite'):
             problems = self.audit({"os/tests/b.py": "print('no import')\n"})
             self.assertTrue(any("does not reference it" in problem for problem in problems), problems)
             manifest = MANIFEST.replace('by = "os/tests/b.py"', 'by = "os/tests/vm.sh"')
             problems = self.audit({"os/tests/vm.sh": "python3 os/tests/helper.py\n"}, manifest)
-            self.assertTrue(any("is not itself gated" in problem for problem in problems), problems)
+            self.assertTrue(any("is not itself guarded" in problem for problem in problems), problems)
         with self.subTest(phase='python unittest suites must run when executed'):
             problems = self.audit({"os/tests/b.py": "import helper, unittest\nclass T(unittest.TestCase): pass\n"})
             self.assertTrue(any("unittest.main" in problem for problem in problems), problems)
@@ -176,7 +176,7 @@ check = "sdk-python"
         }
         self.assertEqual(self.audit(files, manifest), [])
         # A check that only names an `on`, or is default = false, runs there and when asked:
-        # it gates no change, so it cannot prove a suite runs.
+        # it checks no change, so it cannot prove a suite runs.
         for declaration in ('on = ["stable"]\n', 'default = false\n',
                             'on = ["stable"]\ndefault = false\n'):
             with self.subTest(declaration=declaration):
@@ -190,7 +190,7 @@ check = "sdk-python"
                 dict(files, **{"t.toml": '[[check]]\nname = "other"\nrun = "true"\n'}), manifest)
             self.assertTrue(any("sdk-python" in problem for problem in problems), problems)
 
-    def test_cargo_integration_driver_is_a_covering_gate(self):
+    def test_cargo_integration_driver_is_a_covering_check(self):
         manifest = MANIFEST.replace('by = "os/tests/b.py"', 'by = "crates/native/tests/oracle.rs"')
         manifest += '''
 [[cargo]]

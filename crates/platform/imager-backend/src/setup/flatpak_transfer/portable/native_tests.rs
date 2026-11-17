@@ -577,7 +577,7 @@ fn add_source_remote(root: &Path, home: &Path) {
     )
     .unwrap();
     // Source construction uses the real bounded CLI so failures expose native diagnostics;
-    // destination restoration still runs through the canonical trust gate.
+    // destination restoration still runs through the canonical trust check.
     command(
         "/usr/bin/flatpak",
         home,

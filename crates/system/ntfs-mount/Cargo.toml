@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 publish.workspace = true
 license.workspace = true
-description = "Consent-gated NTFS access: the root service that opens a drive only after the person agrees in the shell, its topology-bound remembered choices, and the protocol the shell and Settings speak"
+description = "Consent-guarded NTFS access: the root service that opens a drive only after the person agrees in the shell, its topology-bound remembered choices, and the protocol the shell and Settings speak"
 
 [lib]
 name = "ntfs_mount"

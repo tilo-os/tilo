@@ -257,7 +257,7 @@ if (passkey) {
   // A site that lets people in by invitation (production's) shows a visitor
   // it does not know the invite-only page, and someone who has been here
   // signs in from it with their passkey, as a person would. A stack whose
-  // entry is open to anyone (TILO_SH_ADMISSION=open, as the e2e gate brings
+  // entry is open to anyone (TILO_SH_ADMISSION=open, as the e2e check brings
   // it up) lets the stranger in as a fresh guest instead; they sign in with
   // the passkey from there, through the page's own sign-in.
   const met = await until(`(() => {

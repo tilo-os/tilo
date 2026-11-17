@@ -8,7 +8,7 @@ import tempfile
 import unittest
 
 REPO = Path(__file__).resolve().parents[2]
-GATE = REPO / 'os/scripts/verify-no-python-runtime.sh'
+CHECK = REPO / 'os/scripts/verify-no-python-runtime.sh'
 CONTAINERFILE = REPO / 'os/Containerfile'
 
 MOCK = r'''#!/usr/bin/env python3
@@ -25,9 +25,9 @@ for row in fixture['requirements']:
 '''
 
 
-class PythonGate(unittest.TestCase):
-    def run_gate(self, files, owned=(), requirements=()):
-        with tempfile.TemporaryDirectory(prefix='tilo-python-gate-') as directory:
+class PythonCheck(unittest.TestCase):
+    def run_check(self, files, owned=(), requirements=()):
+        with tempfile.TemporaryDirectory(prefix='tilo-python-check-') as directory:
             base = Path(directory)
             root = base / 'root'
             for path, content, mode in files:
@@ -42,7 +42,7 @@ class PythonGate(unittest.TestCase):
             rpm.chmod(0o755)
             fixture = base / 'fixture.json'
             fixture.write_text(json.dumps(dict(owned=list(owned), requirements=list(requirements))))
-            return subprocess.run(['bash', str(GATE)], capture_output=True, text=True, timeout=30,
+            return subprocess.run(['bash', str(CHECK)], capture_output=True, text=True, timeout=30,
                                   env=dict(os.environ, TILO_RPM_BIN=str(rpm), RPM_FIXTURE=str(fixture),
                                            TILO_ROOTFS=str(root)))
 
@@ -61,7 +61,7 @@ class PythonGate(unittest.TestCase):
         ]
         for path, content in cases:
             with self.subTest(path=path):
-                self.assert_rejected(self.run_gate([(path, content, 0o755)]), path)
+                self.assert_rejected(self.run_check([(path, content, 0o755)]), path)
 
     def test_rpm_owned_files_umu_and_comments_pass(self):
         files = [
@@ -75,16 +75,16 @@ class PythonGate(unittest.TestCase):
         ]
         requirements = [['firewalld', '/usr/bin/python3'], ['python3', 'python3-libs'],
                         ['python3-dbus', 'python(abi) = 3.14'], ['glibc', 'libc.so.6']]
-        result = self.run_gate(files, owned=['/usr/bin/firewall-cmd'], requirements=requirements)
+        result = self.run_check(files, owned=['/usr/bin/firewall-cmd'], requirements=requirements)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
     def test_unreviewed_python_consumers_are_rejected(self):
         for requirement in ['/usr/bin/python3', 'python(abi) = 3.14', 'python3', 'python3.14dist(requests)']:
             with self.subTest(requirement=requirement):
-                result = self.run_gate([], requirements=[['some-tool', requirement]])
+                result = self.run_check([], requirements=[['some-tool', requirement]])
                 self.assert_rejected(result, 'some-tool')
 
-    def test_the_image_runs_the_gate_on_the_finished_rootfs(self):
+    def test_the_image_runs_the_check_on_the_finished_rootfs(self):
         text = CONTAINERFILE.read_text()
         self.assertIn('bash /usr/local/bin/verify-no-python-runtime.sh', text)
         self.assertIn('os/scripts/verify-no-python-runtime.sh', text)

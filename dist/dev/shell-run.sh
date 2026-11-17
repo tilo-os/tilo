@@ -543,7 +543,7 @@ agent_key_args=()
 start_session --shell screen "${agent_key_args[@]}" "${apps[@]}"
 # The MCP server is announced once the session's own sockets are up, which can be after its control
 # socket: wait for it as for the socket, while the session lives.
-# A debug build serves it where `TILO_MCP_SERVER` names; an optimised one at the seat's own
+# A debug build serves it where `TILO_MCP_SERVER` names; an optimised one at the session's own
 # path in this session's runtime directory, which it announces the same way.
 tries=600
 until grep -q "^TILO_MCP_SERVER=$runtime/" "$log"; do

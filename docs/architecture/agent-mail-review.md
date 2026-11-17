@@ -37,7 +37,7 @@ folder, nothing sent, and a summary in the chat with one line per candidate.
 What works today:
 - **Agent tool loop:** discover, invoke and page results across every app's
   actions, under the broker's permissions.
-- **Sending is gated:** `send-message` is Outside and destructive, so the agent
+- **Sending is guarded:** `send-message` is Outside and destructive, so the agent
   asks first.
 - **PDF viewer:** `read-text`, `look-page`, and `import-pdf-content` from a
   content address.

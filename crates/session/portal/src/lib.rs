@@ -436,7 +436,7 @@ impl Portal {
         &self.app_states
     }
 
-    /// The person's access decisions, which the portal gates its requests
+    /// The person's access decisions, which the portal checks its requests
     /// with: what every other service of the session that asks about a
     /// capability shares, so an answer given to one stands for the other.
     #[must_use]

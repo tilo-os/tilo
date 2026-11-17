@@ -64,7 +64,7 @@ const HOST_VERBS: [(Verb, HostOperation); 12] = [
         Verb {
             id: CREATE_WORKSPACE,
             label: "Create workspace",
-            gate: CREATE_WORKSPACE,
+            check: CREATE_WORKSPACE,
             kind: roles::GOVERNANCE_KIND,
             params: create_params,
         },
@@ -74,7 +74,7 @@ const HOST_VERBS: [(Verb, HostOperation); 12] = [
         Verb {
             id: CREATE_OWN_WORKSPACE,
             label: "Create your own workspace",
-            gate: CREATE_OWN_WORKSPACE,
+            check: CREATE_OWN_WORKSPACE,
             kind: roles::GOVERNANCE_KIND,
             params: create_own_params,
         },
@@ -84,7 +84,7 @@ const HOST_VERBS: [(Verb, HostOperation); 12] = [
         Verb {
             id: DELETE_WORKSPACE,
             label: "Delete your workspace",
-            gate: DELETE_WORKSPACE,
+            check: DELETE_WORKSPACE,
             kind: roles::GOVERNANCE_KIND,
             params: workspace_params,
         },
@@ -94,7 +94,7 @@ const HOST_VERBS: [(Verb, HostOperation); 12] = [
         Verb {
             id: BRANCH_OWN_WORKSPACE,
             label: "Branch your workspace",
-            gate: BRANCH_OWN_WORKSPACE,
+            check: BRANCH_OWN_WORKSPACE,
             kind: roles::GOVERNANCE_KIND,
             params: branch::params,
         },
@@ -104,7 +104,7 @@ const HOST_VERBS: [(Verb, HostOperation); 12] = [
         Verb {
             id: LIST_WORKSPACES,
             label: "List workspaces",
-            gate: LIST_WORKSPACES,
+            check: LIST_WORKSPACES,
             kind: ActionKind::Read,
             params: Vec::new,
         },
@@ -114,7 +114,7 @@ const HOST_VERBS: [(Verb, HostOperation); 12] = [
         Verb {
             id: LIST_PERSONAL,
             label: "List your workspaces, wherever they are hosted",
-            gate: LIST_PERSONAL,
+            check: LIST_PERSONAL,
             kind: ActionKind::Read,
             params: list_personal_params,
         },
@@ -124,7 +124,7 @@ const HOST_VERBS: [(Verb, HostOperation); 12] = [
         Verb {
             id: KEEP_PERSONAL,
             label: "Keep your workspace list here",
-            gate: KEEP_PERSONAL,
+            check: KEEP_PERSONAL,
             kind: roles::GOVERNANCE_KIND,
             params: keep_personal_params,
         },
@@ -134,7 +134,7 @@ const HOST_VERBS: [(Verb, HostOperation); 12] = [
         Verb {
             id: PERSONAL_DEVICE_NAME,
             label: "Name one of your devices",
-            gate: PERSONAL_DEVICE_NAME,
+            check: PERSONAL_DEVICE_NAME,
             kind: roles::GOVERNANCE_KIND,
             params: name_personal_params,
         },
@@ -144,7 +144,7 @@ const HOST_VERBS: [(Verb, HostOperation); 12] = [
         Verb {
             id: LIST_REVOCATIONS,
             label: "List revoked devices",
-            gate: LIST_REVOCATIONS,
+            check: LIST_REVOCATIONS,
             kind: ActionKind::Read,
             params: Vec::new,
         },
@@ -154,7 +154,7 @@ const HOST_VERBS: [(Verb, HostOperation); 12] = [
         Verb {
             id: ENTER_WORKSPACE,
             label: "Enter workspace",
-            gate: ENTER_WORKSPACE,
+            check: ENTER_WORKSPACE,
             kind: roles::GOVERNANCE_KIND,
             params: enter_params,
         },
@@ -164,7 +164,7 @@ const HOST_VERBS: [(Verb, HostOperation); 12] = [
         Verb {
             id: HOST_WORKSPACE,
             label: "Serve a workspace for its governor",
-            gate: HOST_WORKSPACE,
+            check: HOST_WORKSPACE,
             kind: roles::GOVERNANCE_KIND,
             params: host_workspace_params,
         },
@@ -174,7 +174,7 @@ const HOST_VERBS: [(Verb, HostOperation); 12] = [
         Verb {
             id: UNHOST_WORKSPACE,
             label: "Stop serving a workspace for its governor",
-            gate: UNHOST_WORKSPACE,
+            check: UNHOST_WORKSPACE,
             kind: roles::GOVERNANCE_KIND,
             params: workspace_params,
         },

@@ -1,4 +1,4 @@
-//! Collaborative-files performance gate: the work each scenario does.
+//! Collaborative-files performance check: the work each scenario does.
 //!
 //! Bytes sent, bytes read, document lookups and nodes examined per lock hold
 //! do not depend on the machine or its load, so every ceiling here is a hard
@@ -68,7 +68,7 @@ fn assert_ranged_read_work(name: &str, read: u64, manifest_len: u64) {
 }
 
 #[test]
-fn conflict_watch_idle_pass_and_lock_hold_performance_gate() {
+fn conflict_watch_idle_pass_and_lock_hold_performance_check() {
     let mut namespace = Namespace::new("perf-conflict").unwrap();
     for directory in 0..CONFLICT_DIRECTORIES {
         let parent = namespace
@@ -112,7 +112,7 @@ fn conflict_watch_idle_pass_and_lock_hold_performance_gate() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn mount_ranged_read_under_remote_apply_performance_gate() {
+async fn mount_ranged_read_under_remote_apply_performance_check() {
     let store = Arc::new(ContentStore::memory());
     let large_file = deterministic_bytes(LARGE_FILE_BYTES);
     let manifest = store
@@ -200,7 +200,7 @@ async fn mount_ranged_read_under_remote_apply_performance_gate() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn document_media_cold_range_performance_gate() {
+async fn document_media_cold_range_performance_check() {
     let dir = tempfile::tempdir().expect("media store tempdir");
     let photos = BlobScope::new("workspace-1", "so.tilo.photos").expect("media scope");
     let len = usize::try_from(MAX_BLOB_BYTES).expect("media limit fits usize");
@@ -271,7 +271,7 @@ async fn document_media_cold_range_performance_gate() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn collaborative_fs_release_performance_gate() {
+async fn collaborative_fs_release_performance_check() {
     let mut original = Namespace::new("perf-fixture").unwrap();
     for index in 0..DIRECTORY_ENTRIES {
         original

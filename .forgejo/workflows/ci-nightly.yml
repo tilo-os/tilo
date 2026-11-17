@@ -34,7 +34,7 @@ jobs:
       - name: Prepare Rust build caches
         uses: ./.forgejo/actions/prepare-rust-build
       # cargo-fuzz needs nightly sanitizer instrumentation. Tool and compiler
-      # are pinned so a moving installer cannot change the security gate.
+      # are pinned so a moving installer cannot change the security check.
       - name: Install pinned fuzz toolchain
         run: |
           rustup toolchain install nightly-2026-08-25 --profile minimal

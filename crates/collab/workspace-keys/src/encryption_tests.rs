@@ -1,5 +1,5 @@
 use super::*;
-use crate::gates::Gates;
+use crate::seal_checks::SealChecks;
 use crate::testing::*;
 use collab_types::{ArtifactId, ContentRetention};
 use std::path::Path;
@@ -10,7 +10,7 @@ struct Device {
     /// created it ([`create`]).
     founds: Arc<std::sync::atomic::AtomicBool>,
     service: WorkspaceKeys,
-    gates: Arc<Gates>,
+    seal_checks: Arc<SealChecks>,
     endpoint: Endpoint,
 }
 
@@ -39,7 +39,7 @@ fn sealed_device(
     dir: &Path,
 ) -> Device {
     workspace.queues.lock().unwrap().entry(id).or_default();
-    let gates = Arc::new(Gates::default());
+    let seal_checks = Arc::new(SealChecks::default());
     // The first device created the workspace.
     let founds = Arc::new(std::sync::atomic::AtomicBool::new(id == 0));
     let service = WorkspaceKeys::open(
@@ -53,13 +53,13 @@ fn sealed_device(
             policy: policy.clone(),
             founds: Arc::clone(&founds),
         }),
-        Arc::clone(&gates) as Arc<dyn GateRegistry>,
+        Arc::clone(&seal_checks) as Arc<dyn SealCheckRegistry>,
     )
     .unwrap();
     Device {
         founds,
         service,
-        gates,
+        seal_checks,
         endpoint: Endpoint {
             workspace: Arc::clone(workspace),
             id,
@@ -95,7 +95,7 @@ fn ready_epoch(access: &KeyAccess) -> Option<u64> {
 
 fn refuses_plaintext(device: &Device) -> bool {
     !device
-        .gates
+        .seal_checks
         .allows_document(&device.endpoint.workspace_id.to_string(), None)
 }
 
@@ -235,13 +235,13 @@ fn a_new_group_is_encrypted_from_creation_and_follows_the_policy() {
     );
     assert!(
         refuses_plaintext(&laptop),
-        "gate: {:?} peer: {:?}",
+        "seal_check: {:?} peer: {:?}",
         laptop.service.registered.get(&workspace_id),
         laptop
             .service
             .peers
             .get(&workspace_id)
-            .map(|e| (e.peer.access(), e.peer.gate()))
+            .map(|e| (e.peer.access(), e.peer.seal_check()))
     );
 
     policy.allowed.lock().unwrap().remove(&public(2));
@@ -1043,7 +1043,7 @@ fn delivery_survives_a_network_outage() {
 }
 
 #[test]
-fn group_state_and_gates_survive_a_restart() {
+fn group_state_and_seal_checks_survive_a_restart() {
     let workspace = Arc::new(Workspace::default());
     let workspace_id = WorkspaceId::new();
     let policy = Policy::default();
@@ -1063,7 +1063,7 @@ fn group_state_and_gates_survive_a_restart() {
         let mut restarted = device(&workspace, workspace_id, id, seed, &policy, dir);
         assert!(
             refuses_plaintext(&restarted),
-            "the plaintext gate holds from the first op after a restart"
+            "the plaintext seal_check holds from the first op after a restart"
         );
         assert!(ready_epoch(&restarted.service.access(workspace_id, now)).is_some());
     }
@@ -1630,10 +1630,10 @@ fn without_a_store_nothing_is_due() {
     *policy.announces.lock().unwrap() = Some(Announcements::Own(Arc::new(
         std::sync::atomic::AtomicU64::new(1),
     )));
-    let gates = Arc::new(Gates::default());
+    let seal_checks = Arc::new(SealChecks::default());
     let mut service = WorkspaceKeys::without_store(
         Box::new(Directory::new(policy.clone())),
-        Arc::clone(&gates) as Arc<dyn GateRegistry>,
+        Arc::clone(&seal_checks) as Arc<dyn SealCheckRegistry>,
     );
     let endpoint = Endpoint::join(&workspace, workspace_id, 0);
     let now = Instant::now();
@@ -1659,7 +1659,7 @@ fn without_a_store_nothing_is_due() {
         "no governance was sent"
     );
     // The workspace is a governed one too: still no state of its own.
-    let mut governed = WorkspaceKeys::without_store(Box::new(Directory::new(policy)), gates);
+    let mut governed = WorkspaceKeys::without_store(Box::new(Directory::new(policy)), seal_checks);
     assert!(matches!(
         governed.access(workspace_id, now),
         KeyAccess::NoSecretStore
@@ -1722,10 +1722,10 @@ fn a_reader_with_custody_that_signs_later_reads_a_key_holders_group() {
                     role: KeyRole::Follower,
                 },
                 Box::new(Directory::new(policy.clone())),
-                Arc::new(Gates::default()),
+                Arc::new(SealChecks::default()),
             )
             .unwrap(),
-            gates: Arc::new(Gates::default()),
+            seal_checks: Arc::new(SealChecks::default()),
             endpoint: Endpoint::join(&workspace, workspace_id, id),
         }
     };

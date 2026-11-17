@@ -86,7 +86,7 @@ pub struct Can {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Way {
-    /// The person's own desktop, gated by its home's entry where the home has one.
+    /// The person's own desktop, guarded by its home's entry where the home has one.
     OwnDesktop,
     /// Open the invitation the site keeps, then [`Self::Invitation`] at the host it names.
     SealedInvitation,

@@ -483,7 +483,7 @@ tilo_test_env::scenario! {
     phase a_verb_of_the_persons_record_is_undoable_and_needs_only_reading;
     // A verb of the person's own record keeps what it does: a destructive one
     // Undo takes back is undoable, so it runs at once and asks nothing, while
-    // what a grant must allow is reading, so the workspace's roles do not gate it.
+    // what a grant must allow is reading, so the workspace's roles do not check it.
     {
         crate::own_kinds::declare("so.tilo.test-board", &["test.playback"]);
         let mut app = TestApp::<BoardApp>::for_person(&ada()).unwrap();

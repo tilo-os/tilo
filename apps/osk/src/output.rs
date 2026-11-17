@@ -11,7 +11,7 @@
 //!
 //! * **Input method** (the Tilo session). Preedit and commits travel on the
 //!   `input-method-v2` connection; editing keys (Backspace, Return, Tab) travel
-//!   as keysyms on the compositor-gated `virtual-keyboard-v1` connection, so a
+//!   as keysyms on the compositor-guarded `virtual-keyboard-v1` connection, so a
 //!   single-line field sees a real Return and submits. Those are two Wayland
 //!   connections, and the compositor orders requests only *within* one, so
 //!   [`OrderedRouter`] inserts a [`Step::Barrier`] (a round trip on the

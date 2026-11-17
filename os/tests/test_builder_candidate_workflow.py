@@ -94,11 +94,11 @@ class BuilderCandidates(unittest.TestCase):
                                 'unset' if override is None else override)
                     self.assertEqual(result.stdout.strip(), expected)
 
-    def test_browser_regressions_gate_publication(self):
+    def test_browser_regressions_check_publication(self):
         script = canary_arm('browser-tests')
         self.assertNotIn('|| true', script)
         # A filter that selects nothing is a failure too: a regression that moved out of the
-        # filter's reach may not leave the gate green.
+        # filter's reach may not leave the check green.
         self.assertEqual(script.count('--no-tests=fail'), 2)
         calls = nextest_invocations(script)
         self.assertEqual(len(calls), 2, 'the canary runs the session client and the agent session')
@@ -163,7 +163,7 @@ class BuilderCandidates(unittest.TestCase):
                                         text=True, capture_output=True)
                 self.assertNotEqual(result.returncode, 0)
 
-    def test_the_candidates_chromium_gates_every_publication_and_its_regressions_a_release(self):
+    def test_the_candidates_chromium_checks_every_publication_and_its_regressions_a_release(self):
         smoke = canary_arm('browser')
         # The smoke reads the image and a few files, so its verdict is kept until the image
         # changes; it compiles nothing.

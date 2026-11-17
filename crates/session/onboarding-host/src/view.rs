@@ -471,7 +471,7 @@ impl Invalidation {
     }
 }
 
-/// Trusted setup owns these document gates; controls only queue the person's intent.
+/// Trusted setup owns these document checks; controls only queue the person's intent.
 #[derive(Clone, Copy, Debug, serde::Serialize)]
 enum AcknowledgementKind {
     IdentityProtection,
@@ -588,7 +588,7 @@ pub struct OnboardingView {
     /// person explicitly asks to make another copy.
     backup_copy_form_open: bool,
     /// An unprotected identity is a consequential, but supported, choice.
-    /// Keep the explicit acknowledgement process-local: it only gates this
+    /// Keep the explicit acknowledgement process-local: it only checks this
     /// one screen, while the durable journal records the resulting choice.
     backup_skip_acknowledged: bool,
     /// `false` shows the post-mint backup step; `true` shows the concise
@@ -2381,7 +2381,7 @@ impl Widget for OnboardingView {
             );
         }
 
-        // The checkbox drives the gate directly rather than being latched, so unticking really does close it again.
+        // The checkbox drives the check directly rather than being latched, so unticking really does close it again.
         // The acknowledgement a running mint was started with holds until
         // the mint reports.
         let understood = read_bool(state, root, KEY_UNDERSTOOD);
@@ -3371,8 +3371,8 @@ mod tests {
             view.nearby_status_path = Some(status);
             // Hold the journal write that records the join, so the assertion
             // below sees the hand-off waiting for it rather than racing it.
-            let (release_journal, journal_gate) = std::sync::mpsc::channel::<()>();
-            view.journal_writer = writer_held_until(journal_gate);
+            let (release_journal, journal_check) = std::sync::mpsc::channel::<()>();
+            view.journal_writer = writer_held_until(journal_check);
             let doc = AutoCommit::new();
             let deadline = tilo_test_env::hang_deadline();
             while view.nearby.is_some() {
@@ -4001,7 +4001,7 @@ mod tests {
             .submit_ordered(move || {
                 let _ = release.recv();
             })
-            .expect("the held writer takes its gate");
+            .expect("the held writer takes its check");
         writer
     }
 
@@ -4133,7 +4133,7 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        fn identity_creation_is_gated_on_acknowledgement_and_mints_once;
+        fn identity_creation_requires_acknowledgement_and_mints_once;
 
         phase structure_and_focus_invalidations_are_consumed_independently;
         {
@@ -4162,7 +4162,7 @@ mod tests {
             press(&v, &mut doc, KEY_CREATE);
             v.sync(&doc, &automerge::ROOT);
             assert_eq!(calls.load(Ordering::SeqCst), 0, "no key was minted");
-            assert_eq!(v.flow().screen(), Screen::NoRecovery, "still on the gate");
+            assert_eq!(v.flow().screen(), Screen::NoRecovery, "still on the check");
         }
 
         phase acknowledging_then_creating_mints_exactly_once;
@@ -4183,7 +4183,7 @@ mod tests {
             assert!(v.flow().is_done());
         }
 
-        phase unticking_the_box_closes_the_gate_again;
+        phase unticking_the_box_blocks_creation_again;
         {
             let (mut v, calls) = view();
             let mut doc = AutoCommit::new();
@@ -4373,7 +4373,7 @@ mod tests {
             }
         }
 
-        phase reopened_tour_has_no_identity_gate_and_can_be_dismissed;
+        phase reopened_tour_does_not_require_an_identity_and_can_be_dismissed;
         {
             let mut view = OnboardingView::new_tour();
             let mut doc = AutoCommit::new();
@@ -4504,7 +4504,7 @@ mod tests {
     tilo_test_env::scenario! {
         fn screen_navigation_follows_context_direction_escape_and_motion_preferences;
 
-        phase host_desktop_context_keeps_the_identity_creation_gate;
+        phase host_desktop_context_keeps_the_identity_creation_check;
         {
             let mut view = OnboardingView::with_all_handlers_in_context(
                 Box::new(|| {
@@ -5212,15 +5212,15 @@ mod tests {
         )
         .unwrap();
         let record = std::fs::read(directory.join("primary.json")).unwrap();
-        let (release, gate) = std::sync::mpsc::channel::<()>();
-        let gate = Mutex::new(gate);
+        let (release, check) = std::sync::mpsc::channel::<()>();
+        let check = Mutex::new(check);
         let (started_tx, started) = std::sync::mpsc::channel();
         let started_tx = Mutex::new(started_tx);
         let setup = CodecSetup::with(
             Arc::new(|| CodecPackStatus::parse(r#"{"state":"not-installed"}"#)),
             Arc::new(move |action| {
                 started_tx.lock().unwrap().send(action).unwrap();
-                gate.lock().unwrap().recv().unwrap();
+                check.lock().unwrap().recv().unwrap();
                 Ok(())
             }),
         );
@@ -5763,8 +5763,8 @@ mod tests {
 
         phase setup_continues_while_the_download_runs;
         {
-            let (release, gate) = std::sync::mpsc::channel::<()>();
-            let gate = Mutex::new(gate);
+            let (release, check) = std::sync::mpsc::channel::<()>();
+            let check = Mutex::new(check);
             let (started_tx, started) = std::sync::mpsc::channel::<()>();
             let started_tx = Mutex::new(started_tx);
             let status = Arc::new(Mutex::new(r#"{"state":"not-installed"}"#.to_string()));
@@ -5776,7 +5776,7 @@ mod tests {
                 Arc::new(move |_| {
                     *writer.lock().unwrap() = r#"{"state":"installing","desired":true,"progress":{"step":3,"steps":7,"label":"Downloading"}}"#.to_string();
                     let _ = started_tx.lock().unwrap().send(());
-                    let _ = gate.lock().unwrap().recv();
+                    let _ = check.lock().unwrap().recv();
                     Ok(())
                 }),
             ));

@@ -493,7 +493,7 @@ impl super::App {
         drop(probe);
         let changed = self.service_local_control_history() || history_changed;
         // This is local writer progress, never a durable owner receipt. The
-        // existing scoped publication barrier still gates terminal success.
+        // existing scoped publication barrier still checks terminal success.
         #[cfg(feature = "native")]
         if let Err(error) = self.autosave_tick() {
             crate::diag!("[app] component autosave tick refused: {error:?}");

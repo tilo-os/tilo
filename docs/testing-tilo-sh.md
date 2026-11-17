@@ -40,7 +40,7 @@ a stack handed what a check built (`TILO_SH_PROGRAMS` and the like), and
 `TILO_SH_BUILD=t` all do the same, and `up` says why.
 
 `TILO_SH_BUILD=t` takes the programs and the bundle from t's checks instead:
-`tilo-sh-programs` (`lounge-gate`) and `web-desktop-gate-bundle` (compiled,
+`tilo-sh-programs` (`lounge-gate`) and `web-desktop-check-bundle` (compiled,
 bound, split and wasm-opt'd on t), the builds the checks run. They start from
 an empty build directory, so they take minutes where the default takes
 seconds; use them to rehearse exactly what the checks build. A clean checkout

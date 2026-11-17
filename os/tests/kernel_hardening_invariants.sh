@@ -484,17 +484,17 @@ grep -Fq 'python3 /work/check-config.py .config --fragment /work/tilo-effective.
 
 grep -Fqx 'compression-algorithm = lz4' "$repo/os/etc/systemd/zram-generator.conf" \
   || bad 'zram is not using the low-latency LZ4 compressor'
-boot_performance_gate="$repo/os/tests/boot_performance_gate.sh"
-grep -Fq "*' [lz4] '*)" "$boot_performance_gate" \
-  || bad 'release boot gate does not verify the live zram compressor'
-grep -Fq 'grep -Fqx /dev/zram0' "$boot_performance_gate" \
-  || bad 'release boot gate does not verify zram is active swap'
-grep -Fq 'if [ "$active_swaps" != /dev/zram0 ]; then' "$boot_performance_gate" \
-  || bad 'release boot gate permits persistent swap beside zram'
+boot_performance_check="$repo/os/tests/boot_performance_check.sh"
+grep -Fq "*' [lz4] '*)" "$boot_performance_check" \
+  || bad 'release boot check does not verify the live zram compressor'
+grep -Fq 'grep -Fqx /dev/zram0' "$boot_performance_check" \
+  || bad 'release boot check does not verify zram is active swap'
+grep -Fq 'if [ "$active_swaps" != /dev/zram0 ]; then' "$boot_performance_check" \
+  || bad 'release boot check permits persistent swap beside zram'
 grep -Fq 'if [ "$active_swaps" = /dev/zram0 ]; then' "$audit" \
   || bad 'installed security audit does not detect persistent swap'
-grep -Fq "*' [bfq] '*)" "$boot_performance_gate" \
-  || bad 'release boot gate does not verify BFQ on physical disks'
+grep -Fq "*' [bfq] '*)" "$boot_performance_check" \
+  || bad 'release boot check does not verify BFQ on physical disks'
 
 for required in \
   'kernel.sched_autogroup_enabled = 1' \

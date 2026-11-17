@@ -35,7 +35,7 @@ impl Drop for RootRetirementPrelude {
     }
 }
 
-/// Borrowed construction guard; private, negative-only, with no gate/callback API.
+/// Borrowed construction guard; private, negative-only, with no check/callback API.
 pub(crate) struct MountConstructionRetirement<'a> {
     retirement: Option<&'a MountRetirement>,
 }

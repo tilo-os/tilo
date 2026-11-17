@@ -1236,7 +1236,7 @@ fn app_from_installation(installation: &ManagedInstallation) -> WindowsApp {
     }
 }
 
-/// Mirror the server's coarse lifecycle gate in the view model.
+/// Mirror the server's coarse lifecycle check in the view model.
 fn can_escalate_install_to_vm(installation: &ManagedInstallation) -> bool {
     matches!(installation.route, RouteKind::Wine | RouteKind::Proton)
         && !matches!(

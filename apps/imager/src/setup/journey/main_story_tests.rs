@@ -581,7 +581,7 @@ fn guided_new_user_migrates_recognized_home_then_reviews_shared_files_storage() 
     env.set("XDG_CONFIG_HOME", &config);
     env.set("XDG_STATE_HOME", root.join("state"));
     env.set(runtime_identity::FILE_SECRETS_ENV, "1");
-    env.set(super::super::internal_install_flow::RUNTIME_GATE_VAR, "1");
+    env.set(super::super::internal_install_flow::RUNTIME_ALLOW_VAR, "1");
     let picture = root.join("avatar.png");
     std::fs::write(&picture, include!("../fixtures/avatar.rs")).unwrap();
     let mut app = App::launched(&["--setup"]).unwrap();
@@ -601,7 +601,7 @@ fn guided_new_user_migrates_recognized_home_then_reviews_shared_files_storage() 
         &["installer.device-name", "installer.next", "installer.back"],
     );
     story_accounts_and_storage(&mut app, &home);
-    env.set(super::super::internal_install_flow::RUNTIME_GATE_VAR, "0");
+    env.set(super::super::internal_install_flow::RUNTIME_ALLOW_VAR, "0");
     app.with_widget::<InstallerPreview, _>(|v| v.dirty = true)
         .unwrap();
     app.settle();
@@ -881,7 +881,7 @@ fn guided_existing_backup_migrates_this_home_without_creating_another_identity()
     env.set("XDG_STATE_HOME", root.join("state"));
     env.set("XDG_CACHE_HOME", root.join("cache"));
     env.set(runtime_identity::FILE_SECRETS_ENV, "1");
-    env.set(super::super::internal_install_flow::RUNTIME_GATE_VAR, "1");
+    env.set(super::super::internal_install_flow::RUNTIME_ALLOW_VAR, "1");
     let donor = PreparedIdentity::create(
         &root.join("donor"),
         "Existing Ada",

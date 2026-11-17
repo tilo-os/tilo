@@ -528,7 +528,7 @@ mod tests {
             }
 
             fn redacted_entry_is_non_revertible_regardless_of_entry_kind() {
-                // The widget gates the [Revert] chip on `EntryKind::is_revertible`
+                // The widget checks the [Revert] chip on `EntryKind::is_revertible`
                 // AND `entry.redaction.is_none()`; a Splice that has since been
                 // redacted MUST NOT show the chip.
                 let mut e = entry(EntryKind::Text, "Alice", 0);

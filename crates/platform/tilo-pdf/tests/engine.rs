@@ -69,9 +69,9 @@ fn engine() -> Option<Engine> {
         Engine::with_helper(&tilo_test_env::package_binary!("tilo-pdf-helper")),
         "a helper engine test",
     ) {
-        tilo_pdf::HelperGate::Sandboxed(engine) => Some(engine),
-        tilo_pdf::HelperGate::StandDown => None,
-        tilo_pdf::HelperGate::Failed(e) => panic!("the PDF helper does not start: {e}"),
+        tilo_pdf::HelperCheck::Sandboxed(engine) => Some(engine),
+        tilo_pdf::HelperCheck::StandDown => None,
+        tilo_pdf::HelperCheck::Failed(e) => panic!("the PDF helper does not start: {e}"),
     }
 }
 

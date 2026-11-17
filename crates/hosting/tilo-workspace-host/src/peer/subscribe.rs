@@ -124,7 +124,7 @@ pub(super) enum Subscribed {
     Refused(Envelope),
 }
 
-/// Handle `Subscribe`: gate on membership (or admit, for a
+/// Handle `Subscribe`: check on membership (or admit, for a
 /// same-owner autobind), replay retained baselines + this device's
 /// pending queue, then register the live subscriber.
 pub(super) async fn handle_subscribe(

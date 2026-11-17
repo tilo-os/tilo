@@ -351,7 +351,7 @@ impl Engine {
 
         let materialized = state.materialized()?;
         let lease_class: HashSet<PathBuf> = state.leases()?.into_keys().collect();
-        let write_gates = Arc::new(super::lease::WriteGates::default());
+        let write_guards = Arc::new(super::lease::WriteGuards::default());
         let mut leases = LeaseKeeper::new(
             Arc::clone(&fs),
             Arc::clone(&placeholders),
@@ -359,7 +359,7 @@ impl Engine {
             cfg.device,
             cfg.leases,
             lease_class,
-            Arc::clone(&write_gates),
+            Arc::clone(&write_guards),
         );
         if cfg.lease_authority {
             leases.serve_as_authority();
@@ -370,7 +370,7 @@ impl Engine {
             content,
             runtime,
             owner,
-            write_gates,
+            write_guards,
         );
         projector.eager_bytes = cfg.eager_bytes;
         let scheduler = cfg.scheduler.clone();

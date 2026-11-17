@@ -250,7 +250,7 @@ td.sum{text-align:right}
 <h1>The harbour at dawn</h1><p class="note">By the night shell</p>
 <p>The harbour kept its own hours, and <a href="/more">the people who worked it</a> had long
 since stopped arguing with the tide. The fee was <span class="old">12 crowns</span> 9 crowns,
-<em>paid at the gate</em>, and <strong>nobody</strong> waited for a receipt longer than it takes
+<em>paid at the hold</em>, and <strong>nobody</strong> waited for a receipt longer than it takes
 to read <code>tide.table</code> twice over.</p>
 <h2>What the boats carried</h2>
 <ul><li>Salt and rope</li><li>Letters for the island</li></ul>

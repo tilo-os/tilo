@@ -348,7 +348,7 @@ async fn signed_native_facade_preserves_physical_intent_without_lending_it_to_ot
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn signed_caller_without_protected_seat_cannot_acquire_physical_intent() {
+async fn signed_caller_without_protected_local_person_cannot_acquire_physical_intent() {
     tokio::task::LocalSet::new()
         .run_until(async {
             let env = Environment::new();

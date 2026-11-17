@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Opt-in SELinux enforcing/audit proof for --dev-login installer media.
 #
-# Kept out of test-installer-cycle.sh so the release-gate script stays free of
+# Kept out of test-installer-cycle.sh so the release-check script stays free of
 # guest-shell and journal inspection channels.
 set -euo pipefail
 

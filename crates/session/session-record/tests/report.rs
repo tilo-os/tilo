@@ -1,5 +1,5 @@
 //! The session report program over recorded logins: its JSON, the render
-//! gate and the typing-latency table.
+//! check and the typing-latency table.
 
 #![allow(
     clippy::unwrap_used,
@@ -189,9 +189,9 @@ fn same(left: &Value, right: &Value) -> bool {
     left.to_json() == right.to_json()
 }
 
-fn gate(root: &Path, log: &str, extra: &[&str]) -> Output {
+fn check(root: &Path, log: &str, extra: &[&str]) -> Output {
     fs::write(root.join("latest.log"), log).expect("flight record");
-    let mut args = vec!["--render-gate"];
+    let mut args = vec!["--render-check"];
     args.extend_from_slice(extra);
     report(root, &args)
 }
@@ -328,7 +328,7 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase the_render_gate_holds_presentation_to_its_contract;
+    phase the_render_check_holds_presentation_to_its_contract;
     {
         let directory = tempfile::tempdir().expect("directory");
         let root = directory.path();
@@ -337,8 +337,8 @@ tilo_test_env::scenario! {
         let readback_summary = "frames=40 direct_frames=0 direct_dropped=0 flip_completions=0 unprofiled_frames=0 window_us=2000000 bridge_us=1800000 scanout_us=3000 readback_bytes=866713600 output_bytes=866713600 avg_direct_us=0 max_direct_us=0 direct_failures=1 direct_scanout_status=unavailable direct_scanout_reason=\"render: GPU-only absolute deadline exceeded\" DRM render phase summary\n";
         let direct_summary = "frames=120 direct_frames=120 direct_dropped=0 flip_completions=120 unprofiled_frames=0 window_us=2000000 bridge_us=0 scanout_us=0 readback_bytes=0 output_bytes=0 avg_direct_us=6100 max_direct_us=9800 direct_failures=1 direct_scanout_status=enabled direct_scanout_reason=\"not-initialized\" DRM render phase summary\n";
 
-        // A demotion that never recovers fails the gate.
-        let failed = gate(
+        // A demotion that never recovers fails the check.
+        let failed = check(
             root,
             &[enabled, direct_summary, degraded, readback_summary].concat(),
             &[],
@@ -361,25 +361,25 @@ tilo_test_env::scenario! {
         );
         let stdout = String::from_utf8_lossy(&failed.stdout);
         assert!(
-            stdout.starts_with("render gate: last phase summary {'frames': 40, 'direct_frames': 0,"),
+            stdout.starts_with("render check: last phase summary {'frames': 40, 'direct_frames': 0,"),
             "{stdout}"
         );
         assert!(
-            stdout.contains("render gate: main-thread frame work None\n"),
+            stdout.contains("render check: main-thread frame work None\n"),
             "{stdout}"
         );
 
         // A retried demotion passes.
-        let passed = gate(
+        let passed = check(
             root,
             &[enabled, degraded, enabled, direct_summary].concat(),
             &[],
         );
         assert!(passed.status.success(), "{passed:?}");
-        assert!(String::from_utf8_lossy(&passed.stdout).contains("render gate: PASS"));
+        assert!(String::from_utf8_lossy(&passed.stdout).contains("render check: PASS"));
 
         // Direct frames over budget fail.
-        let slow = gate(
+        let slow = check(
             root,
             &[enabled, direct_summary].concat(),
             &["--render-budget-ms", "5"],
@@ -390,20 +390,20 @@ tilo_test_env::scenario! {
         // A required direct presenter must start.
         let software = "direct_scanout_status=unavailable reason=\"renderer and scanout use different GPUs\" DRM direct scanout unavailable\n\
         frames=30 direct_frames=0 direct_dropped=0 flip_completions=0 unprofiled_frames=0 window_us=2000000 bridge_us=300000 scanout_us=3000 readback_bytes=1 output_bytes=1 direct_scanout_status=unavailable direct_scanout_reason=\"renderer and scanout use different GPUs\" DRM render phase summary\n";
-        assert!(gate(root, software, &[]).status.success());
+        assert!(check(root, software, &[]).status.success());
         assert_eq!(
-            gate(root, software, &["--require-direct"]).status.code(),
+            check(root, software, &["--require-direct"]).status.code(),
             Some(1)
         );
 
         // No record at all.
         fs::remove_file(root.join("latest.log")).expect("remove");
-        let missing = report(root, &["--render-gate"]);
+        let missing = report(root, &["--render-check"]);
         assert_eq!(missing.status.code(), Some(1));
         assert!(String::from_utf8_lossy(&missing.stderr).contains("no session flight record at"));
     }
 
-    phase the_render_gate_holds_typing_and_damage_to_the_latency_bar;
+    phase the_render_check_holds_typing_and_damage_to_the_latency_bar;
     // The device's latency bar, opt-in: keys show within the budget at the
     // median, and most direct frames repair only their damage or scan a
     // client out instead of rendering the whole output.
@@ -433,14 +433,14 @@ tilo_test_env::scenario! {
             "80",
         ];
 
-        let fast = gate(
+        let fast = check(
             root,
             &[enabled.to_owned(), summary(50, 40), keys([12, 15, 40])].concat(),
             &bar,
         );
         assert!(fast.status.success(), "{fast:?}");
 
-        let dense = gate(
+        let dense = check(
             root,
             &[enabled.to_owned(), summary(13, 0), keys([12, 15, 40])].concat(),
             &bar,
@@ -453,7 +453,7 @@ tilo_test_env::scenario! {
             "{dense:?}"
         );
 
-        let slow = gate(
+        let slow = check(
             root,
             &[enabled.to_owned(), summary(90, 0), keys([50, 57, 89])].concat(),
             &bar,
@@ -466,9 +466,9 @@ tilo_test_env::scenario! {
             "{slow:?}"
         );
 
-        // Without the flags, neither is gated.
+        // Without the flags, neither is guarded.
         assert!(
-            gate(
+            check(
                 root,
                 &[enabled.to_owned(), summary(13, 0), keys([50, 57, 89])].concat(),
                 &[]

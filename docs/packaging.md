@@ -164,7 +164,7 @@ or reinstall release RPMs by hand.
 
 ### What the package route is tested to do
 
-Fedora 44 on x86-64 is the release-gated combination
+Fedora 44 on x86-64 is the release-guarded combination
 (`docs/install-contract.json`). ARM64 packages build and install-test in tagged
 and full-native runs, but no ARM64 combination is release-qualified or publicly
 supported.
@@ -340,7 +340,7 @@ can build or substitute the package declaratively.
 
 ## CI and publishing
 
-`.forgejo/workflows/release-desktop.yml` is the release gate. Pull requests that
+`.forgejo/workflows/release-desktop.yml` is the release check. Pull requests that
 touch packaging or the packaged binaries execute preflight contracts only.
 `desktop-v*` tags execute the lane matrix regardless of changed paths, wait for
 every enabled native-architecture install test, download the artifacts, require
@@ -352,7 +352,7 @@ The workflow uses the existing `runner` Forgejo label. amd64 containers run
 directly, and every target userspace is pinned to a verified OCI digest rather
 than a mutable distribution tag. The `dist/ci` runner can execute other
 architectures through a job-private PRoot and checksum-pinned QEMU without
-registering a host binfmt handler, but that mechanism is not the release gate:
+registering a host binfmt handler, but that mechanism is not the release check:
 the Nix closure must be validated on a native ARM64 runner first. Each selected
 architecture runs all five distribution targets as one sequential lane; native
 Cargo builds use at most six compiler jobs in tagged and full-native runs and
@@ -378,7 +378,7 @@ uses native Forgejo OIDC; package build/install-test userspaces receive neither
 OIDC nor a private key. Only the isolated service holds a dedicated compatible
 OpenPGP authority. The runner receives signed copies and public provenance,
 verifies their signatures and identical immutable headers/payloads, and retains
-both signing and host-session gates. See
+both signing and host-session checks. See
 [the broker protocol and exact separate live approval boundary](desktop-rpm-broker.md).
 No private key belongs in a repository-wide Actions secret. The existing
 `REGISTRY_TOKEN` remains the package-upload credential and must have repository

@@ -14,6 +14,7 @@ pub mod chromium_frame;
 #[cfg(target_os = "linux")]
 pub mod dbus_proxy;
 pub mod dev_env;
+pub mod egress_proxy;
 #[cfg(target_os = "linux")]
 mod fd;
 pub mod gpu;
@@ -37,7 +38,6 @@ pub mod manifest;
 pub mod memory_monitor;
 pub mod memory_pressure;
 pub mod mesa_seed;
-pub mod netgate;
 #[cfg(target_os = "linux")]
 pub mod ordinary_child;
 #[cfg(target_os = "linux")]
@@ -49,10 +49,10 @@ pub mod priority;
 pub mod profile;
 #[cfg(target_os = "linux")]
 pub mod provider_sandbox;
-// Where it lives: hosts that start no launcher hold the same gate over the apps they start themselves
-// (`runtime_portal::registration_gate`).
+// Where it lives: hosts that start no launcher hold the apps they start themselves
+// (`runtime_portal::launch_hold`).
 #[cfg(unix)]
-pub use runtime_portal::registration_gate;
+pub use runtime_portal::launch_hold;
 #[cfg(target_os = "linux")]
 pub mod retained_view;
 #[cfg(target_os = "linux")]

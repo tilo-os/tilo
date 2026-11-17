@@ -90,7 +90,7 @@ async fn deliver_decided(route: &SdkRoute, arrived: Arrived, inbound_tx: &Inboun
         }
         _ => Vec::new(),
     };
-    let events = match crate::commits::gate(
+    let events = match crate::commits::check(
         &inbound_tx.state,
         signed.commit,
         &claims,

@@ -1,8 +1,8 @@
 //! The runtime's budgets (`tilolang_tilo::bench`), held by the
 //! bench's own scenarios. A tilolang app that misses one is a runtime bug.
 //!
-//! The gate holds the work each scenario does, in counts that do not depend on the machine or
-//! its load ([`Work`]), as docs/measurements/performance.md has pull requests gate: what a
+//! The check holds the work each scenario does, in counts that do not depend on the machine or
+//! its load ([`Work`]), as docs/measurements/performance.md has pull requests check: what a
 //! window shows, and what a change re-renders, patches and reads, is the same in a workspace of 10k
 //! items as in one of 1k. Opening over the index a workspace kept reads no more of it at 10k than at
 //! 1k: the pages of the rows it shows, and nothing of the workspace's document.
@@ -13,7 +13,7 @@
 //! --budgets`.
 //!
 //! Its own test target: the allocation counts are those of this work alone (they are counted per
-//! thread, so the apps' tests may run side by side). The runs do the work the gate counts and
+//! thread, so the apps' tests may run side by side). The runs do the work the check counts and
 //! nothing that is only timed ([`BenchConfig::timings`]).
 
 #![allow(clippy::panic, reason = "test assertions")]
@@ -33,14 +33,14 @@ use tilolang_tilo::host::Host;
 
 mod window;
 
-/// The notes app, whose notebook's export the gate holds.
+/// The notes app, whose notebook's export the check holds.
 const NOTES: &str = "so.tilo.lang.notes";
 
 /// Counted, so the documents hold the allocations each scenario made.
 #[global_allocator]
 static ALLOCATOR: CountingAlloc = CountingAlloc;
 
-/// The sizes the gate compares: a scenario does at 10k what it does at 1k.
+/// The sizes the check compares: a scenario does at 10k what it does at 1k.
 const SMALL: usize = 1000;
 const LARGE: usize = 10_000;
 
@@ -156,7 +156,7 @@ fn same_shown(app: &str, label: &str, (small, large): (Work, Work), misses: &mut
     }
 }
 
-fn gate(app: &str, records: &[Record], misses: &mut Vec<String>) {
+fn check(app: &str, records: &[Record], misses: &mut Vec<String>) {
     // Opening over the workspace's index shows the same at 10k as at 1k and reads the same: of the
     // index, the directories and pages of what it shows; of the document, nothing that grows.
     for scenario in ["open", "thread_open"] {
@@ -244,7 +244,7 @@ fn gate(app: &str, records: &[Record], misses: &mut Vec<String>) {
 /// The runtime does the work of what `app` shows, whatever the size of its workspace.
 fn the_runtime_does_the_work_of_what_it_shows(app: &str) {
     let mut misses = Vec::new();
-    gate(app, &bench(app), &mut misses);
+    check(app, &bench(app), &mut misses);
     assert!(
         misses.is_empty(),
         "more work in a larger workspace:\n{}",
@@ -323,7 +323,7 @@ fn chat_does_the_work_of_what_it_shows() {
 }
 
 // Mail's root holds the workspace's accounts, and what people read is the conversations in
-// one: the harness reaches them ([`Shape`]'s holders), so the gate holds them too.
+// one: the harness reaches them ([`Shape`]'s holders), so the check holds them too.
 #[test]
 fn mail_does_the_work_of_what_it_shows() {
     the_runtime_does_the_work_of_what_it_shows("mail");
@@ -481,7 +481,7 @@ fn export_work(packages: &[Compiled], n: usize) -> Read {
     }
 }
 
-/// The counts of one export, in the order the gate reads them.
+/// The counts of one export, in the order the check reads them.
 fn counts(read: Read) -> [(&'static str, u64); 4] {
     [
         ("located", read.located),

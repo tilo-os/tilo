@@ -1046,7 +1046,7 @@ impl ActionContract {
     /// The confirmation a caller that cannot classify arguments must assume:
     /// the declared policy, or [`ConfirmationPolicy::Confirm`] for an action
     /// whose risk depends on its arguments. A trust boundary that only sees
-    /// this inert contract (the session broker) gates on it; the publishing
+    /// this inert contract (the session broker) waits for it; the publishing
     /// host, which can classify, asks
     /// [`ActionSpec::confirmation_for_json`](crate::ActionSpec::confirmation_for_json).
     pub fn advertised_confirmation(&self) -> ConfirmationPolicy {

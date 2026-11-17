@@ -2,7 +2,7 @@
 //! `avfvideosrc`) on the desktop, whose backend is the `native-capture`
 //! feature's, and `getUserMedia` in the browser.
 //!
-//! This module is gated behind the `live-capture` feature so the `--shots`
+//! This module is behind the `live-capture` feature so the `--shots`
 //! headless path never opens a device. Opening is asynchronous where the
 //! platform asks the user first; `CameraApp::poll_camera` drains the newest
 //! frame each sync and turns a refused or failed start into the honest

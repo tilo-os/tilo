@@ -1020,7 +1020,7 @@ impl BrowserShell {
                 }
                 // Where they work: their window comes forward, else one of the app they are in.
                 tilo_session::people::PeopleAsk::GoTo { who } => self.go_to_person(&who),
-                // A page seats no agent of its own: whoever the card stands for, the ask goes
+                // A page starts no agent of its own: whoever the card stands for, the ask goes
                 // through the agent's card in Console.
                 tilo_session::people::PeopleAsk::Agent { client, ask, .. } => {
                     self.chrome.shared.ask_app_action(

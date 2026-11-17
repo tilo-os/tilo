@@ -233,7 +233,7 @@ pub fn identity_socket() -> PathBuf {
 pub fn authenticate_shell_ui_bind(
     resolved: &[ResolvedService],
     app_id: &str,
-    egress: &crate::netgate::EgressDecision,
+    egress: &crate::egress_proxy::EgressDecision,
 ) -> Result<(), ServiceError> {
     let Some(service) = resolved
         .iter()
@@ -255,7 +255,7 @@ pub fn authenticate_shell_ui_bind(
     let mut frame = serde_json::to_vec(&serde_json::json!({
         "protocol": SHELL_UI_LAUNCH_PROTOCOL,
         "app_id": app_id,
-        "network_status_allowed": !matches!(egress, crate::netgate::EgressDecision::Blocked),
+        "network_status_allowed": !matches!(egress, crate::egress_proxy::EgressDecision::Blocked),
     }))
     .map_err(|error| ServiceError::OpenFailed {
         path: path.clone(),
@@ -1385,7 +1385,7 @@ mod tests {
                     ("allowlist", vec!["example.com".to_owned()], true),
                     ("allowlist", Vec::new(), false),
                 ] {
-                    let egress = crate::netgate::EgressDecision::resolve(mode, &hosts, &[]);
+                    let egress = crate::egress_proxy::EgressDecision::resolve(mode, &hosts, &[]);
                     let resolved = resolve_service_binds(&services, false).unwrap();
                     authenticate_shell_ui_bind(&resolved, "so.tilo.chat", &egress).unwrap();
 

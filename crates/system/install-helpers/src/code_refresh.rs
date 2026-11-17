@@ -337,9 +337,9 @@ pub trait Guest {
         Ok(crate::py::strip(&String::from_utf8_lossy(&output.stdout)).to_owned())
     }
 
-    /// `gate`: only the opted-in development scenario VM, in PID 1's mount
+    /// `check`: only the opted-in development scenario VM, in PID 1's mount
     /// namespace.
-    fn gate(&self) -> Result<()> {
+    fn check(&self) -> Result<()> {
         let regular = |path: &str| {
             let path = Path::new(path);
             path.is_file() && !path.is_symlink()
@@ -558,7 +558,7 @@ fn is_generation(name: &OsStr) -> bool {
 /// `apply`: stage every file, then bind each over its helper read-only,
 /// recording the transaction so a backend never runs on a partial view.
 pub fn apply(guest: &dyn Guest, files: &Files, receipt: &Value) -> Result<Value> {
-    guest.gate()?;
+    guest.check()?;
     // Held until this returns, so the backend's own flock waits for the whole
     // transaction.
     let _lock = match advisory_lock::FileLock::try_exclusive(guest.lock()?) {
@@ -795,12 +795,12 @@ fn exchange(guest: &dyn Guest, stream: &mut dyn Stream, ready_sent: &mut bool) -
     Ok(response)
 }
 
-/// The daemon: gate once, then answer every packet the host sends, with
+/// The daemon: check once, then answer every packet the host sends, with
 /// readiness after the first successful refresh. Host connections may close
 /// between refreshes, so the port is reopened rather than spinning on end of
 /// file or treating it as new code.
 pub fn serve(guest: &dyn Guest) -> Result<()> {
-    guest.gate()?;
+    guest.check()?;
     let mut ready_sent = false;
     loop {
         let mut stream = guest.open_port()?;

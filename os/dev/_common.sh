@@ -107,7 +107,7 @@ TILO_MEM="${TILO_MEM:-4096}"
 TILO_SMP="${TILO_SMP:-4}"
 # `auto` uses hardware acceleration when this environment owns a usable KVM
 # device, and otherwise falls back to QEMU's multithreaded software emulator.
-# The fallback is intentionally slower, but lets the release gate run inside a
+# The fallback is intentionally slower, but lets the release check run inside a
 # Kata-isolated CI runner without exposing the Kubernetes node's /dev/kvm.
 # `hvf` is Apple's Hypervisor.framework: a Homebrew QEMU on an Apple silicon Mac
 # running an aarch64 guest (set TILO_AAVMF_DIRS to its edk2 firmware).

@@ -486,7 +486,7 @@ at once).
 - Counts, filters and queries come from the index, never a loop in a view. The compiler warns
   when a view iterates a whole collection outside a virtual list.
 - Every app gets a performance matrix from its scenarios (open, scroll, keystroke, peer edit,
-  filter at 1k, 10k and 100k items), gated by counted work: boundaries rendered, items built,
+  filter at 1k, 10k and 100k items), guarded by counted work: boundaries rendered, items built,
   pages read, repainted area.
 - Widgets report exactly what changed and damage only their own area; the test harness handles
   changes exactly as the live host does.

@@ -958,7 +958,7 @@ impl ServiceAuthority for InstalledVerifiedArtifacts {
             return Err(refused("Installed sealed artifact custody changed"));
         }
         // Crypto verification happens when minting the token and recording the transition; this
-        // private root directory and `O_RDONLY` descriptors prevent receiver writes, and the gate pins
+        // private root directory and `O_RDONLY` descriptors prevent receiver writes, and the check pins
         // mtime/ctime for every delivered inode.
         if self.files.len() != self.stamps.len() {
             return Err(refused("Installed sealed stamp count differs"));

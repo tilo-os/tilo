@@ -570,7 +570,7 @@ pub struct RuntimeActionHost {
     /// other devices.
     apps: Option<Arc<apps::Apps>>,
     // Retains original custody for both owner/search and MCP callers. An
-    // owner projection is not a native seat and never acquires seat authority.
+    // owner projection is not the local person and never acquires the local person's authority.
     session: Option<Arc<AdmittedRuntimeSession>>,
 }
 

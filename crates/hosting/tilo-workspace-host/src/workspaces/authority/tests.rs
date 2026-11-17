@@ -1296,27 +1296,27 @@ async fn calls_are_run_by_the_owner_and_by_members_granted_call() {
     let ada = admit(workspaces, &workspace, &owner, 1).await;
     let bo = admit(workspaces, &workspace, &owner, 2).await;
     set_role(workspaces, &workspace, &owner, &bo, Role::Moderator).await;
-    // Ending a call the workspace never had: past the gate, the call itself
+    // Ending a call the workspace never had: past the check, the call itself
     // answers that it is unknown.
     let end = CallOperation::End {
         call: [9; 32],
         epoch: 1,
     };
-    let past_the_gate = |answer: &Result<CallState, String>| {
+    let past_the_check = |answer: &Result<CallState, String>| {
         answer
             .as_ref()
             .err()
             .is_some_and(|reason| reason.contains("unknown call"))
     };
     let owners = workspaces.voice_call(&workspace, &peer(&owner), &end).await;
-    assert!(past_the_gate(&owners), "{owners:?}");
+    assert!(past_the_check(&owners), "{owners:?}");
     for member in [&ada, &bo] {
         let answer = workspaces.voice_call(&workspace, &peer(member), &end).await;
-        assert!(answer.is_err() && !past_the_gate(&answer), "{answer:?}");
+        assert!(answer.is_err() && !past_the_check(&answer), "{answer:?}");
     }
     grant(workspaces, &workspace, &owner, &ada, governance::CALL).await;
     let granted = workspaces.voice_call(&workspace, &peer(&ada), &end).await;
-    assert!(past_the_gate(&granted), "{granted:?}");
+    assert!(past_the_check(&granted), "{granted:?}");
     relay.shutdown().await;
 }
 

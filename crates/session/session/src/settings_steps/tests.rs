@@ -131,7 +131,7 @@ fn serving(fixture: &Fixture, app_wire: &Path) -> crate::Session {
 }
 
 /// The person at this desktop, in the workspace in front: whose own click a control's action is.
-fn seat(session: &crate::Session) -> Caller {
+fn local_person(session: &crate::Session) -> Caller {
     Caller::local_person(session.shared.person.clone()).in_workspace(WORKSPACE)
 }
 
@@ -198,7 +198,7 @@ fn settings_controls_change_the_settings_the_session_keeps() {
     let broker = session
         .action_broker()
         .expect("the session serves a broker");
-    let person = seat(&session);
+    let person = local_person(&session);
 
     // The sections Settings' panes show stand under the provider its controls name, each with the
     // field edit they bind to: the same resources, and the same action, as the settings the

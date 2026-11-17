@@ -249,7 +249,7 @@ pub struct RichTextLine {
     face: crate::widget::CachedPaint,
     /// What `face` was drawn from, and the model and permission generations it was drawn at: a
     /// sync hands the tree a changed document without a flag of its own, and a permission
-    /// change alters the field's gate.
+    /// change alters the field's check.
     face_key: Option<LineFace>,
     face_model: u64,
     face_permissions: u64,

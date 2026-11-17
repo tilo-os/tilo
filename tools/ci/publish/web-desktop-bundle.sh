@@ -7,7 +7,7 @@
 # as an output instead of each compiling every app to wasm again, and it builds beside the
 # relay's native binaries rather than after them.
 # usage: web-desktop-bundle.sh wasm OUT [PROFILE] | web-desktop-bundle.sh bundle OUT WASM_DIR [PROFILE]
-# PROFILE is build.sh's: `release` (the default) is what ships; `gate` is the same without the
+# PROFILE is build.sh's: `release` (the default) is what ships; `check` is the same without the
 # whole-program link, which the local tilo.sh stack serves (os/containers/tilo-sh/stack.sh).
 set -euo pipefail
 . "$(dirname -- "${BASH_SOURCE[0]}")/lib.sh"

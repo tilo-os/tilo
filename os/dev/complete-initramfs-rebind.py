@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Verify rebound initramfs bytes before removing the development signing block.
 
-This filesystem gate does not build an initramfs, authenticate a registry image,
+This filesystem check does not build an initramfs, authenticate a registry image,
 sign a loader, seal an image, or prove bootability. The caller must hold a
 disposable working-container mount and the marker hash returned by its own
 validated trust replacement operation.

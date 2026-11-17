@@ -1678,10 +1678,10 @@ mod export_tests {
         listings: HashMap<Option<String>, Vec<answers::Row>>,
         refusals: HashMap<String, String>,
         unlistable: HashSet<String>,
-        /// Reads that wait for [`Self::gate`], so a test can see what was
+        /// Reads that wait for [`Self::check`], so a test can see what was
         /// written before the walk ended.
         held: HashSet<String>,
-        gate: Option<Arc<tokio::sync::Semaphore>>,
+        check: Option<Arc<tokio::sync::Semaphore>>,
         /// How long every read takes, so a page's reads overlap.
         delay: Duration,
         in_flight: Arc<AtomicUsize>,
@@ -1725,9 +1725,9 @@ mod export_tests {
                 tokio::time::sleep(self.delay).await;
             }
             if self.held.contains(&path)
-                && let Some(gate) = &self.gate
+                && let Some(check) = &self.check
             {
-                let _ = gate.acquire().await;
+                let _ = check.acquire().await;
             }
             self.in_flight.fetch_sub(1, Ordering::SeqCst);
             if let Some(why) = self.refusals.get(&path) {
@@ -1888,12 +1888,12 @@ mod export_tests {
     /// walk has read the one after it. The chunks read as one document.
     #[tokio::test]
     async fn an_export_sends_what_it_read_before_the_walk_ends() {
-        let gate = Arc::new(tokio::sync::Semaphore::new(0));
+        let check = Arc::new(tokio::sync::Semaphore::new(0));
         let mut fake = Fake::default();
         fake.listings
             .insert(None, vec![row("early", false), row("late", false)]);
         fake.held.insert("late".to_owned());
-        fake.gate = Some(Arc::clone(&gate));
+        fake.check = Some(Arc::clone(&check));
         let mut body = export_body(fake, workspace(), 7, permit().await);
         let mut text = String::new();
         while !text.contains("\"early\"") {
@@ -1903,7 +1903,7 @@ mod export_tests {
             }
         }
         assert!(!text.contains("\"late\""), "{text}");
-        gate.add_permits(1);
+        check.add_permits(1);
         let rest = body.collect().await.unwrap().to_bytes();
         text.push_str(&String::from_utf8_lossy(&rest));
         let export = parse(text.as_bytes());

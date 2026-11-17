@@ -114,7 +114,7 @@ Repair mode is reachable by anyone who can reach the boot menu — that is, anyo
 with physical access to the machine, or with access to its virtual console. It
 must therefore grant **no authority that physical access does not already grant**.
 
-### The gate
+### The check
 
 Every action in the repair console — rollback, boot-once, re-pull, remounting
 `/var`, reading the previous boot's log, the root shell, and even reboot — is
@@ -133,21 +133,21 @@ generation, the composefs digest, whether the disk is encrypted, and the boot me
 — all of which are already visible to someone standing at the boot menu, and all
 of which someone diagnosing the machine needs before they can decide what to try.
 
-### Why a gate at all, when the disk is already open
+### Why a check at all, when the disk is already open
 
 Because an open mapper proves that some unlock factor was supplied earlier; it
 does not prove that the same person is still at the keyboard. A verified TPM2
 system volume unlocks normal boots by itself; other installs use a strong
 passphrase; the recovery key and an explicitly enrolled FIDO2 token work on
-every install. Without a fresh gate, repair mode would become an unattended
+every install. Without a fresh check, repair mode would become an unattended
 physical-access root shell after any of those opened the disk: strictly worse
 than the normal session, where privileged actions still require authentication.
-This is why repair mode is gated on a *typed* secret even though the system
+This is why repair mode depends on a *typed* secret even though the system
 volume itself may carry a keyslot nobody types into
 ([rollback.md](rollback.md), "A keyslot with no PIN").
 
-With the gate, repair mode grants exactly what knowing a disk secret already
-grants. The gate is not defeated by the disk being open, because it does not ask
+With the check, repair mode grants exactly what knowing a disk secret already
+grants. The check is not defeated by the disk being open, because it does not ask
 the disk whether it is open — it asks the LUKS header whether this is a key.
 
 ### Why generation-bound unlock is still stronger
@@ -161,7 +161,7 @@ generation keyslot on verified TPM2 installs from the signed prediction of the
 target UKI ([boot-chain.md](boot-chain.md), "Target-independent enrollment"), and
 the initramfs consumer falls back to the other factors when it cannot unseal.
 
-That is the whole reason the mode's gate can stay as simple as it is. A PIN-less
+That is the whole reason the mode's check can stay as simple as it is. A PIN-less
 keyslot opens because the boot measured what the authority predicted; repair
 mode is a different measurement, so the same TPM refuses it and the person has to
 produce a secret the header holds. Report it with `tilo-rollback boot-status`
@@ -170,7 +170,7 @@ open this boot.
 
 On a verified TPM2 install, repair mode gets the stronger property because the
 mechanism that gives it is the same one that makes the mode selectable at all: the
-command line is inside the measurement. On other installs the gate above is what
+command line is inside the measurement. On other installs the check above is what
 holds, and it holds on its own.
 
 ### What repair mode excludes

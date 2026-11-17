@@ -790,7 +790,7 @@ impl CollabTransport for BrokerTransport {
 
     fn document_publishable(&self, channel: Option<&str>) -> bool {
         // Withdrawn health withdraws read readiness at once: the route's
-        // reader only clears its gate when it next wakes, and a route whose
+        // reader only clears its check when it next wakes, and a route whose
         // transport failed elsewhere (a refused commit) is not publishable.
         self.state.is_healthy()
             && channel.is_some_and(|channel| self.state.document_reads.publishable(channel))
@@ -1135,7 +1135,7 @@ pub(crate) struct BridgeState {
     /// How often a queued document mutation found its route not yet
     /// publishable and waited again.
     #[cfg(test)]
-    publication_gate_waits: Arc<std::sync::atomic::AtomicUsize>,
+    publication_hold_waits: Arc<std::sync::atomic::AtomicUsize>,
     /// The shovel thread's tid, which a test holds the connection idle
     /// against and counts its wakes on; -1 before the thread starts.
     #[cfg(all(test, unix))]
@@ -1331,7 +1331,7 @@ impl BridgeState {
             connect: Arc::new(std::sync::Mutex::new(ConnectPhase::Connecting)),
             join_hold: Arc::default(),
             #[cfg(test)]
-            publication_gate_waits: Arc::default(),
+            publication_hold_waits: Arc::default(),
             #[cfg(all(test, unix))]
             shovel_tid: Arc::new(std::sync::atomic::AtomicI32::new(-1)),
         }
@@ -1349,7 +1349,7 @@ impl BridgeState {
     }
 
     /// The workspace commits this endpoint has seen. A poisoned lock is a
-    /// panic in the gate: the endpoint goes on with what it has.
+    /// panic in the check: the endpoint goes on with what it has.
     pub(crate) fn commits(&self) -> std::sync::MutexGuard<'_, crate::commits::Commits> {
         self.commits.lock_recover()
     }
@@ -2408,7 +2408,7 @@ impl JoiningProbe {
         drop(self.answer.lock_recover().take());
     }
     /// The reason [`Self::refuse`] gives.
-    pub const REFUSAL: &'static str = "fixture join gate dropped";
+    pub const REFUSAL: &'static str = "fixture join check dropped";
     /// The broker reports the workspace as `status` from now on.
     pub fn set_workspace_status(&self, status: runtime_collab::WorkspaceStatus) {
         let _ = self.workspace.send(Ok(status));
@@ -4832,7 +4832,7 @@ async fn spawn_op_stream(
                     }
                     _ => Vec::new(),
                 };
-                let events = match crate::commits::gate(
+                let events = match crate::commits::check(
                     &tx.state,
                     signed.commit,
                     &claims,
@@ -5768,7 +5768,7 @@ async fn wait_for_document_publication(
             return PublicationWait::Open;
         }
         #[cfg(test)]
-        state.publication_gate_waits.fetch_add(1, Ordering::AcqRel);
+        state.publication_hold_waits.fetch_add(1, Ordering::AcqRel);
         let _ = tokio::time::timeout_at(deadline, changed).await;
     }
 }

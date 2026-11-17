@@ -33,7 +33,7 @@ For every record of the run:
 `--accept KPI[,KPI]` (or `all`) records the run's values as the new baseline
 start for an intended change; budgets still apply. `--synthetic SERIES
 --synthetic-factor F` multiplies the run's values by F and tags them, which
-proves the gate end to end: synthetic records never enter a real baseline and
+proves the check end to end: synthetic records never enter a real baseline and
 only see the previous record of their own series.
 
     python3 tools/perf/compare.py --results results/*.jsonl \

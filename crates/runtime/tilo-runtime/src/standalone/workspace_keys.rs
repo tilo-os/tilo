@@ -21,7 +21,7 @@ use std::{
     time::Duration,
 };
 use tilo_action_broker::{
-    collab_core::{BrokerChannels, BrokerGates},
+    collab_core::{BrokerChannels, BrokerSealChecks},
     workspace_keys::{
         GovernancePump, KeyDir, KeyDirectory, KeyProvider, KeysConfig, SharedKeys, WorkspaceKeys,
     },
@@ -72,7 +72,7 @@ pub(super) fn open(
         Box::new(Directory {
             joined: Arc::clone(&joined),
         }),
-        Arc::new(BrokerGates(broker)),
+        Arc::new(BrokerSealChecks(broker)),
     )?;
     let park = joined.governance_wake();
     let poke = Arc::clone(&park);

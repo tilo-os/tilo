@@ -102,7 +102,7 @@ pub(crate) const REVOKE_KEY: &str = "key.revoke";
 /// The calling person's own name in the workspace: what its member list and
 /// the invitations they make show for them, from any of their devices or
 /// keys. Every member names themself, so it is no governance action and no
-/// grant gates it.
+/// grant checks it.
 pub(crate) const NAME: &str = "member.name";
 /// Holding a person in the workspace by their key, at a role, as an
 /// administrator or as an owner: what an administrator does when they know
@@ -125,7 +125,7 @@ pub(crate) const HOSTS: &str = "host.list";
 pub(crate) const ADD_HOST: &str = "host.add";
 /// Having a host hold the workspace no more.
 pub(crate) const REMOVE_HOST: &str = "host.remove";
-/// What gates choosing the workspace's hosts: its owners', which no grant of
+/// What checks choosing the workspace's hosts: its owners', which no grant of
 /// its governance gives ([`Workspaces::chooses_hosts`]).
 const CHOOSES_HOSTS: &str = "choose-hosts";
 /// Listing the workspace as a public workspace, with its description and the
@@ -188,9 +188,9 @@ const END_CALL: &str = "end";
 struct Verb {
     id: &'static str,
     label: &'static str,
-    /// The workspace governance action [`Workspaces::authorize`] gates it on, and the
+    /// The workspace governance action [`Workspaces::authorize`] checks it on, and the
     /// catalogue offers it by.
-    gate: &'static str,
+    check: &'static str,
     kind: ActionKind,
     params: fn() -> Vec<ActionParam>,
 }
@@ -200,172 +200,172 @@ const VERBS: [Verb; 25] = [
     Verb {
         id: governance::INVITE,
         label: "Invite",
-        gate: governance::INVITE,
+        check: governance::INVITE,
         kind: roles::GOVERNANCE_KIND,
         params: invite_params,
     },
     Verb {
         id: INVITATIONS,
         label: "List invitations",
-        gate: governance::INVITE,
+        check: governance::INVITE,
         kind: ActionKind::Read,
         params: Vec::new,
     },
     Verb {
         id: CANCEL_INVITATION,
         label: "Cancel invitation",
-        gate: governance::INVITE,
+        check: governance::INVITE,
         kind: roles::GOVERNANCE_KIND,
         params: invitation_params,
     },
     Verb {
         id: MEMBERS,
         label: "List members",
-        gate: governance::INVITE,
+        check: governance::INVITE,
         kind: ActionKind::Read,
         params: Vec::new,
     },
     Verb {
         id: ADD_MEMBER,
         label: "Add a person",
-        gate: governance::ADD_MEMBER,
+        check: governance::ADD_MEMBER,
         kind: roles::GOVERNANCE_KIND,
         params: add_member_params,
     },
     Verb {
         id: WAIT_LIST,
         label: "List the wait list",
-        gate: governance::INVITE,
+        check: governance::INVITE,
         kind: ActionKind::Read,
         params: Vec::new,
     },
     Verb {
         id: UNLIST,
         label: "Take an address off the wait list",
-        gate: governance::INVITE,
+        check: governance::INVITE,
         kind: roles::GOVERNANCE_KIND,
         params: wait_list_entry_params,
     },
     Verb {
         id: MAIL_INVITATION,
         label: "Mail an invitation to an address on the wait list",
-        gate: governance::INVITE,
+        check: governance::INVITE,
         kind: roles::GOVERNANCE_KIND,
         params: mail_invitation_params,
     },
     Verb {
         id: HOSTS,
         label: "List the hosts holding it",
-        gate: CHOOSES_HOSTS,
+        check: CHOOSES_HOSTS,
         kind: ActionKind::Read,
         params: Vec::new,
     },
     Verb {
         id: ADD_HOST,
         label: "Have another host hold it",
-        gate: CHOOSES_HOSTS,
+        check: CHOOSES_HOSTS,
         kind: roles::GOVERNANCE_KIND,
         params: add_host_params,
     },
     Verb {
         id: REMOVE_HOST,
         label: "Have a host hold it no more",
-        gate: CHOOSES_HOSTS,
+        check: CHOOSES_HOSTS,
         kind: roles::GOVERNANCE_KIND,
         params: remove_host_params,
     },
     Verb {
         id: NAME,
         label: "Name yourself",
-        // Nothing gates it: what a person is called in a workspace is theirs,
+        // Nothing checks it: what a person is called in a workspace is theirs,
         // not a grant's. Whoever asks names themselves, or is refused.
-        gate: "",
+        check: "",
         kind: roles::GOVERNANCE_KIND,
         params: name_params,
     },
     Verb {
         id: governance::UNBAN,
         label: "Unban",
-        gate: governance::UNBAN,
+        check: governance::UNBAN,
         kind: roles::GOVERNANCE_KIND,
         params: person_params,
     },
     Verb {
         id: governance::CALL,
         label: "Call",
-        gate: governance::CALL,
+        check: governance::CALL,
         kind: roles::GOVERNANCE_KIND,
         params: call_params,
     },
     Verb {
         id: PUBLISH,
         label: "Make public",
-        gate: governance::SETTINGS,
+        check: governance::SETTINGS,
         kind: roles::GOVERNANCE_KIND,
         params: publish_params,
     },
     Verb {
         id: UNPUBLISH,
         label: "Make private",
-        gate: governance::SETTINGS,
+        check: governance::SETTINGS,
         kind: roles::GOVERNANCE_KIND,
         params: Vec::new,
     },
     Verb {
         id: PUBLICATION,
         label: "Public listing",
-        gate: governance::SETTINGS,
+        check: governance::SETTINGS,
         kind: ActionKind::Read,
         params: Vec::new,
     },
     Verb {
         id: REQUEST_BOT,
         label: "Add a bot",
-        gate: governance::INSTALL_BOT,
+        check: governance::INSTALL_BOT,
         kind: roles::GOVERNANCE_KIND,
         params: bot_request_params,
     },
     Verb {
         id: WITHDRAW_BOT_REQUEST,
         label: "Remove a bot",
-        gate: governance::UNINSTALL_BOT,
+        check: governance::UNINSTALL_BOT,
         kind: roles::GOVERNANCE_KIND,
         params: bot_entry_params,
     },
     Verb {
         id: SET_CONNECTOR_SECRET,
         label: "Give a bot's connector its secret",
-        gate: governance::INSTALL_BOT,
+        check: governance::INSTALL_BOT,
         kind: ActionKind::Outside,
         params: connector_secret_params,
     },
     Verb {
         id: governance::INSTALL_APP,
         label: "Run a version of an app",
-        gate: governance::INSTALL_APP,
+        check: governance::INSTALL_APP,
         kind: roles::GOVERNANCE_KIND,
         params: app_release_params,
     },
     Verb {
         id: UPLOAD_APP_FILE,
         label: "Hand the workspace an app version's package",
-        gate: governance::INSTALL_APP,
+        check: governance::INSTALL_APP,
         kind: roles::GOVERNANCE_KIND,
         params: app_file_params,
     },
     Verb {
         id: UNINSTALL_APP,
         label: "Let everyone run their own version of an app",
-        gate: governance::INSTALL_APP,
+        check: governance::INSTALL_APP,
         kind: roles::GOVERNANCE_KIND,
         params: app_params,
     },
     Verb {
         id: KEYS,
         label: "List the keys this workspace admitted",
-        // Nothing gates it: a key lists the grants of its own person's, and
+        // Nothing checks it: a key lists the grants of its own person's, and
         // the API server shows it only the key itself and the keys it minted.
-        gate: "",
+        check: "",
         kind: ActionKind::Read,
         params: Vec::new,
     },
@@ -374,7 +374,7 @@ const VERBS: [Verb; 25] = [
         label: "Revoke a key",
         // As listing: its own person's grant, and only the key itself or one
         // it minted, which the handler checks.
-        gate: "",
+        check: "",
         kind: roles::GOVERNANCE_KIND,
         params: key_params,
     },
@@ -387,14 +387,14 @@ const OWNER_CONFIRMED: [Verb; 2] = [
     Verb {
         id: governance::REMOVE_MEMBER,
         label: "Remove member",
-        gate: governance::REMOVE_MEMBER,
+        check: governance::REMOVE_MEMBER,
         kind: roles::GOVERNANCE_KIND,
         params: person_params,
     },
     Verb {
         id: governance::BAN,
         label: "Ban",
-        gate: governance::BAN,
+        check: governance::BAN,
         kind: roles::GOVERNANCE_KIND,
         params: person_params,
     },
@@ -779,13 +779,13 @@ impl Verb {
     }
 }
 
-/// The governance action `action` is gated on, for one this provider names.
-fn gate_of(action: &str) -> Option<&'static str> {
+/// The governance action `action` depends on, for one this provider names.
+fn check_of(action: &str) -> Option<&'static str> {
     VERBS
         .iter()
         .chain(&OWNER_CONFIRMED)
         .find(|verb| verb.id == action)
-        .map(|verb| verb.gate)
+        .map(|verb| verb.check)
 }
 
 /// Whether `action` with `args` by a device of `owner`'s person or not needs
@@ -811,7 +811,7 @@ fn refused(error: &impl ToString) -> ActionHostError {
 /// Keep the secret a requested bot's connector needs in this host's store
 /// for that connector, where its worker asks for it. Only the secrets a
 /// connector is known to take are kept; the caller already holds the
-/// workspace's right to install bots (the verb's gate).
+/// workspace's right to install bots (the verb's check).
 fn connector_secret(args: &Args) -> Result<Value, ActionHostError> {
     let app = args.required_text("app")?;
     let purpose = args.required_text("purpose")?;
@@ -1194,19 +1194,19 @@ impl Workspaces {
                 .iter()
                 .chain(confirmed)
                 .filter(|verb| {
-                    // A verb with no gate is the caller's own business (naming
+                    // A verb with no check is the caller's own business (naming
                     // themselves), which every person has and an agent's grant
                     // does not.
-                    if verb.gate.is_empty() {
+                    if verb.check.is_empty() {
                         return speaks_for_themselves(caller);
                     }
-                    if verb.gate == CHOOSES_HOSTS {
+                    if verb.check == CHOOSES_HOSTS {
                         return self.chooses_hosts(&workspace, &device);
                     }
                     self.permits(
                         &device,
                         Some(&workspace),
-                        WorkspaceOp::Govern(verb.gate),
+                        WorkspaceOp::Govern(verb.check),
                         now,
                     )
                 })
@@ -1396,7 +1396,7 @@ impl Workspaces {
         request: &InvokeRequest,
     ) -> Result<Value, ActionHostError> {
         let address = &request.target.address;
-        let gate = gate_of(&address.action).ok_or(ActionHostError::UnknownAction)?;
+        let check = check_of(&address.action).ok_or(ActionHostError::UnknownAction)?;
         // A key's own record is read by the key itself, whatever its grant may
         // govern: the workspace lists the grants of its person's, and only the
         // key or the key that minted it revokes one.
@@ -1426,16 +1426,16 @@ impl Workspaces {
                     reason: format!("key_revoked: this key was revoked at {revoked_ms}"),
                 });
             }
-            // Unknown and forbidden are the same answer. A verb with no gate
+            // Unknown and forbidden are the same answer. A verb with no check
             // is the caller's own business, which its run decides: naming
             // themselves, in [`NAME`]'s case, and nobody else.
-            let permitted = match gate {
+            let permitted = match check {
                 "" => true,
                 CHOOSES_HOSTS => self.chooses_hosts(&workspace, &device),
-                gate => self.permits(
+                check => self.permits(
                     &device,
                     Some(&workspace),
-                    WorkspaceOp::Govern(gate),
+                    WorkspaceOp::Govern(check),
                     tilo_clock::unix_now_ns(),
                 ),
             };

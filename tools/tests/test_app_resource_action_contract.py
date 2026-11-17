@@ -887,7 +887,7 @@ class AppResourceActionContractTests(unittest.TestCase):
             reasons = "\n".join(item.reason for item in violations)
             self.assertIn("unbounded search_limited fallback", reasons)
             self.assertIn("non-paged search_page fallback", reasons)
-        with self.subTest(phase='app search provider with budgeted override passes search gate'):
+        with self.subTest(phase='app search provider with budgeted override passes search check'):
             root = self.fixture(
                 "use tilo_actions::ActionSpec;\n"
                 "fn resources(&self) {}\n"
@@ -906,7 +906,7 @@ class AppResourceActionContractTests(unittest.TestCase):
             reasons = "\n".join(item.reason for item in violations)
             self.assertNotIn("search_limited", reasons)
             self.assertNotIn("search_page", reasons)
-        with self.subTest(phase='limited only provider still fails paging gate'):
+        with self.subTest(phase='limited only provider still fails paging check'):
             root = self.fixture(
                 "use tilo_actions::ActionSpec;\n"
                 "fn resources(&self) {}\n"
@@ -947,7 +947,7 @@ class AppResourceActionContractTests(unittest.TestCase):
             )
             violations, _ = contract.audit(root)
             self.assertTrue(any("calls unbounded search" in item.reason for item in violations))
-        with self.subTest(phase='catalog backed provider passes search gate'):
+        with self.subTest(phase='catalog backed provider passes search check'):
             root = self.fixture(
                 "use tilo_actions::ActionSpec;\n"
                 "fn resources(&self) {}\n"

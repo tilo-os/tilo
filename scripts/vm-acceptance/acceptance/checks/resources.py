@@ -1,6 +1,6 @@
 """Essential 5: idle CPU, wakeups, frames and RAM; memory per app cgroup; frame work
 during interactions; boot to a usable greeter; greeter sign-in to a usable desktop; the
-render-path gate. Software rendering in a VM skews GPU-bound numbers, so every result
+render-path check. Software rendering in a VM skews GPU-bound numbers, so every result
 carries the renderer it was measured on, and so does every performance record
 (acceptance/records.py)."""
 
@@ -770,7 +770,7 @@ def _budget_problems(m, budgets, prefix, software=False):
     On a software renderer (`software`) the compositor's CPU is judged without its CPU
     rasteriser's threads. On a real desktop a GPU does the work of the frames the
     budget allows, a few milliseconds of it, while lavapipe spends ~0.4 s of CPU on each. The
-    frames stay gated, and a rasteriser that runs with no frame painted fails."""
+    frames stay guarded, and a rasteriser that runs with no frame painted fails."""
     problems = []
     if m["shell_cpu_pct"] is None:
         raise core.Unobservable("no `tilo-session` process of the account user found")
@@ -1195,13 +1195,13 @@ def frame_work(ctx, res):
     core.judge([], problems, where)
 
 
-# -- the installed-desktop gates of os-acceptance-{arch}, on this run's VM ---------
+# -- the installed-desktop checks of os-acceptance-{arch}, on this run's VM ---------
 
 # Test tooling the image does not ship: the run copies it from the checkout into the guest.
-BOOT_GATE = Path(__file__).resolve().parents[4] / "os/tests/boot_performance_gate.sh"
+BOOT_CHECK = Path(__file__).resolve().parents[4] / "os/tests/boot_performance_check.sh"
 BOOT_TOTAL = re.compile(r"kernel\+userspace reached usable greeter in (\d+)\.(\d{3})s")
 BOOT_PHASES = re.compile(r"phases: kernel ([0-9.]+)s, initrd ([0-9.]+)s, userspace to greeter ([0-9.]+)s")
-GATE_EXIT = re.compile(r"^GATE-EXIT=(\d+)$", re.M)
+CHECK_EXIT = re.compile(r"^CHECK-EXIT=(\d+)$", re.M)
 
 
 def guest_script(script: Path, env: str = "") -> str:
@@ -1215,10 +1215,10 @@ def guest_script(script: Path, env: str = "") -> str:
             f'{env} bash "$d/{script.name}"')
 
 
-def parse_boot_gate(text: str) -> dict:
-    """The boot gate's output: its exit status, kernel+userspace seconds to a usable
+def parse_boot_check(text: str) -> dict:
+    """The boot check's output: its exit status, kernel+userspace seconds to a usable
     greeter and, when it printed them, the kernel, initrd and userspace phases."""
-    exit_ = GATE_EXIT.search(text)
+    exit_ = CHECK_EXIT.search(text)
     total = BOOT_TOTAL.search(text)
     phases = BOOT_PHASES.search(text)
     out = {"exit": int(exit_.group(1)) if exit_ else None,
@@ -1231,28 +1231,28 @@ def parse_boot_gate(text: str) -> dict:
 
 @check("R06", AREA, "The VM booted kernel and userspace to a usable greeter within budget")
 def boot(ctx, res):
-    """The release gate's boot check (os/tests/boot_performance_gate.sh, copied into the
+    """The release's boot check (os/tests/boot_performance_check.sh, copied into the
     guest for the run): graphical.target and greetd's login endpoint up, no device timeout, the
     image's boot contract, all within the budget. It reads this boot's monotonic
     timestamps, so it may run at any point of the run."""
     budget = ctx.config["budgets"]["boot_to_greeter_s"]
-    text = ctx.vm.root_exec(guest_script(BOOT_GATE, f"TILO_BOOT_USERSPACE_BUDGET_SEC={budget}")
-                            + " 2>&1; echo GATE-EXIT=$?", timeout=180)
-    ctx.write("R06-boot-gate.txt", text)
-    gate = parse_boot_gate(text)
-    res.metrics.update({k: v for k, v in gate.items() if k != "exit"}, budget_s=budget)
-    said = " | ".join(l.strip() for l in text.splitlines()[-8:] if l.strip() and "GATE-EXIT" not in l)
-    if gate["to_greeter_s"] is None:
-        raise core.Unobservable(f"the boot gate named no time to the greeter (exit {gate['exit']}): {said}")
-    ctx.record("boot.to_greeter_s", "s", [gate["to_greeter_s"]], what="kernel+userspace, firmware excluded")
+    text = ctx.vm.root_exec(guest_script(BOOT_CHECK, f"TILO_BOOT_USERSPACE_BUDGET_SEC={budget}")
+                            + " 2>&1; echo CHECK-EXIT=$?", timeout=180)
+    ctx.write("R06-boot-check.txt", text)
+    check = parse_boot_check(text)
+    res.metrics.update({k: v for k, v in check.items() if k != "exit"}, budget_s=budget)
+    said = " | ".join(l.strip() for l in text.splitlines()[-8:] if l.strip() and "CHECK-EXIT" not in l)
+    if check["to_greeter_s"] is None:
+        raise core.Unobservable(f"the boot check named no time to the greeter (exit {check['exit']}): {said}")
+    ctx.record("boot.to_greeter_s", "s", [check["to_greeter_s"]], what="kernel+userspace, firmware excluded")
     for phase in ("kernel", "initrd", "userspace"):
-        ctx.record(f"boot.{phase}_s", "s", [gate.get(f"{phase}_s")])
+        ctx.record(f"boot.{phase}_s", "s", [check.get(f"{phase}_s")])
     problems, over = [], []
-    if gate["exit"] != 0:
-        # The gate's budget is its last judgement and the only one after which it names the
+    if check["exit"] != 0:
+        # The check's budget is its last judgement and the only one after which it names the
         # time to the greeter as over it; every other refusal is the boot's.
-        late = gate["to_greeter_s"] > budget and "rebuilt caches" not in text
-        (over if late else problems).append(f"the boot gate failed: {said}")
+        late = check["to_greeter_s"] > budget and "rebuilt caches" not in text
+        (over if late else problems).append(f"the boot check failed: {said}")
     wrong, slow = boot_attribution(ctx, res)
     problems += wrong
     over += slow
@@ -1331,7 +1331,7 @@ def boot_kernel_log(ctx, res) -> None:
                    what="1 when this boot is the only one in the persistent journal")
 
 
-# Where a passing boot's time went, written on every run (the gate names it only on a
+# Where a passing boot's time went, written on every run (the check names it only on a
 # failing or slow boot): systemd's own phases, the greeter's critical chain, the units that
 # took longest and the whole boot as a plot.
 BOOT_ANALYSIS = r"""
@@ -1425,18 +1425,18 @@ RENDER_REPORT = "/usr/libexec/tilo-session-report"
 RENDER_UNOBSERVABLE = ("no session flight record", "the compositor logged no DRM render phase")
 
 
-@check("R07", AREA, "The session presented within the render-path budgets (tilo-session-report --render-gate)")
-def render_gate(ctx, res):
-    """The release gate's render check on this run's session: direct GPU scanout where
+@check("R07", AREA, "The session presented within the render-path budgets (tilo-session-report --render-check)")
+def render_check(ctx, res):
+    """The release's render check on this run's session: direct GPU scanout where
     the renderer shares the scanout GPU, and every DRM render phase and the painted
     frames' main-thread work within the budgets os-acceptance-{arch} holds a KVM guest to."""
     b = ctx.config["budgets"]
-    text = ctx.vm.exec(f"{RENDER_REPORT} --render-gate --render-budget-ms {b['render_frame_ms']} "
-                       f"--frame-work-budget-ms {b['render_frame_work_ms']} 2>&1; echo GATE-EXIT=$?",
+    text = ctx.vm.exec(f"{RENDER_REPORT} --render-check --render-budget-ms {b['render_frame_ms']} "
+                       f"--frame-work-budget-ms {b['render_frame_work_ms']} 2>&1; echo CHECK-EXIT=$?",
                        timeout=120, check=False)
-    ctx.write("R07-render-gate.txt", text)
-    exit_ = GATE_EXIT.search(text)
-    failures = [l.split("render gate: FAIL ", 1)[1] for l in text.splitlines() if "render gate: FAIL " in l]
+    ctx.write("R07-render-check.txt", text)
+    exit_ = CHECK_EXIT.search(text)
+    failures = [l.split("render check: FAIL ", 1)[1] for l in text.splitlines() if "render check: FAIL " in l]
     res.metrics.update(failures=failures, renderer=ctx.facts.get("renderer"))
     if exit_ is None or (exit_.group(1) != "0" and not failures):
         raise core.Unobservable(f"{RENDER_REPORT} did not judge the session: {text.strip()[-300:]}")

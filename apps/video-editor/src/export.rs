@@ -970,7 +970,7 @@ pub(crate) fn encode_to(
 mod gst_pipeline {
     #[allow(
         clippy::wildcard_imports,
-        reason = "the pipeline module is the gated half of this file and shares its scope"
+        reason = "the pipeline module is the guarded half of this file and shares its scope"
     )]
     use super::*;
     use std::sync::atomic::Ordering;

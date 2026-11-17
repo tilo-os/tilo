@@ -608,13 +608,13 @@ async fn a_lost_answer_is_recovered_by_invocation_id_on_a_new_connection() {
 
 /// The application's directory answering for the fixture action, which
 /// holds its answer once `block` is set until `release`.
-struct GatedDirectory {
+struct HeldDirectory {
     block: Rc<std::cell::Cell<bool>>,
     entered: tokio::sync::mpsc::UnboundedSender<()>,
     release: Rc<tokio::sync::Notify>,
     row: runtime_collab::ActionDirectoryRow,
 }
-impl wire::DirectorySource for GatedDirectory {
+impl wire::DirectorySource for HeldDirectory {
     fn query(
         &self,
         _query: runtime_collab::ActionDirectoryQuery,
@@ -661,7 +661,7 @@ async fn durable_admission_rechecks_original_custody_after_the_directory_answers
                 rig.worker
                     .handle
                     .publish_action_directory(crate::collab_app_broker::wire_answerer(Rc::new(
-                        GatedDirectory {
+                        HeldDirectory {
                             block: block.clone(),
                             entered,
                             release: release.clone(),

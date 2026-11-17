@@ -1,7 +1,7 @@
 # What in an app's code shows that it uses a capability (tilo-caps).
 #
 # One table, two front ends, like app_portability_rules.toml:
-#   * tools/policy/check_app_capabilities.py (the CI gate) fails when an app
+#   * tools/policy/check_app_capabilities.py (the CI check) fails when an app
 #     uses a capability its tilo-app.toml does not declare;
 #   * `tilo-app check` / `tilo-app build` (crates/dev/tilo-app-cli/src/
 #     capability_usage.rs, which embeds this file) refuse the same app with the

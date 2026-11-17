@@ -208,7 +208,7 @@ pub(crate) struct Shared {
     pub(crate) music: tilo_desktop::widgets::Music,
     /// The power menu, workspace settings, the questions the session asks
     /// for apps and services, and the one deleting a workspace asks, by
-    /// their seats.
+    /// their mounts.
     #[cfg(target_os = "linux")]
     pub(crate) power: Option<tilo_sheets::power::PowerState>,
     #[cfg(target_os = "linux")]

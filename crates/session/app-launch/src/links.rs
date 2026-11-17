@@ -3,7 +3,7 @@
 //!
 //! When the session starts a Tilo app in a workspace it keeps one end of a window
 //! link (`runtime_portal::windows`) and hands the other to the launch with
-//! its release ([`launcher::registration_gate`]). Every later window of that
+//! its release ([`launcher::launch_hold`]). Every later window of that
 //! app in that workspace is then a request on the link instead of a second
 //! process, which could never hold the app's records: one process owns them.
 //! The request names the window's instance and carries the window's own

@@ -14,7 +14,7 @@ fn retained_owner_facade_refuses_revoked_device_before_import() {
     };
     let session = Standalone::start_reporting(&profile, &mut |_| {}).unwrap();
     // The persistent OS-search API and CLI use this same runtime facade.
-    // It retains certified custody without installing a native seat service.
+    // It retains certified custody without installing a local person service.
     let host = session.action_host().unwrap();
     let owner = Caller::local_person(session.actor()).in_workspace(session.workspace());
     let runtime = session.media_host().handle().unwrap();

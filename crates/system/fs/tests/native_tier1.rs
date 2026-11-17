@@ -1451,7 +1451,7 @@ fn sqlite_opened_read_write_on_the_device_without_the_lease_reads_and_refuses_wr
     );
 }
 
-fn gate(socket: &Path, command: &str) {
+fn check(socket: &Path, command: &str) {
     use std::io::Write as _;
     let mut stream = std::os::unix::net::UnixStream::connect(socket).unwrap();
     stream.write_all(format!("{command}\n").as_bytes()).unwrap();
@@ -1615,17 +1615,17 @@ fn a_version_from_a_tenancy_its_author_did_not_hold_is_kept_as_a_conflict_and_ne
         &a,
         &b,
         &["--lease-authority"],
-        &[("TILO_FS_TRANSPORT_GATE_SOCKET", "@profile-gate.sock")],
+        &[("TILO_FS_TRANSPORT_SWITCH_SOCKET", "@profile-check.sock")],
     );
-    let host_gate = pair.dir.join("host-gate.sock");
-    let peer_gate = pair.dir.join("peer-gate.sock");
+    let host_check = pair.dir.join("host-check.sock");
+    let peer_check = pair.dir.join("peer-check.sock");
     let content = pattern(10, 64 * 1024);
     lease_class_file(&mut pair, "data.db", &content);
     let f1 = pair.host.mount.join("data.db");
     let f2 = pair.peer.mount.join("data.db");
 
-    gate(&host_gate, "partition");
-    gate(&peer_gate, "partition");
+    check(&host_check, "partition");
+    check(&peer_check, "partition");
     let start = Arc::new(std::sync::Barrier::new(2));
     let host_bytes = b"HOST-TENANCY".to_vec();
     let peer_bytes = b"PEER-OPTIMIS".to_vec();
@@ -1646,8 +1646,8 @@ fn a_version_from_a_tenancy_its_author_did_not_hold_is_kept_as_a_conflict_and_ne
     pair.peer
         .wait_line("optimistically: the lease authority did not answer");
     std::thread::sleep(Duration::from_secs(8));
-    gate(&host_gate, "reconnect");
-    gate(&peer_gate, "reconnect");
+    check(&host_check, "reconnect");
+    check(&peer_check, "reconnect");
 
     let (m1, m2) = (pair.host.mount.clone(), pair.peer.mount.clone());
     let t = Instant::now();

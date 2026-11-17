@@ -71,7 +71,7 @@ const CLEARED_ENV: &[&str] = &[
     "TILO_USER_IDENTITY",
     "TILO_IDENTITY_BROKER_FD",
     "TILO_CLI_COMMAND",
-    "TILO_NET_GATE",
+    "TILO_EGRESS_PROXY",
     "TILO_HOST_ACTIVATION_TOKEN",
 ];
 
@@ -594,7 +594,7 @@ mod tests {
                     "TILO_WORKSPACE_ID",
                     "TILO_APP_DIR",
                     "TILO_USER_IDENTITY",
-                    "TILO_NET_GATE",
+                    "TILO_EGRESS_PROXY",
                 ] {
                     assert!(
                         !launch.env.contains_key(absent),

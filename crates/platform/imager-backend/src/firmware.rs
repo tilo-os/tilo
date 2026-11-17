@@ -1,4 +1,4 @@
-//! Firmware observation and the compile-time native test-override gate.
+//! Firmware observation and the compile-time native test-override check.
 
 use crate::{efi, platform::Platform};
 

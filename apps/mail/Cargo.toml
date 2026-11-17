@@ -95,7 +95,7 @@ base64.workspace = true
 # and refresh. The custodian and its HTTPS client are compiled with `live`.
 account-custody = { path = "../../crates/system/account-custody", default-features = false }
 
-# Live IMAP and SMTP for the account engine. These are optional and gated by
+# Live IMAP and SMTP for the account engine. These are optional and guarded by
 # `live`; the default build uses the offline backend.
 async-imap = { workspace = true, optional = true }
 lettre = { version = "0.11", optional = true, default-features = false, features = ["smtp-transport", "tokio1-rustls", "ring", "rustls-native-certs", "tokio1"] }

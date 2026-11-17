@@ -1,4 +1,4 @@
-// The gate's waits end on what the shell says, not on how many frames this
+// The check's waits end on what the shell says, not on how many frames this
 // machine drew. A shell with nothing left to draw presents nothing, so a wait
 // that counted frames alone would hang until its timeout — when the same wait
 // read the shell's own answer, it would already be done.

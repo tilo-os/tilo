@@ -354,10 +354,10 @@ impl SearchIndexServices for ContentIndex {
 }
 
 /// The workspaces' sealed records as this session serves them: the broker
-/// the channel service gates, and where an endpoint follows a route's keys.
+/// the channel service checks, and where an endpoint follows a route's keys.
 pub struct Sealed {
     /// The broker's side of the workspaces' sealed records: the channel
-    /// service gates a sealed record crossing it.
+    /// service checks a sealed record crossing it.
     pub broker: std::sync::Arc<Mutex<BrokerChannels>>,
     /// Where an endpoint follows when a route's keys change, when this
     /// session's channel service runs.
@@ -387,7 +387,7 @@ pub struct Hosted {
     /// The agent sessions the person admitted at the MCP server: what the broker admits each
     /// session's certificate on.
     pub agent_sessions: Option<std::sync::Arc<dyn tilo_broker_core::services::AgentSessions>>,
-    /// The workspaces' sealed records: what the broker gates, and where an
+    /// The workspaces' sealed records: what the broker checks, and where an
     /// endpoint follows a route's keys.
     pub sealed: Sealed,
     /// How an app on this device runs one of its actions on another of the
@@ -463,7 +463,7 @@ pub fn journal_root(state: &std::path::Path) -> PathBuf {
 /// in `content`, the index search reads.
 ///
 /// `sealed` is the broker's side of the workspaces' sealed records: the
-/// channel service gates a sealed record crossing it, and its keys are what
+/// channel service checks a sealed record crossing it, and its keys are what
 /// an endpoint follows to hear when a route's keys change.
 ///
 /// # Errors
@@ -722,13 +722,13 @@ impl LayoutAuthority {
             held.insert(workspace.to_owned(), people);
         }
         let mut tree = self.tree.lock_recover();
-        self.seat_people(&mut tree);
+        self.write_people(&mut tree);
         drop(tree);
         self.announce();
     }
 
     /// Write who is here into each workspace of `tree` presence names people in.
-    fn seat_people(&self, tree: &mut tilo_desktop_model::Layout) {
+    fn write_people(&self, tree: &mut tilo_desktop_model::Layout) {
         let people = self.people.lock_recover();
         for workspace in &mut tree.workspaces {
             if let Some(here) = people.get(&workspace.id().to_string()) {
@@ -748,7 +748,7 @@ impl LayoutAuthority {
     /// it holds on the announcement rather than on a clock.
     pub fn publish(&self, mut tree: tilo_desktop_model::Layout) {
         claim_earlier_owners(&mut tree, &self.names);
-        self.seat_people(&mut tree);
+        self.write_people(&mut tree);
         *self.tree.lock_recover() = tree;
         self.announce();
     }

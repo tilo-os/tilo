@@ -249,11 +249,11 @@ async fn progress_parent(
 
 // Real authenticated capability dispatch. The host fixture reports bounded
 // observations but deliberately executes no guest and claims no success.
-struct GatedProgressProbe {
-    gates: Mutex<std::sync::mpsc::Receiver<()>>,
+struct HeldProgressProbe {
+    holds: Mutex<std::sync::mpsc::Receiver<()>>,
     calls: std::sync::atomic::AtomicUsize,
 }
-impl ApprovedCheckServices for GatedProgressProbe {
+impl ApprovedCheckServices for HeldProgressProbe {
     fn run(
         &self,
         context: &ApprovedCheckContext,
@@ -266,11 +266,11 @@ impl ApprovedCheckServices for GatedProgressProbe {
                 completed: Some(completed),
                 total: Some(2),
             })?;
-            self.gates
+            self.holds
                 .lock()
                 .unwrap()
                 .recv_timeout(tilo_test_env::hang_bound())
-                .map_err(|_| "gated progress fixture was not released")?;
+                .map_err(|_| "held progress fixture was not released")?;
             context.recheck()?;
         }
         assert!(
@@ -295,12 +295,12 @@ impl ApprovedCheckServices for GatedProgressProbe {
                 .is_err(),
             "disabled informational lane cannot restart"
         );
-        Err("gated fixture executed no guest check".into())
+        Err("held fixture executed no guest check".into())
     }
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn approved_check_reported_progress_preserves_original_custody_replay_and_gated_delivery() {
+async fn approved_check_reported_progress_preserves_original_custody_replay_and_held_delivery() {
     tokio::task::LocalSet::new()
         .run_until(async {
             let workspace = signed_worker::OriginalWorkspace::new(
@@ -308,9 +308,9 @@ async fn approved_check_reported_progress_preserves_original_custody_replay_and_
                 None,
                 None,
             );
-            let (release, gates) = std::sync::mpsc::channel();
-            let probe = Arc::new(GatedProgressProbe {
-                gates: Mutex::new(gates),
+            let (release, holds) = std::sync::mpsc::channel();
+            let probe = Arc::new(HeldProgressProbe {
+                holds: Mutex::new(holds),
                 calls: std::sync::atomic::AtomicUsize::new(0),
             });
             let descriptors = progress_descriptors();
@@ -334,13 +334,13 @@ async fn approved_check_reported_progress_preserves_original_custody_replay_and_
             use runtime_collab::approved_checks::{ReportObservation, ReportedProgressUpdate};
             for (sequence, phase) in [(1, "Synthesis"), (2, "Routing")] {
                 let update = tilo_test_env::within(
-                    "reported phase must arrive before gate release",
+                    "reported phase must arrive before hold release",
                     progress.read(),
                 )
                 .await
                 .unwrap();
                 let ReportedProgressUpdate::Report(report) = update else {
-                    panic!("gate cannot produce a terminal before release");
+                    panic!("hold cannot produce a terminal before release");
                 };
                 assert_eq!(report.invocation, request.invocation);
                 assert_eq!(report.check_id, request.check_id);
@@ -415,9 +415,9 @@ async fn approved_check_reported_progress_refuses_cancelled_original_before_late
                 None,
                 None,
             );
-            let (release, gates) = std::sync::mpsc::channel();
-            let probe = Arc::new(GatedProgressProbe {
-                gates: Mutex::new(gates),
+            let (release, holds) = std::sync::mpsc::channel();
+            let probe = Arc::new(HeldProgressProbe {
+                holds: Mutex::new(holds),
                 calls: std::sync::atomic::AtomicUsize::new(0),
             });
             let descriptors = progress_descriptors();
@@ -688,7 +688,7 @@ async fn approved_check_requires_exact_retained_target_and_accepted_id() {
                 .to_string();
             assert!(
                 error.contains("unsupported by this host"),
-                "genuine accepted target custody must reach the real host-service gate: {error}"
+                "genuine accepted target custody must reach the real host-service hold: {error}"
             );
             let mut changed = descriptor.clone();
             changed.semantic_identity.as_mut().unwrap().key = "different-resource-key".into();
@@ -831,7 +831,7 @@ async fn approved_check_native_target_requires_live_launcher_connection() {
         assert_eq!(delivered.invocation_uuid, *accepted.invocation.0.as_bytes());
         let request = runtime_collab::approved_checks::Request { version: 1, invocation: uuid::Uuid::from_bytes(delivered.invocation_uuid).to_string(), check_id: "regression".into() };
         let error = connection.handle.approved_check(&request).await.unwrap_err().to_string();
-        assert!(error.contains("unsupported by this host"), "actual native custody must reach the trusted service gate: {error}");
+        assert!(error.contains("unsupported by this host"), "actual native custody must reach the trusted service hold: {error}");
         let mut replacement = descriptor;
         replacement.resource = "fresh-opaque-resource-lifetime".into();
         connection.handle.publish_actions(&[replacement]).await.unwrap();
@@ -842,7 +842,7 @@ async fn approved_check_native_target_requires_live_launcher_connection() {
         assert_eq!(next.invocation_uuid, *fresh.invocation.0.as_bytes());
         let new_request = runtime_collab::approved_checks::Request { invocation: uuid::Uuid::from_bytes(next.invocation_uuid).to_string(), ..request.clone() };
         assert!(connection.handle.approved_check(&new_request).await.unwrap_err().to_string().contains("unsupported by this host"),
-            "fresh opaque address retains authenticated stable identity and reaches the real host service gate");
+            "fresh opaque address retains authenticated stable identity and reaches the real host service hold");
         let foreign_route = CrdtRoute::record(&workspace.route.app_id, &workspace.route.cluster_id, "foreign-record");
         let foreign = rpc.join_channel(&foreign_route.channel_key(), &signed_worker::presentation(&workspace.route.cluster_id, &workspace.cert, &workspace.key)).await.unwrap();
         assert!(foreign.approved_check(&request).await.unwrap_err().to_string().contains("no retained target invocation"), "same process and app cannot send an accepted invocation over a foreign record channel: that record's own hold was never handed it");

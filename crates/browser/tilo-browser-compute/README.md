@@ -75,11 +75,11 @@ hashes, actual WASM memory/import inspection, native pixel-oracle comparisons fo
 PNG/JPEG/WebP, >1 second of real repeated decode, page heartbeat overlap with
 worker CPU intervals, real cancellation, malformed/oversized rejection,
 deliberate trap/hang termination, and runtime memory growth refusal. The separate
-release compute WASM gate is an initial 1 MiB limit; dev modules have no byte
+release compute WASM check is an initial 1 MiB limit; dev modules have no byte
 budget. Both profiles check final memory and allow only bindgen string/error
 imports; dev additionally permits bindgen’s own externref-table initializer. The desktop main-module budget is unchanged.
 
-## Integration gates
+## Integration checks
 
 Both canonical builders (runtime/desktop shell script and app/desktop SDK CLI)
 package lazy top-level `compute-*.mjs` and `pkg/compute/`. This only assembles
@@ -106,6 +106,6 @@ unchanged and records canonical hashes in the qualification receipt. Never run
 and uploads its receipt. P6 must use canonical scheduler
 policy/owner custody and Rust completion tickets and prove foreground plus 100
 actually mounted apps. Standalone page heartbeats do not prove those integration
-gates, OS RSS bounds, 120 Hz performance or Notes end-to-end behavior. Same-origin
+checks, OS RSS bounds, 120 Hz performance or Notes end-to-end behavior. Same-origin
 Worker glue is trusted code, not a hostile-JavaScript security sandbox. Image
 fetch authority stays in the host; the worker only loads its static code assets.

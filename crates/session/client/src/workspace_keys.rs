@@ -30,15 +30,15 @@ use crate::network::{Cmd, RosterDevice, Topic, topic_of};
 use collab_types::Ed25519PublicKey;
 use neighbour_wire::NeighbourMsg;
 #[cfg(target_os = "linux")]
-use tilo_broker_core::collab_core::{BrokerChannels, BrokerGates};
+use tilo_broker_core::collab_core::{BrokerChannels, BrokerSealChecks};
 use tilo_desktop_model::WorkspaceId as ModelWorkspaceId;
 use tilo_identity_host::policy_change;
 use tilo_lock::MutexRecover as _;
-#[cfg(target_os = "linux")]
-use tilo_workspace_keys::{GateRegistry, GovernancePump, KeysConfig, WorkspaceKeys};
 use tilo_workspace_keys::{
     GovernancePark, GovernanceTransport, InboundGovernance, KeyDirectory, SharedKeys,
 };
+#[cfg(target_os = "linux")]
+use tilo_workspace_keys::{GovernancePump, KeysConfig, SealCheckRegistry, WorkspaceKeys};
 
 use crate::engine::Engine;
 use tilo_peer_state::owner::NativeWorkspaceOwner;
@@ -97,7 +97,7 @@ impl KeyService {
         mut settled: impl FnMut() + Send + 'static,
     ) -> std::io::Result<Self> {
         let directory = Box::new(OwnerDirectory::member(engine.owner().clone()));
-        let gates: Arc<dyn GateRegistry> = Arc::new(BrokerGates(broker));
+        let checks: Arc<dyn SealCheckRegistry> = Arc::new(BrokerSealChecks(broker));
         let service = match MlsVault::open_for_session() {
             Ok(vault) => WorkspaceKeys::open(
                 KeysConfig {
@@ -107,7 +107,7 @@ impl KeyService {
                     role: tilo_workspace_keys::KeyRole::Committer,
                 },
                 directory,
-                Arc::clone(&gates),
+                Arc::clone(&checks),
             )
             .inspect_err(|error| {
                 tracing::warn!(%error, "group encryption state could not be opened");
@@ -118,7 +118,7 @@ impl KeyService {
                     %error,
                     "no system secret store answered: only workspaces this device hosts have group keys"
                 );
-                Some(WorkspaceKeys::without_store(directory, gates))
+                Some(WorkspaceKeys::without_store(directory, checks))
             }
         };
         let keys = engine.keys();

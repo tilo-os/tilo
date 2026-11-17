@@ -126,15 +126,15 @@ async fn stop_agent(
     .await
 }
 
-/// A gate a scripted model waits at until the test opens it. It opens when it is dropped, so a
+/// A hold a scripted model waits at until the test opens it. It opens when it is dropped, so a
 /// failed test never leaves a model's thread waiting.
 #[derive(Default)]
-struct Gate {
+struct Hold {
     open: Mutex<bool>,
     opened: Condvar,
 }
 
-impl Gate {
+impl Hold {
     fn open(&self) {
         *self.open.lock().unwrap() = true;
         self.opened.notify_all();
@@ -148,8 +148,8 @@ impl Gate {
     }
 }
 
-/// Opens its gate when the test ends, however it ends.
-struct Opens(Arc<Gate>);
+/// Opens its hold when the test ends, however it ends.
+struct Opens(Arc<Hold>);
 
 impl Drop for Opens {
     fn drop(&mut self) {
@@ -158,13 +158,13 @@ impl Drop for Opens {
 }
 
 /// A model whose answers are written out, in order over every turn it is made for (a host makes
-/// its model anew for each turn), the last one again once they are used up. It waits at its gate
+/// its model anew for each turn), the last one again once they are used up. It waits at its hold
 /// before it answers the call numbered `hold_at`, counted from 0 over every call it is asked.
 struct Waits {
     answers: Arc<Mutex<Vec<ModelResponse>>>,
     asked: Arc<Mutex<Vec<ModelRequest>>>,
     hold_at: usize,
-    gate: Arc<Gate>,
+    hold: Arc<Hold>,
 }
 
 impl tilo_agent_session::model::PlanTurns for Waits {
@@ -181,7 +181,7 @@ impl tilo_agent_session::model::PlanTurns for Waits {
             asked.len() - 1
         };
         if index == self.hold_at {
-            self.gate.pass();
+            self.hold.pass();
         }
         let mut answers = self.answers.lock().unwrap();
         Ok(if answers.len() > 1 {
@@ -200,16 +200,16 @@ fn waits(
     answers: Vec<ModelResponse>,
     hold_at: usize,
     asked: &Arc<Mutex<Vec<ModelRequest>>>,
-    gate: &Arc<Gate>,
+    hold: &Arc<Hold>,
 ) -> Model {
-    let (asked, gate) = (Arc::clone(asked), Arc::clone(gate));
+    let (asked, hold) = (Arc::clone(asked), Arc::clone(hold));
     let answers = Arc::new(Mutex::new(answers));
     Arc::new(move || {
         Some(Box::new(Waits {
             answers: Arc::clone(&answers),
             asked: Arc::clone(&asked),
             hold_at,
-            gate: Arc::clone(&gate),
+            hold: Arc::clone(&hold),
         }) as Box<dyn tilo_agent_session::model::PlanTurns>)
     })
 }
@@ -443,8 +443,8 @@ async fn what_its_person_writes_reaches_a_going_turn_and_what_a_cause_asks_waits
         "plan the launch",
     )
     .await;
-    let (asked, gate) = (Arc::new(Mutex::new(Vec::new())), Arc::new(Gate::default()));
-    let _opens = Opens(Arc::clone(&gate));
+    let (asked, hold) = (Arc::new(Mutex::new(Vec::new())), Arc::new(Hold::default()));
+    let _opens = Opens(Arc::clone(&hold));
     let agents = HostAgents::new(
         workspaces.clone(),
         actions.clone(),
@@ -457,7 +457,7 @@ async fn what_its_person_writes_reaches_a_going_turn_and_what_a_cause_asks_waits
             ],
             1,
             &asked,
-            &gate,
+            &hold,
         )),
     );
     agents.look(&workspace).await.unwrap();
@@ -485,7 +485,7 @@ async fn what_its_person_writes_reaches_a_going_turn_and_what_a_cause_asks_waits
     .await;
     agents.look(&workspace).await.unwrap();
     agents.look(&workspace).await.unwrap();
-    gate.open();
+    hold.open();
 
     // The turn goes on under what the person wrote next: there its answer stands, and the reply
     // to their first message says so. No second answer was started beside it.
@@ -557,8 +557,8 @@ async fn a_persons_stop_reaches_a_turn_that_is_going() {
         "plan the launch",
     )
     .await;
-    let (asked, gate) = (Arc::new(Mutex::new(Vec::new())), Arc::new(Gate::default()));
-    let _opens = Opens(Arc::clone(&gate));
+    let (asked, hold) = (Arc::new(Mutex::new(Vec::new())), Arc::new(Hold::default()));
+    let _opens = Opens(Arc::clone(&hold));
     let agents = HostAgents::new(
         workspaces.clone(),
         actions.clone(),
@@ -566,7 +566,7 @@ async fn a_persons_stop_reaches_a_turn_that_is_going() {
             vec![looks(), says("The launch is planned.")],
             1,
             &asked,
-            &gate,
+            &hold,
         )),
     );
     agents.look(&workspace).await.unwrap();
@@ -585,7 +585,7 @@ async fn a_persons_stop_reaches_a_turn_that_is_going() {
         "a stopped message asks nobody"
     );
     agents.look(&workspace).await.unwrap();
-    gate.open();
+    hold.open();
     let reply = ended(&workspaces, &workspace, &first).await;
     assert_eq!(
         end_of(&reply),
@@ -656,12 +656,12 @@ async fn after_a_restart_a_turn_left_begun_is_not_started_over_and_one_only_take
 
     // The host stops while the turn works: it had looked through the workspace, and its model
     // was asked what to do next.
-    let (asked, gate) = (Arc::new(Mutex::new(Vec::new())), Arc::new(Gate::default()));
-    let _opens = Opens(Arc::clone(&gate));
+    let (asked, hold) = (Arc::new(Mutex::new(Vec::new())), Arc::new(Hold::default()));
+    let _opens = Opens(Arc::clone(&hold));
     let dying = HostAgents::new(
         workspaces.clone(),
         actions.clone(),
-        Some(waits(vec![looks(), says("never said")], 1, &asked, &gate)),
+        Some(waits(vec![looks(), says("never said")], 1, &asked, &hold)),
     );
     let turns = dying.turns(&workspace).await.unwrap();
     assert_eq!(turns.len(), 1, "{turns:?}");
@@ -717,12 +717,12 @@ async fn after_a_restart_a_turn_left_begun_is_not_started_over_and_one_only_take
         "and the budget?",
     )
     .await;
-    let (waiting, second_gate) = (Arc::new(Mutex::new(Vec::new())), Arc::new(Gate::default()));
-    let _opens_second = Opens(Arc::clone(&second_gate));
+    let (waiting, second_hold) = (Arc::new(Mutex::new(Vec::new())), Arc::new(Hold::default()));
+    let _opens_second = Opens(Arc::clone(&second_hold));
     let dying = HostAgents::new(
         workspaces.clone(),
         actions.clone(),
-        Some(waits(vec![says("never said")], 0, &waiting, &second_gate)),
+        Some(waits(vec![says("never said")], 0, &waiting, &second_hold)),
     );
     let turns = dying.turns(&workspace).await.unwrap();
     assert_eq!(turns.len(), 1, "{turns:?}");

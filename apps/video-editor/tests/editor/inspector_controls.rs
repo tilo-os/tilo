@@ -166,7 +166,7 @@ fn the_history_buttons_are_disabled_until_there_is_something_to_undo() {
         "it says what it reverts"
     );
     let (_, redo) = node(&mut app, Role::Button, "Redo").unwrap();
-    assert!(redo.is_disabled(), "redo is gated separately");
+    assert!(redo.is_disabled(), "redo is guarded separately");
 
     press(&mut app, Role::Button, "Undo");
     assert_eq!(

@@ -50,7 +50,7 @@ case "${1:-}" in
 esac
 
 # Installing this root-owned marker opts the machine into the additional owner
-# chain. Without it, the mandatory containers-policy Cosign gate remains the
+# chain. Without it, the mandatory containers-policy Cosign check remains the
 # update authority and this helper is deliberately inert.
 ARMED=0
 if [ -e "$TRUST_DIR/required" ] || [ -L "$TRUST_DIR/required" ]; then

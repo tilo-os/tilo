@@ -181,7 +181,7 @@ pub enum Request {
         model_id: String,
         image: VisionImage,
     },
-    /// Fixed, consent-gated face detection and clustering.  The gateway owns
+    /// Fixed, consent-guarded face detection and clustering.  The gateway owns
     /// the request schema and admits it only for the signed local face model.
     /// It returns opaque cluster/photo membership; no embedding, crop, face
     /// rectangle, identity name, or raw path can cross this boundary.

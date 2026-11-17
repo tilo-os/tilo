@@ -432,7 +432,7 @@ impl ExposureRequest {
                     return Err(io::ErrorKind::WouldBlock.into());
                 }
                 // Actual owned outer process wait/reap is mandatory even when it is still waiting at
-                // the unexported view gate.
+                // the unexported view check.
                 if let Some(consumer) = consumer.as_mut() {
                     consumer.retire_before_exit();
                     if !consumer.observed_stopped() {

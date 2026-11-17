@@ -988,7 +988,7 @@ impl Workspaces {
             .await?;
         if matches!(membership, Membership::Remove | Membership::Ban) {
             // A removal takes back every way in the workspace handed them, not
-            // only their seat: an invitation issued to them before, still
+            // only their membership: an invitation issued to them before, still
             // unredeemed, would otherwise admit them again at once.
             let mut state = workspace.collaboration().clone();
             state.withdraw_invitations(&std::collections::BTreeSet::from([target]));
@@ -1222,7 +1222,7 @@ impl Workspaces {
         command: tilo_peer_state::workspace_membership::WorkspaceMembershipCommand,
     ) -> Result<GovernanceCompletion, CollaborationError> {
         use tilo_peer_state::workspace_membership::WorkspaceMembershipCommand as Command;
-        let gate = match &command {
+        let check = match &command {
             Command::RequestBot(_) => governance::INSTALL_BOT,
             Command::WithdrawBotRequest { .. } => governance::UNINSTALL_BOT,
             _ => {
@@ -1231,7 +1231,7 @@ impl Workspaces {
                 ));
             }
         };
-        self.govern_as_member(workspace, member, request_id, command, gate, "bot.request")
+        self.govern_as_member(workspace, member, request_id, command, check, "bot.request")
             .await
     }
 
@@ -1291,7 +1291,7 @@ impl Workspaces {
     }
 
     /// Apply `command` to `workspace` as `member`, whom the workspace must allow the
-    /// governance action `gate`, and publish it; `tag` names the request
+    /// governance action `check`, and publish it; `tag` names the request
     /// kind in its digest.
     async fn govern_as_member(
         &self,
@@ -1299,14 +1299,14 @@ impl Workspaces {
         member: &DeviceCert,
         request_id: [u8; 32],
         command: tilo_peer_state::workspace_membership::WorkspaceMembershipCommand,
-        gate: &'static str,
+        check: &'static str,
         tag: &'static str,
     ) -> Result<GovernanceCompletion, CollaborationError> {
         command.validate()?;
         let now = tilo_clock::unix_now_ns();
         let workspace = self.workspace(workspace).await?;
         let mut workspace = workspace.lock().await;
-        self.authorize(member, Some(&workspace), WorkspaceOp::Govern(gate), now)?;
+        self.authorize(member, Some(&workspace), WorkspaceOp::Govern(check), now)?;
         let key = self.inner.host.key.clone();
         workspace
             .peer()

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Exercise the image builder's profile gates and build arguments without a build."""
+"""Exercise the image builder's profile checks and build arguments without a build."""
 
 import os
 import json

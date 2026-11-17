@@ -386,7 +386,7 @@ impl Presence {
     }
 
     /// The workspace on `topic`, by its id, and the person its board heard `peer` as there: what a
-    /// workspace's gate holds a message from `peer` to.
+    /// workspace's check holds a message from `peer` to.
     pub(crate) fn heard_member(
         &self,
         topic: Topic,

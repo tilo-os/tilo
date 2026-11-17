@@ -103,7 +103,7 @@ impl Arch {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum Accel {
     /// KVM when this environment can create a KVM VM for the guest, else
-    /// QEMU's multithreaded emulator. The fallback is slower, but lets a gate
+    /// QEMU's multithreaded emulator. The fallback is slower, but lets a check
     /// run inside a CI runner that does not expose its node's /dev/kvm.
     Auto,
     Kvm,

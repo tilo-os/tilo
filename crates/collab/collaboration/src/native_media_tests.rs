@@ -7,13 +7,13 @@ fn native_media_leave_bypasses_wedged_document_and_retires_unmute_reply() {
     captures
         .lock()
         .unwrap()
-        .document_gates
-        .push_back(DocumentSendGate {
+        .document_holds
+        .push_back(DocumentSendHold {
             entered,
             release: wait,
         });
     let (unmute_reply, unmute_wait) = tokio::sync::oneshot::channel();
-    captures.lock().unwrap().media_gates.push_back(unmute_wait);
+    captures.lock().unwrap().media_holds.push_back(unmute_wait);
     let (fd, captures, worker) = stand_up_fake_broker(FakeBroker {
         captures,
         ..FakeBroker::default()
@@ -25,7 +25,7 @@ fn native_media_leave_bypasses_wedged_document_and_retires_unmute_reply() {
         authorization: None,
         commit: None,
     }));
-    tilo_test_env::recv("the gated document RPC", &observed);
+    tilo_test_env::recv("the held document RPC", &observed);
     assert!(manager.send(CollabRequest::NativeMediaCommand {
         request_id: 1,
         command: Request::new(Command::SetMuted { muted: false })
@@ -78,8 +78,8 @@ fn native_media_manager_drop_tears_down_while_document_rpc_is_wedged() {
     captures
         .lock()
         .unwrap()
-        .document_gates
-        .push_back(DocumentSendGate {
+        .document_holds
+        .push_back(DocumentSendHold {
             entered,
             release: wait,
         });
@@ -104,7 +104,7 @@ fn native_media_manager_drop_tears_down_while_document_rpc_is_wedged() {
         authorization: None,
         commit: None,
     }));
-    tilo_test_env::recv("the gated document RPC", &observed);
+    tilo_test_env::recv("the held document RPC", &observed);
     drop(manager);
     tilo_test_env::wait_until(
         "manager drop must use reserved teardown before document completion",
@@ -131,7 +131,7 @@ fn native_media_full_normal_lane_still_dispatches_reserved_leave() {
     for _ in 0..8 {
         let (release, wait) = tokio::sync::oneshot::channel();
         releases.push(release);
-        captures.lock().unwrap().media_gates.push_back(wait);
+        captures.lock().unwrap().media_holds.push_back(wait);
     }
     let (fd, captures, worker) = stand_up_fake_broker(FakeBroker {
         captures,
@@ -296,8 +296,8 @@ async fn native_media_pending_or_uncertain_stop_blocks_later_effects() {
                     media_joined: true,
                     ..Default::default()
                 }));
-                let (release, gate) = tokio::sync::oneshot::channel();
-                captures.lock().unwrap().media_gates.push_back(gate);
+                let (release, hold) = tokio::sync::oneshot::channel();
+                captures.lock().unwrap().media_holds.push_back(hold);
                 let (client, _) = fake_client(FakeBroker {
                     captures: captures.clone(),
                     ..FakeBroker::default()

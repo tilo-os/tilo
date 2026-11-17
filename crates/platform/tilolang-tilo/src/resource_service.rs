@@ -14,7 +14,7 @@
 //!
 //! An invocation is the published action's own: the API builds it through the action's spec,
 //! which plans it in the runtime, and it is committed to the document as a step of the person
-//! seated here, or of the agent acting for them, in the run it is a step of.
+//! at this device, or of the agent acting for them, in the run it is a step of.
 //!
 //! Each document's root carries the history verbs every app's document answers ([`crate::history`]):
 //! its steps are listed, and taken back by step or by run, here as in an app's instance, so a

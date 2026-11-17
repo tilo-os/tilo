@@ -516,10 +516,10 @@ mod tests {
     }
 
     /// A provisional decode that ends on its own thread and wakes the loop:
-    /// `gate` holds it until released, `nap` postpones it.
+    /// `check` holds it until released, `nap` postpones it.
     #[derive(Default)]
     struct DeferredDraft {
-        gate: Option<mpsc::Receiver<()>>,
+        check: Option<mpsc::Receiver<()>>,
         nap: Option<Duration>,
         pending: Arc<Mutex<Option<Result<String, SpeechError>>>>,
         running: Arc<AtomicBool>,
@@ -533,11 +533,11 @@ mod tests {
             let wake = wake.clone();
             let pending = Arc::clone(&self.pending);
             let running = Arc::clone(&self.running);
-            let (gate, nap) = (self.gate.take(), self.nap);
+            let (check, nap) = (self.check.take(), self.nap);
             std::thread::spawn(move || {
-                match gate {
+                match check {
                     // Long enough that the loop is already waiting on the wake.
-                    Some(gate) => drop(gate.recv()),
+                    Some(check) => drop(check.recv()),
                     None => std::thread::sleep(nap.unwrap_or_default()),
                 }
                 if let Ok(mut slot) = pending.lock() {
@@ -808,11 +808,11 @@ mod tests {
         phase finish_answers_while_a_provisional_decode_still_runs;
         // A provisional decode still running never delays the final.
         {
-            let (release, gate) = mpsc::channel();
+            let (release, check) = mpsc::channel();
             let running = Arc::new(AtomicBool::new(false));
             let mut worker = Endpoint::start(
                 DeferredDraft {
-                    gate: Some(gate),
+                    check: Some(check),
                     running: Arc::clone(&running),
                     ..DeferredDraft::default()
                 },

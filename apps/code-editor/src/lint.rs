@@ -6,7 +6,7 @@ use crate::model::Language;
 
 /// Whether `language` writes lifetimes with `'`.
 ///
-/// This gate matters more than it looks. In Python, JavaScript, TypeScript,
+/// This check matters more than it looks. In Python, JavaScript, TypeScript,
 /// shell, YAML and CSS a single quote *opens a string*, so treating a lone `'`
 /// as a lifetime would make the scanner read a string's contents as code and
 /// report the brackets inside it. Rust is the only language here where a lone

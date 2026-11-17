@@ -1530,7 +1530,7 @@ mod tests {
 
     /// A channel of a resource that knows nobody: a real session's ask conversation, whose resource
     /// was created by the ask and never introduced to its reader or its agent, with one message
-    /// from the person seated here under their root key and one from the agent answering them.
+    /// from the person at this device under their root key and one from the agent answering them.
     fn unacquainted_channel(me: &str, agent: &str) -> Channel {
         let mut chat = crate::chat::Chat::default();
         chat.open_channel(

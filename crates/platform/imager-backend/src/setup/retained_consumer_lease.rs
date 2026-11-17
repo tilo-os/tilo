@@ -295,7 +295,7 @@ impl RetainedConsumerLease {
         original_actor: &mut Option<
             Arc<super::installed_retained_actor::ReviewedInstalledRetainedLaunch>,
         >,
-        terminal: &mut Option<RetirementGate>,
+        terminal: &mut Option<RetirementCheck>,
     ) -> io::Result<()> {
         let mut refresh_at = Instant::now();
         let mut refusal: Option<io::Error> = None;
@@ -387,7 +387,7 @@ impl RetainedConsumerLease {
             }
             std::thread::sleep(Duration::from_millis(50));
         }
-        *terminal = Some(RetirementGate { _private: () });
+        *terminal = Some(RetirementCheck { _private: () });
         refusal.map_or(Ok(()), Err)
     }
 
@@ -487,7 +487,7 @@ impl Drop for RetainedConsumerLease {
     }
 }
 
-/// Nonserializable proof that the genuine Files/actor/editor retirement gate completed.
-pub(super) struct RetirementGate {
+/// Nonserializable proof that the genuine Files/actor/editor retirement check completed.
+pub(super) struct RetirementCheck {
     _private: (),
 }

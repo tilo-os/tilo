@@ -108,7 +108,7 @@ The VM is a libvirt session VM, the way `tilo-vm` runs on a laptop: the script i
 libvirt's QEMU driver, passt, OVMF and Pillow (pixel checks), and runs `run.py` as an
 unprivileged user (root cannot hand passt its socket in a session). The nodes have no GPU,
 so `gl=auto` creates the VM without virgl and the report records the software renderer;
-frame-timing checks gated to real display hardware report that. The report (`report.md`,
+frame-timing checks guarded to real display hardware report that. The report (`report.md`,
 `report.json`, shots, frame traces) is the check's output, and the check fails unless every
 check passes.
 
@@ -234,15 +234,15 @@ R05 runs `tilo device health --gpu --json` in the guest and reads every app's `t
 window adapter` line from the session log. A machine without a hardware render node
 cannot show a CPU fallback, so a plain software VM leaves R05 unobservable; `--gl` boots
 virgl, where a degraded health report, a window on a `type=Cpu` adapter or a reported CPU
-fallback fails it. `gpu_check.py` is the same judgement for gates that boot an installed
-image without tilo-vm (the installed-desktop gate of t's `os-acceptance-{arch}` check):
+fallback fails it. `gpu_check.py` is the same judgement for checks that boot an installed
+image without tilo-vm (the installed-desktop check of t's `os-acceptance-{arch}` check):
 
 ```bash
 ./os/dev/vm.sh ssh "$(python3 scripts/vm-acceptance/gpu_check.py --probe)" \
   | python3 scripts/vm-acceptance/gpu_check.py
 ```
 
-### Cold start of every app (installed-desktop gate)
+### Cold start of every app (installed-desktop check)
 
 Every app logs one `APP-STARTUP app=<pkg> total_ms=<ms> phases=<mark>:<ms>,...` line at
 its first presented frame, and `HISTORY-OPEN listed=<n> earlier=<bool> ms=<ms>` when its
@@ -252,7 +252,7 @@ frame takes longer than its budget: 1 s, or 600 ms for small single-view apps
 (`acceptance/app_startup.py`), and 1 s for opening History. A launch whose window
 adapter is a CPU rasterizer (llvmpipe in a VM without a GPU) compiles vello's shaders and
 renders on the CPU, so it is held to the VM checks' software budget, 3 s, instead. The
-judgement prints every `APP-STARTUP` line it read, with all its phases. The installed-desktop gate of
+judgement prints every `APP-STARTUP` line it read, with all its phases. The installed-desktop check of
 `os-acceptance-{arch}` runs it after its app checks, having typed a ~2000-character note on the
 real keyboard and reopened Notes on it (`reopen-history`), so a note with thousands of
 changes in its history is part of every judged run. Under TCG it reports without judging.
@@ -262,12 +262,12 @@ changes in its history is part of every judged run. Under TCG it reports without
   | python3 scripts/vm-acceptance/app_startup_check.py --require so.tilo.notes
 ```
 
-### Installed-desktop gates (R06, R07, R08, A15, A16)
+### Installed-desktop checks (R06, R07, R08, A15, A16)
 
 The checks `os-acceptance-{arch}` runs on an installed image, which per-push dev builds skip,
 run here on every full run instead, on the dev disk under KVM:
 
-- R06 runs the boot gate (`os/tests/boot_performance_gate.sh`, sent from the checkout in
+- R06 runs the boot check (`os/tests/boot_performance_check.sh`, sent from the checkout in
   the command, since the image ships no test tooling) as root: kernel and userspace to greetd's login
   endpoint within `boot_to_greeter_s` (20 s), with the image's boot contract. It reads the
   VM's boot timestamps, so where it runs in the order does not matter. Every run also
@@ -279,7 +279,7 @@ run here on every full run instead, on the dev disk under KVM:
   chain: greetd waits for `systemd-user-sessions.service`, which upstream orders after
   `network.target`, so a network start queued before logins are allowed holds the greeter
   until NetworkManager is up.
-- R07 runs `tilo-session-report --render-gate` in the account's session with the KVM
+- R07 runs `tilo-session-report --render-check` in the account's session with the KVM
   budgets (`render_frame_ms` 1000, `render_frame_work_ms` 100).
 - A15 opens Files, Notes and Settings once unmeasured and then ten times each. Every
   open is requested from inside the session (`date +%s%3N; tilo-control actions invoke
@@ -486,7 +486,7 @@ fail P01 if the VM booted anything else, was moved onto another image since, or 
 | ui | U01 theme and language through actions, U02/U03 Settings, quick settings, workspace settings, overview in light/dark/high-contrast (en, de) with layout checks on `list-targets` rects, U04 German action titles |
 | apps | A01–A07: Terminal (live shell), Files, Settings, Notes, Store, a host Wayland app, an X11 app — first frame, placement, focus, exit on close, no false toasts. A08–A13, the apps used every day, one per toolkit and protocol path: Chromium on Wayland (A08, the engine Electron apps ship) and forced onto X11 (A09), GNOME Text Editor (A10, GTK4/libadwaita), FeatherPad (A11, Qt6 Wayland), alacritty (A12, winit/OpenGL), glxgears (A13, OpenGL X11 like games) — window in the current strip with focus, a first frame with content, the right buffer scale on both outputs as it moves between them, real-keyboard typing, copy to and paste from Tilo's clipboard, exit on close; A13 also full screen and back. A14 Files' first launch: process start to first presented frame within budget, and its folder listing read off its AT-SPI tree. A15 ten warm opens each of Files, Notes and Settings, request to first frame; A16 every launch of the run within its app's budget; A17 Files opens after the session's compositor ended abruptly; A18 the machine's own apps (alacritty, which renders with OpenGL, and foot on shared memory) run on through three in-place desktop restarts (the wrapper's SIGUSR1, as an update asks for it): the same processes, their windows back, their loops still drawing and writing, typed keys reaching them, and a logout ends them and their keepers |
 | search | S01–S09: empty-query view, English and German names, launch from search, windows, actions, files, workspace activity, workspace history |
-| resources | R01/R02 idle CPU, wakeups and frames with no apps and with several (`R01-idle-empty.json`/`R02-idle-apps.json` carry CPU and context switches per thread of the compositor, `shell_threads` and `shell_thread_groups`, and of any other process above 0.5%, plus the compositor's age when the window opened, `session_age_s`; the compositor is the account user's `shell` with no `shell` above it, so its own shader-seed child is never taken for it; an over-budget compositor names its busiest threads), R03 memory per open app from its own cgroup (memory.current, anon/file) plus the compositor's anonymous RSS; R01 and R03 also write the compositor's `smaps_rollup`, status lines and 20 largest anonymous mappings (`R01-shell-smaps.json`/`R03-shell-smaps.json`), so R03 less R01 is what four windows cost and a growing `[heap]` or run of glibc arenas reads apart from one GPU buffer, R04 frame CPU p50/p95/p99 during interactions (wall time on real display hardware), R05 every app window renders on the machine's GPU, not a CPU fallback; the renderer and whether the display is real hardware are recorded; R06 boot to a usable greeter and where its time went, R07 the render-path gate, R08 greeter sign-in to a usable desktop, R09 an idle shared workspace's broker and app shovels |
+| resources | R01/R02 idle CPU, wakeups and frames with no apps and with several (`R01-idle-empty.json`/`R02-idle-apps.json` carry CPU and context switches per thread of the compositor, `shell_threads` and `shell_thread_groups`, and of any other process above 0.5%, plus the compositor's age when the window opened, `session_age_s`; the compositor is the account user's `shell` with no `shell` above it, so its own shader-seed child is never taken for it; an over-budget compositor names its busiest threads), R03 memory per open app from its own cgroup (memory.current, anon/file) plus the compositor's anonymous RSS; R01 and R03 also write the compositor's `smaps_rollup`, status lines and 20 largest anonymous mappings (`R01-shell-smaps.json`/`R03-shell-smaps.json`), so R03 less R01 is what four windows cost and a growing `[heap]` or run of glibc arenas reads apart from one GPU buffer, R04 frame CPU p50/p95/p99 during interactions (wall time on real display hardware), R05 every app window renders on the machine's GPU, not a CPU fallback; the renderer and whether the display is real hardware are recorded; R06 boot to a usable greeter and where its time went, R07 the render-path check, R08 greeter sign-in to a usable desktop, R09 an idle shared workspace's broker and app shovels |
 | basics | B01 brightness, B02 Wi-Fi, B03 Bluetooth (unavailable without hardware, no fake controls), B04 de nodeadkeys applied to the physical keys, B05 display modes, B06 hotplug. The GNOME keyboard import runs only in a host-desktop session, so the host-desktop VM test checks it (dist/session/vm-e2e, H05) |
 
 The everyday apps (A08–A13) come with the dev image (`os/Containerfile.dev`, about 600 MiB,

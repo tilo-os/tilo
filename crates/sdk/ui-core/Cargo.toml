@@ -58,7 +58,7 @@ lazy-engine = ["tilo-search/lazy-engine"]
 # Clients of the local session daemons: the runtime portal's inherited
 # service descriptors and the runtime identity service with its on-disk
 # identity. Without it the host installs a `local_identity::LocalIdentitySource`
-# (default: none). Settings are not gated here: `settings-store` reads
+# (default: none). Settings are not guarded here: `settings-store` reads
 # `settings.json` unless the host installs a `settings_store::SettingsSource`.
 local-daemons = ["dep:runtime-portal", "dep:runtime-identity", "collaboration/local-daemons"]
 # The collaboration manager's built-in transport: the collaboration wire's

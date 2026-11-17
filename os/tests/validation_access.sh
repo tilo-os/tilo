@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# The release gate's SSH access stays validation-only: a signed extension and
-# /etc edits confined to the gate's own disk copy, never the image.
+# The release check's SSH access stays validation-only: a signed extension and
+# /etc edits confined to the check's own disk copy, never the image.
 set -uo pipefail
 
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -54,7 +54,7 @@ else
   bad 'the validation overlay can rewrite the label or mode of the deployment /etc'
 fi
 
-# The release gate's diagnostic service must pass the overlay policy. Use an
+# The release check's diagnostic service must pass the overlay policy. Use an
 # intentionally missing helper to stop at the next preflight without a build.
 allowed_overlay="$work/diagnostics-allowed"
 mkdir -p "$allowed_overlay"
@@ -86,14 +86,14 @@ else
 fi
 
 # The signing key lives for one image; only its certificate is kept, in the
-# gate copy's /etc/verity.d.
+# check copy's /etc/verity.d.
 if grep -Fq 'rm -f /work/validation.key' "$access" \
    && grep -Fq '[ ! -e "$work/validation.key" ] || die' "$access" \
    && grep -Fq 'install -D -m 0644 "$work/validation.crt" "$etc/verity.d/$EXTENSION.crt"' "$access" \
    && ! grep -Eq 'verity\.d|validation\.crt' "$image"; then
-  ok 'the validation key is discarded and its certificate reaches only the gate disk'
+  ok 'the validation key is discarded and its certificate reaches only the check disk'
 else
-  bad 'the validation signing key can outlive the gate, or its trust can reach the image'
+  bad 'the validation signing key can outlive the check, or its trust can reach the image'
 fi
 
 # A virtio-backed raw block device can have a different backing name from the
@@ -128,7 +128,7 @@ if grep -Fq 'disk_args+=(--etc-overlay "$TILO_VALIDATION_ETC")' "$build" \
    && ! grep -Eq 'dnf install[^&]*openssh-server' "$image"; then
   ok 'validation access reaches only a disk built with it; the image stays sshd-free'
 else
-  bad 'validation access leaks beyond the gate disk, or the image gained sshd'
+  bad 'validation access leaks beyond the check disk, or the image gained sshd'
 fi
 
 exit "$fail"

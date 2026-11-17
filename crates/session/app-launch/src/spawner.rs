@@ -265,10 +265,10 @@ impl Spawner {
     /// the app is handed with its release so it opens the app's later
     /// windows itself.
     ///
-    /// The launcher waits at a registration gate until `record` has written
+    /// The launcher waits at a launch hold until `record` has written
     /// the launch down: an app that connected before its launch was known
     /// would be refused by the session's services. A launch without a link
-    /// gets no gate, and its command line is its stdin.
+    /// gets no hold, and its command line is its stdin.
     ///
     /// The link comes back held for as long as the app runs, so the caller
     /// keeps it until the app ends.
@@ -301,15 +301,15 @@ impl Spawner {
             .stderr(Stdio::piped());
         let diagnostics = diagnostics_file(planned, &mut command);
         let output = Arc::new(AppOutput::new(planned.app.clone(), diagnostics));
-        let gate = match link {
-            Some(_) => match launcher::registration_gate::install(&mut command) {
-                Ok(gate) => Some(gate),
-                // Without its gate the launch would run unreleased: it starts
+        let hold = match link {
+            Some(_) => match launcher::launch_hold::install(&mut command) {
+                Ok(hold) => Some(hold),
+                // Without its hold the launch would run unreleased: it starts
                 // nothing, as an app that cannot start does.
                 Err(error) => {
                     return Err(SpawnError {
                         app: planned.app.clone(),
-                        reason: format!("no launch gate: {error}"),
+                        reason: format!("no launch hold: {error}"),
                     });
                 }
             },
@@ -341,12 +341,12 @@ impl Spawner {
         let app_of = self.app_of(started.pid, &planned.app, kept.as_ref());
         running(&self.running).insert(id, app_of);
         record(started.pid);
-        if let Some(gate) = gate {
+        if let Some(hold) = hold {
             // The launch is written down: the app may connect.
             let served = link.as_mut().and_then(|link| link.serve(started.pid));
             let released = match &served {
-                Some(theirs) => gate.release_with_window_link(theirs.as_fd()),
-                None => gate.release(),
+                Some(theirs) => hold.release_with_window_link(theirs.as_fd()),
+                None => hold.release(),
             };
             if let Err(error) = released {
                 tracing::warn!(app = %planned.app, %error, "the launch was not released");

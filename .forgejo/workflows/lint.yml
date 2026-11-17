@@ -2,15 +2,15 @@ name: CI / fast quality
 
 # Clippy over the whole tree runs nightly (ci-nightly.yml); push runs lint the
 # packages a push touches (check.yml). This cheap path runs on every main commit so
-# the format, dependency and policy gates of the commit being promoted have a
-# result. Main is not gated, so a red result here blocks only the promotion.
+# the format, dependency and policy checks of the commit being promoted have a
+# result. Main is not guarded, so a red result here blocks only the promotion.
 #
-# The gates run as two jobs: a push waits for a verdict in about the longer half
+# The checks run as two jobs: a push waits for a verdict in about the longer half
 # instead of the sum of every step, and a slow inventory scan no longer delays
 # the compile-heavy lints that developers wait for.
 #
 # Every push gets its own verdict: the format, commit-message and unused
-# dependency gates check exactly the commits a push added
+# dependency checks check exactly the commits a push added
 # (`github.event.before`), so a push whose run another run stood in for would
 # never have them checked at all.
 on:

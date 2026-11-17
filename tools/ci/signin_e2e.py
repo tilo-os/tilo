@@ -7,7 +7,7 @@ The installer medium is dev-installer-medium-<arch>'s. Everything runs through t
 VM harness: os/dev/vm.sh boots the live installer and the installed target in one named cycle
 (disk, swtpm state and firmware persist across its boots and nowhere else), and the installer
 and greeter are driven through their console channel (os/dev/installer-console.py, the same
-actions tilo-vm scenario install and the release gate use). Early boot has no channel but the
+actions tilo-vm scenario install and the release check use). Early boot has no channel but the
 keyboard and the screen: secrets are typed with QEMU key events and the boot screens are read
 from the framebuffer (software graphics, OCR).
 
@@ -1556,7 +1556,7 @@ cryptsetup close e2e-target
     def first_frame(self, lines: str) -> None:
         """Item 13: the greeter's first frame in the initrd within 300 ms of the moment
         tilo-boot-signin knows who may sign in, when Plymouth's own sign-in screen used to
-        appear (the same measure as os/tests/boot_performance_gate.sh)."""
+        appear (the same measure as os/tests/boot_performance_check.sh)."""
         stamps = {}
         for line in lines.splitlines():
             match = re.match(r"\[\s*([0-9.]+)\]", line)

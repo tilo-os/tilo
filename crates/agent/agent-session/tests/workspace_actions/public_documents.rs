@@ -16,7 +16,7 @@
 //! still refused as absent, once the service heard the host say so.
 //!
 //! What the workspace holds is the host's to say, and a listing of it is what a
-//! member's agent names a record by: the chat the operator seated there is one
+//! member's agent names a record by: the chat the operator set up there is one
 //! of the workspace's records whether or not the service's own session was ever
 //! sent it, and a post goes into the channel it opens with.
 
@@ -253,7 +253,7 @@ async fn the_hosts_action_service_reads_and_acts_on_a_public_workspaces_records(
 }
 
 /// A public workspace — anyone may walk in, and its host sends a device its
-/// records when it opens them — whose chat the operator seated: the app's own
+/// records when it opens them — whose chat the operator set up: the app's own
 /// record of the workspace, holding the channel it opens with. Nobody's
 /// device has it open, and the workspace sends it to no one who does not.
 async fn lounge_with_chat() -> (Hosted, Device, String, tempfile::TempDir) {
@@ -280,7 +280,7 @@ async fn lounge_with_chat() -> (Hosted, Device, String, tempfile::TempDir) {
         .unwrap();
     let workspace = lounge.workspace.clone();
 
-    // Its chat, as an operator seats it: the app's own record of the workspace,
+    // Its chat, as an operator sets it up: the app's own record of the workspace,
     // holding the channel it opens with. Nobody's device has it open, and the
     // workspace sends it to no one who does not.
     workspaces
@@ -301,7 +301,7 @@ async fn lounge_with_chat() -> (Hosted, Device, String, tempfile::TempDir) {
             CHAT,
             "",
             |doc| {
-                // The channel the operator seats, under the id the workspace's
+                // The channel the operator sets up, under the id the workspace's
                 // own settle gives it (`c_` and its name).
                 chat::demo::apply_as(
                     doc,
@@ -327,7 +327,7 @@ async fn lounge_with_chat() -> (Hosted, Device, String, tempfile::TempDir) {
 }
 
 /// What an agent through the action API asks before it names a record: what runs in
-/// the workspace. The chat its operator seated there is one of them, and the
+/// the workspace. The chat its operator set up there is one of them, and the
 /// channel it opens with is where a post goes.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_hosts_action_service_lists_a_public_workspaces_chat_it_was_never_sent() {
@@ -426,7 +426,7 @@ async fn chat_history(hosted: &Hosted, workspace: &str) -> (Vec<u8>, usize) {
 }
 
 /// A member's agent opens Chat in a public workspace whose chat the operator
-/// seated. The service holds none of that record until asked, and Chat keeps
+/// set up. The service holds none of that record until asked, and Chat keeps
 /// one record per workspace: opening it must open the chat the workspace
 /// holds, never found it again as if it were new, which would lay an empty
 /// chat's genesis over the one people talk in.
@@ -467,7 +467,7 @@ async fn an_agent_opening_chat_in_a_public_workspace_opens_the_chat_it_has() {
     );
 
     // Nothing was founded: the chat the host keeps is the one the operator
-    // seated, write for write.
+    // set up, write for write.
     assert!(
         chat_history(&hosted, &workspace).await == before,
         "opening Chat wrote to the workspace's chat as if it were new"

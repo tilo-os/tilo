@@ -16,8 +16,8 @@ use super::staging::record::{Record, ReleaseRef, Step};
 use super::staging::{ALIGN_BYTES, DEFAULT_TARGET_BYTES};
 use tilo_lock::MutexRecover as _;
 
-pub(super) const BUILD_GATE: Option<&str> = option_env!("TILO_IMAGER_INTERNAL_INSTALL");
-pub(super) const RUNTIME_GATE_VAR: &str = "TILO_IMAGER_ALLOW_INTERNAL_INSTALL";
+pub(super) const BUILD_ALLOW: Option<&str> = option_env!("TILO_IMAGER_INTERNAL_INSTALL");
+pub(super) const RUNTIME_ALLOW_VAR: &str = "TILO_IMAGER_ALLOW_INTERNAL_INSTALL";
 
 const GIB: u64 = 1 << 30;
 
@@ -52,13 +52,16 @@ fn remember_tpm_handoff(
 pub(super) use super::staging::{PROVISIONAL_STAGING_ESP_BYTES, PROVISIONAL_STAGING_ROOT_BYTES};
 
 #[must_use]
-pub(super) fn gate_open(build: Option<&str>, runtime: Option<&str>) -> bool {
+pub(super) fn install_allowed(build: Option<&str>, runtime: Option<&str>) -> bool {
     build == Some("1") || runtime == Some("1")
 }
 
 #[must_use]
-pub(super) fn live_gate_open() -> bool {
-    gate_open(BUILD_GATE, std::env::var(RUNTIME_GATE_VAR).ok().as_deref())
+pub(super) fn live_install_allowed() -> bool {
+    install_allowed(
+        BUILD_ALLOW,
+        std::env::var(RUNTIME_ALLOW_VAR).ok().as_deref(),
+    )
 }
 
 pub(super) trait HelperRun: Send {
@@ -620,7 +623,7 @@ fn new_operation_id() -> String {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) enum Readiness {
-    Gated,
+    NotEnabled,
     Checking,
     NoRelease,
     Unsupported(Vec<Blocker>),
@@ -636,7 +639,7 @@ pub(super) struct InternalInstall {
     deferred: bool,
     profile: serde_json::Map<String, serde_json::Value>,
     link: StagingLink,
-    gate: bool,
+    check: bool,
     host: HostOs,
     readiness: Readiness,
     facts: Option<HostFacts>,
@@ -655,7 +658,7 @@ pub(super) struct InternalInstall {
 }
 
 impl InternalInstall {
-    pub(super) fn new(runtime: StagingRuntime, gate: bool, host: HostOs) -> Self {
+    pub(super) fn new(runtime: StagingRuntime, check: bool, host: HostOs) -> Self {
         Self {
             migration_intent: None,
             prepared_custody: None,
@@ -665,12 +668,12 @@ impl InternalInstall {
                 runtime,
                 shared: Arc::new(Mutex::new(RunShared::default())),
             },
-            gate,
+            check,
             host,
-            readiness: if gate {
+            readiness: if check {
                 Readiness::Checking
             } else {
-                Readiness::Gated
+                Readiness::NotEnabled
             },
             facts: None,
             pending: Vec::new(),
@@ -688,7 +691,7 @@ impl InternalInstall {
         }
     }
 
-    pub(super) fn gated(host: HostOs) -> Self {
+    pub(super) fn guarded(host: HostOs) -> Self {
         Self::new(StagingRuntime::live(), false, host)
     }
 
@@ -700,8 +703,8 @@ impl InternalInstall {
         &self.link.runtime
     }
 
-    pub(super) fn gate(&self) -> bool {
-        self.gate
+    pub(super) fn check(&self) -> bool {
+        self.check
     }
 
     pub(super) fn host(&self) -> HostOs {
@@ -719,7 +722,7 @@ impl InternalInstall {
     pub(super) fn probe_task(
         &mut self,
     ) -> Option<impl FnOnce() -> (HostFacts, Vec<Record>) + Send + 'static> {
-        if !self.gate || self.probing {
+        if !self.check || self.probing {
             return None;
         }
         self.probing = true;
@@ -744,8 +747,8 @@ impl InternalInstall {
         has_release: bool,
     ) {
         self.probing = false;
-        self.readiness = if !self.gate {
-            Readiness::Gated
+        self.readiness = if !self.check {
+            Readiness::NotEnabled
         } else if !has_release {
             Readiness::NoRelease
         } else if facts.offers_full_os() {
@@ -996,7 +999,7 @@ impl InternalInstall {
         if canonical != reviewed.plan {
             return Err(refused());
         }
-        if !self.gate || !has_release || !reviewed.facts.offers_full_os() {
+        if !self.check || !has_release || !reviewed.facts.offers_full_os() {
             return Err(super::strings::t("imager-setup-internal-error-unavailable"));
         }
         if let Some(prepared) = &reviewed.prepared {
@@ -1689,8 +1692,8 @@ pub(super) mod tests {
         deferred.profile.prepared_setup = None;
         let mut deferred_install = probed(&fakes, true);
         deferred_install.adopt_reviewed(deferred, true).unwrap();
-        let mut gated = InternalInstall::new(fakes.runtime(), false, HostOs::Linux);
-        assert!(gated.adopt_reviewed(reviewed.clone(), true).is_err());
+        let mut guarded = InternalInstall::new(fakes.runtime(), false, HostOs::Linux);
+        assert!(guarded.adopt_reviewed(reviewed.clone(), true).is_err());
         assert!(install.adopt_reviewed(reviewed.clone(), false).is_err());
         install.adopt_reviewed(reviewed.clone(), true).unwrap();
         assert_eq!(
@@ -1743,22 +1746,22 @@ pub(super) mod tests {
 
     tilo_test_env::scenario! {
         #[allow(clippy::too_many_lines, reason = "one scenario test keeps each merged phase and its fresh fixture visible")]
-        fn the_internal_install_gate_follows_blockers_and_replans_within_bounds;
+        fn the_internal_install_check_follows_blockers_and_replans_within_bounds;
 
-        phase internal_install_gate_readiness_and_remedies_follow_blockers;
+        phase internal_install_check_readiness_and_remedies_follow_blockers;
         {
             {
-                assert!(!gate_open(None, None));
-                assert!(!gate_open(Some("0"), Some("true")));
-                assert!(gate_open(Some("1"), None));
-                assert!(gate_open(None, Some("1")));
+                assert!(!install_allowed(None, None));
+                assert!(!install_allowed(Some("0"), Some("true")));
+                assert!(install_allowed(Some("1"), None));
+                assert!(install_allowed(None, Some("1")));
 
                 let fakes = Fakes::new(Vec::new());
-                let mut gated = InternalInstall::new(fakes.runtime(), false, HostOs::Windows);
-                assert!(gated.probe_task().is_none());
-                assert_eq!(gated.readiness(), &Readiness::Gated);
-                gated.accept_probe(facts(Vec::new()), Vec::new(), true);
-                assert!(!gated.offers_full_os());
+                let mut guarded = InternalInstall::new(fakes.runtime(), false, HostOs::Windows);
+                assert!(guarded.probe_task().is_none());
+                assert_eq!(guarded.readiness(), &Readiness::NotEnabled);
+                guarded.accept_probe(facts(Vec::new()), Vec::new(), true);
+                assert!(!guarded.offers_full_os());
                 assert_eq!(fakes.probes.load(Ordering::SeqCst), 0);
             }
 

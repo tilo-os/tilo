@@ -898,7 +898,7 @@ impl Sparkline {
     }
 
     /// Where each sample of `data` lands inside `rect` — the same projection
-    /// [`Self::paint`] draws, so a host can seat labels or marks on the line.
+    /// [`Self::paint`] draws, so a host can place labels or marks on the line.
     pub fn points<T: Copy + Into<f64>>(rect: Rect, data: &[T], range: TrendRange) -> Vec<Point> {
         let len = data.len();
         data.iter()

@@ -4,7 +4,7 @@
 #
 #   os/dev/publish-dev-disk.sh
 #
-# Run once the disk passed its gates: t's publish-os-dev-<arch>
+# Run once the disk passed its checks: t's publish-os-dev-<arch>
 # (tools/ci/publish/os-dev-publish.sh). It writes, in this order:
 #
 #   registry.tilo.so/tilo/tilo-vm:<tag>-<arch>          the dev image child

@@ -432,7 +432,7 @@ async fn a_sealed_read_waiting_for_its_key_ends_when_the_key_arrives() {
                 policy: policy.clone(),
                 founds: Arc::new(std::sync::atomic::AtomicBool::new(id == 0)),
             }),
-            Arc::new(tilo_workspace_keys::Gates::default()),
+            Arc::new(tilo_workspace_keys::SealChecks::default()),
         )
         .unwrap();
         let endpoint = testing::Endpoint::join(&workspace, workspace_id, usize::from(id));

@@ -27,7 +27,7 @@ pub fn suggest(dict: &Dictionary, word: &str, max: usize) -> Vec<String> {
         if cand == needle {
             continue;
         }
-        // Integer bound gates membership; weighted cost only orders the matches.
+        // Integer bound checks membership; weighted cost only orders the matches.
         if damerau_levenshtein_within(&needle, cand, MAX_EDIT_DISTANCE).is_some() {
             let cost = weighted_edit_cost(&needle, cand, MAX_EDIT_DISTANCE);
             scored.push((cost, cand.chars().count(), cand));

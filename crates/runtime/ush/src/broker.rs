@@ -1068,7 +1068,7 @@ pub(crate) struct Shared {
     stop: AtomicBool,
     /// Rung once, when the broker stops, and never drained.
     pub(crate) stopping: WakeFd,
-    host_updates: HostUpdateGate,
+    host_updates: HostUpdateLock,
 }
 
 impl Shared {
@@ -1076,7 +1076,7 @@ impl Shared {
         Ok(Self {
             stop: AtomicBool::new(false),
             stopping: WakeFd::new()?,
-            host_updates: HostUpdateGate::new()?,
+            host_updates: HostUpdateLock::new()?,
         })
     }
 
@@ -1092,7 +1092,7 @@ impl Shared {
 
 /// Keeps host updates one at a time. A waiting update sleeps until the
 /// running one lets go (`released` rings) or its own guest leaves.
-struct HostUpdateGate {
+struct HostUpdateLock {
     lock: Mutex<()>,
     released: WakeFd,
 }
@@ -1109,7 +1109,7 @@ impl Drop for HostUpdateGuard<'_> {
     }
 }
 
-impl HostUpdateGate {
+impl HostUpdateLock {
     fn new() -> std::io::Result<Self> {
         Ok(Self {
             lock: Mutex::new(()),
@@ -1272,11 +1272,11 @@ fn acquire_host_mutation<'a>(
     if !command.mutating {
         return Ok(None);
     }
-    let gate = &shared.host_updates;
+    let check = &shared.host_updates;
     let mut told = false;
     loop {
-        gate.released.drain();
-        if let Some(guard) = gate.try_acquire() {
+        check.released.drain();
+        if let Some(guard) = check.try_acquire() {
             return Ok(Some(guard));
         }
         if !told {
@@ -1292,7 +1292,7 @@ fn acquire_host_mutation<'a>(
         let mut fds = [
             pollfd(writer.as_raw_fd(), GUEST_GONE),
             pollfd(shared.stopping.fd().as_raw_fd(), libc::POLLIN),
-            pollfd(gate.released.fd().as_raw_fd(), libc::POLLIN),
+            pollfd(check.released.fd().as_raw_fd(), libc::POLLIN),
         ];
         if poll_fds(&mut fds, None).is_err() {
             return Err(Cancelled);
@@ -1550,7 +1550,7 @@ fn pump_host_command(
 }
 
 /// The mutation has finished before the guest can observe its completion.
-/// A slow response reader must not retain the host's update serialization gate.
+/// A slow response reader must not retain the host's update serialization check.
 fn complete_host_command(
     writer: &mut UnixStream,
     response: Response,
@@ -2086,7 +2086,7 @@ pub(crate) mod tests {
             drop(broker);
         }
 
-        phase completed_host_command_releases_gate_before_a_blocked_completion_frame;
+        phase completed_host_command_releases_check_before_a_blocked_completion_frame;
         {
             let dir = tempfile::tempdir().unwrap();
             fake_host_program(dir.path(), "tilo", "#!/bin/sh\nexit 7\n");
@@ -2141,7 +2141,7 @@ pub(crate) mod tests {
             );
             assert!(
                 released,
-                "completed command retained the host mutation gate while sending its response"
+                "completed command retained the host mutation check while sending its response"
             );
         }
 

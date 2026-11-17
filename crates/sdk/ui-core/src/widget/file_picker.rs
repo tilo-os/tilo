@@ -8,7 +8,7 @@
 //! (only when the app named more than one type) and Cancel and the primary button.
 //!
 //! Constructed with "accessible roots" — the paths the caller may be given.
-//! [`FilePicker::can_navigate_to`] gates every path mutation against them so the person
+//! [`FilePicker::can_navigate_to`] checks every path mutation against them so the person
 //! can't `..` out of them, and every chosen path is checked against their real paths again
 //! before it is answered.
 

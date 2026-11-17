@@ -705,7 +705,7 @@ fn state() -> std::path::PathBuf {
     )))
 }
 
-/// Seats a device in `home`: the throwaway identity `dist/dev/nested-session.sh` mints, and a
+/// Sets up a device in `home`: the throwaway identity `dist/dev/nested-session.sh` mints, and a
 /// secret store, so a session there holds its workspaces. Its state directory.
 ///
 /// # Panics

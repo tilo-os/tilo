@@ -702,12 +702,12 @@ fn endpoint_planner(url: &str) -> Box<dyn tilo_agent_session::Planner> {
 fn model_endpoint(
     answers: Vec<serde_json::Value>,
 ) -> (String, std::sync::mpsc::Receiver<String>, Responder) {
-    gated_model_endpoint(answers.into_iter().map(|answer| (answer, None)).collect())
+    held_model_endpoint(answers.into_iter().map(|answer| (answer, None)).collect())
 }
 
-/// [`model_endpoint`], an answer with a gate held back until the gate is
+/// [`model_endpoint`], an answer with a hold held back until the hold is
 /// opened (or dropped): a request in flight while the workspace changes.
-fn gated_model_endpoint(
+fn held_model_endpoint(
     answers: Vec<(serde_json::Value, Option<std::sync::mpsc::Receiver<()>>)>,
 ) -> (String, std::sync::mpsc::Receiver<String>, Responder) {
     let (sent, received) = std::sync::mpsc::channel();
@@ -718,10 +718,10 @@ fn gated_model_endpoint(
     );
     let served = Responder::serve(move |peer| {
         let next = answers.lock().unwrap().pop_front();
-        let Some((answer, gate)) = next else { return };
+        let Some((answer, hold)) = next else { return };
         let _ = sent.send(peer.request().body_text());
-        if let Some(gate) = gate {
-            let _ = gate.recv();
+        if let Some(hold) = hold {
+            let _ = hold.recv();
         }
         peer.reply(&answer_reply(&answer));
     });
@@ -1795,8 +1795,8 @@ fn chat_parts_text(agent: &AgentMember, route: &DocumentRoute) -> String {
 async fn a_chat_post_by_another_agent_is_news_with_its_text_and_wakes_a_wait() {
     let (root, host_device, _state, host) = session().await;
     let plan = |id: &str, input: serde_json::Value| tool_call(id, "plan", &input);
-    let (gate, held) = std::sync::mpsc::channel();
-    let (url, sent, _served) = gated_model_endpoint(vec![
+    let (hold, held) = std::sync::mpsc::channel();
+    let (url, sent, _served) = held_model_endpoint(vec![
         (
             plan(
                 "p1",
@@ -1920,7 +1920,7 @@ async fn a_chat_post_by_another_agent_is_news_with_its_text_and_wakes_a_wait() {
         async move { held.then_some(()) }
     })
     .await;
-    gate.send(()).unwrap();
+    hold.send(()).unwrap();
     let told = last_turn(
         &wait_for("the plan again for the news", || {
             waiter.pump();
@@ -2248,8 +2248,8 @@ impl RelayWorkspace {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_agent_introducing_itself_in_chat_neither_replans_nor_wakes_a_waiting_task() {
     let plan = |id: &str, input: serde_json::Value| tool_call(id, "plan", &input);
-    let (gate, held) = std::sync::mpsc::channel();
-    let (url, sent, _served) = gated_model_endpoint(vec![
+    let (hold, held) = std::sync::mpsc::channel();
+    let (url, sent, _served) = held_model_endpoint(vec![
         (
             plan(
                 "p1",
@@ -2277,7 +2277,7 @@ async fn an_agent_introducing_itself_in_chat_neither_replans_nor_wakes_a_waiting
         .await;
     // While the wait is planned, Ben joins the chat.
     workspace.ben_joins().await;
-    gate.send(()).unwrap();
+    hold.send(()).unwrap();
     workspace.ana_waits(&task).await;
     assert!(
         sent.try_recv().is_err(),
@@ -2341,8 +2341,8 @@ async fn an_agent_introducing_itself_in_chat_neither_replans_nor_wakes_a_waiting
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_news_replan_that_finds_nothing_to_do_keeps_the_task_waiting() {
     let plan = |id: &str, input: serde_json::Value| tool_call(id, "plan", &input);
-    let (gate, held) = std::sync::mpsc::channel();
-    let (url, sent, _served) = gated_model_endpoint(vec![
+    let (hold, held) = std::sync::mpsc::channel();
+    let (url, sent, _served) = held_model_endpoint(vec![
         (
             plan(
                 "p1",
@@ -2394,7 +2394,7 @@ async fn a_news_replan_that_finds_nothing_to_do_keeps_the_task_waiting() {
     // The news names the member who changed the record as their own presence
     // says it, so Ana hears Ben before the plan is asked again.
     workspace.ana_hears("Ben").await;
-    gate.send(()).unwrap();
+    hold.send(()).unwrap();
     let told = last_turn(
         &workspace
             .next_request(&sent, "the plan again for the news")

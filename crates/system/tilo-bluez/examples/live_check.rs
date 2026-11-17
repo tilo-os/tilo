@@ -11,7 +11,7 @@
 //! thing on the machine allowed to invoke a pairing agent is therefore
 //! `bluetoothd` itself. That refusal is the defence — it is what stops any
 //! user process from driving the pairing dialog — so the check exercises the
-//! agent through the same gate by re-executing itself under `sudo` to play
+//! agent through the same check by re-executing itself under `sudo` to play
 //! the daemon's part, and separately asserts that an unprivileged caller is
 //! still turned away.
 
@@ -203,7 +203,7 @@ async fn accept_round_trip(mut events: AgentEvents, unique: &str) -> Result<(), 
     Ok(())
 }
 
-/// Step 5: the bus policy is the gate — the same call from this unprivileged
+/// Step 5: the bus policy is the check — the same call from this unprivileged
 /// process must be refused before it ever reaches our object.
 async fn refuse_unprivileged_caller(unique: &str) -> Result<(), String> {
     let caller = zbus::Connection::system()

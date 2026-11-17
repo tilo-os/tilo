@@ -31,7 +31,7 @@ pub struct StreamingThrottle {
 }
 
 impl StreamingThrottle {
-    /// Construct a throttle gated at 30 fps.
+    /// Construct a throttle guarded at 30 fps.
     pub fn new() -> Self {
         Self::with_interval(ENCODE_INTERVAL)
     }
@@ -51,7 +51,7 @@ impl StreamingThrottle {
 
     /// Whether the caller should encode now: `true` before the first encode
     /// and once the next one is due. Callers must then call
-    /// [`Self::mark_encoded`] only when they actually encode — gating on this
+    /// [`Self::mark_encoded`] only when they actually encode — guarding on this
     /// for telemetry without encoding would poison the throttle.
     pub fn should_encode(&self, now: Instant) -> bool {
         self.next_due.is_none_or(|due| now >= due)

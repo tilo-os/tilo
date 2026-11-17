@@ -33,7 +33,7 @@ polkit.addRule(function (action, subject) {
 // What that adds up to: someone who could already reboot the machine from the
 // desktop can also choose which image it reboots into. It grants no ability to
 // read data, install software, or reach another user's session. Repair mode is
-// separately gated on the disk passphrase — see docs/security/repair-mode.md.
+// separately depending on the disk passphrase — see docs/security/repair-mode.md.
 polkit.addRule(function (action, subject) {
     var units = {
         "tilo-deployment-rollback.service": true,

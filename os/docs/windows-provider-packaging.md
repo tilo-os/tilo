@@ -78,7 +78,7 @@ is introduced. VM fallback, Proton, Steam runtime and UMU assets remain included
 
 ## Acceptance still required
 
-These are packaging gates. A successful build is not proof of mixed-width
+These are packaging checks. A successful build is not proof of mixed-width
 Windows execution, Proton namespace startup, graphics rendering or hardware
 support. Run Wine32/PE32, Wine64/PE64 and Wine64/PE32 in the same Win64 prefix,
 including the managed native DXVK DLL checks, in the generated production

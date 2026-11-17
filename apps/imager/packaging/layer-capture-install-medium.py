@@ -37,7 +37,7 @@ def layer(settings, base, output, env):
         host.parent.mkdir(parents=True)
         shutil.copyfile(release.ROOT / 'target/release/imager', host)
         host.chmod(0o755)
-        # Execute the gate on the bytes destined for the medium, not an old
+        # Execute the check on the bytes destined for the medium, not an old
         # detached receipt or the base image's historical host.
         release.run(['bash', HERE / 'stage-capture-sidecar.sh',
                      release.ROOT / 'target/release/imager', root / 'usr', host], env)
@@ -45,7 +45,7 @@ def layer(settings, base, output, env):
         cohort = qualifier.admit_cohort(Path(env['TILO_CAPTURE_QUALIFICATION_COHORT']),
                                        host, True)
         # Publish the same actual platform consumers exercised by the full
-        # receiver gate at their ordinary Linux installation locations.
+        # receiver check at their ordinary Linux installation locations.
         for role, destination in qualifier.BINDINGS.items():
             subject = cohort['roles'][role]
             qualifier.bound_file(subject['path'], subject['sha256'])

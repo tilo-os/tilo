@@ -772,7 +772,7 @@ impl PowerService {
     }
 
     /// Issue the suspend request, if logind allows it. The inhibitor registry is the
-    /// compositor's gate for idle suspend; lid and critical suspends are deliberate
+    /// compositor's check for idle suspend; lid and critical suspends are deliberate
     /// and proceed regardless.
     async fn start_suspend(&mut self) {
         if self.suspend_task.is_some() {

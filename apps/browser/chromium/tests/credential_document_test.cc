@@ -33,29 +33,29 @@ int main() {
   auto child = document;
   child.frame = "child";
   assert(!handshake.Accept(child));
-  CredentialDocument gate(false);
-  assert(!gate.Begin(CredentialOperation::Fill, document, now));
-  assert(gate.Commit(document, true, true, false));
-  const auto before_hide = gate.Begin(CredentialOperation::Fill, document, now);
+  CredentialDocument check(false);
+  assert(!check.Begin(CredentialOperation::Fill, document, now));
+  assert(check.Commit(document, true, true, false));
+  const auto before_hide = check.Begin(CredentialOperation::Fill, document, now);
   assert(before_hide);
-  gate.SetVisible(false);
-  assert(!gate.Begin(CredentialOperation::Fill, document, now));
-  assert(!gate.Take(*before_hide, CredentialOperation::Fill, document, now));
-  gate.SetVisible(true);
-  assert(!gate.Take(*before_hide, CredentialOperation::Fill, document, now));
-  const auto after_show = gate.Begin(CredentialOperation::Fill, document, now);
+  check.SetVisible(false);
+  assert(!check.Begin(CredentialOperation::Fill, document, now));
+  assert(!check.Take(*before_hide, CredentialOperation::Fill, document, now));
+  check.SetVisible(true);
+  assert(!check.Take(*before_hide, CredentialOperation::Fill, document, now));
+  const auto after_show = check.Begin(CredentialOperation::Fill, document, now);
   assert(after_show && *after_show != *before_hide);
-  assert(gate.Take(*after_show, CredentialOperation::Fill, document, now));
-  const auto fill = gate.Begin(CredentialOperation::Fill, document, now);
+  assert(check.Take(*after_show, CredentialOperation::Fill, document, now));
+  const auto fill = check.Begin(CredentialOperation::Fill, document, now);
   assert(fill);
   auto wrong_origin = document;
   wrong_origin.origin = "https://example.com.evil.test";
-  assert(!gate.Take(*fill, CredentialOperation::Fill, wrong_origin, now));
-  assert(!gate.Take(*fill, CredentialOperation::Fill, document, now));
+  assert(!check.Take(*fill, CredentialOperation::Fill, wrong_origin, now));
+  assert(!check.Take(*fill, CredentialOperation::Fill, document, now));
 
   for (auto changed : {0, 1, 2, 3, 4}) {
-    assert(gate.Commit(document, true, true, false));
-    const auto request = gate.Begin(CredentialOperation::Fill, document, now);
+    assert(check.Commit(document, true, true, false));
+    const auto request = check.Begin(CredentialOperation::Fill, document, now);
     assert(request);
     auto stale = document;
     if (changed == 0) stale.browser_id++;
@@ -63,43 +63,43 @@ int main() {
     if (changed == 2) stale.origin = "https://example.com:8443";
     if (changed == 3) stale.context = "renderer-context-2";
     if (changed == 4) stale.generation++;
-    assert(!gate.Take(*request, CredentialOperation::Fill, stale, now));
+    assert(!check.Take(*request, CredentialOperation::Fill, stale, now));
   }
   for (auto operation : {CredentialOperation::Capture, CredentialOperation::Save,
                          CredentialOperation::Update, CredentialOperation::Fill,
                          CredentialOperation::List, CredentialOperation::Delete}) {
-    CredentialDocument private_gate(true);
-    assert(!private_gate.Commit(document, true, true, false));
-    assert(!private_gate.Begin(operation, document, now));
+    CredentialDocument private_check(true);
+    assert(!private_check.Commit(document, true, true, false));
+    assert(!private_check.Begin(operation, document, now));
   }
-  assert(!gate.Commit(document, false, true, false)); // subframe
-  assert(!gate.Commit(document, true, false, false)); // invalid/unknown TLS
-  assert(!gate.Commit(document, true, true, true)); // mixed content
+  assert(!check.Commit(document, false, true, false)); // subframe
+  assert(!check.Commit(document, true, false, false)); // invalid/unknown TLS
+  assert(!check.Commit(document, true, true, true)); // mixed content
   auto insecure = document;
   insecure.origin = "http://example.com";
-  assert(!gate.Commit(insecure, true, true, false));
-  assert(gate.Commit(document, true, true, false));
-  const auto old = gate.Begin(CredentialOperation::Save, document, now);
-  gate.Invalidate(); // navigation, renderer/context loss, close
-  assert(!gate.Take(*old, CredentialOperation::Save, document, now));
+  assert(!check.Commit(insecure, true, true, false));
+  assert(check.Commit(document, true, true, false));
+  const auto old = check.Begin(CredentialOperation::Save, document, now);
+  check.Invalidate(); // navigation, renderer/context loss, close
+  assert(!check.Take(*old, CredentialOperation::Save, document, now));
   auto reload = document;
   reload.generation++;
   reload.context = "reload-context";
-  assert(gate.Commit(reload, true, true, false));
-  assert(!gate.Begin(CredentialOperation::Fill, document, now));
-  const auto fresh = gate.Begin(CredentialOperation::Fill, reload, now);
+  assert(check.Commit(reload, true, true, false));
+  assert(!check.Begin(CredentialOperation::Fill, document, now));
+  const auto fresh = check.Begin(CredentialOperation::Fill, reload, now);
   assert(fresh && *fresh != *old);
-  assert(gate.Take(*fresh, CredentialOperation::Fill, reload, now));
-  assert(!gate.Take(*fresh, CredentialOperation::Fill, reload, now)); // one shot
-  const auto expired = gate.Begin(CredentialOperation::Fill, reload, now);
-  assert(!gate.Take(*expired, CredentialOperation::Fill, reload,
+  assert(check.Take(*fresh, CredentialOperation::Fill, reload, now));
+  assert(!check.Take(*fresh, CredentialOperation::Fill, reload, now)); // one shot
+  const auto expired = check.Begin(CredentialOperation::Fill, reload, now);
+  assert(!check.Take(*expired, CredentialOperation::Fill, reload,
                     now + std::chrono::seconds(30)));
-  const auto wrong_action = gate.Begin(CredentialOperation::List, reload, now);
-  assert(!gate.Take(*wrong_action, CredentialOperation::Delete, reload, now));
-  assert(!gate.Take(*wrong_action, CredentialOperation::List, reload, now));
+  const auto wrong_action = check.Begin(CredentialOperation::List, reload, now);
+  assert(!check.Take(*wrong_action, CredentialOperation::Delete, reload, now));
+  assert(!check.Take(*wrong_action, CredentialOperation::List, reload, now));
   for (size_t i = 0; i < CredentialDocument::kMaxPending; ++i)
-    assert(gate.Begin(CredentialOperation::List, reload, now));
-  assert(!gate.Begin(CredentialOperation::List, reload, now));
+    assert(check.Begin(CredentialOperation::List, reload, now));
+  assert(!check.Begin(CredentialOperation::List, reload, now));
   // Expiration restores capacity without reusing request IDs.
-  assert(gate.Begin(CredentialOperation::List, reload, now + std::chrono::seconds(31)));
+  assert(check.Begin(CredentialOperation::List, reload, now + std::chrono::seconds(31)));
 }

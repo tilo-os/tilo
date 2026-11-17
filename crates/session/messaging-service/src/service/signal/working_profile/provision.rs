@@ -17,8 +17,8 @@ pub(crate) struct UnpublishedSignalProfile {
 impl UnpublishedSignalProfile {
     pub(crate) fn seal(self, account: &NativeSignalAccount, root: &Path) -> Result<(), SendError> {
         self.original.check()?;
-        account.gate.check()?;
-        if self.original.owner != account.gate.identity.owner {
+        account.guard.check()?;
+        if self.original.owner != account.guard.identity.owner {
             return Err(SendError::Revoked);
         }
         let mut sealed = account.create_profile(root)?;

@@ -4,7 +4,7 @@
 //! Each endpoint names who it admits with an [`EndpointTrust`] and runs
 //! [`LiveIdentity::authenticate`] over its stream, or, split across two HTTPS
 //! requests, [`LiveIdentity::begin`] and [`PendingServer::finish`]. Anything an
-//! endpoint checks beyond that (workspace membership, the owner gate on compute
+//! endpoint checks beyond that (workspace membership, the owner check on compute
 //! control) is authorization and stays with the endpoint.
 
 use std::sync::{Arc, RwLock};

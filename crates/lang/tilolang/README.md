@@ -947,7 +947,7 @@ The table is sorted by inclusive fuel, so a unit that calls others carries their
 how often the unit ran, so a requirement evaluated for every item shows the count grow with the
 workspace rather than with the rows a person can see.
 
-The counts do not depend on the machine or its load, so they gate: a test records the costs of
+The counts do not depend on the machine or its load, so they check: a test records the costs of
 an interaction (`Runtime::record_costs`, `::reset_costs`, `::costs`) and holds them
 (`tilolang_runtime::assert_costs("open", &costs, |c| c.calls("Task.due_today requirement") <= rows)`),
 failing with the whole table. Fuel is a function of the code run, in the engine's own units: a

@@ -6,7 +6,7 @@
 #                                      booted system and logged-in user session
 #
 # The image mode runs during os/Containerfile itself.  Runtime mode is driven
-# over SSH by the installed-desktop gate (t's os-acceptance-{arch}) after bootc
+# over SSH by the installed-desktop check (t's os-acceptance-{arch}) after bootc
 # installation and graphical login, through `os/dev/vm.sh test`, which copies
 # this script, the Files AT-SPI smoke
 # and the external AT-SPI client (test tooling the image does not ship) into
@@ -321,7 +321,7 @@ if [ "$mode" = runtime ]; then
 
   # Unit state and non-empty files are not cryptographic evidence. Require the
   # personal root and every device-chain artifact, then run the same read-only
-  # verifier that gates compositor startup.
+  # verifier that checks compositor startup.
   id -nG | tr ' ' '\n' | grep -Fqx tilo-identity \
     || die "login user is not a member of tilo-identity"
   for identity_file in \

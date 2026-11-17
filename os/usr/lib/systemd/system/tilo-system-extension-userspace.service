@@ -9,7 +9,7 @@ Type=oneshot
 ExecStart=/usr/libexec/tilo-system-extension-activate userspace
 RemainAfterExit=no
 
-# This root-owned gate reads desired state and writes a runtime marker. It
+# This root-owned check reads desired state and writes a runtime marker. It
 # cannot install anything; the local-model service is a separate unprivileged
 # process. Private networking makes the no-download invariant enforceable.
 ProtectSystem=strict

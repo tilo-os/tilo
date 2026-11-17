@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# Gate kernel-plus-userspace boot latency on a running installed image. Firmware
+# Check kernel-plus-userspace boot latency on a running installed image. Firmware
 # timing is intentionally excluded: CI controls the Tilo kernel and userspace,
 # not a customer's UEFI implementation.
 #
-# The numbers are only meaningful in a KVM guest, like the release gate's VM.
+# The numbers are only meaningful in a KVM guest, like the release check's VM.
 # os/dev/vm.sh falls back to TCG emulation on a host without usable KVM and
 # warns when it does; a TCG boot's phases are not comparable with KVM or
 # hardware in either direction.
@@ -177,7 +177,7 @@ activation_timestamp() {
 graphical_us="$(activation_timestamp graphical.target)"
 greetd_us="$(activation_timestamp greetd.service)"
 # A target may become active before its display manager has accepted work.
-# Gate the later event so this measures a usable login endpoint, not merely an
+# Check the later event so this measures a usable login endpoint, not merely an
 # early systemd synchronization point.
 entered_us="$graphical_us"
 if [ "$greetd_us" -gt "$entered_us" ]; then entered_us="$greetd_us"; fi
@@ -199,7 +199,7 @@ boot_phases() {
 # The kernel phase has no units to blame: name the longest silences in this
 # boot's kernel log before the initrd started, and the initramfs unpack.
 # The initrd phase: the longest silences between its start and switch-root,
-# from the journal (the gate user reads it through wheel). systemd and its
+# from the journal (the check user reads it through wheel). systemd and its
 # units log there in real time, so a gap names what the boot waited on.
 initrd_gaps() {
   local initrd_us userspace_us log
@@ -279,9 +279,9 @@ kernel_gaps() {
   # Journald timestamps imported early messages at receipt. Those timestamps
   # can place every early message after the initrd started. Read the kernel's
   # own clock instead; an unprivileged failure must not fabricate kernel gaps.
-  # dmesg is restricted for the gate user. journald keeps the kernel's own
+  # dmesg is restricted for the check user. journald keeps the kernel's own
   # timestamp of each kernel message as _SOURCE_MONOTONIC_TIMESTAMP, which the
-  # gate user reads through wheel.
+  # check user reads through wheel.
   log="$(dmesg --color=never 2>/dev/null)" || log="$(sudo -n dmesg --color=never 2>/dev/null)" \
     || log="$(journalctl -k -b -o json --no-pager 2>/dev/null | python3 -c '
 import json, sys

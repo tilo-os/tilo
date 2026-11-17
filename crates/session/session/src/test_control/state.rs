@@ -8,14 +8,14 @@ use std::hash::Hash as _;
 use serde_json::{Value as Json, json};
 use tilo_desktop_model::Layout;
 
-use super::{Context, Gate, Part, Scope, Session};
+use super::{Audience, Context, Part, Scope, Session};
 
-/// What a socket at `gate` may see of the state `dump`: a development socket sees the session as
+/// What a socket at `who` may see of the state `dump`: a development socket sees the session as
 /// it is, and the owner's API sees it too — except while the screen is locked, where it learns
 /// that it is and nothing of what the lock covers: no windows, no workspaces, no titles or the
 /// text in them.
-pub(super) fn owner_shown(gate: Gate, dump: Json) -> Json {
-    if gate == Gate::Dev || !locked_in(&dump) {
+pub(super) fn owner_shown(who: Audience, dump: Json) -> Json {
+    if who == Audience::Dev || !locked_in(&dump) {
         return dump;
     }
     let mut dump = dump;
@@ -43,8 +43,8 @@ pub(super) fn owner_shown(gate: Gate, dump: Json) -> Json {
 /// nothing of the session while the screen is locked.
 pub(super) fn shown(ctx: &Context, dump: Json) -> Json {
     match &ctx.scope {
-        None => owner_shown(ctx.gate, dump),
-        Some(scope) => owner_shown(ctx.gate, only_workspace(dump, scope)),
+        None => owner_shown(ctx.who, dump),
+        Some(scope) => owner_shown(ctx.who, only_workspace(dump, scope)),
     }
 }
 
@@ -223,7 +223,7 @@ pub(super) fn state_dump(tree: &Layout, session: &Session<'_>) -> Json {
 /// waits for the host. A socket sees what [`shown`] lets it see of the session: an app its own
 /// workspace, and nothing of a locked session but through a development socket.
 pub(super) fn workspace_hosts(tree: &Layout, session: &Session<'_>, ctx: &Context) -> Json {
-    let rows: Vec<Json> = if ctx.gate != Gate::Dev && session.locked {
+    let rows: Vec<Json> = if ctx.who != Audience::Dev && session.locked {
         Vec::new()
     } else {
         tree.workspaces

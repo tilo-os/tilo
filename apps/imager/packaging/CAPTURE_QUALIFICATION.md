@@ -1,6 +1,6 @@
 # Native capture release qualification
 
-`qualify-capture-release.py` is the fixed executable gate used by
+`qualify-capture-release.py` is the fixed executable check used by
 `stage-capture-sidecar.sh`. It executes tests itself. A signed worker, saved
 success JSON, protocol advertisement or old artifact receipt does not qualify a
 release. Candidate compilation and signature admission remain separate.
@@ -72,10 +72,10 @@ cache hit is fine). The script does not mint compiler receipts.
 
 `prepare-capture-release.py --build-only` compiles and signs the complete fresh
 cohort and Browser/CEF graph, but does not construct the receiving image or run
-the gate. It emits only `build-inputs.json`, not a qualification receipt or the
+the check. It emits only `build-inputs.json`, not a qualification receipt or the
 packaging environment. This allows compilation in a dependency container whose
 namespace UID0 maps to the rootless operator. Image admission and the canonical
-full gate must subsequently run as that actual non-root operator; native kernel
+full check must subsequently run as that actual non-root operator; native kernel
 work remains in the separately owned privileged namespaces below.
 
 Disposable keys may live in ignored `target/` storage with mode0600 and explicit

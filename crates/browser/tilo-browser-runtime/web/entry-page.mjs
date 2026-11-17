@@ -1788,8 +1788,8 @@ async function offerUpdate({page, status}) {
 
 /** Whether this page may offer the person's own desktop under `home`
  * (`ownDesktopOpen`), asked once per page. */
-let ownDesktopGate = null;
-const ownDesktopAllowed = home => (ownDesktopGate ??= ownDesktopOpen(home).catch(() => false));
+let ownDesktopCheck = null;
+const ownDesktopAllowed = home => (ownDesktopCheck ??= ownDesktopOpen(home).catch(() => false));
 
 /** The bundle version this page runs, for the reconnect screen's details. */
 const PAGE_BUILD = servedVersion(import.meta.url)?.version ?? 'development';

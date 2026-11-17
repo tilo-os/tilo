@@ -1,4 +1,4 @@
-//! The single gate for developer-only environment overrides in the
+//! The single check for developer-only environment overrides in the
 //! packaging stack: the store, the launcher, the app host and `app`.
 
 use std::ffi::OsString;
@@ -9,13 +9,13 @@ use tilo_lock::MutexRecover as _;
 pub const DEV_ENV_OVERRIDES: bool = cfg!(any(debug_assertions, feature = "dev-overrides"));
 
 /// Read the developer override `name`, honouring it only when this build's
-/// gate is open.
+/// check is open.
 pub fn dev_override(name: &'static str) -> Option<OsString> {
     dev_override_from(DEV_ENV_OVERRIDES, name, std::env::var_os(name))
 }
 
-/// [`dev_override`] as a function of the gate and the raw value, so the
-/// release behaviour is assertable from a debug test run. When the gate is
+/// [`dev_override`] as a function of the check and the raw value, so the
+/// release behaviour is assertable from a debug test run. When the check is
 /// closed and the variable is set, warns once per variable and returns
 /// `None`.
 pub fn dev_override_from(
@@ -68,7 +68,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn dev_overrides_pass_only_through_an_open_gate_and_warn_once() {
+    fn dev_overrides_pass_only_through_an_open_check_and_warn_once() {
         {
             assert_eq!(
                 DEV_ENV_OVERRIDES,

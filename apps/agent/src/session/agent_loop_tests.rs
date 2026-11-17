@@ -280,9 +280,9 @@ struct World {
     /// after the last of them started; until it has, each of them waits
     /// (at most the hang bound). A step that waited for an earlier one
     /// to settle never lets them.
-    settle_gate: usize,
-    /// The invocations the gate holds, in start order.
-    gated: Vec<tilo_actions::InvocationId>,
+    settle_hold: usize,
+    /// The invocations the hold holds, in start order.
+    held: Vec<tilo_actions::InvocationId>,
     /// A native child settles when the host takes in this re-ask of it
     /// (1-based), instead of after `settle_after`.
     settles_at_reask: Option<usize>,
@@ -1275,25 +1275,25 @@ impl Broker {
         }
     }
 
-    /// Once the last invocation the gate holds has started, settle
+    /// Once the last invocation the hold holds has started, settle
     /// every one of them at `at`.
-    fn open_the_gate(&self, at: ui::time::Instant) {
+    fn release_the_hold(&self, at: ui::time::Instant) {
         let mut world = self.world.borrow_mut();
-        if world.gated.len() < world.settle_gate {
+        if world.held.len() < world.settle_hold {
             return;
         }
-        let gated = world.gated.clone();
-        // The gate holds the first invocations started.
+        let held = world.held.clone();
+        // The hold holds the first invocations started.
         let World {
             started,
             settling,
-            settle_gate,
+            settle_hold,
             ..
         } = &mut *world;
-        for (_, _, settles) in started.iter_mut().take(*settle_gate) {
+        for (_, _, settles) in started.iter_mut().take(*settle_hold) {
             *settles = at;
         }
-        for invocation in &gated {
+        for invocation in &held {
             if let Some((due, _)) = settling.get_mut(invocation) {
                 *due = at;
             }
@@ -1346,12 +1346,12 @@ impl Broker {
         };
         let now = ui::time::now();
         let settle_after = self.world.borrow().settle_after.unwrap_or_default();
-        let gated = {
+        let held = {
             let world = self.world.borrow();
-            world.gated.len() < world.settle_gate
+            world.held.len() < world.settle_hold
         };
         let due = now
-            + if gated {
+            + if held {
                 tilo_test_env::hang_bound()
             } else {
                 settle_after
@@ -1361,9 +1361,9 @@ impl Broker {
             world.started.push((action.to_owned(), now, due));
             world.settling.insert(invocation, (due, terminal));
         }
-        if gated {
-            self.world.borrow_mut().gated.push(invocation);
-            self.open_the_gate(now + settle_after);
+        if held {
+            self.world.borrow_mut().held.push(invocation);
+            self.release_the_hold(now + settle_after);
         }
         self.events.push(step_receipt(
             invocation,

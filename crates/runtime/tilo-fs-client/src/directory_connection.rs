@@ -77,7 +77,7 @@ impl DirectoryConnection {
         self.0.retire()
     }
     /// Terminally close this exact authenticated channel before waiting for
-    /// callbacks. The source provider observes peer death at native effect gates.
+    /// callbacks. The source provider observes peer death at native effect checks.
     pub fn revoke(&self) {
         self.0.revoke();
     }

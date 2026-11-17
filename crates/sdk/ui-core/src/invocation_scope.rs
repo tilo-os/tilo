@@ -1386,7 +1386,7 @@ pub(crate) fn identified_resource(document: &AutoCommit) -> Option<ResourceStamp
 
 /// A scoped chooser or URI request rechecks this admitted caller on the host's worker immediately
 /// before the effect.
-impl crate::portal::EffectGate for ResourceEffectScope {
+impl crate::portal::EffectCheck for ResourceEffectScope {
     fn with_effect<R>(&self, effect: impl FnOnce() -> Result<R, String>) -> Result<R, String> {
         ResourceEffectScope::with_effect(self, effect)
     }

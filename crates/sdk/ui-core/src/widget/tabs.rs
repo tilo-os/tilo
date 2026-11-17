@@ -180,7 +180,7 @@ pub(crate) fn pill_appearance(
     )
 }
 
-/// Gated on `look.fill` being opaque, so the × never paints without a body under it; paint-only,
+/// Depends on `look.fill` being opaque, so the × never paints without a body under it; paint-only,
 /// since the hit rect stays live.
 pub(crate) fn close_affordance_visible(look: &PillAppearance, is_pinned: bool) -> bool {
     !is_pinned && look.fill.a() > 0
@@ -3213,7 +3213,7 @@ impl TabBar {
     pub fn tab_rects(&self) -> &[Rect] {
         &self.tab_rects
     }
-    /// Gated `cfg(any(test, debug_assertions))` rather than `cfg(test)`, so integration tests in
+    /// Guarded `cfg(any(test, debug_assertions))` rather than `cfg(test)`, so integration tests in
     /// other crates can resolve the chip from live geometry.
     #[cfg(any(test, debug_assertions))]
     pub fn max_rects(&self) -> &[Rect] {

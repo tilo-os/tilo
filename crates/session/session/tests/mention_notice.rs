@@ -219,7 +219,7 @@ fn a_mention_in_a_record_is_told_and_choosing_it_opens_the_record() {
         },
         ..Options::default()
     };
-    // Who sits here, as the session's own seat reads it: this device's identity names them, and a
+    // Who sits here, as the session's own identity reads it: this device's identity names them, and a
     // mention of anyone else is not theirs.
     let person = tilo_session::identity::own_person(&options);
     let mut session = headless(options);

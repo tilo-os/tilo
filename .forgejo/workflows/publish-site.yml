@@ -129,7 +129,7 @@ jobs:
           bash os/containers/tilo-lounge/test-image.sh "$dir/image.oci.tar"
 
       - name: Install a browser for the integration test
-        # The gate opens the built web entry in a real headless Chromium.
+        # The check opens the built web entry in a real headless Chromium.
         run: |
           set -euo pipefail
           if ! rpm -q chromium >/dev/null; then
@@ -138,15 +138,15 @@ jobs:
           command -v chromium-browser >/dev/null && echo "CHROME=$(command -v chromium-browser)" >> "$GITHUB_ENV"
 
       - name: Run the Lounge with people in it
-        # The gate before publishing: the image the deployment runs starts on
+        # The check before publishing: the image the deployment runs starts on
         # a fresh volume, lists itself in its directory, and hosts two
         # people's browsers in the shared shell — chat, windows and presence —
         # with the same programs and entry the deployment uses.
         run: bash os/containers/tilo-lounge/test-integration.sh "$OUT/lounge/image.oci.tar" "$OUT/web-desktop/bundle" "$OUT/lounge-gate"
 
-      - name: Keep the gate's diagnostics
-        # Whatever the gate found, whether or not it passed: each page's
-        # snapshot, its console, the site's and the Lounge's logs. A gate that
+      - name: Keep the check's diagnostics
+        # Whatever the check found, whether or not it passed: each page's
+        # snapshot, its console, the site's and the Lounge's logs. A check that
         # stopped on a page that never arrived says why here; its own failure
         # line says which step the page was in.
         if: always()

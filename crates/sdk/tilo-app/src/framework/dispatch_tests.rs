@@ -123,7 +123,7 @@ tilo_test_env::scenario! {
         let mut after = Vec::new();
         // Reproduce the removed eager Invoke construction, not an old binary.
         // Both cases still execute the real SDK dispatcher; timings are descriptive
-        // only (run with --nocapture), never a machine-dependent correctness gate.
+        // only (run with --nocapture), never a machine-dependent correctness check.
         for round in 0..4 {
             for eager in if round % 2 == 0 {
                 [true, false]

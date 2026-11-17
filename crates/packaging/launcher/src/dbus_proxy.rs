@@ -99,7 +99,7 @@ pub const ATSPI_READ_ONLY_ENV: &str = "TILO_ATSPI_READ_ONLY";
 const IMAGE_FLAVOUR: &str = "/usr/lib/tilo/image-flavour";
 
 /// Whether apps launched here serve their AT-SPI tree read-only: always, except on the dev image, whose
-/// release gates drive apps over AT-SPI (`tools/atspi_external_client.py`).
+/// release checks drive apps over AT-SPI (`tools/atspi_external_client.py`).
 #[must_use]
 pub fn atspi_read_only() -> bool {
     atspi_read_only_on(std::fs::read(IMAGE_FLAVOUR).ok().as_deref())

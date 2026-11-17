@@ -92,7 +92,7 @@ operate it. Companion to `docs/security/design-rationale.md`.
   four independent operators and requires at least two selectable sources.
   It imports no DHCP, pool, peer, or configuration-directory sources, so an
   unauthenticated network time response cannot advance this persistent floor.
-  Immediately before verification, the staged-image gate revalidates that
+  Immediately before verification, the staged-image check revalidates that
   owner-controlled configuration and requires `chronyc waitsync` to report
   less than 100 ms remaining correction. An unsynchronized future RTC therefore
   cannot become the durable trusted-time floor during early boot.
@@ -308,7 +308,7 @@ to a **signed** image. There is a transition window: any image published
 (correctly) refused. **Resolution:** ensure CI has published at least one signed
 `:latest` (the signing + attest steps are green) before relying on auto-update on
 an installed machine. New installs are fine — they install from the local booted
-image, and only *future* upgrades are gated.
+image, and only *future* upgrades are guarded.
 
 ## Key rotation / revocation
 

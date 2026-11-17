@@ -89,7 +89,7 @@ async fn lounge() -> Lounge {
 impl Lounge {
     /// The host's runtime for the workspace, with the member subscribed to it
     /// as its session would have been: what its change is published through.
-    async fn publishing(&self) -> (crate::workspace::SharedWorkspace, Gates) {
+    async fn publishing(&self) -> (crate::workspace::SharedWorkspace, Holds) {
         let runtime = self
             .relay
             .host()
@@ -108,22 +108,22 @@ impl Lounge {
                 disconnect: disconnect.clone(),
             });
         }
-        let mut gates = Gates::over(&runtime, self.workspace_id, outbound, disconnect);
-        gates.delivered = delivered;
-        gates.disconnected = disconnected;
-        (runtime, gates)
+        let mut holds = Holds::over(&runtime, self.workspace_id, outbound, disconnect);
+        holds.delivered = delivered;
+        holds.disconnected = disconnected;
+        (runtime, holds)
     }
 
     /// The runtime admits the member's device and holds its session, as it
     /// does when the workspace's governance reaches the relay.
-    async fn publishing_again(&self, runtime: &crate::workspace::SharedWorkspace, gates: &Gates) {
+    async fn publishing_again(&self, runtime: &crate::workspace::SharedWorkspace, holds: &Holds) {
         let mut held = runtime.lock().await;
         held.admit_device(self.member.device_public_key)
             .expect("the workspace admits the member's device");
         held.add_subscriber(Subscriber {
             device_public_key: self.member.device_public_key,
-            tx: gates.outbound.clone(),
-            disconnect: gates.disconnect.clone(),
+            tx: holds.outbound.clone(),
+            disconnect: holds.disconnect.clone(),
         });
     }
 
@@ -216,9 +216,9 @@ impl Lounge {
     }
 }
 
-/// The gates a member's session is opened with, every one a test does not
+/// The holds a member's session is opened with, every one a test does not
 /// vary left closed.
-struct Gates {
+struct Holds {
     registry: WorkspaceRegistry,
     metrics: Arc<crate::metrics::Metrics>,
     trust: Arc<std::sync::RwLock<crate::policy::TrustPolicy>>,
@@ -237,7 +237,7 @@ struct Gates {
     disconnected: mpsc::Receiver<()>,
 }
 
-impl Gates {
+impl Holds {
     fn over(
         runtime: &crate::workspace::SharedWorkspace,
         workspace_id: WorkspaceId,
@@ -322,10 +322,10 @@ fn peer_of(cert: &DeviceCert, user: [u8; 32]) -> AuthenticatedPeer {
 )]
 async fn a_refused_change_is_never_kept_and_the_same_sequence_still_applies() {
     let lounge = lounge().await;
-    let (runtime, gates) = lounge.publishing().await;
+    let (runtime, holds) = lounge.publishing().await;
     let user = lounge.governor.user_public_key;
     let peer = peer_of(&lounge.member, user);
-    let session = gates.ctx(&user, &lounge.governor);
+    let session = holds.ctx(&user, &lounge.governor);
 
     // The workspace's own governance has not taken the device in yet, so the
     // change it writes is one the workspace refuses.
@@ -371,7 +371,7 @@ async fn a_refused_change_is_never_kept_and_the_same_sequence_still_applies() {
     // The device's admission reaches the relay's own runtime, and the
     // standings its changes are decided against, as a settled decision
     // carries them there.
-    lounge.publishing_again(&runtime, &gates).await;
+    lounge.publishing_again(&runtime, &holds).await;
     project_standings(&lounge.workspaces, &lounge.workspace).await;
     let ((), sealed) = lounge.writer.seal(&lounge.workspace, |document| {
         document

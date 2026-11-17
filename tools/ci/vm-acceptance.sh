@@ -37,11 +37,11 @@
 #            --test`, the ones T_TEST_FILTER names)
 #   outputs  the slot's outputs
 #   gl       virgl: auto, on or off
-#   budgets  report (the default on t) or gate: whether a measurement over its
+#   budgets  report (the default on t) or check: whether a measurement over its
 #            budget (frame times, idle CPU, memory, boot and open times) fails
 #            its check or is reported as over-budget. t's shared workers run
 #            the VM without a GPU beside other jobs, so their timings say more
-#            about the worker than the commit: budgets gate again once the
+#            about the worker than the commit: budgets check again once the
 #            suite runs on dedicated or GPU runners.
 #
 # vm-acceptance runs the suite in shards (run.py SHARDS), and
@@ -68,7 +68,7 @@ if [[ $mode == e2e-ws-branch ]]; then
   published=${CARGO_TARGET_DIR:-/target}/e2e-ws-branch
   reports=$work/e2e-ws-branch
 fi
-gate=/target/publish/os-dev-disk/$arch/disk
+check=/target/publish/os-dev-disk/$arch/disk
 tilo_vm=/target/tilo-vm-bin/tilo-vm
 cohort=/target/vm-cohort
 verifier=/target/vm-cohort-verifier
@@ -96,14 +96,14 @@ mkdir -p "$work" "$reports" ${published:+"$published"}
 
 # A run without a git checkout names its commit.
 target=${TILO_ACCEPTANCE_COMMIT:-$(git rev-parse HEAD)}
-disk=$gate/disk.qcow2
-[[ -s $disk && -s $gate/image-digest ]] \
-  || { echo "no installed dev disk in $gate: the check needs os-dev-disk-$arch" >&2; exit 1; }
+disk=$check/disk.qcow2
+[[ -s $disk && -s $check/image-digest ]] \
+  || { echo "no installed dev disk in $check: the check needs os-dev-disk-$arch" >&2; exit 1; }
 [[ -x $tilo_vm ]] || { echo "no $tilo_vm: the check needs tilo-vm-binary-$arch" >&2; exit 1; }
 # t gives this run the disk its own tree's inputs built (the need), whatever commit first
 # built it: the disk names its image by digest, the commit is this run's.
 commit=$target
-oci_digest=$(cat "$gate/image-digest")
+oci_digest=$(cat "$check/image-digest")
 
 swap=${T_INPUT_SWAP:-none}
 case $swap in
@@ -170,7 +170,7 @@ case $gl in
 esac
 outputs=${T_INPUT_OUTPUTS:-1920x1080@1,1280x800@1.25}
 budgets=${T_INPUT_BUDGETS:-report}
-[[ $budgets == report || $budgets == gate ]] || { echo 'budgets must be report or gate' >&2; exit 1; }
+[[ $budgets == report || $budgets == check ]] || { echo 'budgets must be report or check' >&2; exit 1; }
 echo "testing ${target:0:12} on its own dev image $oci_digest; swap: ${swap:-nothing}; checks: ${only:-all}; gl=$gl; budgets: $budgets"
 
 export TILO_TEST_ASSET_CACHE=${TILO_TEST_ASSET_CACHE:-$work/test-assets}
@@ -239,7 +239,7 @@ part() {
     python3 scripts/vm-acceptance/run.py "${args[@]}" --out "$report" \
     --records "$report/records.jsonl" "$@" || status=$?
   [[ ! -f $report/report.md ]] || cat "$report/report.md"
-  # A failed check keeps no outputs, so its text evidence (tracebacks, boot gate,
+  # A failed check keeps no outputs, so its text evidence (tracebacks, boot check,
   # memory maps, shell runtime excerpts) is printed here, bounded by report.py.
   if [[ -s $report/failure-evidence.txt ]]; then
     echo "## Evidence of the failed checks"

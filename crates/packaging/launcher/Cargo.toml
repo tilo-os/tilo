@@ -6,7 +6,7 @@ version = "0.1.0"
 edition = "2024"
 publish.workspace = true
 license.workspace = true
-description = "Builds the sandbox every Tilo app runs in (bwrap, seccomp, Landlock, netgate)."
+description = "Builds the sandbox every Tilo app runs in (bwrap, seccomp, Landlock, egress proxy)."
 
 # Tilo application launcher. Reads a package manifest, constructs a
 # bubblewrap-based sandbox per its declarations (bubblewrap + Landlock
@@ -114,7 +114,7 @@ runtime-identity = { path = "../../runtime/runtime-identity" }
 # Landlock ruleset construction and the baseline seccomp filter. A leaf
 # crate, so the launcher still depends on nothing in the compositor.
 tilo-sandbox-core = { path = "../../system/sandbox-core" }
-# The egress gate and the in-sandbox relay serve their connections as tasks on
+# The egress proxy and the in-sandbox relay serve their connections as tasks on
 # a bounded runtime rather than an OS thread (or two) per connection.
 tilo-rt.workspace = true
 # Asks the session for the AT-SPI bus address (`org.a11y.Bus.GetAddress`),

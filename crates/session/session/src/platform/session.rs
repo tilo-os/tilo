@@ -640,7 +640,7 @@ impl Session {
         // This device's channels of its workspaces' sealed records: its keys,
         // and the devices each one admits, which its window streams carry
         // between. The broker the apps reach is the one the channel service
-        // gates, so a sealed record opens before any of it reaches an app.
+        // checks, so a sealed record opens before any of it reaches an app.
         let channels_broker = std::sync::Arc::new(std::sync::Mutex::new(
             tilo_broker_core::collab_core::BrokerChannels::default(),
         ));
@@ -1056,8 +1056,8 @@ impl Session {
             pair_device,
             delete_workspace,
             display_confirm,
-            displays: display_seat,
-            shortcut_guide: guide_seat,
+            displays: displays_sheet,
+            shortcut_guide: guide_sheet,
             add_app,
             uninstall,
             lock_view,
@@ -1114,7 +1114,7 @@ impl Session {
             Rc::clone(&controller),
         ));
         let shortcut_guide =
-            crate::shortcut_guide::ShortcutGuide::new(guide_seat, Rc::clone(&guide_state));
+            crate::shortcut_guide::ShortcutGuide::new(guide_sheet, Rc::clone(&guide_state));
         let guide_keys = Rc::clone(&guide_state);
         let (commands, controls_reading, invocations, triggered, readout) = mount_controls(
             &mut compositor,
@@ -1126,7 +1126,7 @@ impl Session {
                 controller: Rc::clone(&controller),
                 controller_keys: Rc::clone(&controller_keys),
                 sheets: crate::keys::SheetKeys {
-                    displays: display_seat
+                    displays: displays_sheet
                         .as_ref()
                         .map(|state| tilo_sheets::SheetState::presentation(state).clone()),
                     modal: modal_sheets,
@@ -1871,7 +1871,7 @@ impl Session {
             published_displays,
             confirmation: crate::display_confirm::Confirmation::default(),
             display_sheet: crate::display_sheet::DisplaySheet::new(
-                display_seat,
+                displays_sheet,
                 options.projector.clone(),
                 &options.wake.handle(),
             ),

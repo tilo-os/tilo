@@ -71,21 +71,21 @@ use crate::common::catalogue;
 use crate::support::{Device, TestHost, WORKSPACE, enrol, ready, start_peer, wait_for, workspace};
 use tilo_relay_protocol::WorkspaceId;
 
-/// Plans the task `gated` as a slow model would: only once its steps arrive
+/// Plans the task `held` as a slow model would: only once its steps arrive
 /// on `release`, noting when the plan was ready. Anything else is planned as
 /// written.
-struct GatedPlanner {
+struct HeldPlanner {
     release: std::sync::mpsc::Receiver<serde_json::Value>,
     ready: Arc<std::sync::Mutex<Option<Instant>>>,
 }
 
-impl tilo_agent_session::Planner for GatedPlanner {
+impl tilo_agent_session::Planner for HeldPlanner {
     fn plan(
         &mut self,
         task: &str,
         context: &tilo_agent_session::PlanContext,
     ) -> Result<Vec<tilo_agent_session::Step>, String> {
-        if task != "gated" {
+        if task != "held" {
             return DirectPlanner.plan(task, context);
         }
         let steps = self.release.recv().map_err(|error| error.to_string())?;
@@ -462,7 +462,7 @@ async fn an_agent_edits_beside_a_browser_and_both_see_each_other() {
         identity,
         control.clone(),
         catalogue.clone(),
-        Box::new(GatedPlanner {
+        Box::new(HeldPlanner {
             release,
             ready: Arc::clone(&plan_ready),
         }),
@@ -666,7 +666,7 @@ async fn an_agent_edits_beside_a_browser_and_both_see_each_other() {
         release_later.send(planned_steps).unwrap();
         held_past_the_bound
     });
-    let gated = control.message("gated").unwrap();
+    let held = control.message("held").unwrap();
     agent.pump();
     agent.pump();
     let _ = pumped_twice.send(());
@@ -676,14 +676,14 @@ async fn an_agent_edits_beside_a_browser_and_both_see_each_other() {
             .info()
             .tasks
             .into_iter()
-            .find(|task| task.id == gated);
+            .find(|task| task.id == held);
         if first_step.is_none() && task.as_ref().is_some_and(|task| !task.steps.is_empty()) {
             first_step = Some(Instant::now());
         }
         task.is_some_and(|task| !matches!(task.state, TaskState::Queued | TaskState::Running))
     });
     let waited_for_the_planner = releaser.join().unwrap();
-    let task = ended(&gated).expect("the planned task ended");
+    let task = ended(&held).expect("the planned task ended");
     assert_eq!(task.state, TaskState::Completed, "{task:?}");
     let ready = plan_ready.lock().unwrap().expect("the plan was made");
     let to_first_step = first_step
@@ -713,7 +713,7 @@ async fn an_agent_edits_beside_a_browser_and_both_see_each_other() {
     // pause holds the late plan until resume, and a cancelled or stopped
     // task's late plan is dropped. Each step goes through the agent's
     // action API while the loop pumps.
-    let gated_edit = |text: &str| {
+    let held_edit = |text: &str| {
         let (note, arguments) = crate::common::scratchpad_body(text);
         serde_json::json!([{
             "app": SCRATCHPAD,
@@ -749,7 +749,7 @@ async fn an_agent_edits_beside_a_browser_and_both_see_each_other() {
             host_key,
             Some(&mut agent),
             ActionAddress::new(&agent_id, MESSAGE_ACTION),
-            InvokeArgument::Text("gated".into()),
+            InvokeArgument::Text("held".into()),
         )
         .await;
         let task = completed(&given)["taskId"].as_str().unwrap().to_owned();
@@ -775,7 +775,7 @@ async fn an_agent_edits_beside_a_browser_and_both_see_each_other() {
             .await,
         );
         let sent_at = Instant::now();
-        release_plan.send(gated_edit(text)).unwrap();
+        release_plan.send(held_edit(text)).unwrap();
         let made = || {
             plan_ready
                 .lock()

@@ -752,7 +752,7 @@ impl Pan {
                         self.scroll_x = target;
                         self.last_wheel_at = None;
                     } else {
-                        // The snap starts when the idle gate was met, not at `now`, so the tick
+                        // The snap starts when the idle check was met, not at `now`, so the tick
                         // that sees the idle shows how far it has come; it falls back to
                         // `last_wheel` on the astronomically unlikely overflow.
                         let started = last_wheel
@@ -1120,7 +1120,7 @@ impl GroupRow {
     }
 
     /// Freeze the sibling fade at `elapsed` along `durations.fast`: offscreen paints cost more wall
-    /// time than the curve, so a capture harness would only ever see the endpoints. Not gated on
+    /// time than the curve, so a capture harness would only ever see the endpoints. Not depending on
     /// `debug_assertions`, since `shots` ships in release.
     pub fn hold_sibling_fade_at(&mut self, elapsed: Duration) -> bool {
         if self.groups.len() < 2 {
@@ -2071,7 +2071,7 @@ impl GroupRow {
         self.handles.get(idx)
     }
 
-    /// `debug_assertions` gated so it's available to `crates/sdk/ui-core/tests` but not
+    /// `debug_assertions` guarded so it's available to `crates/sdk/ui-core/tests` but not
     /// shipped in release.
     #[cfg(any(test, debug_assertions))]
     pub fn group_at_for_test(&self, idx: usize) -> Option<&WindowGroup> {
@@ -6778,7 +6778,7 @@ mod tests {
 
             /// The prune sweep removes faded groups from `self.groups` while
             /// `node_ids` stays stale until the next `build_layout`; the
-            /// production `debug_assert` pins that. Gated since the asserts
+            /// production `debug_assert` pins that. Guarded since the asserts
             /// exercised are themselves debug-only.
             #[cfg(debug_assertions)]
             fn group_prune_keeps_node_ids_aligned_in_debug() {
@@ -6811,7 +6811,7 @@ mod tests {
                     "two fully-faded groups must be pruned in a single sweep",
                 );
 
-                // Only refused outcome: drift with no rebuild gate set, which
+                // Only refused outcome: drift with no rebuild check set, which
                 // would crash apply_layout.
                 let aligned_now = row.node_ids.len() == row.groups.len();
                 let dirty_for_rebuild = row.take_structure_dirty();
@@ -8670,7 +8670,7 @@ mod tests {
         }
 
         /// `group_canvas_spans` is what the shell reads to place a new
-        /// launch, so overlapping spans would seat a window on top of one
+        /// launch, so overlapping spans would place a window on top of one
         /// already there. Every pair is compared, not just neighbours: two
         /// groups sharing an origin only shows up under a full pairwise sweep.
         fn no_two_groups_on_a_strip_share_horizontal_space() {

@@ -1014,7 +1014,7 @@ impl AgentModelsArea {
             })
             .collect();
         // In-process models run inside the apps that use them on any CPU, so
-        // neither the hardware fit nor accelerator setup gates them.
+        // neither the hardware fit nor accelerator setup blocks them.
         for local in &model.snapshot.in_process {
             let mut row = LiveRow::new(
                 format!("settings.agent-model:{}", local.package.id),

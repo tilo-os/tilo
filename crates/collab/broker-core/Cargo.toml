@@ -28,7 +28,7 @@ runtime-collab = { version = "0.1.0", path = "../../runtime/runtime-collab", def
 tracing.workspace = true
 # The wall clock a policy question is decided at, as every host reads it.
 tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
-# The channels a workspace's records are sealed in: the gate a governance state keeps.
+# The channels a workspace's records are sealed in: the check a governance state keeps.
 tilo-workspace-keys = { version = "0.1.0", path = "../workspace-keys" }
 key-group = { version = "0.1.0", path = "../key-group" }
 uuid.workspace = true

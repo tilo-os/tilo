@@ -30,11 +30,11 @@ pub struct ShimArgs {
     pub rw_noexec: Vec<PathBuf>,
     /// Deny all TCP bind/connect (ABI ≥ 4).
     pub net_restricted: bool,
-    /// Egress gate socket, sandbox-side — when set, the shim starts the loopback relay before
+    /// egress proxy socket, sandbox-side — when set, the shim starts the loopback relay before
     /// restricting itself.
-    pub net_gate: Option<PathBuf>,
+    pub egress_proxy: Option<PathBuf>,
     /// Loopback port the relay listens on, and the only TCP port the app is permitted to connect to.
-    pub net_gate_port: Option<u16>,
+    pub egress_proxy_port: Option<u16>,
     /// Skip Landlock entirely.
     pub no_landlock: bool,
     /// Accept Landlock not, or only partially, enforced: a system-store app on a provider-sandboxed
@@ -121,8 +121,8 @@ impl ShimArgs {
                 "--net-restricted" => parsed.net_restricted = true,
                 "--no-landlock" => parsed.no_landlock = true,
                 "--landlock-best-effort" => parsed.landlock_best_effort = true,
-                "--ro" | "--ro-noexec" | "--rw" | "--rw-noexec" | "--net-gate"
-                | "--net-gate-port" | "--keep-fd" => {
+                "--ro" | "--ro-noexec" | "--rw" | "--rw-noexec" | "--net-proxy"
+                | "--net-proxy-port" | "--keep-fd" => {
                     let value = args
                         .get(i.saturating_add(1))
                         .ok_or_else(|| ShimParseError::DanglingValue(arg.clone()))?;
@@ -131,7 +131,7 @@ impl ShimArgs {
                         "--ro-noexec" => parsed.ro_noexec.push(PathBuf::from(value)),
                         "--rw" => parsed.rw.push(PathBuf::from(value)),
                         "--rw-noexec" => parsed.rw_noexec.push(PathBuf::from(value)),
-                        "--net-gate" => parsed.net_gate = Some(PathBuf::from(value)),
+                        "--net-proxy" => parsed.egress_proxy = Some(PathBuf::from(value)),
                         "--keep-fd" => {
                             let fd: i32 = value
                                 .parse()
@@ -144,7 +144,7 @@ impl ShimArgs {
                         // A port we can't parse must not silently become "no port", which would leave
                         // the app pinned by Landlock to nothing, unable to reach the relay at all.
                         _ => {
-                            parsed.net_gate_port = Some(
+                            parsed.egress_proxy_port = Some(
                                 value
                                     .parse()
                                     .map_err(|_| ShimParseError::DanglingValue(arg.clone()))?,
@@ -172,8 +172,10 @@ impl ShimArgs {
 /// without restricting the test process.
 pub fn ruleset_spec(args: &ShimArgs) -> RulesetSpec {
     use landlock::{Access, AccessFs};
-    let gate_port = args.net_gate_port.filter(|_| args.net_gate.is_some());
-    let net = match gate_port {
+    let proxy_port = args
+        .egress_proxy_port
+        .filter(|_| args.egress_proxy.is_some());
+    let net = match proxy_port {
         Some(port) => NetRestriction::ConnectOnly(port),
         None if args.net_restricted => NetRestriction::DenyAll,
         None => NetRestriction::Unrestricted,
@@ -298,7 +300,7 @@ fn close_fd_range(first: u32, last: u32) -> std::io::Result<()> {
     }
 }
 
-/// Start the in-sandbox half of the egress gate, in a child process.
+/// Start the in-sandbox half of the egress proxy, in a child process.
 #[allow(
     clippy::exit,
     reason = "the forked child (pid == 0 branch) must terminate itself \
@@ -306,7 +308,7 @@ fn close_fd_range(first: u32, last: u32) -> std::io::Result<()> {
               paths meant for the parent, nor return into the parent's \
               control flow"
 )]
-fn spawn_relay(gate: &std::path::Path, port: u16) {
+fn spawn_relay(proxy: &std::path::Path, port: u16) {
     // SAFETY: `fork` in a single-threaded process.
     let pid = unsafe { libc::fork() };
     match pid {
@@ -316,7 +318,7 @@ fn spawn_relay(gate: &std::path::Path, port: u16) {
         }
         0 => {
             // Child: serve until the sandbox goes away.
-            if let Err(e) = crate::netgate::run_relay(gate, port) {
+            if let Err(e) = crate::egress_proxy::run_relay(proxy, port) {
                 eprintln!("tilo-sandbox-exec: egress relay stopped: {e}");
             }
             std::process::exit(0);
@@ -324,7 +326,7 @@ fn spawn_relay(gate: &std::path::Path, port: u16) {
         _ => {
             eprintln!(
                 "tilo-sandbox-exec: egress relay on 127.0.0.1:{port} → {}",
-                gate.display()
+                proxy.display()
             );
         }
     }
@@ -337,7 +339,7 @@ fn prepare_target_projection(
         return Ok(None);
     }
     if !parsed.net_restricted
-        || parsed.net_gate.is_some()
+        || parsed.egress_proxy.is_some()
         || parsed.no_landlock
         || parsed.landlock_best_effort
         || !parsed.keep_fds.is_empty()
@@ -385,7 +387,7 @@ fn prepare_original_source(parsed: &mut ShimArgs) -> std::io::Result<()> {
         return Ok(());
     }
     if !parsed.net_restricted
-        || parsed.net_gate.is_some()
+        || parsed.egress_proxy.is_some()
         || parsed.no_landlock
         || parsed.landlock_best_effort
     {
@@ -434,7 +436,7 @@ pub fn run_sandbox_exec(args: &[String]) -> ! {
     };
     let retained_credentials = if parsed.retained_io_fd.is_some() {
         if !parsed.net_restricted
-            || parsed.net_gate.is_some()
+            || parsed.egress_proxy.is_some()
             || parsed.no_landlock
             || parsed.landlock_best_effort
             || !parsed.keep_fds.is_empty()
@@ -455,18 +457,18 @@ pub fn run_sandbox_exec(args: &[String]) -> ! {
 
     // Before Landlock: the relay needs accesses the app is about to be denied, and it must exist
     // before the app's first connect.
-    if let (Some(gate), Some(port)) = (parsed.net_gate.as_deref(), parsed.net_gate_port) {
-        spawn_relay(gate, port);
+    if let (Some(proxy), Some(port)) = (parsed.egress_proxy.as_deref(), parsed.egress_proxy_port) {
+        spawn_relay(proxy, port);
     }
 
     let outcome = confine_application(&parsed, target_credentials.as_mut());
     eprintln!(
-        "tilo-sandbox-exec: {} ({} ro, {} rw, net_restricted={}, gate_port={:?})",
+        "tilo-sandbox-exec: {} ({} ro, {} rw, net_restricted={}, proxy_port={:?})",
         outcome.describe(),
         parsed.ro.len(),
         parsed.rw.len(),
         parsed.net_restricted,
-        parsed.net_gate_port,
+        parsed.egress_proxy_port,
     );
 
     if !parsed.no_landlock && !landlock_accepted(outcome, parsed.landlock_best_effort) {
@@ -830,25 +832,25 @@ mod tests {
                 assert!(restricted.connect_ports.is_empty());
                 assert_eq!(restricted.rules, rules);
 
-                let gated = ruleset_spec(&ShimArgs {
-                    net_gate: Some(PathBuf::from("/run/gate.sock")),
-                    net_gate_port: Some(8118),
+                let proxied = ruleset_spec(&ShimArgs {
+                    egress_proxy: Some(PathBuf::from("/run/proxy.sock")),
+                    egress_proxy_port: Some(8118),
                     ..base.clone()
                 });
-                assert_eq!(gated.handled_net.bits(), 0b11);
-                assert_eq!(gated.connect_ports, vec![8118]);
+                assert_eq!(proxied.handled_net.bits(), 0b11);
+                assert_eq!(proxied.connect_ports, vec![8118]);
 
-                // Restricted and gated together: still only the gate port.
+                // Restricted and proxied together: still only the proxy port.
                 let both = ruleset_spec(&ShimArgs {
                     net_restricted: true,
-                    net_gate: Some(PathBuf::from("/run/gate.sock")),
-                    net_gate_port: Some(8118),
+                    egress_proxy: Some(PathBuf::from("/run/proxy.sock")),
+                    egress_proxy_port: Some(8118),
                     ..base.clone()
                 });
-                assert_eq!(both, gated);
+                assert_eq!(both, proxied);
 
                 let portless = ruleset_spec(&ShimArgs {
-                    net_gate_port: Some(8118),
+                    egress_proxy_port: Some(8118),
                     ..base
                 });
                 assert!(portless.handled_net.is_empty());

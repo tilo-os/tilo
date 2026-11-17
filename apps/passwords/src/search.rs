@@ -114,7 +114,7 @@ mod tests {
                 entries(&crate::demo::full_items())
                     .iter()
                     .all(|entry| entry.secret),
-                "every vault entry is secret-bearing, so the system index gates it on the lock"
+                "every vault entry is secret-bearing, so the system index checks it on the lock"
             );
             let hit = provider
                 .search("Northstar")

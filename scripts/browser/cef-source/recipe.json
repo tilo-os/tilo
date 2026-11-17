@@ -254,7 +254,7 @@
     "input_qualification": "refuse wrong source/patch/profile, missing closure/header/license/architecture or existing output",
     "output_qualification": "UNQUALIFIED_DO_NOT_PUBLISH_OR_CONSUME"
   },
-  "delivery_gate": {
+  "delivery_check": {
     "namespace_verification": "BLOCKED: supported public registry metadata GETs returned403 Cloudflare1010, retryablefalse, owner_action_requiredtrue; no retry/bypass",
     "registry_source_change": "PR3609, e0f4747102ececd497b022ed536a0a7fef84d292",
     "required_read_only_proof": "Actual existing outer app publisher key and live list-publishers namespaces/can_add_new; inner runtime key or source merge is not proof of migration",

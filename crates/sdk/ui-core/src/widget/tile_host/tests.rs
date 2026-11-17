@@ -1100,7 +1100,7 @@ fn a_tile_holds_its_place_opaquely_until_the_app_can_be_shown() {
             !drawn.get(),
             "the app painted into a tile that is still holding its place; \
          its buffer is not the size of the tab yet, and putting it on \
-         screen is the resize-after-open this gate exists to prevent",
+         screen is the resize-after-open this check exists to prevent",
         );
     }
 

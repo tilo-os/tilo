@@ -6331,7 +6331,7 @@ fn describe_owner(owner: &Owner) -> Option<String> {
 pub fn scenario_driver(entry: &Component) -> String {
     match entry.name.as_str() {
         "installer" => {
-            "tilo-vm scenario install   (a throwaway VM installs from your medium through the installer's actions and cold-boots the result; the release gate is os/dev/test-installer-cycle.sh)".into()
+            "tilo-vm scenario install   (a throwaway VM installs from your medium through the installer's actions and cold-boots the result; the release check is os/dev/test-installer-cycle.sh)".into()
         }
         _ => entry
             .scenario

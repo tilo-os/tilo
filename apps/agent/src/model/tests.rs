@@ -279,41 +279,41 @@ tilo_test_env::scenario! {
 /// finished turn's late release then leaves the channel to it.
 #[test]
 fn a_late_release_never_frees_the_channel_a_later_turn_holds() {
-    let gate = MarkGate::default();
+    let queue = MarkQueue::default();
     let trace = tilo_model_client::PlanTrace { id: 1, turn: 0 };
-    let held = |gate: &MarkGate| {
-        let state = gate.state.lock().unwrap();
+    let held = |queue: &MarkQueue| {
+        let state = queue.state.lock().unwrap();
         (state.busy, state.pending.len())
     };
-    let first = gate.acquire();
-    gate.mark(trace, tilo_model_client::TraceEvent::ActionSubmitted);
+    let first = queue.acquire();
+    queue.mark(trace, tilo_model_client::TraceEvent::ActionSubmitted);
     assert_eq!(
-        held(&gate),
+        held(&queue),
         (true, 1),
         "held while the turn owns the channel"
     );
     // The loop already heard `Finished` and starts the next turn before
     // the first one's thread released.
-    gate.plan_over(first);
-    let second = gate.acquire();
-    assert_eq!(held(&gate), (true, 0), "sent before the next Plan starts");
-    gate.release(first);
+    queue.plan_over(first);
+    let second = queue.acquire();
+    assert_eq!(held(&queue), (true, 0), "sent before the next Plan starts");
+    queue.release(first);
     assert_eq!(
-        held(&gate),
+        held(&queue),
         (true, 0),
         "the next turn still owns the channel"
     );
-    gate.mark(trace, tilo_model_client::TraceEvent::ActionSettled);
-    assert_eq!(held(&gate), (true, 1));
+    queue.mark(trace, tilo_model_client::TraceEvent::ActionSettled);
+    assert_eq!(held(&queue), (true, 1));
     // A turn whose Plan is not over (abandoned, still streaming) keeps
     // its marks from the channel when another turn starts.
-    let third = gate.acquire();
-    assert_eq!(held(&gate), (true, 1));
-    gate.release(second);
-    assert_eq!(held(&gate), (true, 1));
-    gate.plan_over(third);
-    gate.release(third);
-    assert_eq!(held(&gate), (false, 0), "released: sent, channel free");
+    let third = queue.acquire();
+    assert_eq!(held(&queue), (true, 1));
+    queue.release(second);
+    assert_eq!(held(&queue), (true, 1));
+    queue.plan_over(third);
+    queue.release(third);
+    assert_eq!(held(&queue), (false, 0), "released: sent, channel free");
 }
 
 /// A task stopped while its planning turn streams lets go of the turn.

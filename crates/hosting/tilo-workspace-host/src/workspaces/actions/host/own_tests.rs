@@ -1451,7 +1451,7 @@ async fn only_its_owner_deletes_a_workspace_and_everything_it_kept_goes_with_it(
 /// setup the two checks below share. Returns the host's actions, its
 /// workspaces, the listed workspace, a stranger who left an address there,
 /// and the state directory they live in.
-async fn gated_host() -> (
+async fn held_host() -> (
     HostWorkspaceActions,
     Workspaces,
     String,
@@ -1556,13 +1556,13 @@ async fn the_owners_own_device_is_let_in_past_an_invitation_only_entry() {
         .expect("the owner is let in through their own workspace's closed entry");
 }
 
-/// The wait list gates the entry: the invitation-only entry lets nobody in on
+/// The wait list holds the entry: the invitation-only entry lets nobody in on
 /// the strength of an address, and says it keeps one.
 #[tokio::test]
-async fn the_wait_list_gates_the_entry_and_lets_nobody_in_on_an_address() {
+async fn the_wait_list_holds_the_entry_and_lets_nobody_in_on_an_address() {
     use tilo_relay_protocol::directory::EntryJoin;
 
-    let (_, workspaces, lounge, stranger, _state) = gated_host().await;
+    let (_, workspaces, lounge, stranger, _state) = held_host().await;
     let refused = workspaces
         .admit_listed(
             &lounge,
@@ -1615,7 +1615,7 @@ fn waits(result: &Result<impl std::fmt::Debug, ActionHostError>) {
 /// host keeps nothing for them: no workspace, no workspace list.
 #[tokio::test]
 async fn a_fresh_root_and_its_keys_are_refused_with_the_wait_list() {
-    let (host, workspaces, _, stranger, _state) = gated_host().await;
+    let (host, workspaces, _, stranger, _state) = held_host().await;
     waits(&create_own(&host, &stranger, json!({})).await);
     waits(&create_own(&host, &stranger, json!({"name": "Mine"})).await);
     let root = SigningKey::from_bytes(&rand::random());
@@ -1662,7 +1662,7 @@ async fn a_fresh_root_and_its_keys_are_refused_with_the_wait_list() {
 /// address keeps nothing.
 #[tokio::test]
 async fn a_person_let_in_makes_as_many_workspaces_as_they_like() {
-    let (host, workspaces, lounge, stranger, _state) = gated_host().await;
+    let (host, workspaces, lounge, stranger, _state) = held_host().await;
     let root = SigningKey::from_bytes(&rand::random());
     let person = root.verifying_key().to_bytes();
     let page = certified(
@@ -1736,7 +1736,7 @@ async fn a_person_let_in_makes_as_many_workspaces_as_they_like() {
 /// their own as well.
 #[tokio::test]
 async fn an_invited_member_enters_what_they_were_invited_into() {
-    let (host, workspaces, lounge, stranger, _state) = gated_host().await;
+    let (host, workspaces, lounge, stranger, _state) = held_host().await;
     let (_, ada) = guest_device();
     let invitation = let_in(&workspaces, &lounge, ada.user_public_key).await;
     join_with(&workspaces, invitation, &ada).await;

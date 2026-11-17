@@ -22,7 +22,7 @@ use tilolang_tilo::chunk::Chunks;
 // evaluation and the layout cost within it: a keystroke must not wait for the workspace's size,
 // and neither must a place switch, a check-off, a page or a scroll. The targets do not move
 // with the machine: a step over one is reported with its gap, and a step past what it is held to
-// (what it costs now, with room for a loaded machine) fails. The gate on the work a change does
+// (what it costs now, with room for a loaded machine) fails. The check on the work a change does
 // is also the instruction count the `budgets` test holds.
 
 /// The workspace the interactions are measured in: what a person who has used Tasks for years
@@ -431,7 +431,7 @@ fn cost(session: &mut Session, label: &'static str, input: impl FnOnce(&mut Sess
 /// are the targets, not what this workspace costs: a step over one is reported with its gap (see
 /// [`Costs::report`]), and one past what it is held to ([`Held`]) fails.
 ///
-/// The same targets, counted rather than timed, are how a change is gated: a modern core of
+/// The same targets, counted rather than timed, are how a change is guarded: a modern core of
 /// 3.5 GHz at an IPC of 2.5 retires 8.75 million instructions a millisecond, so 8 ms is 70
 /// million instructions, 16 ms 140 million and 300 ms 2.6 billion, and a callgrind run counts
 /// the same work the same on every machine. This test reports the times and fails a step past

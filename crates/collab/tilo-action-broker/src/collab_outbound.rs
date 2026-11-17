@@ -238,7 +238,7 @@ impl PeerPublisher {
     }
 
     /// [`Self::ready`] for a payload that repeats (pointer rate) — same
-    /// gate, logged at `debug!` so it doesn't bury the warning that matters.
+    /// check, logged at `debug!` so it doesn't bury the warning that matters.
     fn ready_quietly(&self, route: &CrdtRoute, what: &str) -> Option<&Arc<dyn PeerPublishSink>> {
         self.ready_at(route, what, false)
     }

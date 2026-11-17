@@ -429,7 +429,7 @@ mod tests {
     }
 
     /// The session's side of the app sheets: the registry of the person's downloaded programs, the
-    /// two sheets' seats, and the session's notices.
+    /// two sheets' mounts, and the session's notices.
     struct Session {
         sheets: AppSheets,
         services: Rc<RefCell<Services>>,

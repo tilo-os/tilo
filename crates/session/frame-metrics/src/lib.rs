@@ -1207,7 +1207,7 @@ mod tests {
 
         phase summarize_paint_period_measures_gaps_between_painted_frames_only;
         {
-            // Ticks at 0/8/16/24 ms, painting only on the even ones. The paint period is 16 ms even though the tick period is 8 ms — the distinction redraw gating relies on.
+            // Ticks at 0/8/16/24 ms, painting only on the even ones. The paint period is 16 ms even though the tick period is 8 ms — the distinction redraw guarding relies on.
             let s = vec![
                 sample(0, 0, 0, true),
                 sample(1, 8_000, 8_000, false),

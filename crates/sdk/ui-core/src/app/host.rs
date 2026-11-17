@@ -83,7 +83,7 @@ fn draw_frame_content_owning(
     mut culled: Option<&mut crate::draw_cull::Scenes>,
 ) -> DrawnFrame {
     // What the tree holds was drawn from the permissions of that frame. A
-    // change since moves what gated widgets paint with nothing in the tree
+    // change since moves what guarded widgets paint with nothing in the tree
     // marking it: the retained drawings go, and this frame draws them again.
     if app.permissions_moved() {
         app.root_widget.release_scene_cache();
@@ -1031,7 +1031,7 @@ mod rebuild_focus_tests;
 
 /// Mutating events should route through this so denied interactions
 /// short-circuit before the widget ever observes them.
-pub fn dispatch_gated_event<W: crate::widget::Widget + ?Sized>(
+pub fn dispatch_guarded_event<W: crate::widget::Widget + ?Sized>(
     ctx: &crate::permissions::PermissionContext,
     widget: &W,
     dispatch: impl FnOnce(),

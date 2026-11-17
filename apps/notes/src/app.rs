@@ -3934,7 +3934,7 @@ impl NotesApp {
         // page list behind it; symmetrically, while the sidebar's
         // right-click menu is open, keyboard nav belongs to the menu, not
         // the editor. Mouse events still reach both panes (a click only
-        // ever hits one pane's rect), so we only gate keyboard routing.
+        // ever hits one pane's rect), so we only check keyboard routing.
         let is_keyboard = matches!(event, WindowEvent::KeyboardInput { .. });
         let editor_menu_open = self.main.editor().slash_menu_visible()
             || self.main.editor().link_popover().is_visible();

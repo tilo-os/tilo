@@ -416,7 +416,7 @@ impl Default for DesktopBackdrop {
 
 impl Widget for DesktopBackdrop {
     ui::provides!(
-        dyn ui::permissions::capability::PermissionGated,
+        dyn ui::permissions::capability::PermissionGuarded,
         dyn ui::presence::capability::PublishesPresence
     );
 
@@ -578,7 +578,7 @@ impl Widget for DesktopBackdrop {
 
 impl ui::presence::capability::PublishesPresence for DesktopBackdrop {}
 
-impl ui::permissions::capability::PermissionGated for DesktopBackdrop {}
+impl ui::permissions::capability::PermissionGuarded for DesktopBackdrop {}
 
 #[cfg(test)]
 mod tests {

@@ -497,7 +497,7 @@ impl Action {
 ///   Source → Drive → Customize → Confirm → Write → Done
 ///
 /// * **Confirm** is the last screen before anything destructive happens: a
-///   read-only review of every choice plus the typed device-name gate.
+///   read-only review of every choice plus the typed device-name check.
 /// * **Write** shows live progress; the read-back verify is a phase *within*
 ///   it (so "writing" and "verifying" share one station).
 /// * **Done** is the terminal outcome (verified / failed) with a fresh-start

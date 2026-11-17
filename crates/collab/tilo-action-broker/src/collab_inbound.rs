@@ -128,7 +128,7 @@ fn deliver_at(
                     record = %document.document_id,
                     epoch = encryption.map(|metadata| metadata.epoch),
                     replayed,
-                    "collab_broker (net): a document op its workspace's gate does not take"
+                    "collab_broker (net): a document op its workspace's check does not take"
                 );
                 Err(ValidationError::DocumentRouteMismatch)
             }
@@ -321,10 +321,10 @@ mod tests {
         Standing::person(policy, "editor")
     }
 
-    /// The gate of a workspace that requires encryption: its group's, which
+    /// The check of a workspace that requires encryption: its group's, which
     /// every record of the workspace seals under.
-    fn gate() -> key_group::SealGate {
-        key_group::SealGate {
+    fn check() -> key_group::SealCheck {
+        key_group::SealCheck {
             encryption_required: true,
         }
     }
@@ -483,10 +483,10 @@ mod tests {
     /// the writes it was shown in the order it was shown them.
     fn member_takes(writes: &[SignedOp]) -> MemberTook {
         let channels = Arc::new(Mutex::new(BrokerChannels::default()));
-        channels
-            .lock()
-            .unwrap()
-            .register_gate(collab_types::WorkspaceId::parse(WORKSPACE).unwrap(), gate());
+        channels.lock().unwrap().register_seal_check(
+            collab_types::WorkspaceId::parse(WORKSPACE).unwrap(),
+            check(),
+        );
         let fanout = FanoutState::new();
         let shown = Arc::new(Mutex::new(Vec::new()));
         let app = Arc::clone(&shown);
@@ -537,7 +537,7 @@ mod tests {
     }
 
     /// A record's writes in the clear before its seal are its base, live or
-    /// replayed, though the channel's gate has closed: a device away while
+    /// replayed, though the channel's check has closed: a device away while
     /// the record sealed reads it only by taking them in. Once a sealed
     /// write of the record entered, one in the clear is refused however it
     /// came.
@@ -560,10 +560,10 @@ mod tests {
             op
         };
         let channels = Arc::new(Mutex::new(BrokerChannels::default()));
-        channels
-            .lock()
-            .unwrap()
-            .register_gate(collab_types::WorkspaceId::parse(WORKSPACE).unwrap(), gate());
+        channels.lock().unwrap().register_seal_check(
+            collab_types::WorkspaceId::parse(WORKSPACE).unwrap(),
+            check(),
+        );
         let fanout = FanoutState::new();
         let delivered = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let app = Arc::clone(&delivered);

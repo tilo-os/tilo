@@ -1148,7 +1148,7 @@ def component_launch_registry_wired(main_text: str, crate_text: str) -> bool:
     architecture, while ``LaunchSpec`` only supplies host inputs. Follow the
     definition's named create callback and require that the same registry
     passed to ``actions::register`` reaches ``AppComponent::new``. This keeps
-    test-only or disconnected registration helpers from satisfying the gate.
+    test-only or disconnected registration helpers from satisfying the check.
     """
     main = code_only(live_launch_registration_code(main_text))
     if not (
@@ -2133,7 +2133,7 @@ def audit(
             # A document ActionSpec is only valid at runtime when its decoder
             # is installed into the App's ActionRegistry. Looking for a
             # register function anywhere in the crate used to let test-only
-            # calls satisfy this gate while the production LaunchSpec silently
+            # calls satisfy this check while the production LaunchSpec silently
             # withdrew the complete resource catalogue as invalid.
             if (
                 ACTION_REGISTRY_DEFINITION.search(combined)

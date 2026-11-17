@@ -10,7 +10,7 @@
 # inherit from. `--changed` therefore scans the crates that own a changed or
 # deleted path. Pure literal workspace-member additions scan those new crates;
 # inherited settings, structural changes, or checker changes scan every crate. BASE/BEFORE have the same pull-request/push meaning as the
-# formatting and allow-reason gates.
+# formatting and allow-reason checks.
 set -euo pipefail
 script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 repo=${TILO_REPO_ROOT:-$(cd "$script_dir/../.." && pwd)}

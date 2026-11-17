@@ -9,7 +9,7 @@ use tilo_lock::MutexRecover as _;
 use tilo_sort::CompactSort as _;
 #[derive(Clone, Default)]
 pub(super) struct Reads(
-    Arc<std::sync::Mutex<BTreeMap<String, Gate>>>,
+    Arc<std::sync::Mutex<BTreeMap<String, RouteState>>>,
     Arc<std::sync::Mutex<BTreeMap<String, CommittedDocument>>>,
     Arc<std::sync::Mutex<std::collections::BTreeSet<String>>>,
     Arc<std::sync::Mutex<BTreeMap<String, Arc<tokio::sync::Semaphore>>>>,
@@ -44,7 +44,7 @@ struct Progress {
     reader: tokio::sync::Notify,
 }
 #[derive(Clone)]
-enum Gate {
+enum RouteState {
     Joining,
     Legacy,
     /// The route of a chain's head (`DocumentId::chain_head`), which names whichever
@@ -72,8 +72,8 @@ impl Reads {
         self.5.closed.store(true, Ordering::Release);
         {
             let rows = self.0.lock_recover();
-            for gate in rows.values() {
-                if let Gate::Required(ready, _) = gate {
+            for route_state in rows.values() {
+                if let RouteState::Required(ready, _) = route_state {
                     ready.store(false, Ordering::Release);
                 }
             }
@@ -99,8 +99,8 @@ impl Reads {
             return ready.swap(false, Ordering::AcqRel);
         }
         let rows = self.0.lock_recover();
-        let current = !self.closed() && rows.values().any(|gate| {
-            matches!(gate, Gate::Required(candidate, _) if std::ptr::eq(candidate.as_ref(), ready))
+        let current = !self.closed() && rows.values().any(|route_state| {
+            matches!(route_state, RouteState::Required(candidate, _) if std::ptr::eq(candidate.as_ref(), ready))
         });
         ready.swap(current, Ordering::AcqRel) != current
     }
@@ -142,7 +142,7 @@ impl Reads {
             .0
             .lock_recover()
             .get(key)
-            .is_some_and(|gate| matches!(gate, Gate::Required(_, _)));
+            .is_some_and(|route_state| matches!(route_state, RouteState::Required(_, _)));
         let staged = self
             .1
             .lock_recover()
@@ -159,7 +159,7 @@ impl Reads {
     pub(super) fn delivery_generation(&self, key: &str) -> Option<Arc<AtomicBool>> {
         let rows = self.0.lock_recover();
         match rows.get(key)? {
-            Gate::Required(ready, _) => Some(ready.clone()),
+            RouteState::Required(ready, _) => Some(ready.clone()),
             _ => None,
         }
     }
@@ -239,17 +239,17 @@ impl Reads {
             .lock_recover()
             .get(key)
             .cloned()
-            .is_some_and(|gate| match gate {
-                Gate::Joining | Gate::Failed(_) | Gate::ChainHead => false,
-                Gate::Legacy => true,
-                Gate::Required(ready, _) => ready.load(Ordering::Acquire),
+            .is_some_and(|route_state| match route_state {
+                RouteState::Joining | RouteState::Failed(_) | RouteState::ChainHead => false,
+                RouteState::Legacy => true,
+                RouteState::Required(ready, _) => ready.load(Ordering::Acquire),
             })
     }
     pub(super) fn required(&self, key: &str) -> bool {
         self.0
             .lock_recover()
             .get(key)
-            .is_some_and(|gate| matches!(gate, Gate::Required(_, _)))
+            .is_some_and(|route_state| matches!(route_state, RouteState::Required(_, _)))
     }
     pub(super) fn bind_private_window(
         &self,
@@ -257,7 +257,7 @@ impl Reads {
         instance: Option<u64>,
     ) -> Result<(), String> {
         let rows = self.0.lock_recover();
-        let Some(Gate::Required(_, bound)) = rows.get(key) else {
+        let Some(RouteState::Required(_, bound)) = rows.get(key) else {
             return Err("private binding requires admitted native document custody".into());
         };
         bound.store(instance.unwrap_or(0), Ordering::Release);
@@ -265,7 +265,7 @@ impl Reads {
     }
     pub(super) fn private_window(&self, key: &str) -> Option<u64> {
         let rows = self.0.lock_recover();
-        let Gate::Required(_, instance) = rows.get(key)? else {
+        let RouteState::Required(_, instance) = rows.get(key)? else {
             return None;
         };
         let instance = instance.load(Ordering::Acquire);
@@ -273,18 +273,22 @@ impl Reads {
     }
 
     /// Whether the route of `key` has not resolved how it opens yet: no
-    /// gate, or its join still on its way.
+    /// route_state, or its join still on its way.
     pub(super) fn resolving(&self, key: &str) -> bool {
-        !self.closed() && matches!(self.0.lock_recover().get(key), None | Some(Gate::Joining))
+        !self.closed()
+            && matches!(
+                self.0.lock_recover().get(key),
+                None | Some(RouteState::Joining)
+            )
     }
 
     pub(super) fn joining(&self, key: &str) -> bool {
         let mut rows = self.0.lock_recover();
-        let rejoin = matches!(rows.get(key), Some(Gate::Failed(_)));
+        let rejoin = matches!(rows.get(key), Some(RouteState::Failed(_)));
         if self.closed() || (rows.contains_key(key) && !rejoin) || (!rejoin && rows.len() >= 64) {
             return false;
         }
-        rows.insert(key.into(), Gate::Joining);
+        rows.insert(key.into(), RouteState::Joining);
         true
     }
     /// The route of `key` could not be joined, or its first read failed,
@@ -292,11 +296,11 @@ impl Reads {
     pub(super) fn join_failed(&self, key: &str, error: String) {
         let mut rows = self.0.lock_recover();
         match rows.get(key) {
-            Some(Gate::Joining) => {}
-            Some(Gate::Required(ready, _)) => ready.store(false, Ordering::Release),
+            Some(RouteState::Joining) => {}
+            Some(RouteState::Required(ready, _)) => ready.store(false, Ordering::Release),
             _ => return,
         }
-        rows.insert(key.into(), Gate::Failed(error));
+        rows.insert(key.into(), RouteState::Failed(error));
         drop(rows);
         self.progressed();
     }
@@ -309,8 +313,8 @@ impl Reads {
         }
         let rows = self.0.lock_recover();
         match rows.get(key) {
-            Some(Gate::Failed(error)) => Some(error.clone()),
-            Some(Gate::ChainHead) => {
+            Some(RouteState::Failed(error)) => Some(error.clone()),
+            Some(RouteState::ChainHead) => {
                 Some("a chain's head names its newest part and holds no document".into())
             }
             None => Some("committed document route capacity".into()),
@@ -323,7 +327,7 @@ impl Reads {
         self.0
             .lock_recover()
             .get(key)
-            .is_some_and(|gate| matches!(gate, Gate::Legacy))
+            .is_some_and(|route_state| matches!(route_state, RouteState::Legacy))
     }
     pub(super) fn initial(&self, key: &str) -> Option<CommittedDocument> {
         // Only a whole document can seed an owner; staged changes apply
@@ -353,8 +357,8 @@ impl Reads {
     /// The current staged capture still awaiting the canonical owner's merge.
     /// Unlike `initial`, observing this handoff does not request a refresh.
     pub(super) fn unapplied(&self, key: &str) -> Option<CommittedDocument> {
-        let gates = self.0.lock_recover();
-        if !matches!(gates.get(key), Some(Gate::Required(_, _))) {
+        let routes = self.0.lock_recover();
+        if !matches!(routes.get(key), Some(RouteState::Required(_, _))) {
             return None;
         }
         self.1
@@ -371,9 +375,9 @@ impl Reads {
         ready: &Arc<AtomicBool>,
         read: CommittedDocument,
     ) -> Result<(), String> {
-        let gates = self.0.lock_recover();
+        let routes = self.0.lock_recover();
         if self.closed()
-            || !matches!(gates.get(key),Some(Gate::Required(current, _)) if Arc::ptr_eq(current,ready))
+            || !matches!(routes.get(key),Some(RouteState::Required(current, _)) if Arc::ptr_eq(current,ready))
         {
             return Err("committed route replaced".into());
         }
@@ -383,7 +387,7 @@ impl Reads {
         }
         rows.insert(key.into(), read);
         drop(rows);
-        drop(gates);
+        drop(routes);
         self.progressed();
         Ok(())
     }
@@ -401,7 +405,7 @@ impl Reads {
             return false;
         }
         self.0.lock_recover().get(key).is_some_and(
-            |gate| matches!(gate, Gate::Required(current, _) if Arc::ptr_eq(current, ready)),
+            |route_state| matches!(route_state, RouteState::Required(current, _) if Arc::ptr_eq(current, ready)),
         )
     }
     fn discard_stage(&self, key: &str) {
@@ -421,7 +425,7 @@ impl Reads {
         if self.closed() {
             return Err("committed document reader closed".into());
         }
-        rows.insert(key.into(), Gate::Legacy);
+        rows.insert(key.into(), RouteState::Legacy);
         drop(rows);
         self.progressed();
         Ok(())
@@ -434,7 +438,7 @@ impl Reads {
         if self.closed() {
             return Err("committed document reader closed".into());
         }
-        rows.insert(key.into(), Gate::ChainHead);
+        rows.insert(key.into(), RouteState::ChainHead);
         drop(rows);
         self.progressed();
         Ok(())
@@ -444,7 +448,7 @@ impl Reads {
         if self.closed() {
             return Err("committed document reader closed".into());
         }
-        if let Some(Gate::Required(old, _)) = rows.get(key) {
+        if let Some(RouteState::Required(old, _)) = rows.get(key) {
             old.store(false, Ordering::Release);
         }
         self.discard_stage(key);
@@ -453,10 +457,10 @@ impl Reads {
         }
         let ready = Arc::new(AtomicBool::new(false));
         let instance = match rows.get(key) {
-            Some(Gate::Required(_, instance)) => instance.clone(),
+            Some(RouteState::Required(_, instance)) => instance.clone(),
             _ => Arc::new(std::sync::atomic::AtomicU64::new(0)),
         };
-        rows.insert(key.into(), Gate::Required(ready.clone(), instance));
+        rows.insert(key.into(), RouteState::Required(ready.clone(), instance));
         drop(rows);
         // Whatever waits on the generation this one replaces hears that the
         // read it waited for is no longer this route's.
@@ -970,7 +974,7 @@ mod tests {
         );
         assert!(
             reads.unapplied("route").is_none(),
-            "a downgraded gate cannot hand retained bytes to a new owner"
+            "a downgraded route_state cannot hand retained bytes to a new owner"
         );
         assert!(
             !read.merged.load(Ordering::Acquire),

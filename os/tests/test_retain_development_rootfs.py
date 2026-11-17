@@ -1,4 +1,4 @@
-"""Identity/signature boundaries; native registry publication is a separate gate."""
+"""Identity/signature boundaries; native registry publication is a separate check."""
 import copy
 import importlib.util
 import json

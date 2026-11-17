@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Per-app size budgets for the shipped tapps, and the fleet gate over them.
+"""Per-app size budgets for the shipped tapps, and the fleet check over them.
 
 "Apps are ~2 MB" is a marketed claim. The KPI behind it ("App package size")
 is the bytes of the signed
 `.tapp` a person downloads, per architecture: median <= 2 MB, p90 <= 4 MB and
-max <= 6 MB, ratcheted per app. Two gates hold it:
+max <= 6 MB, ratcheted per app. Two checks hold it:
 
 - **Per app, when the tapp is packaged.** `measure DIR` reads what
   dist/apps/package-apps.sh wrote (`index.json` and `tapp/`): Release / apps
@@ -18,7 +18,7 @@ max <= 6 MB, ratcheted per app. Two gates hold it:
   until the next one publishes, and a later commit's budgets describe apps
   that are not published yet (its `app-sizes-<arch>` checks measure those).
 
-`check-budget --base REV` runs in diff-based gates without building
+`check-budget --base REV` runs in diff-based checks without building
 anything. It fails when a budget is larger than at REV beyond what the raise
 files new in the change add. It also fails when the budgeted apps are not
 exactly the default collection, so a new app brings its budget in the same

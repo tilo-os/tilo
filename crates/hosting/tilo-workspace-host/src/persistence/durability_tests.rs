@@ -591,7 +591,7 @@ fn a_retried_edit_still_in_its_group_is_retained_once() {
     assert_eq!(retained_edits(&state.store), [0, 1]);
 }
 
-/// The owner, its first job held until `gate` fires, then `count` grouped
+/// The owner, its first job held until `hold` fires, then `count` grouped
 /// edits queued behind it, each completing with whether its record was
 /// durable and listed when it completed.
 async fn grouped_owner(
@@ -611,13 +611,13 @@ async fn grouped_owner(
     let state = Arc::new(std::sync::Mutex::new(opened));
     let (tx, rx) = mpsc::channel::<super::NormalJob>(64);
     let (_replay_tx, replay_rx) = mpsc::channel::<super::ReplayJob>(1);
-    let (gate, held) = oneshot::channel::<()>();
+    let (hold, release) = oneshot::channel::<()>();
     tx.send(super::NormalJob {
         sequence: 1,
         grouped: false,
         job: Box::new(move |_| {
             Box::pin(async move {
-                let _ = held.await;
+                let _ = release.await;
             })
         }),
     })
@@ -667,15 +667,15 @@ async fn grouped_owner(
     }
     drop(tx);
     let running = tokio::spawn(super::run_owner(rx, replay_rx, state.clone()));
-    (state, gate, receipts, running)
+    (state, hold, receipts, running)
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn queued_commits_complete_in_order_after_one_shared_barrier() {
     let dir = tempfile::tempdir().unwrap();
-    let (state, gate, receipts, running) = grouped_owner(dir.path(), QUEUED).await;
+    let (state, hold, receipts, running) = grouped_owner(dir.path(), QUEUED).await;
     let records = state.lock().unwrap().group.records();
-    gate.send(()).unwrap();
+    hold.send(()).unwrap();
     let mut completed = Vec::new();
     for receipt in receipts {
         completed.push(receipt.await.unwrap().unwrap());
@@ -692,10 +692,10 @@ async fn queued_commits_complete_in_order_after_one_shared_barrier() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_failed_group_barrier_fails_every_commit_it_covers() {
     let dir = tempfile::tempdir().unwrap();
-    let (state, gate, receipts, running) = grouped_owner(dir.path(), 5).await;
+    let (state, hold, receipts, running) = grouped_owner(dir.path(), 5).await;
     let generation = active_generation(&state.lock().unwrap().store);
     let _fault = crate::store::test_barrier::fail(&generation, "journal-sync");
-    gate.send(()).unwrap();
+    hold.send(()).unwrap();
     for receipt in receipts {
         assert!(
             receipt.await.unwrap().is_err(),

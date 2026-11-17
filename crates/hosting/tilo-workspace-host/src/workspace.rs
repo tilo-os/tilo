@@ -102,7 +102,7 @@ pub struct WorkspaceRuntime {
     /// its files stay, and this runtime writes them no more.
     pub(crate) evicted: bool,
     /// Which of the user's devices are workspace members. Used to
-    /// gate subscribes AND to decide who gets store-and-forward
+    /// check subscribes AND to decide who gets store-and-forward
     /// on delta receive.
     pub membership: Membership,
     /// Serializes filesystem authority operations independently of state IO.
@@ -150,7 +150,7 @@ pub struct WorkspaceRuntime {
     /// frame (the browser sends presence only for its hello, a `SyncReq`, and a
     /// rejected checkpoint), which resets its served set. The native publishes
     /// its checkpoint as one set of messages — one per channel (the workspace plus
-    /// each record) — so the gate is per channel: a full bootstrap set passes
+    /// each record) — so the check is per channel: a full bootstrap set passes
     /// once, and the next idle set, on the same channels, is withheld from a
     /// device that already holds every delta ([`crate::peer`]'s live fan-out).
     checkpoint_served: HashMap<[u8; 32], HashSet<[u8; 32]>>,
@@ -186,7 +186,7 @@ pub struct WorkspaceRuntime {
     /// its ledger check until it is admitted and recorded
     /// ([`Self::claim_commit`]): two copies of one commit cannot both be
     /// admitted, while different commits are admitted side by side. One
-    /// gate for the whole workspace held every commit through the previous one's
+    /// check for the whole workspace held every commit through the previous one's
     /// durability and publication, so a busy workspace committed one change at a
     /// time.
     commit_claims: CommitClaims,

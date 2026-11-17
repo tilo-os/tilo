@@ -554,7 +554,7 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase bundle_signatures_gate_the_runtime_mount;
+    phase bundle_signatures_check_the_runtime_mount;
     {
         {
             let home = runtime_home();

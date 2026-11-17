@@ -628,14 +628,14 @@ tilo_test_env::scenario! {
         let again = rows_of(list);
         for (before, after) in first.iter().zip(&again) {
             let name = before.name.as_deref().unwrap_or_default();
-            let gated = (0..4).any(|index| name == format!("Folder {index}"));
+            let guarded = (0..4).any(|index| name == format!("Folder {index}"));
             assert_eq!(
-                after.state.disabled, gated,
+                after.state.disabled, guarded,
                 "{name} is disabled exactly when its action is unavailable"
             );
             assert_eq!(
                 std::sync::Arc::ptr_eq(before, after),
-                !gated,
+                !guarded,
                 "{name}: only the rows the list disables are copied"
             );
         }

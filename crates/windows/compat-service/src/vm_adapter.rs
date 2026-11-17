@@ -578,7 +578,7 @@ pub struct LiveVmDelegate<B, A, C, L, P> {
     /// verifies the guest's actual response before a viewer is started.
     presentation: windows_vm::ApplicationPresentation,
     shared_session: VmSharedSessionTracker,
-    launch_gate: Mutex<()>,
+    launch_lock: Mutex<()>,
     installer: Mutex<Option<ActiveVmInstallation>>,
     uninstaller: Mutex<Option<ActiveVmUninstallation>>,
 }
@@ -680,7 +680,7 @@ impl<B, A, C, L, P> LiveVmDelegate<B, A, C, L, P> {
             portal,
             presentation,
             shared_session,
-            launch_gate: Mutex::new(()),
+            launch_lock: Mutex::new(()),
             installer: Mutex::new(None),
             uninstaller: Mutex::new(None),
         }
@@ -765,9 +765,9 @@ where
         input: VmInstallerInput,
         source: File,
     ) -> Result<VmInstallation, windows_vm::LaunchError> {
-        let _launch_guard = self.launch_gate.lock().map_err(|_| {
+        let _launch_guard = self.launch_lock.lock().map_err(|_| {
             windows_vm::LaunchError::CapabilityBroker(
-                "singleton Windows launch gate is unavailable".to_string(),
+                "singleton Windows launch check is unavailable".to_string(),
             )
         })?;
         self.require_no_active_uninstallation()?;
@@ -971,9 +971,9 @@ where
         // Serialise the start of uninstall with every launch/install check.
         // Once this transaction is recorded, those paths continue to reject
         // until guest status reaches a terminal state.
-        let _launch_guard = self.launch_gate.lock().map_err(|_| {
+        let _launch_guard = self.launch_lock.lock().map_err(|_| {
             windows_vm::LaunchError::CapabilityBroker(
-                "singleton Windows launch gate is unavailable".to_string(),
+                "singleton Windows launch check is unavailable".to_string(),
             )
         })?;
         let uninstaller = self.uninstaller.lock().map_err(|_| {
@@ -1030,9 +1030,9 @@ where
         &self,
         request: VmRouteRequest<'_>,
     ) -> Result<windows_vm::RunningRemoteApp, windows_vm::LaunchError> {
-        let _launch_guard = self.launch_gate.lock().map_err(|_| {
+        let _launch_guard = self.launch_lock.lock().map_err(|_| {
             windows_vm::LaunchError::CapabilityBroker(
-                "singleton Windows launch gate is unavailable".to_string(),
+                "singleton Windows launch check is unavailable".to_string(),
             )
         })?;
         self.require_no_active_uninstallation()?;
@@ -1061,9 +1061,9 @@ where
         source: File,
         access: windows_vm::PortalDocumentAccess,
     ) -> Result<windows_vm::RunningRemoteApp, windows_vm::LaunchError> {
-        let _launch_guard = self.launch_gate.lock().map_err(|_| {
+        let _launch_guard = self.launch_lock.lock().map_err(|_| {
             windows_vm::LaunchError::CapabilityBroker(
-                "singleton Windows launch gate is unavailable".to_string(),
+                "singleton Windows launch check is unavailable".to_string(),
             )
         })?;
         self.require_no_active_uninstallation()?;

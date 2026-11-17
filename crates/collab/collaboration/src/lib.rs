@@ -1460,7 +1460,7 @@ impl CollaborationManager {
     }
 
     /// Whether the actual route's original document history has been applied.
-    /// This is the same transport gate used before document publication. A
+    /// This is the same transport check used before document publication. A
     /// closed transport never reopens, so its routes stop being ready the
     /// moment it closes, before the worker clears their read state.
     pub fn document_route_ready(&self, route: Option<&RouteSpec>) -> bool {
@@ -1519,7 +1519,7 @@ impl CollaborationManager {
         }
     }
 
-    /// Independently sample the existing transport read gates without admission.
+    /// Independently sample the existing transport read checks without admission.
     #[cfg(all(feature = "native", any(test, feature = "test-support")))]
     pub fn controlled_document_read_phase_for_test(
         &self,

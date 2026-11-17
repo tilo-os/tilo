@@ -339,7 +339,7 @@ class HardwareProfileTest(unittest.TestCase):
             "files": {name: hashlib.sha256((self.firmware / name).read_bytes()).hexdigest() for name in NAMES},
         }
         self.write_manifest()
-        # Architecture and privilege gates are exercised separately below. File
+        # Architecture and privilege checks are exercised separately below. File
         # validation and every actual payload write remain production behavior.
         native = patch.object(prepare.platform, "machine", return_value="aarch64")
         privileged = patch.object(prepare.os, "geteuid", return_value=0)

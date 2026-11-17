@@ -16,7 +16,7 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
 const IO_TIMEOUT: Duration = Duration::from_secs(60);
 const CLOSE_TIMEOUT: Duration = Duration::from_secs(2);
 
-/// Called only by the shared transport registration gate, before network use.
+/// Called only by the shared transport launch hold, before network use.
 pub(super) fn register() -> Result<(), git2::Error> {
     for scheme in ["ssh", "git+ssh", "ssh+git"] {
         // SAFETY: transport::with_context serializes registration before it

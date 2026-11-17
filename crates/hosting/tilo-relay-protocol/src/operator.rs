@@ -219,8 +219,8 @@ pub enum OperatorEvent {
         #[serde(default, skip_serializing_if = "is_zero")]
         members: u32,
         /// Every person counted in `people` (user roots, hex): the entry
-        /// seats people, so a person already here is already seated, and
-        /// another device of theirs coming in takes no seat a newcomer
+        /// counts people, so a person already here is already counted, and
+        /// another device of theirs coming in takes no place a newcomer
         /// could have.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         online: Vec<String>,

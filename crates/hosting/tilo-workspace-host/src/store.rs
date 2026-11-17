@@ -695,15 +695,15 @@ mod tests {
             for _ in 0..8 {
                 let tmp = tempfile::tempdir().unwrap();
                 let root = tmp.path().to_path_buf();
-                let gate = std::sync::Arc::new(std::sync::Barrier::new(4));
+                let check = std::sync::Arc::new(std::sync::Barrier::new(4));
                 // Spawn every key holder before joining: interleaving spawn/join
                 // would deadlock the barrier.
                 let mut workers = Vec::with_capacity(4);
                 for _ in 0..4 {
                     let root = root.clone();
-                    let gate = std::sync::Arc::clone(&gate);
+                    let check = std::sync::Arc::clone(&check);
                     workers.push(std::thread::spawn(move || {
-                        gate.wait();
+                        check.wait();
                         load_or_create_iroh_secret(&root).unwrap()
                     }));
                 }

@@ -1100,7 +1100,7 @@ mod tests {
         clippy::too_many_lines,
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
-    fn namespace_permissions_gate_creation_and_publication() {
+    fn namespace_permissions_check_creation_and_publication() {
         // A private child does not stop another account replacing it through an unsafe parent, so
         // the refusal must come before mkdir, not after adoption.
         {

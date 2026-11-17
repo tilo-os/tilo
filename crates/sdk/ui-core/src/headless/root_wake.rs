@@ -169,11 +169,11 @@ mod tests {
             if self.landed.is_some() || self.value.is_some() {
                 return;
             }
-            let (release, gate) = mpsc::channel::<()>();
+            let (release, check) = mpsc::channel::<()>();
             let (answer, landed) = mpsc::channel();
             let wake = crate::wake::WakeHandle::new();
             std::thread::spawn(move || {
-                let _ = gate.recv();
+                let _ = check.recv();
                 let _ = answer.send(7);
                 wake.wake();
             });

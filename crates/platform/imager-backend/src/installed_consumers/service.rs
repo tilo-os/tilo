@@ -440,7 +440,7 @@ fn route_proof(candidate: Value, shell_path: &str, facts: Map<String, Value>) ->
 
 #[allow(
     clippy::too_many_lines,
-    reason = "one linear contract: each step gates the next"
+    reason = "one linear contract: each step checks the next"
 )]
 fn qualify_receivers(
     root: &Path,

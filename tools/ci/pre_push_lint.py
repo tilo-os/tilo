@@ -8,7 +8,7 @@ Git runs `.githooks/pre-push` with one line per ref it is updating on stdin:
 Two sets of packages are linted the way CI lints them: the ones the pushed
 commits own, and the ones whose own source names something those commits
 changed. A rename, a removed item or a field added to a struct breaks the crates
-that use it, not the crate that declares it, and a gate that linted only the
+that use it, not the crate that declares it, and a check that linted only the
 declaring crate left main red with every linted package green.
 
 What is linted is what CI lints: the changed files through the repository's own
@@ -29,7 +29,7 @@ PATH: they compile nothing, so they need no other machine.
 
 The lint reads the files on disk, so a push is refused when what it sends is not
 the tree checked out here: a lint that spoke for another commit would say
-nothing about this one. A push whose changed packages the gate cannot name, or
+nothing about this one. A push whose changed packages the check cannot name, or
 whose page lint cannot run here, is refused too, rather than passed unread.
 
 There is no switch to skip the lint: `git push --no-verify` is Git's own
@@ -68,7 +68,7 @@ WASM_TARGET = "wasm32-unknown-unknown"
 RUST_SUFFIXES = (".rs", ".tl")
 RUST_NAMES = ("Cargo.toml", "Cargo.lock", "build.rs")
 # Files that steer the whole workspace's build: a change to one can reach every
-# member, so one the gate cannot attribute refuses the push instead.
+# member, so one the check cannot attribute refuses the push instead.
 WORKSPACE_MANIFEST = "Cargo.toml"
 WORKSPACE_LOCK = "Cargo.lock"
 # The manifest that gives every member the features the workspace's whole build
@@ -139,7 +139,7 @@ def wasm_target_installed() -> bool:
 
 
 class Lint(NamedTuple):
-    """One lint run of the push gate: what it is called, the command that reruns it, and what it reads.
+    """One lint run of the push check: what it is called, the command that reruns it, and what it reads.
 
     `packages` are linted; with `dependencies` the run also reads every crate they build on.
     """
@@ -155,7 +155,7 @@ class Lint(NamedTuple):
 
 
 class Push(NamedTuple):
-    """What the refs being pushed change, and what the gate could not name about them."""
+    """What the refs being pushed change, and what the check could not name about them."""
     files: set[str]
     comparisons: list[tuple[str, str]]
     tips: list[str]
@@ -455,7 +455,7 @@ def select(root: Path, push: Push, files: set[str]) -> Selection | None:
         readers = set(reading_packages(root, unowned))
         if not readers:
             say(f"pre-push: no workspace package reads {', '.join(unowned[:3])}"
-                f"{' and more' if len(unowned) > 3 else ''}, so CI builds them outside the gate; "
+                f"{' and more' if len(unowned) > 3 else ''}, so CI builds them outside the check; "
                 "they are not linted here")
         owners |= readers & members
     seeds = set(owners)
@@ -539,7 +539,7 @@ def page_clippy_config(root: Path) -> dict[str, str]:
 
 
 def lint_runs(root: Path, selection: Selection, web: list[str], formatting: list[str]) -> list[Lint]:
-    """The runs the gate makes: formatting, the host lint, and the page lint where it can run.
+    """The runs the check makes: formatting, the host lint, and the page lint where it can run.
 
     `web` is what is actually linted for the page, so a toolchain without the
     target leaves it empty. Each command is also the line a failure prints to
@@ -700,7 +700,7 @@ def main(argv: list[str]) -> int:
         say("pre-push: no Rust or Cargo file changed; nothing to lint")
         return 0
     if push.unnamed:
-        say("pre-push: refusing a push the gate cannot name")
+        say("pre-push: refusing a push the check cannot name")
         return 1
     if tip := unchecked_tree(root, push):
         say(f"pre-push: {tip[:12]} is not the commit checked out here, and the lint reads the files "

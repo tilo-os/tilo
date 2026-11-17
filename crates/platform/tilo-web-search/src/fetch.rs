@@ -300,7 +300,7 @@ fn pretty_json(bytes: &[u8], truncated: bool) -> String {
 /// Refuse a name that resolves to this device or its network.
 ///
 /// A lookup that fails is not a refusal: inside a sandbox without a resolver
-/// the egress gate resolves instead, and it refuses local destinations
+/// the egress proxy resolves instead, and it refuses local destinations
 /// itself. A name that resolves to both public and local addresses is
 /// refused, since the connection might take either.
 async fn check_resolved(url: &Url) -> Result<(), FetchError> {

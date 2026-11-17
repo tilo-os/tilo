@@ -1,15 +1,15 @@
-//! The gate a broker checks every document op of a workspace against.
+//! The check a broker checks every document op of a workspace against.
 
 use collab_types::EncryptionMetadata;
 
 /// What a broker checks every document op of a workspace against: whether
 /// plaintext is closed off there.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct SealGate {
+pub struct SealCheck {
     pub encryption_required: bool,
 }
 
-impl SealGate {
+impl SealCheck {
     /// Refuse plaintext once encryption is required.
     ///
     /// An op sealed under an epoch the workspace has since moved past is
@@ -26,19 +26,19 @@ impl SealGate {
 }
 
 #[cfg(test)]
-mod gate_tests {
-    use super::SealGate;
+mod seal_check_tests {
+    use super::SealCheck;
     use collab_types::{ContentRetention, EncryptionMetadata};
 
     /// Content sealed under an earlier epoch is admitted live as it is from
     /// the host's history; plaintext is refused.
     #[test]
     fn content_sealed_under_an_earlier_epoch_is_admitted_live() {
-        let gate = SealGate {
+        let seal_check = SealCheck {
             encryption_required: true,
         };
         let old = EncryptionMetadata::content_key(1, ContentRetention::Delta);
-        assert!(gate.accepts(Some(&old)));
-        assert!(!gate.accepts(None));
+        assert!(seal_check.accepts(Some(&old)));
+        assert!(!seal_check.accepts(None));
     }
 }

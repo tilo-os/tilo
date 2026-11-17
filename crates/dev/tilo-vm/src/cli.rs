@@ -130,7 +130,7 @@ pub enum Command {
     /// Build this worktree's dev image (and dev disk) into a directory, for vm upgrade --image and vm create --image.
     #[command(subcommand)]
     Image(ImageCommand),
-    /// Boot a disk under QEMU: the one command line every headless boot, gate and boot-time measurement uses.
+    /// Boot a disk under QEMU: the one command line every headless boot, check and boot-time measurement uses.
     #[command(subcommand)]
     Qemu(Box<QemuCommand>),
     /// Manage accounts: your user, session and layer stack inside a VM.

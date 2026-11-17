@@ -4,7 +4,7 @@
 //! [`FsStore`] is the native implementation: one directory per document
 //! (`<data home>/<app-id>/state.automerge` for a app's own document,
 //! below it for workspaces and their documents), atomic replacement, synced appends,
-//! an actor sidecar for restart continuity and advisory-lock gates for single
+//! an actor sidecar for restart continuity and advisory-lock checks for single
 //! or shared ownership. Identifiers are validated so an app can't address
 //! another app's storage or the shared workspace FUSE root.
 //!
@@ -49,7 +49,7 @@ pub const ACTOR_FILE: &str = "actor";
 /// Beside a large document: the change hashes its last full save
 /// listed, so the next load need not rebuild every change (`load_hint`).
 pub const LOAD_HINT_FILE: &str = "state.hashes";
-pub const CANONICAL_GATE: &str = "canonical.lock";
+pub const CANONICAL_LOCK: &str = "canonical.lock";
 pub const LOCK_FILE: &str = "writer.lock";
 /// Subdirectory holding one directory per document. See
 /// [`DocStore::open_workspace_document`].
@@ -326,7 +326,7 @@ impl DocStore {
     }
 
     /// The exclusive owner of the document kept directly in `directory`.
-    /// Never adopts stale files. The ownership gate is cooperative: older
+    /// Never adopts stale files. The ownership check is cooperative: older
     /// binaries that do not acquire it can still write, so concurrent use of
     /// one profile with those binaries is unsupported.
     pub fn open_canonical_at(app_id: &str, directory: &Path) -> Result<Self, StoreError> {
@@ -765,14 +765,14 @@ fn same_file(_file: &File, _path: &Path) -> bool {
     false
 }
 
-fn acquire_gate(path: &Path, exclusive: bool) -> Result<FileLock, StoreError> {
+fn acquire_lock(path: &Path, exclusive: bool) -> Result<FileLock, StoreError> {
     let file = OpenOptions::new()
         .create(true)
         .read(true)
         .write(true)
         .truncate(false)
         .open(path)
-        .map_err(|e| io_err(format!("opening gate {}", path.display()), e))?;
+        .map_err(|e| io_err(format!("opening check {}", path.display()), e))?;
     let mode = if exclusive {
         LockMode::Exclusive
     } else {
@@ -782,7 +782,7 @@ fn acquire_gate(path: &Path, exclusive: bool) -> Result<FileLock, StoreError> {
         TryLockError::WouldBlock => StoreError::WriterBusy {
             path: path.to_path_buf(),
         },
-        TryLockError::Error(error) => io_err("acquiring canonical gate", error),
+        TryLockError::Error(error) => io_err("acquiring canonical check", error),
     })
 }
 
@@ -1095,21 +1095,21 @@ mod tests {
             }
         }
 
-        phase store_gates_locks_and_directories_fail_closed;
+        phase store_checks_locks_and_directories_fail_closed;
         {
-            // Phase `canonical_gate_blocks_legacy_before_actor_creation`.
+            // Phase `canonical_lock_blocks_legacy_before_actor_creation`.
             {
                 let tmp = TempDir::new().unwrap();
-                // The exclusive owner holds this gate before touching actor or document.
-                let gate = DocStore::open_canonical_at("so.tilo.test", tmp.path()).unwrap();
+                // The exclusive owner holds this check before touching actor or document.
+                let check = DocStore::open_canonical_at("so.tilo.test", tmp.path()).unwrap();
                 let result = DocStore::open_in("so.tilo.test", tmp.path());
                 assert!(
                     result.is_err(),
-                    "a legacy opener must respect the canonical gate"
+                    "a legacy opener must respect the canonical check"
                 );
                 assert!(!tmp.path().join(ACTOR_FILE).exists());
                 assert!(!tmp.path().join(DOCUMENT_FILE).exists());
-                drop(gate);
+                drop(check);
                 assert!(DocStore::open_in("so.tilo.test", tmp.path()).is_ok());
             }
             // Phase `writer_lock_is_exclusive_and_released_with_its_handle`.

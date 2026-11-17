@@ -8,7 +8,7 @@
 # throwaway overlays) and share a second NIC on one L2 segment (os/dev/vm.sh
 # TILO_VM_LAN_*, joined by os/dev/nearby-lan-hub.py), so the pairing broadcast
 # on UDP 23831 crosses between them exactly as it does on a home network. B's
-# UI is driven over AT-SPI like the release gate drives first use; A approves
+# UI is driven over AT-SPI like the release check drives first use; A approves
 # as its signed-in user with tilo-enroll, the program Settings runs. A third
 # overlay, C, later joins the segment.
 #
@@ -191,10 +191,10 @@ stop_owned_vm() {
 cleanup() {
   local rc=$? cleanup_rc=0
   trap - EXIT
-  # Keep the original gate result and pre-stop evidence, including failures.
-  printf '%s\n' "$rc" > "$out/gate-exit-status.txt" || cleanup_rc=1
+  # Keep the original check result and pre-stop evidence, including failures.
+  printf '%s\n' "$rc" > "$out/check-exit-status.txt" || cleanup_rc=1
   if [ -f "$out/verdict.txt" ]; then
-    cp "$out/verdict.txt" "$out/gate-verdict.txt" || cleanup_rc=1
+    cp "$out/verdict.txt" "$out/check-verdict.txt" || cleanup_rc=1
   fi
   collect a "$run_a" vm_a
   collect b "$run_b" vm_b
@@ -289,18 +289,18 @@ wait_onboarding() {
   done
   die "$each: the compositor did not reach first-login onboarding"
 }
-# A session the gate drives over ssh for minutes without touching its keyboard
+# A session the check drives over ssh for minutes without touching its keyboard
 # locks after its idle timeout like any other. A program in it holds an idle
 # block lock as the person, the way a presentation tool does. The session
 # honours it; the lock policy and its timeout stay as they are.
 hold_awake() {
   local each=$1
   "$each" ssh "systemd-run --user --quiet --unit=tilo-nearby-idle-hold \
-      systemd-inhibit --what=idle --mode=block --who='nearby pairing gate' \
+      systemd-inhibit --what=idle --mode=block --who='nearby pairing check' \
         --why='drives this session over its control socket' sleep infinity" \
     || die "$each could not take an idle lock for the rest of the run"
   for attempt in $(seq 1 60); do
-    session_log "$each" | grep -F 'kept awake by another program' | grep -F 'nearby pairing gate' \
+    session_log "$each" | grep -F 'kept awake by another program' | grep -F 'nearby pairing check' \
       > "$out/$each-idle-hold.txt" && break
     [ "$attempt" -lt 60 ] || {
       "$each" ssh 'systemd-inhibit --list --no-pager' > "$out/$each-inhibitors.txt" 2>&1 || true
@@ -311,14 +311,14 @@ hold_awake() {
   note "$each's session is held awake for the rest of the run"
 }
 
-# Each waits at onboarding while the gate drives the other, A while B signs in,
+# Each waits at onboarding while the check drives the other, A while B signs in,
 # B while A creates its identity, and then for the rest of the run.
 wait_onboarding vm_a
 hold_awake vm_a
 wait_onboarding vm_b
 hold_awake vm_b
 
-# A: the ordinary Create path, exactly as the release gate makes it.
+# A: the ordinary Create path, exactly as the release check makes it.
 vm_a test native-atspi-smoke.sh oobe-actions
 for attempt in $(seq 1 60); do
   vm_a ssh "test -s $identity_dir/primary.json && test -s /var/lib/tilo/device/cert.bin" && break
@@ -555,7 +555,7 @@ for attempt in $(seq 1 120); do
 done
 vm_b test native-atspi-smoke.sh post-identity
 vm_b shot relogin >/dev/null && cp -f "$run_b/relogin.png" "$out/"
-# The read-only gate the graphical session wrapper runs at login, in the
+# The read-only check the graphical session wrapper runs at login, in the
 # person's own session so their secret store answers.
 vm_b ssh 'DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$(id -u)/bus /usr/bin/tilo-session --verify-collaboration-identity' \
   > "$out/b-verify-identity.txt" 2>&1 || {

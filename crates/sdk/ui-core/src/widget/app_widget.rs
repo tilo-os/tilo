@@ -912,7 +912,7 @@ mod component_adapter {
             dyn crate::widget::controls::ActionControls,
             dyn crate::resources::PublishesResources,
             dyn crate::search::capability::SearchSource,
-            dyn crate::permissions::capability::PermissionGated,
+            dyn crate::permissions::capability::PermissionGuarded,
             dyn crate::presence::capability::PublishesPresence,
             dyn crate::resource::capability::ResourceScoped,
             dyn crate::view::capability::ViewState,
@@ -1724,7 +1724,7 @@ mod component_adapter {
         }
     }
 
-    impl crate::permissions::capability::PermissionGated for BoundAppWidget {
+    impl crate::permissions::capability::PermissionGuarded for BoundAppWidget {
         fn permission_scope(&self) -> Option<PermissionScope> {
             self.in_root(|root| crate::permissions::capability::permission_scope(root))
                 .flatten()

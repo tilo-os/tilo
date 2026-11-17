@@ -55,7 +55,7 @@ published in `registry.tilo.so/tilo/tilo-vm`:
 
 | Tag | What |
 | --- | --- |
-| `<arch>-ci`, `<board>-ci` | the dev channel: main's newest gated image |
+| `<arch>-ci`, `<board>-ci` | the dev channel: main's newest guarded image |
 | `main-<sha7>-ci-<arch>`, `main-<sha7>-<board>` | main's build of one commit |
 
 `--from sha:<commit>` takes the build of that commit: main's dev image, else a

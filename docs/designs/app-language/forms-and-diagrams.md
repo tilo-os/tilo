@@ -164,7 +164,7 @@ view done_per_week(p: Project, weeks: Collection<WeekCount>) {
 Each component draws only what changed and only what's visible. A graph past a few hundred
 nodes clusters out of view, and a chart with more points than pixels draws the min and max per
 pixel column. The perf matrix (components.md §5) gains 10k-point chart and 1k-node graph cases,
-gated like lists.
+guarded like lists.
 
 ## 4. Order
 
@@ -174,4 +174,4 @@ gated like lists.
 3. `ui.Chart`, first used by Tasks' project page (done per week).
 4. `ui.Graph`, first used by Tasks' dependencies (`blocked_by`).
 5. `ui.Timeline`, first used by Tasks' project schedule.
-6. `tilolang layout-check` (layout.md §6) gates all of these from its first landing.
+6. `tilolang layout-check` (layout.md §6) checks all of these from its first landing.

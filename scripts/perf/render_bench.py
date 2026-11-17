@@ -10,7 +10,7 @@ target. The session's own desktop surface is measured by `session_perf`
 
 Subcommands:
 
-- `counters UI_PERF`: the per-change gate. Runner-independent counters only:
+- `counters UI_PERF`: the per-change check. Runner-independent counters only:
   allocator calls and bytes per redraw, native pixels rasterised per redraw,
   and allocations per 1,000 events that need no redraw, against the budgets
   `docs/ui-performance-benchmark.md` documents. No clock is compared.
@@ -49,7 +49,7 @@ NATIVE_4K = {"TILO_UI_DASH_WIDTH": "3840", "TILO_UI_DASH_HEIGHT": "2160"}
 VERIFY = {**NATIVE_4K, "TILO_UI_DASH_VERIFY": "1", "TILO_UI_DASH_VERIFY_FRAMES": "40",
           "TILO_UI_DASH_ITERS": "40"}
 # The documented acceptance budgets for the animated 4K redraw and the
-# one-million-event no-redraw gate, with fewer events: both are rates, and a
+# one-million-event no-redraw check, with fewer events: both are rates, and a
 # per-change run need not wait for the full count. The raster-pixel budget sits
 # about 30 % above the 95,000-116,000 px/redraw the lane measured in October
 # 2026, where 600,000 let a redraw grow five-fold unnoticed.
@@ -174,9 +174,9 @@ def timing(args: argparse.Namespace) -> int:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     commands = parser.add_subparsers(dest="command", required=True)
-    gate = commands.add_parser("counters", help="the per-change counter gate")
-    gate.add_argument("ui_perf")
-    gate.add_argument("--out", type=Path, default=REPO / "target/render-bench")
+    check = commands.add_parser("counters", help="the per-change counter check")
+    check.add_argument("ui_perf")
+    check.add_argument("--out", type=Path, default=REPO / "target/render-bench")
     lane = commands.add_parser("timing", help="frame-time records for the scheduled lane")
     lane.add_argument("ui_perf")
     lane.add_argument("--env-json", type=Path, required=True, help="tools/perf/record.py env output")

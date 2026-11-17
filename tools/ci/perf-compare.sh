@@ -7,7 +7,7 @@
 #
 # T_INPUT_ACCEPT names KPI ids (or all) whose values start a new baseline,
 # where the store is written; T_INPUT_SYNTHETIC_SERIES and
-# T_INPUT_SYNTHETIC_FACTOR tag the records as a synthetic series for a gate
+# T_INPUT_SYNTHETIC_FACTOR tag the records as a synthetic series for a check
 # test, which never enters a real baseline. TILO_PACKAGE_TOKEN (or t's
 # TILO_PACKAGES_TOKEN, or REGISTRY_TOKEN) writes the store.
 #

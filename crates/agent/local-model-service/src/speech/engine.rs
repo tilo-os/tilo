@@ -625,7 +625,7 @@ fn segments(state: NonNull<sys::whisper_state>) -> Result<String, SpeechError> {
     }
     let text = text.as_str();
     // ASR segment whitespace is not a spoken Enter/paragraph command.
-    // Normalize whitespace before the compositor's control-character gate.
+    // Normalize whitespace before the compositor's control-character check.
     if text
         .chars()
         .any(|ch| ch.is_control() && !ch.is_whitespace())

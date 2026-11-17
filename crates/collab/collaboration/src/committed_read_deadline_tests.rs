@@ -154,7 +154,7 @@ fn held_capture_acknowledgement(outcome: AcknowledgementOutcome) {
     graph.commit();
     let expected = graph.save();
     let (entered, observed) = mpsc::channel();
-    let (release, gate) = tokio::sync::oneshot::channel();
+    let (release, hold) = tokio::sync::oneshot::channel();
     {
         let mut captures = captures.lock().unwrap();
         captures.committed_history_fixture = Some(expected.clone());
@@ -169,7 +169,7 @@ fn held_capture_acknowledgement(outcome: AcknowledgementOutcome) {
                 captures.committed_ack_reply =
                     Some(runtime_collab::committed_document::Reply::Unavailable);
             }
-            _ => captures.committed_ack_gate = Some((entered, gate)),
+            _ => captures.committed_ack_hold = Some((entered, hold)),
         }
     }
     if matches!(
@@ -192,8 +192,8 @@ fn held_capture_acknowledgement(outcome: AcknowledgementOutcome) {
         | AcknowledgementOutcome::InvalidReply => None,
         AcknowledgementOutcome::RepeatedDeadline => {
             let (entered, observed) = mpsc::channel();
-            let (release, gate) = tokio::sync::oneshot::channel();
-            captures.lock().unwrap().committed_ack_gate = Some((entered, gate));
+            let (release, hold) = tokio::sync::oneshot::channel();
+            captures.lock().unwrap().committed_ack_hold = Some((entered, hold));
             Some((release, observed))
         }
         AcknowledgementOutcome::ChangedCustody => {
@@ -389,12 +389,12 @@ impl ReadyReader {
     }
 
     /// Hold the broker's answer to the acknowledgement of the next changed
-    /// read until the returned gate is dropped: from the reader's side, a
+    /// read until the returned hold is dropped: from the reader's side, a
     /// read starved past its deadline. The caller changes the document.
     fn starve_next_poll(&self) -> Starved {
-        let (release, gate) = tokio::sync::oneshot::channel();
+        let (release, hold) = tokio::sync::oneshot::channel();
         let (entered, acknowledging) = std::sync::mpsc::channel();
-        self.captures.lock().unwrap().committed_ack_gate = Some((entered, gate));
+        self.captures.lock().unwrap().committed_ack_hold = Some((entered, hold));
         self.wake_waits();
         Starved {
             _release: release,
@@ -518,7 +518,7 @@ fn a_slow_renewal_after_a_wait_is_retried_instead_of_closing() {
         .captures
         .lock()
         .unwrap()
-        .join_gates
+        .join_holds
         .push_back(held_join);
     reader.commit("after the slow renewal");
     let _poll = reader.starve_next_poll();
@@ -603,8 +603,8 @@ fn refused_renewal(held_first: bool) {
     {
         let mut captures = reader.captures.lock().unwrap();
         if held_first {
-            let (sender, gate) = tokio::sync::oneshot::channel();
-            captures.join_gates.push_back(gate);
+            let (sender, hold) = tokio::sync::oneshot::channel();
+            captures.join_holds.push_back(hold);
             release = Some(sender);
         }
         captures.join_refusal = Some("collaboration join identity rejected: revoked".into());

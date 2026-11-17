@@ -1,5 +1,5 @@
 //! Current privacy on local Linux POSIX ACL filesystems, without userspace ACL
-//! enumeration. `ACL_MASK` is reflected in group mode bits and gates named users
+//! enumeration. `ACL_MASK` is reflected in group mode bits and checks named users
 //! and groups. Kernel/capability and hostile same-principal bypasses are outside
 //! this discretionary privacy contract. tmpfs is not persistence evidence.
 use std::{

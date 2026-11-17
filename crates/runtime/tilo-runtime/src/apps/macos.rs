@@ -74,7 +74,7 @@ pub(super) fn launch(apps: &Apps, app: &InstalledApp, sockets: &Sockets) -> Resu
         runtime_dylib_dir: None,
         container_dir: container,
         capabilities: launcher::capabilities::CapabilityPlan::empty(),
-        egress: launcher::netgate::EgressDecision::resolve(
+        egress: launcher::egress_proxy::EgressDecision::resolve(
             &manifest.sandbox.net.mode,
             &manifest.sandbox.net.hosts,
             &[],

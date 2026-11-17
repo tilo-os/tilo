@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# os/tests/boot_units_gate.sh against a stubbed systemd: what it accepts, and
+# os/tests/boot_units_check.sh against a stubbed systemd: what it accepts, and
 # that each way a boot can go wrong fails it.
 set -euo pipefail
 
 repo="$(cd "$(dirname "$0")/../.." && pwd)"
-gate="$repo/os/tests/boot_units_gate.sh"
+check="$repo/os/tests/boot_units_check.sh"
 work="$(mktemp -d)"; trap 'rm -rf "$work"' EXIT
 mkdir -p "$work/bin"
 
@@ -35,31 +35,31 @@ chmod +x "$work/bin/"*
 
 printf 'root=tilo-auto tilo.generation=7 quiet\n' >"$work/cmdline"
 
-run_gate() {
+run_check() {
   rm -f "$work/started"
   env PATH="$work/bin:$PATH" STUB_DIR="$work" TILO_PROC_CMDLINE="$work/cmdline" \
-    TILO_ROLLBACK_STATE="$work/state.json" "$@" bash "$gate" >"$work/out" 2>&1
+    TILO_ROLLBACK_STATE="$work/state.json" "$@" bash "$check" >"$work/out" 2>&1
 }
 expect_pass() {
   local name="$1"; shift
-  run_gate "$@" || { cat "$work/out"; echo "FAIL: $name should pass" >&2; exit 1; }
+  run_check "$@" || { cat "$work/out"; echo "FAIL: $name should pass" >&2; exit 1; }
 }
 expect_fail() {
   local name="$1" needle="$2"; shift 2
-  if run_gate "$@"; then cat "$work/out"; echo "FAIL: $name should fail" >&2; exit 1; fi
+  if run_check "$@"; then cat "$work/out"; echo "FAIL: $name should fail" >&2; exit 1; fi
   grep -Fq "$needle" "$work/out" || { cat "$work/out"; echo "FAIL: $name should report: $needle" >&2; exit 1; }
 }
 
 rm -f "$work/state.json"
 expect_pass 'an unenrolled machine with nothing failed' \
   STUB_CONFIRM_LOG='tilo-rollback: no TPM on this machine — rollback binding is unavailable by design'
-grep -Fq 'starting it now' "$work/out" || { cat "$work/out"; echo 'FAIL: the gate must start a confirmation the timer has not run' >&2; exit 1; }
+grep -Fq 'starting it now' "$work/out" || { cat "$work/out"; echo 'FAIL: the check must start a confirmation the timer has not run' >&2; exit 1; }
 grep -Fq 'nothing to confirm on this machine (tilo-rollback: no TPM' "$work/out" \
-  || { cat "$work/out"; echo 'FAIL: the gate must say why there was nothing to confirm' >&2; exit 1; }
+  || { cat "$work/out"; echo 'FAIL: the check must say why there was nothing to confirm' >&2; exit 1; }
 
 expect_pass 'a confirmation the timer already ran' STUB_CONFIRM_STARTED=42
 if grep -Fq 'starting it now' "$work/out"; then
-  cat "$work/out"; echo 'FAIL: the gate must not run a finished confirmation again' >&2; exit 1
+  cat "$work/out"; echo 'FAIL: the check must not run a finished confirmation again' >&2; exit 1
 fi
 
 # The field failure: the sandbox could not be set up, so the unit failed with
@@ -85,4 +85,4 @@ expect_fail 'an enrolled machine left on the previous generation' 'confirmed gen
 expect_fail 'an enrolled machine whose confirmation declined' 'did not confirm generation 7' \
   STUB_CONFIRM_LOG="tilo-rollback: WARNING: system state is 'degraded', not 'running' — not confirming this generation"
 
-echo 'ok    boot units gate'
+echo 'ok    boot units check'

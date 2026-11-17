@@ -55,7 +55,7 @@ class ExpectedFailure(CheckFailed):
 
 class BudgetExceeded(CheckFailed):
     """The subject worked, and a measurement of it went over its budget: time, CPU, frames,
-    memory. A run that gates on budgets (`--budgets gate`, the default) fails it like any
+    memory. A run that waits for budgets (`--budgets check`, the default) fails it like any
     other failure; one that reports them (`--budgets report`) records it as `over-budget`,
     which does not fail the run. Release candidates are verified on t's shared, GPU-less
     workers, whose timings say more about the worker than about the commit: there the

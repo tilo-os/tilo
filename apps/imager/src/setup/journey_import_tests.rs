@@ -26,7 +26,7 @@ fn journey_open(uri: &str) -> ui::portal::LaunchChannel {
     rx
 }
 #[test]
-fn journey_copy_later_restart_keeps_identity_gate_and_completion_destinations() {
+fn journey_copy_later_restart_keeps_identity_check_and_completion_destinations() {
     JOURNEY_URIS.with(|uris| uris.borrow_mut().clear());
     let (temp, mut app, source, destination) = fixture();
     settle_index(&mut app);
@@ -45,10 +45,10 @@ fn journey_copy_later_restart_keeps_identity_gate_and_completion_destinations() 
     assert!(app.admit(ImportEffect::OpenStore).is_err());
     JOURNEY_URIS.with(|uris| assert!(uris.borrow().is_empty()));
     app.identity_checker = identity_ready;
-    app.request_identity_gate(ImportCommand::CheckIdentity)
+    app.request_identity_check(ImportCommand::CheckIdentity)
         .unwrap();
     let deadline = tilo_test_env::hang_deadline();
-    while app.gate_request.is_some() {
+    while app.check_request.is_some() {
         app.poll_background();
         assert!(ui::time::now() < deadline);
         std::thread::yield_now();
@@ -86,10 +86,10 @@ fn journey_copy_later_restart_keeps_identity_gate_and_completion_destinations() 
     assert!(reopened.admit(ImportEffect::OpenStore).is_err());
     reopened.identity_checker = identity_ready;
     reopened
-        .request_identity_gate(ImportCommand::CheckIdentity)
+        .request_identity_check(ImportCommand::CheckIdentity)
         .unwrap();
     let deadline = tilo_test_env::hang_deadline();
-    while reopened.gate_request.is_some() {
+    while reopened.check_request.is_some() {
         reopened.poll_background();
         assert!(ui::time::now() < deadline);
         std::thread::yield_now();

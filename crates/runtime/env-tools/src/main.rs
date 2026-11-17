@@ -38,16 +38,16 @@ struct RuntimeArgs {
     /// on a filesystem overlayfs accepts as an upper (ordinary disk).
     #[arg(long)]
     state: PathBuf,
-    /// What builds may reach: the runtime's repositories (`gated`, the
+    /// What builds may reach: the runtime's repositories (`guarded`, the
     /// default), nothing (`offline`), or this machine's whole network
     /// (`host`, for a CI builder without `/dev/net/tun`).
-    #[arg(long, value_enum, default_value_t = NetworkArg::Gated)]
+    #[arg(long, value_enum, default_value_t = NetworkArg::Guarded)]
     network: NetworkArg,
 }
 
 #[derive(Clone, Copy, clap::ValueEnum)]
 enum NetworkArg {
-    Gated,
+    Guarded,
     Offline,
     Host,
 }
@@ -55,7 +55,7 @@ enum NetworkArg {
 impl From<NetworkArg> for NetworkChoice {
     fn from(arg: NetworkArg) -> Self {
         match arg {
-            NetworkArg::Gated => Self::Gated,
+            NetworkArg::Guarded => Self::Guarded,
             NetworkArg::Offline => Self::Offline,
             NetworkArg::Host => Self::Host,
         }

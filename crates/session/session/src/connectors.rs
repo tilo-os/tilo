@@ -132,7 +132,7 @@ impl ConnectorHost {
     }
 
     /// Start the connector `planned` ran, releasing the socket `socket` to it through the launcher's
-    /// registration gate, and following it on a thread of its own.
+    /// launch hold, and following it on a thread of its own.
     fn start(planned: &Planned, socket: &OwnedFd) -> Result<Child, String> {
         tilo_app_launch::name_surface(planned);
         let mut command = Command::new(&planned.program);
@@ -145,8 +145,8 @@ impl ConnectorHost {
             // the same as a window's app's.
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
-        let gate = launcher::registration_gate::install(&mut command)
-            .map_err(|error| format!("{} has no launch gate: {error}", planned.app))?;
+        let hold = launcher::launch_hold::install(&mut command)
+            .map_err(|error| format!("{} has no launch hold: {error}", planned.app))?;
         let mut child = command
             .spawn()
             .map_err(|error| format!("{}'s connector did not start: {error}", planned.app))?;
@@ -165,7 +165,7 @@ impl ConnectorHost {
         }
         // The connector's socket reaches it as a window's does: the launcher hands it into the
         // sandbox as the connector's own service.
-        gate.release_with_window_link(socket.as_fd())
+        hold.release_with_window_link(socket.as_fd())
             .map_err(|error| format!("{}'s connector was not released: {error}", planned.app))?;
         tracing::info!(app = %planned.app, argv = %planned.describe(), "an origin connector started");
         Ok(child)

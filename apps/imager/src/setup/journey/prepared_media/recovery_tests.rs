@@ -106,7 +106,7 @@ fn prepared_stage_rechecks_recovery_custody_at_actual_write_admission() {
         // A completed journal does not prove that these filesystem paths are
         // outside the raw target. The production binding path refuses it.
         assert!(prepared.bind_recovery(evidence.clone(), plan).is_err());
-        // Exercise the write gate itself against a stale/unsafe bound witness,
+        // Exercise the write check itself against a stale/unsafe bound witness,
         // not merely the selection-time check. Such a witness cannot yield a
         // staging artifact or pass the media writer's final admission.
         *prepared.recovery.lock().unwrap() =

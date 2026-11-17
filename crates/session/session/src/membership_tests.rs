@@ -33,12 +33,12 @@ fn workspace_here(joiner: &str) -> (Engine, Workspace, String, tempfile::TempDir
 
 /// When a signer that holds its signatures back answers: once the asking loop turned.
 #[derive(Default)]
-struct SignGate {
+struct SignHold {
     held: std::sync::atomic::AtomicBool,
     waiting: std::sync::Mutex<Vec<std::task::Waker>>,
 }
 
-impl SignGate {
+impl SignHold {
     fn held(&self) -> bool {
         self.held.load(std::sync::atomic::Ordering::SeqCst)
     }
@@ -51,18 +51,18 @@ impl SignGate {
     /// The loop turned: answer what was held back.
     fn open(&self) {
         self.held.store(false, std::sync::atomic::Ordering::SeqCst);
-        let waiting = std::mem::take(&mut *self.waiting.lock().expect("the gate"));
+        let waiting = std::mem::take(&mut *self.waiting.lock().expect("the hold"));
         for waker in waiting {
             waker.wake();
         }
     }
 }
 
-/// This device's key behind a gate: what a page's key, which signs through a promise, or a signer
+/// This device's key behind a hold: what a page's key, which signs through a promise, or a signer
 /// that answers through the session's own loop looks like to the code that asks it.
 struct LateSigner {
     key: SigningKey,
-    gate: std::sync::Arc<SignGate>,
+    hold: std::sync::Arc<SignHold>,
 }
 
 impl collab_types::signer::DeviceSigner for LateSigner {
@@ -76,14 +76,14 @@ impl collab_types::signer::DeviceSigner for LateSigner {
 
     fn sign(&self, message: Vec<u8>) -> collab_types::signer::SignFuture<'_> {
         let signature = ed25519_dalek::Signer::sign(&self.key, &message).to_bytes();
-        let gate = std::sync::Arc::clone(&self.gate);
+        let hold = std::sync::Arc::clone(&self.hold);
         Box::pin(std::future::poll_fn(move |context| {
-            if gate.held() {
-                gate.waiting
+            if hold.held() {
+                hold.waiting
                     .lock()
-                    .expect("the gate")
+                    .expect("the hold")
                     .push(context.waker().clone());
-                if gate.held() {
+                if hold.held() {
                     return std::task::Poll::Pending;
                 }
             }
@@ -92,21 +92,21 @@ impl collab_types::signer::DeviceSigner for LateSigner {
     }
 }
 
-/// [`workspace_here`] with this device signing through `gate` when one is given.
+/// [`workspace_here`] with this device signing through `hold` when one is given.
 fn workspace_signed_through(
     joiner: &str,
-    gate: Option<std::sync::Arc<SignGate>>,
+    hold: Option<std::sync::Arc<SignHold>>,
 ) -> (Engine, Workspace, String, tempfile::TempDir) {
     let person_root = SigningKey::from_bytes(&[9; 32]);
     let person_key = SigningKey::from_bytes(&[10; 32]);
     let cert = testing::certificate(&person_root, &person_key, "This device");
     let directory = tempfile::TempDir::new().expect("a state directory");
-    let identity = match gate {
-        Some(gate) => HostIdentity::kept(
+    let identity = match hold {
+        Some(hold) => HostIdentity::kept(
             cert.clone(),
             LateSigner {
                 key: person_key.clone(),
-                gate,
+                hold,
             },
         ),
         None => identity(&cert, &person_key),
@@ -1755,8 +1755,8 @@ fn a_share_signed_late_never_holds_the_loop_that_asked() {
     use tilo_actions::remote::PendingPoll;
     use tilo_broker_core::services::WorkspaceNodeAsk;
 
-    let gate = Arc::new(SignGate::default());
-    let (engine, _, _, _state) = workspace_signed_through("ada", Some(Arc::clone(&gate)));
+    let hold = Arc::new(SignHold::default());
+    let (engine, _, _, _state) = workspace_signed_through("ada", Some(Arc::clone(&hold)));
     let engine = Arc::new(engine);
     let asks = WorkspaceNodes::service(Some(&engine)).expect("this session holds a workspace");
     let node = TreePath::workspace(WORKSPACE)
@@ -1764,7 +1764,7 @@ fn a_share_signed_late_never_holds_the_loop_that_asked() {
         .kind("notes.notebook")
         .resource("plan")
         .to_string();
-    gate.hold();
+    hold.hold();
     let mut share = asks
         .ask(
             WORKSPACE,
@@ -1780,7 +1780,7 @@ fn a_share_signed_late_never_holds_the_loop_that_asked() {
         "nothing is shared before the signer answered"
     );
     // The loop that asked goes on, and its turn is what lets the signer answer.
-    gate.open();
+    hold.open();
     let shared = landed(share).expect("the workspace's owner shares what they hold");
     assert_eq!(
         shared["grants"], 1,

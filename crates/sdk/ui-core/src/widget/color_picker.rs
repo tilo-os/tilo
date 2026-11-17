@@ -119,7 +119,7 @@ pub struct ColorPicker {
     hex_input_rect: Rect,
     /// Set by `set_hex_text_for_test` so tests can drive a parse pass
     /// without faking IME keystrokes; drained inside `handle_event`.
-    /// Gated to test/debug builds so the test surface doesn't leak into prod.
+    /// Guarded to test/debug builds so the test surface doesn't leak into prod.
     #[cfg(any(test, debug_assertions))]
     hex_input_force_dirty_for_test: bool,
     /// Stashed mid-`handle_event` when the embedded hex input asked for

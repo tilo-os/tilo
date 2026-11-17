@@ -206,9 +206,9 @@ pub struct Projector {
     pub parallel_chunks: usize,
     owner: Option<(u32, u32)>,
     seq: AtomicU64,
-    /// Write gates of lease-class files. A new version of a gated file is gated before it is
-    /// renamed into place, so no writer gets through ungated.
-    write_gates: Arc<super::lease::WriteGates>,
+    /// Write checks of lease-class files. A new version of a guarded file is guarded before it is
+    /// renamed into place, so no writer gets through unguarded.
+    write_guards: Arc<super::lease::WriteGuards>,
     last_unavailable: std::sync::Mutex<Option<String>>,
     held: std::sync::Mutex<Option<(PathBuf, u64, std::time::Instant)>>,
 }
@@ -226,7 +226,7 @@ impl Projector {
         content: Arc<Hydrator>,
         runtime: tokio::runtime::Handle,
         owner: Option<(u32, u32)>,
-        write_gates: Arc<super::lease::WriteGates>,
+        write_guards: Arc<super::lease::WriteGuards>,
     ) -> Self {
         Self {
             live,
@@ -238,7 +238,7 @@ impl Projector {
             parallel_chunks: super::fetch::DEFAULT_PARALLEL_CHUNKS,
             owner,
             seq: AtomicU64::new(0),
-            write_gates,
+            write_guards,
             last_unavailable: std::sync::Mutex::new(None),
             held: std::sync::Mutex::new(None),
         }
@@ -605,7 +605,7 @@ impl Projector {
             match &install {
                 Install::Staged(staging) => {
                     if !record.symlink {
-                        self.write_gates.gate_new_version(
+                        self.write_guards.check_new_version(
                             &self.placeholders,
                             staging,
                             &abs,
@@ -623,8 +623,8 @@ impl Projector {
                     } else {
                         self.placeholders.create_placeholder(&abs, spec)?;
                     }
-                    self.write_gates
-                        .gate_new_version(&self.placeholders, &abs, &abs, &rel)
+                    self.write_guards
+                        .check_new_version(&self.placeholders, &abs, &abs, &rel)
                 }
                 Install::Chmod(mode) => {
                     fs::set_permissions(&abs, fs::Permissions::from_mode(*mode))

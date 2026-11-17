@@ -187,9 +187,9 @@ corresponding instrumentation automatically.
 | `TILO_UI_DASH_RSS_GROWTH_BUDGET_KIB`        | Warm-to-final RSS increase, KiB                | u64; zero allowed, invalid ignored; negative growth treated as zero        |
 | `TILO_UI_DASH_GPU_GROWTH_BUDGET_BYTES`      | Warm-to-final known GPU increase, bytes        | u64; zero allowed, invalid ignored; negative growth treated as zero        |
 
-Always check that the expected gate actually printed a result: a misspelled
-budget or an invalid value in an ignore-on-error parser is not a passing gate. A
-16,667 µs p99 gate is a useful 60 Hz screen, not proof that every frame met its
+Always check that the expected check actually printed a result: a misspelled
+budget or an invalid value in an ignore-on-error parser is not a passing check. A
+16,667 µs p99 check is a useful 60 Hz screen, not proof that every frame met its
 deadline. The million-event frozen test measures **zero redraws**, not a million
 rendered frames. Source:
 [dashboard harness](../crates/dev/ui-examples/examples/dashboard_perf_bench.rs).
@@ -395,7 +395,7 @@ than silently comparing different feature sets.
 
 ## Optimizations without environment flags
 
-Dirty/animation gating, retained widget/resource caches, allocation-free child
+Dirty/animation guarding, retained widget/resource caches, allocation-free child
 traversal, retained scene sections, bounded queues/image caches/undo history,
 shared image storage, GPU buffer/bind-group reuse, and DRM recovery checks are
 code paths or fixed bounds, not hidden tunables. Do not invent flags for cache

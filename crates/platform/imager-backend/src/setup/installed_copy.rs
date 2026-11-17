@@ -1,12 +1,12 @@
 //! Installed-copy continuation receives authority only through the existing
-//! pinned Shell / exact root-helper gate. No setup labels or paths mint a grant.
+//! pinned Shell / exact root-helper check. No setup labels or paths mint a grant.
 mod dispatcher;
 pub use dispatcher::{CopyCommand, CopyEvent};
 mod receiver;
 use super::{flatpak_transfer::portable, migration::PinnedDirectory, portable_home_media};
 use launcher::{
     owned_service::ServiceCancellation,
-    retained_view::{RetainedLaunchGate, installed_copy::ReceivedInstalledCopy},
+    retained_view::{RetainedLaunchAdmission, installed_copy::ReceivedInstalledCopy},
 };
 use std::{
     fs::File,
@@ -87,8 +87,11 @@ pub(super) struct AuthenticatedCopyReceive {
     applications_taken: bool,
 }
 impl AuthenticatedCopyReceive {
-    fn receive(gate: RetainedLaunchGate, cancellation: ServiceCancellation) -> io::Result<Self> {
-        let channel = gate.receive_installed_copy(cancellation)?;
+    fn receive(
+        check: RetainedLaunchAdmission,
+        cancellation: ServiceCancellation,
+    ) -> io::Result<Self> {
+        let channel = check.receive_installed_copy(cancellation)?;
         channel.check()?;
         let declaration = channel.declaration();
         let payload: CopyPayload =
@@ -252,7 +255,7 @@ pub fn run_receiver(arguments: impl Iterator<Item = std::ffi::OsString>) -> io::
         return Err(refused());
     }
     // The handles select transport only; all authority is constructed by the
-    // canonical mutual QPE/gate. Both are consumed exactly once by this entry.
+    // canonical mutual QPE/check. Both are consumed exactly once by this entry.
     fn socket(fd: i32) -> io::Result<UnixStream> {
         let mut kind = 0i32;
         let mut size = u32::try_from(std::mem::size_of::<i32>()).map_err(io::Error::other)?;
@@ -283,8 +286,8 @@ pub fn run_receiver(arguments: impl Iterator<Item = std::ffi::OsString>) -> io::
     let shell = socket(shell)?;
     let root = socket(root)?;
     let cancellation = ServiceCancellation::default();
-    let gate = RetainedLaunchGate::receive(shell, root, &cancellation)?;
-    let grant = AuthenticatedCopyReceive::receive(gate, cancellation)?;
+    let check = RetainedLaunchAdmission::receive(shell, root, &cancellation)?;
+    let grant = AuthenticatedCopyReceive::receive(check, cancellation)?;
     let fence = grant.stop_fence()?;
     let cancel = std::sync::Arc::new(AtomicBool::new(false));
     let stop = std::sync::Arc::new(AtomicBool::new(false));

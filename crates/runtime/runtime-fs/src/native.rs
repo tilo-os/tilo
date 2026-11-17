@@ -1,5 +1,5 @@
 //! The descriptor-backed Unix provider macOS and Linux share: calls block, so
-//! they belong on bounded workers, never in paint or layout. The authority gate
+//! they belong on bounded workers, never in paint or layout. The authority check
 //! serializes calls with revocation and close, no ambient path is retained, and
 //! symlink resolution walks a bounded stack of already-authorized descriptors.
 
@@ -1728,7 +1728,7 @@ impl FsSession {
     }
     #[allow(
         clippy::too_many_lines,
-        reason = "bounded read-only directory, file and link verification share one confinement gate"
+        reason = "bounded read-only directory, file and link verification share one confinement check"
     )]
     fn hash_receipt_object(
         &self,

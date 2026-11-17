@@ -1,5 +1,5 @@
 #!/bin/sh
-# Narrow activation gate for desired Tilo system extensions. The Rust
+# Narrow activation check for desired Tilo system extensions. The Rust
 # system-extension crate verifies pinned signed manifests and receipts; this
 # helper never downloads, mounts, loads modules, invokes a package manager, or
 # accepts a path/URL from a desktop or agent.

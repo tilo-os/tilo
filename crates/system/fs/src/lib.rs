@@ -83,7 +83,7 @@ pub mod sync_folder;
 #[cfg(feature = "filesystem")]
 pub mod thumbs;
 #[cfg(feature = "filesystem")]
-pub mod transport_gate;
+pub mod transport_switch;
 /// The workspace tree as the Files app's person record.
 #[cfg(feature = "filesystem")]
 pub mod tree_document;

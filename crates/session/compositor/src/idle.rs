@@ -62,7 +62,7 @@ pub enum SessionTransition {
     Unlocked,
     /// The session has been idle past the suspend threshold — the machine should suspend
     /// (`logind.Suspend`). Unlike blank/lock this leaves the compositor untouched; the actuator and
-    /// inhibitor gate live outside this pure state machine. See [`SessionManager::cancel_suspend`].
+    /// inhibitor check live outside this pure state machine. See [`SessionManager::cancel_suspend`].
     Suspend,
 }
 

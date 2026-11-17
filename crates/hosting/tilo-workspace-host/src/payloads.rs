@@ -8,7 +8,7 @@
 //!
 //! [`NeighbourPayloads`] answers them for the desktop's peer-sync messages
 //! (`NeighbourMsg`); it is the only place compaction, surface admission,
-//! retained-checkpoint replacement and the live checkpoint gate decode one.
+//! retained-checkpoint replacement and the live checkpoint check decode one.
 //!
 //! The adapter is injected, not looked up: a host takes one when it opens
 //! ([`HostConfig::shell_payloads`](crate::host::HostConfig::shell_payloads),

@@ -7,7 +7,7 @@ use tilo_relay_protocol::WorkspaceId;
 /// missing, computed against this host's materialized pinned doc.
 /// Read-only — does not touch subscriptions or the pending queues, so a
 /// peer can reconcile whether or not it is currently subscribed. The
-/// workspace's membership gates the requester, as it does on `Subscribe`.
+/// workspace's membership checks the requester, as it does on `Subscribe`.
 #[expect(
     clippy::significant_drop_tightening,
     reason = "the membership guard keeps the roster fixed until the reply is classified"

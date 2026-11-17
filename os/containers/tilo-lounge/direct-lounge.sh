@@ -39,8 +39,8 @@ lounge_fail() {
 
 # The Lounge's entrypoint, started on the volume start_lounge laid out.
 run_lounge() {
-  # The image's entrypoint, with the environment the gate gives the image.
-  # `LOUNGE_ADMISSION` is the entry: `open` (the gate's own Lounge) or
+  # The image's entrypoint, with the environment the check gives the image.
+  # `LOUNGE_ADMISSION` is the entry: `open` (the check's own Lounge) or
   # `invite`, which keeps a wait list (`LOUNGE_WAIT_LIST_MAX`, and the mail
   # settings a test names for its sink).
   env -i HOME="$lounge_home" PATH="$lounge_bin:/usr/bin:/bin" \

@@ -1963,7 +1963,7 @@ impl App {
             return 0;
         }
         // A committed refresh temporarily closes the original native history
-        // gate. Keep control/causal intents with their existing producers until
+        // check. Keep control/causal intents with their existing producers until
         // the owner applies that capture and its worker rechecks the route.
         // Nothing has crossed the action API yet; accepted deliveries retain
         // the separate fail-closed guard in invoke_published_action.

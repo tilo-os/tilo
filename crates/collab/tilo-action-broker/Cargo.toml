@@ -54,7 +54,7 @@ tilo-identity-host = { path = "../../runtime/tilo-identity-host" }
 tilo-actions = { path = "../actions" }
 # The broker's half every host runs: the step seam, the route, the receipts.
 tilo-broker-core = { path = "../broker-core" }
-# The channel engine every host runs: this broker enforces its channels' plaintext gates.
+# The channel engine every host runs: this broker enforces its channels' plaintext checks.
 tilo-workspace-keys = { path = "../workspace-keys" }
 # Shortcuts: checking, running and describing them at the action API.
 tilo-automation = { path = "../automation" }
@@ -76,7 +76,7 @@ tilo-app-id = { version = "0.1.0", path = "../../platform/tilo-app-id" }
 workspace-hack = { version = "0.1" }
 ui = { package = "tilo-ui", path = "../../sdk/ui-core" }
 [dev-dependencies]
-# The channel engine's tests read what its gates refuse through this broker.
+# The channel engine's tests read what its checks refuse through this broker.
 tilo-workspace-keys = { path = "../workspace-keys", features = ["test-support"] }
 runtime-identity-host = { package = "runtime-identity", path = "../../runtime/runtime-identity" }
 # The disclosure regression reaches the real verifier and durable registry store over HTTPS.

@@ -41,9 +41,9 @@ tilo_test_env::scenario! {
     phase the_device_shell_is_asked_for_once_and_opens_when_allowed;
     {
         let allowed = Rc::new(RefCell::new(false));
-        let gate = allowed.clone();
+        let check = allowed.clone();
         let (mut widget, opened) = tab(RecentTarget::none(), move |target| {
-            if target.is_host() && !*gate.borrow() {
+            if target.is_host() && !*check.borrow() {
                 Err(OpenError::NeedsAllow("not allowed yet".into()))
             } else {
                 Ok(())
@@ -715,10 +715,10 @@ fn a_carried_session_is_kept_and_re_attached_on_reopen_and_replaced_when_gone() 
 #[test]
 fn native_widget_exposes_the_permission_request_and_retries_after_the_answer() {
     let allowed = Rc::new(RefCell::new(false));
-    let gate = allowed.clone();
+    let check = allowed.clone();
     let mut app = App::new().unwrap();
     let opened = host_tab(&mut app, RecentTarget::none(), move |target| {
-        if target.is_host() && !*gate.borrow() {
+        if target.is_host() && !*check.borrow() {
             Err(OpenError::NeedsAllow("not allowed".into()))
         } else {
             Ok(())
@@ -908,8 +908,8 @@ fn trusted_shell_selection_enters_normal_permission_without_agent_identity_relab
 fn approved_owner_host_command_uses_real_pty_and_stale_or_agent_input_is_refused() {
     use ui::floating_surface::DeviceShellOperation as O;
     let allowed = Rc::new(std::cell::Cell::new(false));
-    let gate = allowed.clone();
-    let sessions = owner_fixture_sessions(gate);
+    let check = allowed.clone();
+    let sessions = owner_fixture_sessions(check);
     let mut app = App::new().unwrap();
     app.with_surface(|t: &mut crate::TerminalView| t.set_sessions(sessions))
         .unwrap();
@@ -1043,13 +1043,13 @@ fn wait_for_owner_shell(app: &mut App, session: &str, ended: bool) {
     });
 }
 
-fn owner_fixture_sessions(gate: Rc<std::cell::Cell<bool>>) -> Sessions {
+fn owner_fixture_sessions(check: Rc<std::cell::Cell<bool>>) -> Sessions {
     Sessions::scripted(RecentTarget::none(), move |target, by, _| {
         assert_eq!(by, Requester::Person);
         if !target.is_host() {
             return Err(OpenError::NoRuntime("fixture runtime absent".into()));
         }
-        if !gate.get() {
+        if !check.get() {
             return Err(OpenError::NeedsAllow(
                 "fixture owner consent required".into(),
             ));

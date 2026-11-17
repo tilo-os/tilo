@@ -714,13 +714,13 @@ fn a_large_record_is_read_whole_only_for_the_change_that_mentions_the_person() {
         began.elapsed()
     );
 
-    // Bea's own window takes a seat and signs what it writes with her id: no mention of her.
+    // Bea's own window registers itself and signs what it writes with her id: no mention of her.
     let (_, all) = doc.get(ROOT, "issues").unwrap().unwrap();
     let (_, entry) = doc.get(&all, "i3").unwrap().unwrap();
     let (_, issue) = doc.get(&entry, "v").unwrap().unwrap();
     doc.put(&issue, "author", BEA).unwrap();
-    let seats = doc.put_object(ROOT, "seats", ObjType::Map).unwrap();
-    doc.put(&seats, BEA, BEA).unwrap();
+    let windows = doc.put_object(ROOT, "windows", ObjType::Map).unwrap();
+    doc.put(&windows, BEA, BEA).unwrap();
     doc.commit();
     device.writes(TASKS, TRACKER, &mut doc);
     look(&mentions);

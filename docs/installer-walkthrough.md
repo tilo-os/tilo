@@ -94,7 +94,7 @@ The Imager caches and verifies both before allowing the medium to be written.
 The cross-platform build workflow also emits digests, but its unsigned CI
 artifacts are for validation only: they must not be presented as production
 downloads. Code signing on Linux and Windows and signing plus notarization on
-macOS are release gates performed with protected release credentials. An
+macOS are release checks performed with protected release credentials. An
 `imager-v*` tag fails rather than producing a release artifact if any required
 credential is absent; see `apps/imager/packaging/README.md`.
 
@@ -228,14 +228,14 @@ or weak passphrase slot. FIDO2 can be enrolled as an additional convenience
 factor, never a replacement for recovery. Save the displayed recovery key away
 from the computer before rebooting.
 
-### What the automated dual-boot gate proves
+### What the automated dual-boot check proves
 
 The native release VM runs both prepared and guided alongside installs against
 a GPT containing an NTFS filesystem, a Linux filesystem, and a foreign ESP. It
 checks their partition identities and bytes before the first target boot and
 again after desktop acceptance. In prepared mode, the foreign loader paths hold
 architecture-matched controlled EFI applications rather than text sentinels.
-The gate opens the installed systemd-boot menu with keyboard input, selects the
+The check opens the installed systemd-boot menu with keyboard input, selects the
 displayed numeric entries, and requires distinct Windows-path and Linux-path
 markers on the firmware framebuffer. Entry-file presence alone cannot pass.
 
@@ -244,7 +244,7 @@ that its same-ESP shortcuts are selectable. It is not evidence that Windows or
 a complete foreign Linux distribution booted, and the evidence records both of
 those claims as false. The controlled applications are unsigned, so their menu
 execution is not treated as Secure Boot acceptance. Guided mode deliberately
-uses a separate Tilo ESP; the gate proves the foreign ESP is byte-identical and
+uses a separate Tilo ESP; the check proves the foreign ESP is byte-identical and
 that no invalid cross-ESP shortcut was created, but does not invent a firmware
 entry for the synthetic fixture. A release or hardware acceptance still needs
 an installed, licensed Windows system and a real Linux installation, their

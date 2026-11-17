@@ -72,7 +72,7 @@ p50 = 65536
 
 A failing Release / apps job prints this file with each over-budget app's
 numbers. Each architecture's job prints its own lines, so merge them. A raise
-may at most double a budget. When an app shrinks, both gates print the lower
+may at most double a budget. When an app shrinks, both checks print the lower
 budget to commit (`[apps."<id>"] <arch> = <bytes>`), with the app removed from
 its raise files. They also print when an interim fleet ceiling can be lowered,
 or removed once its target holds. To re-seed the budgets from the registry,

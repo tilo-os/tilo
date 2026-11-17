@@ -1,4 +1,4 @@
-//! The sheets the session lends its seats to: the power menu, a workspace's settings, the
+//! The sheets the session mounts: the power menu, a workspace's settings, the
 //! directory, the portal apps open links through, the file picker, the guide, the display sheet,
 //! the questions about the person's apps and the one deleting a workspace asks — each mounted over
 //! the desktop and what it shows, and handed to the session as the state it speaks through.
@@ -24,7 +24,7 @@ use tilo_sheets::workspace_settings::WorkspaceSettingsState;
 use crate::Options;
 use crate::sheets::Sheet;
 
-/// The sheets the session lends its seats to.
+/// The sheets the session mounts.
 pub(crate) struct Sheets {
     pub(crate) power: Option<PowerState>,
     pub(crate) workspace_settings: Option<WorkspaceSettingsState>,

@@ -13,7 +13,7 @@ use tilo_messaging::{
 };
 
 pub type SendText<'a> = Pin<Box<dyn Future<Output = Result<(), SendError>> + Send + 'a>>;
-/// The native host binds this to its original authenticated endpoint and gate.
+/// The native host binds this to its original authenticated endpoint and check.
 /// Successful completion means the pinned peer durably accepted this exact id.
 pub trait Transport: Send + Sync {
     fn send<'a>(&'a self, request: &'a SendRequest, timestamp_ms: u64) -> SendText<'a>;

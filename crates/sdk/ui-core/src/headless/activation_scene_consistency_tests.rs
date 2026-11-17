@@ -630,7 +630,7 @@ fn closed_destination_is_not_restored_as_a_keyboard_owner_control() {
     let node = f.frame.named_target_nodes()["activation-selected"];
     let closing = f.frame.bindings.binding_for(node).unwrap().closing.clone();
     let draws = f.selected.draws.get();
-    closing.set(true); // original live binding gate; allocation remains owned
+    closing.set(true); // original live binding check; allocation remains owned
     f.frame.activate_app_focus(SELECTED);
     assert!(f.frame.focused().is_none());
     assert!(f.frame.ime_window().is_none());
@@ -778,7 +778,7 @@ fn original_history_preflight_preserves_suspended_live_caret_control() {
         .unwrap();
     assert!(frame.history.as_ref().unwrap().captures_input());
     let before = frame.relayout_frames();
-    // Same preflight gate used by DesktopHandle.navigate; do not bypass History
+    // Same preflight check used by DesktopHandle.navigate; do not bypass History
     // by calling activation after a refusal.
     assert!(frame.check_app_activation().is_err());
     assert_eq!(frame.relayout_frames(), before);

@@ -42,7 +42,7 @@ foreach ($path in @($bridgeScript, $networkProxyScript, $remoteAppScript, $focus
 
 # Parse every PowerShell payload with Windows' own parser before installing or
 # registering a startup task. Linux CI also checks their structure, but this
-# authoritative gate ensures a malformed bridge/helper fails setup visibly
+# authoritative check ensures a malformed bridge/helper fails setup visibly
 # instead of producing an appliance whose background bridge never starts.
 foreach ($scriptPath in @($bridgeScript, $networkProxyScript, $remoteAppScript, $focusedScript, $installerScript, $uninstallerScript, $processJobScript, $processJobBrokerScript)) {
     $tokens = $null

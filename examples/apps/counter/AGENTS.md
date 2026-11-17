@@ -46,7 +46,7 @@ tilo-app dev --platform web --share  # the app in a workspace: one browser windo
 tilo-app test                      # resource and production-view tests
 tilo-app inspect                   # headless widget/accessibility tree
 tilo-app shot                      # headless image of the production root
-tilo-app check                     # quality gate, including audited scenarios
+tilo-app check                     # quality check, including audited scenarios
 ```
 
 A failed rebuild leaves the last good app running. Use `tilo-app add --help`

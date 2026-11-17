@@ -8,7 +8,7 @@ import org.signal.network.config.HttpProxy;
 // The signed launcher sanitizes the environment and supplies this local
 // relay only after protected review. No host proxy or direct-network fallback.
 final class TiloHttpProxy {
-    static Optional<HttpProxy> nativeGate() {
+    static Optional<HttpProxy> nativeProxy() {
         var value = System.getenv("HTTP_PROXY");
         if (value == null) { return Optional.empty(); }
         var uri = URI.create(value);

@@ -1013,11 +1013,11 @@ mod tests {
             // The watch's thread is held, as a busy machine holds it, while directories are made
             // and written into: what landed before the watch took them in is reported with them.
             let dir = tempfile::tempdir().expect("temporary directory");
-            let gate = dir.path().join("gate");
+            let check = dir.path().join("check");
             let (release, held) = std::sync::mpsc::channel::<()>();
             let seen = Arc::new(Mutex::new(Vec::new()));
             let record = Arc::clone(&seen);
-            let held_at = gate.clone();
+            let held_at = check.clone();
             let _watch = Watcher::tree(dir.path())
                 .start(move |events: &[Event]| {
                     record.lock().expect("events").extend_from_slice(events);
@@ -1026,8 +1026,8 @@ mod tests {
                     }
                 })
                 .expect("watch");
-            std::fs::write(&gate, b"").expect("gate");
-            until_seen(&seen, "the gate", |event| event.path == gate);
+            std::fs::write(&check, b"").expect("check");
+            until_seen(&seen, "the check", |event| event.path == check);
             let file = dir.path().join("app").join("workspaces").join("index");
             std::fs::create_dir_all(file.parent().expect("a parent")).expect("new directories");
             std::fs::write(&file, b"one").expect("write in new directory");

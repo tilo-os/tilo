@@ -88,7 +88,7 @@ impl ClipEffect {
 }
 
 /// The kinds of stackable effect a clip can carry. Each transforms the graded
-/// colour; the preview and the (gated) export apply them in list order.
+/// colour; the preview and the (guarded) export apply them in list order.
 #[derive(
     Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Model, ui::tilo_resource::JsonSchema,
 )]
@@ -1329,7 +1329,7 @@ impl Clip {
     /// Envelope gain in 0..1 from the fade-in / fade-out ramps at timeline
     /// time `t`. 1.0 in the clip's steady middle; ramps linearly across the
     /// `fade_in`/`fade_out` regions. Used by both the preview (video dip)
-    /// and the (gated) audio mix.
+    /// and the (guarded) audio mix.
     pub fn envelope(&self, t: f64) -> f64 {
         let into = t - self.start;
         let dur = self.duration();

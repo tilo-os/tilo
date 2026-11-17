@@ -11,7 +11,7 @@ fn a_pending_calendar_vault_read_does_not_block_cancel_or_accept_changed_scope()
         let (entered, started) = crate::channel::sync_channel(1);
         let (release, released) = crate::channel::sync_channel(1);
         let released = std::sync::Mutex::new(released);
-        pane.account_root = root.clone().with_vault_gate(move || {
+        pane.account_root = root.clone().with_vault_hold(move || {
             entered.send(()).unwrap();
             released.lock().unwrap().recv().unwrap();
         });

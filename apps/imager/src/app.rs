@@ -4659,7 +4659,7 @@ mod tests {
     }
 
     #[test]
-    fn official_installable_request_preserves_real_handoff_and_disabled_writer_gate() {
+    fn official_installable_request_preserves_real_handoff_and_disabled_writer_check() {
         let (mut app, _doc) = seeded_app();
         assert!(app.customizable(), "selected source is catalog-matched");
         assert!(app.offers_write_setup(), "official Confirm offers setup");

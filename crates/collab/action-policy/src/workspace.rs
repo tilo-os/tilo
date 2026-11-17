@@ -119,7 +119,7 @@ impl Change {
 }
 
 /// Whether `change` is `actor_person` removing themselves: leaving, which the
-/// workspace's grants never gate.
+/// workspace's grants never check.
 fn is_leaving(actor_person: &str, change: &Change) -> bool {
     matches!(change, Change::RemoveMember { person } if person == actor_person)
 }

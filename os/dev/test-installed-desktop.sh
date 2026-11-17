@@ -13,7 +13,7 @@
 #
 # DISK_QCOW2 is never booted or modified. --base-digest is the OS image the dev
 # image was built on, which tilo-vmd must report. The live system update is
-# os-dev-gate's (tools/ci/publish/os-dev-gate.sh).
+# os-dev-check's (tools/ci/publish/os-dev-check.sh).
 set -euo pipefail
 
 dev_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -83,7 +83,7 @@ trap cleanup EXIT
 
 "$vm" tool qemu-img create -f qcow2 -F qcow2 -b "$base" "$TILO_DISK" >/dev/null
 "$vm" boot "--$display"
-# The boot gate below counts the time the boot waited on this host (its disk,
+# The boot check below counts the time the boot waited on this host (its disk,
 # its CPUs) apart from the image's own, from what the guest records while it
 # boots: from as soon as it answers SSH until five minutes after it started,
 # twice a second, its uptime, I/O pressure total and CPU steal.
@@ -112,12 +112,12 @@ done
 kvm=0
 python3 "$dev_dir/probe-kvm.py" "$arch" >/dev/null 2>&1 && kvm=1
 
-# Fixed QEMU hardware makes this a stable regression gate. Keep a generous
+# Fixed QEMU hardware makes this a stable regression check. Keep a generous
 # ceiling for shared-host variance while still catching a newly serialized
 # network wait, initramfs stall, or service timeout. Before the login: it
 # checks the greeter's login endpoint, which greetd removes once the session
 # has started.
-"$vm" with-tests "TILO_BOOT_USERSPACE_BUDGET_SEC=20 TILO_BOOT_HOST_SAMPLES=$host_samples \"\$TILO_GUEST_TESTS/boot-performance-gate.sh\""
+"$vm" with-tests "TILO_BOOT_USERSPACE_BUDGET_SEC=20 TILO_BOOT_HOST_SAMPLES=$host_samples \"\$TILO_GUEST_TESTS/boot-performance-check.sh\""
 
 # The sign-in screen as a person meets it, judged from the frames QEMU scans
 # out: whole before any input and while the pointer moves, each keystroke on
@@ -178,7 +178,7 @@ done
 # have failed by now, and the rollback confirmation (which refuses to confirm
 # a degraded generation) must have run and succeeded. Before the app checks,
 # so none of them can mask it.
-"$vm" ssh "printf '%s\n' '$TILO_PASS' | sudo -S -p '' /usr/libexec/tilo/boot-units-gate.sh"
+"$vm" ssh "printf '%s\n' '$TILO_PASS' | sudo -S -p '' /usr/libexec/tilo/boot-units-check.sh"
 
 # The compositor presented this login's first-use flow on the presenter its
 # GPU allows, within budget. The guest renders with Mesa software Vulkan, so
@@ -189,25 +189,25 @@ if [ "$kvm" = 1 ]; then
 else
   render_budgets='--render-budget-ms 10000 --frame-work-budget-ms 2000'
 fi
-"$vm" ssh "/usr/libexec/tilo-session-report --render-gate $render_budgets"
+"$vm" ssh "/usr/libexec/tilo-session-report --render-check $render_budgets"
 
 "$vm" test projection-boot-check.sh
-# H.264 decode names the element the image really chose. Reported, not gating:
+# H.264 decode names the element the image really chose. Reported, not guarding:
 # the clip it decodes is written by an encoder only the opt-in codec pack
 # carries, so a stock guest has no subject and the check fails saying so. Run
 # it on a board whose SoC has a codec block with --require-hardware.
 if "$vm" test h264-boot-check.py; then
   note 'H.264 decode named the element the image chose'
 else
-  note 'H.264 decode could not be observed (reported, not gating)'
+  note 'H.264 decode could not be observed (reported, not guarding)'
 fi
 # AirPlay encrypted-media acceptance: phase-bounded deadlines on the shipped
-# script. Its failure is reported and does not fail the desktop gate;
+# script. Its failure is reported and does not fail the desktop check;
 # OpenH264 arrives via the opt-in codec pack.
 if "$vm" ssh /usr/libexec/tilo/airplay-encrypted-session-test.sh; then
   note 'AirPlay encrypted-session acceptance passed'
 else
-  note 'AirPlay encrypted-session acceptance failed (reported, not gating)'
+  note 'AirPlay encrypted-session acceptance failed (reported, not guarding)'
 fi
 "$vm" test collaborative-files-image-contract.sh runtime
 # The signed Settings and Files payloads, driven as an independent AT-SPI
@@ -252,28 +252,28 @@ cat "$page_log"
 # Tabs are the desktop's. Ctrl+T on the real keyboard in an app opens another
 # instance of it as a tab beside the first: one window group gains exactly one
 # tab and a second process of the app joins the bus.
-new_tab_gate() {
-  local app=$1 log gate status=0
+new_tab_check() {
+  local app=$1 log check status=0
   log="$TILO_RUN/new-tab-$app.log"
   "$vm" test installed-atspi-apps.sh new-tab "$app" > "$log" 2>&1 &
-  gate=$!
+  check=$!
   for _ in $(seq 1 180); do
     grep -q '^READY' "$log" && break
-    kill -0 "$gate" 2>/dev/null || break
+    kill -0 "$check" 2>/dev/null || break
     sleep 1
   done
   if ! grep -q '^READY' "$log"; then
-    wait "$gate" || true
+    wait "$check" || true
     cat "$log"
-    die "$app did not open for the Ctrl+T gate"
+    die "$app did not open for the Ctrl+T check"
   fi
   "$vm" keys ctrl-t
-  wait "$gate" || status=$?
+  wait "$check" || status=$?
   cat "$log"
   [ "$status" = 0 ] || die "Ctrl+T in $app did not open it as a desktop tab"
 }
-new_tab_gate Files
-new_tab_gate Browser
+new_tab_check Files
+new_tab_check Browser
 "$vm" test native-atspi-smoke.sh desktop
 # Quick Settings reaches the system: the power profile changed there reads
 # back from the daemon.

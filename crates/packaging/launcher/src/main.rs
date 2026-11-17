@@ -8,18 +8,18 @@ use std::process::ExitCode;
 use clap::{Parser, Subcommand};
 use desktop_entry::launch::LaunchEnv;
 use launcher::landlock_shim::{SANDBOX_EXEC_SUBCOMMAND, run_sandbox_exec};
-use launcher::registration_gate::{LAUNCH_REGISTRATION_FD_ENV, LAUNCH_REGISTRATION_STDIN_ENV};
+use launcher::launch_hold::{LAUNCH_REGISTRATION_FD_ENV, LAUNCH_REGISTRATION_STDIN_ENV};
 use launcher::run::{IdentitySource, LaunchMode, RunOptions, launch_manifest, run_manifest};
 
 fn wait_for_registration_fd(
     fd: RawFd,
-) -> std::io::Result<Option<launcher::retained_view::OrdinaryLaunchGate>> {
+) -> std::io::Result<Option<launcher::retained_view::OrdinaryLaunchAdmission>> {
     if fd < 3 {
         return Err(std::io::ErrorKind::InvalidInput.into());
     }
-    let gate = unsafe { std::os::unix::net::UnixStream::from_raw_fd(fd) };
-    launcher::retained_view::RetainedLaunchGate::receive_registration(
-        gate,
+    let socket = unsafe { std::os::unix::net::UnixStream::from_raw_fd(fd) };
+    launcher::retained_view::RetainedLaunchAdmission::receive_registration(
+        socket,
         &launcher::owned_service::ServiceCancellation::default(),
     )
 }
@@ -29,7 +29,7 @@ fn wait_for_registration_fd(
     reason = "runs first in main before any thread is spawned, and the internal handoff variable must be removed so launched apps never inherit it"
 )]
 fn wait_for_shell_registration()
--> Result<Option<launcher::retained_view::OrdinaryLaunchGate>, String> {
+-> Result<Option<launcher::retained_view::OrdinaryLaunchAdmission>, String> {
     let on_stdin = std::env::var_os(LAUNCH_REGISTRATION_STDIN_ENV).is_some();
     let raw_fd = std::env::var(LAUNCH_REGISTRATION_FD_ENV);
     // SAFETY: process startup is single-threaded; remove the internal handoff before any launched app
@@ -39,7 +39,7 @@ fn wait_for_shell_registration()
         std::env::remove_var(LAUNCH_REGISTRATION_FD_ENV);
     }
     if on_stdin {
-        return launcher::registration_gate::wait_on_stdin()
+        return launcher::launch_hold::wait_on_stdin()
             .map(|()| None)
             .map_err(|error| format!("launch-registration handoff failed: {error}"));
     }
@@ -373,7 +373,7 @@ fn main() -> ExitCode {
 
 fn dispatch_command(
     command: Cmd,
-    retained_endpoint: Option<launcher::retained_view::OrdinaryLaunchGate>,
+    retained_endpoint: Option<launcher::retained_view::OrdinaryLaunchAdmission>,
 ) -> ExitCode {
     // Whatever runs an app, or is about to start one, leaves the session's protection from the OOM
     // killer, which it may have inherited from the compositor: an app is always a candidate.
@@ -744,7 +744,7 @@ struct RunCliArgs {
 /// entrypoint or its explicitly requested managed-service entrypoint.
 fn run_gui_command(
     args: RunCliArgs,
-    retained_endpoint: Option<launcher::retained_view::OrdinaryLaunchGate>,
+    retained_endpoint: Option<launcher::retained_view::OrdinaryLaunchAdmission>,
 ) -> ExitCode {
     warn_deprecated_minimal_libs(args.minimal_libs);
     let opts = RunOptions {
@@ -803,7 +803,7 @@ fn run_gui_command(
         if let Some(endpoint) = retained_endpoint {
             let cancellation = launcher::owned_service::ServiceCancellation::default();
             match endpoint {
-                launcher::retained_view::OrdinaryLaunchGate::Home(endpoint) => {
+                launcher::retained_view::OrdinaryLaunchAdmission::Home(endpoint) => {
                     launcher::retained_view::RetainedViewAdmission::receive(
                         endpoint,
                         &args.manifest,

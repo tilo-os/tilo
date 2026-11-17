@@ -2625,7 +2625,7 @@ impl ActivityTimeline {
             None,
             text_style,
         );
-        // Drawn after the text so a regression that forgets to gate on
+        // Drawn after the text so a regression that forgets to check on
         // `is_redacted_row` paints a visible mark.
         if is_redacted_row {
             let (dw, _) = text_renderer.measure_style(&drawn_summary, None, text_style);

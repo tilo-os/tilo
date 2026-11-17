@@ -310,7 +310,7 @@ impl crate::MediaReader for StoredByTestApp {
 /// cancelled, and which says when one changed, as the broker's hosts do:
 /// only to the caller that may observe it.
 #[derive(Clone, Default)]
-pub struct GatedHost {
+pub struct HeldHost {
     pub stub: StubHost,
     pub owner: Arc<StdMutex<Option<Caller>>>,
     pub finished: Arc<StdMutex<HashSet<InvocationId>>>,
@@ -377,7 +377,7 @@ fn map_poll(
     }
 }
 
-impl GatedHost {
+impl HeldHost {
     /// Finish `id` and wake whoever waits on a change.
     pub fn finish(&self, id: InvocationId) {
         self.finished.lock().unwrap().insert(id);
@@ -414,7 +414,7 @@ impl GatedHost {
     }
 }
 
-impl ActionHost for GatedHost {
+impl ActionHost for HeldHost {
     fn query(
         &self,
         caller: &Caller,
@@ -537,7 +537,7 @@ pub fn long_invoke(invocation: InvocationId) -> Value {
 /// could not — and each reply comes back whole, on a line of its own, as
 /// soon as it is ready rather than in the order asked. Closing the client's
 /// side ends the connection.
-pub fn overlapping_lines(host: &GatedHost, client: &std::os::unix::net::UnixStream) {
+pub fn overlapping_lines(host: &HeldHost, client: &std::os::unix::net::UnixStream) {
     client
         .set_read_timeout(Some(tilo_test_env::hang_bound()))
         .unwrap();

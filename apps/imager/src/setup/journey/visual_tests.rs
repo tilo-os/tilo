@@ -1422,10 +1422,10 @@ fn destination_discloses_usb_route_before_personal_setup() {
     let mut environment = tilo_test_env::ScopedEnv::new();
     environment.set("XDG_STATE_HOME", custody.path().join("state"));
     environment.set("XDG_CONFIG_HOME", custody.path().join("config"));
-    for runtime_gate in ["0", "1"] {
+    for runtime_check in ["0", "1"] {
         environment.set(
-            super::super::internal_install_flow::RUNTIME_GATE_VAR,
-            runtime_gate,
+            super::super::internal_install_flow::RUNTIME_ALLOW_VAR,
+            runtime_check,
         );
         let mut app = TestApp::<ImagerShell>::launched(&["--setup"]).unwrap();
         app.with_widget::<InstallerPreview, _>(|preview| {
@@ -1446,8 +1446,8 @@ fn destination_discloses_usb_route_before_personal_setup() {
                 .unwrap()
                 .name
                 .unwrap();
-            let expected = if super::super::internal_install_flow::BUILD_GATE == Some("1")
-                || runtime_gate == "1"
+            let expected = if super::super::internal_install_flow::BUILD_ALLOW == Some("1")
+                || runtime_check == "1"
             {
                 t("installer-preview-computer-body")
             } else {
@@ -1761,7 +1761,7 @@ fn missing_direct_preparation_stays_disabled_and_refuses_installation() {
     let mut environment = tilo_test_env::ScopedEnv::new();
     environment.set("XDG_STATE_HOME", custody.path().join("state"));
     environment.set("XDG_CONFIG_HOME", custody.path().join("config"));
-    environment.set(super::super::internal_install_flow::RUNTIME_GATE_VAR, "1");
+    environment.set(super::super::internal_install_flow::RUNTIME_ALLOW_VAR, "1");
     for (tag, theme) in [
         ("dark", Theme::dark()),
         ("light", Theme::light()),

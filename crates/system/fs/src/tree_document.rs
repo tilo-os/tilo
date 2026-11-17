@@ -589,7 +589,7 @@ impl TreePublisher {
             (None, Access::Unsealed) => Open::Opened(op.payload.clone()),
             (_, Access::Waiting) => Open::Later,
             // A change that does not go as this record's route does is another workspace's:
-            // cleartext into a workspace that seals is the downgrade the gate refuses, and sealed
+            // cleartext into a workspace that seals is the downgrade the check refuses, and sealed
             // content on a route with no keys to open it is not this tree's.
             (None, Access::Sealed) | (Some(_), Access::Unsealed) => Open::Never,
             (Some(metadata), Access::Sealed) => {

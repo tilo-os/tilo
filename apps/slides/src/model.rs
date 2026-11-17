@@ -1057,7 +1057,7 @@ fn seed_slide_two_column() -> Slide {
 fn seed_slide_diagram() -> Slide {
     let mut s = Slide::new(Layout::Blank);
     s.background = Background::Deep;
-    s.notes = "The route at a glance: north gate, through the plaza, out to \
+    s.notes = "The route at a glance: north check, through the plaza, out to \
                the pier. Trace it as you talk."
         .into();
     s.add(

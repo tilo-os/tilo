@@ -275,7 +275,7 @@ filesystem, no update timer, no sshd. It gives you a console with
 It is the same rootfs the desktop boots, selected by `tilo.mode=repair` on a
 *sealed* kernel command line — see [security/repair-mode.md](security/repair-mode.md)
 for how that is derived and for the authentication story (short version: on an
-encrypted machine the recovery gate verifies a passphrase against the LUKS
+encrypted machine the recovery check verifies a passphrase against the LUKS
 header, even when the disk is already unlocked).
 
 What repair mode cannot fix: a rootfs that will not mount. The composefs root is
@@ -342,8 +342,8 @@ Check the following invariants and paths:
 ```bash
 # Host-side, no VM: the invariants the mechanism rests on — that the two
 # tilo.mode values are the same length, that the repair entry sorts below every
-# deployment and carries no counter, that the health gate is wired the way
-# systemd expects, that every repair verb is behind the passphrase gate.
+# deployment and carries no counter, that the health check is wired the way
+# systemd expects, that every repair verb is behind the passphrase check.
 ./os/tests/repair_mode.sh
 
 # And that the ESP is sized for the retention window plus the repair image.

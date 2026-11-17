@@ -170,9 +170,9 @@ test('credential publication stays pending while the storage commit is outstandi
   const storage=memory();
   let release,started;
   const committing=new Promise(resolve=>{started=resolve;});
-  const gate=new Promise(resolve=>{release=resolve;});
+  const hold=new Promise(resolve=>{release=resolve;});
   const env={locks:serializedLocks(),storage:{...storage,put:async(store,key,value)=>{
-    if(store==='items'){started();await gate;}
+    if(store==='items'){started();await hold;}
     return storage.put(store,key,value);
   }}};
   const bytes=new TextEncoder().encode('unpublished auth');

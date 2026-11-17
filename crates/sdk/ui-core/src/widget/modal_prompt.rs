@@ -15,7 +15,7 @@
 //! ```
 //!
 //! A confirmation that waits for a typed phrase (erasing a disk, deleting a vault) is
-//! [`PromptBody::confirm_phrase`] with the primary action gated on [`PromptBody::confirms`]:
+//! [`PromptBody::confirm_phrase`] with the primary action depending on [`PromptBody::confirms`]:
 //!
 //! ```ignore
 //! ModalDialog::new("Erase sdb?", PromptBody::confirm_phrase(message, "sdb"))
@@ -429,9 +429,9 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        fn a_prompt_gates_on_its_real_editable_field;
+        fn a_prompt_waits_for_its_real_editable_field;
 
-        phase a_typed_phrase_gates_the_confirmation;
+        phase a_typed_phrase_checks_the_confirmation;
         {
             let body = PromptBody::confirm_phrase("Everything on sdb will be erased.", "sdb");
             let mut d = laid_out(body, Rect::new(0.0, 0.0, 800.0, 600.0));

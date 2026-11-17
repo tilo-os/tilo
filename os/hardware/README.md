@@ -236,7 +236,7 @@ from the registry tag and verify its Cosign signature and provenance before a ph
 It does not join the generic multiarch `latest`/`genN` release series. QEMU's `virt` machine
 cannot boot the Lenovo device tree its UKI carries, so the release validates the disk install
 and the signed image without claiming a physical boot; the generic ARM64 image runs the full VM
-desktop gate. The first laptop boot and device drivers still require on-device acceptance.
+desktop check. The first laptop boot and device drivers still require on-device acceptance.
 
 Local driver invocations may instead use `--hardware-profile` with already
 staged, verified firmware. Firmware transfer and hash checks establish build

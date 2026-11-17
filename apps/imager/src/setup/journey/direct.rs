@@ -75,7 +75,7 @@ impl InstallerPreview {
             "installer-review-preparation-pending"
         } else if self.personal.prepared_handle().is_none() {
             "installer-review-identity-pending"
-        } else if !crate::setup::internal_install_flow::live_gate_open() {
+        } else if !crate::setup::internal_install_flow::live_install_allowed() {
             "installer-preview-storage-release-blocked"
         } else {
             return self.direct_storage_blocker();

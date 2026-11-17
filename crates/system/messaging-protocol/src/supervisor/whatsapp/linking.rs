@@ -397,7 +397,7 @@ mod tests {
     async fn fixture() -> (
         tempfile::TempDir,
         Arc<WhatsappLinking>,
-        Arc<super::super::network::tests::Gate>,
+        Arc<super::super::network::tests::Hold>,
     ) {
         let root = tempfile::tempdir().unwrap();
         let owner = Owner {
@@ -407,18 +407,18 @@ mod tests {
             account: "fixture-account".into(),
             linking_generation: 1,
         };
-        let (gate, _, network) = super::super::network::tests::fixture(false, false);
+        let (check, _, network) = super::super::network::tests::fixture(false, false);
         let bootstrap = super::super::WhatsappBootstrap::open_profile(
             &root.path().join("sdk"),
             owner.clone(),
             secret_vault::VaultKey::from_bytes([23; 32]),
             network,
-            gate.clone(),
+            check.clone(),
         )
         .await
         .unwrap();
-        let linker = WhatsappLinking::new(owner, bootstrap.client(), gate.clone(), None).unwrap();
-        (root, linker, gate)
+        let linker = WhatsappLinking::new(owner, bootstrap.client(), check.clone(), None).unwrap();
+        (root, linker, check)
     }
     fn qr(code: &str) -> Event {
         Event::PairingQrCode(
@@ -430,7 +430,7 @@ mod tests {
     }
     #[tokio::test]
     async fn private_sdk_code_rotation_never_proves_authentication_and_revocation_clears_it() {
-        let (_root, linker, gate) = fixture().await;
+        let (_root, linker, check) = fixture().await;
         linker.event(&qr("private-first-code"));
         let first = linker
             .state
@@ -457,14 +457,14 @@ mod tests {
         assert_eq!(linker.finish(&next), Err(SendError::Unavailable));
         assert!(!linker.source.is_logged_in());
         assert!(!linker.source.is_connected());
-        gate.0.store(false, Ordering::Release);
+        check.0.store(false, Ordering::Release);
         linker.event(&qr("refused-code"));
         assert!(linker.state.lock().unwrap().presentation.is_none());
         assert_eq!(linker.finish(&next), Err(SendError::Revoked));
     }
     #[tokio::test]
     async fn expired_private_sdk_attempt_refuses_completion_before_identity_or_connection() {
-        let (_root, linker, _gate) = fixture().await;
+        let (_root, linker, _check) = fixture().await;
         linker.event(&qr("private-expiring-code"));
         let attempt = {
             let mut state = linker.state.lock().unwrap();
@@ -482,7 +482,7 @@ mod tests {
     }
     #[tokio::test]
     async fn restart_without_exact_encrypted_self_identity_cannot_connect_or_pair() {
-        let (_root, linker, _gate) = fixture().await;
+        let (_root, linker, _check) = fixture().await;
         let resumed = WhatsappLinking::new(
             linker.owner.clone(),
             linker.source.clone(),

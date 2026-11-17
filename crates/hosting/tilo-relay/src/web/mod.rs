@@ -1023,7 +1023,7 @@ async fn handle(web: &Web, request: Request<hyper::body::Incoming>) -> Response<
         return response;
     }
     // A sealed invitation is fetched and taken back with their own methods,
-    // so the shelf answers before the POST-only gate.
+    // so the shelf answers before the POST-only check.
     if let Some(handle) = tilo_relay_protocol::sealed_invitations::handle_of(request.uri().path()) {
         let handle = handle.to_owned();
         let mut response = shelf::handle(web, request, &handle).await;

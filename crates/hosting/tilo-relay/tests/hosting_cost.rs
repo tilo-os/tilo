@@ -11,7 +11,7 @@
 //! relay's state root.
 //!
 //! It prints one `HOSTING_COST key=value …` line for the cost model.
-//! It gates only deterministic byte counts, as docs/measurements/performance.md
+//! It checks only deterministic byte counts, as docs/measurements/performance.md
 //! requires of a per-PR check; the delivery latency it prints is a
 //! report, never an assertion.
 
@@ -63,7 +63,7 @@ const ROUTES: [(&str, &str); 4] = [
 ];
 /// Eight words in each document: every keystroke is a durable relay commit,
 /// whose barriers take a tenth of a second or more on a busy CI disk. What
-/// is gated is the size of single frames, which more keystrokes repeat:
+/// is guarded is the size of single frames, which more keystrokes repeat:
 /// 1,000 of them took 5 to 16 minutes and measured 2 to 3 B more at the
 /// medians and maxima, as their later edits' larger counters took more
 /// bytes. Each document still grows to the compactor's 64-entry check.

@@ -43,7 +43,7 @@ async fn posts_held(on_relay: &OnRelay) -> Result<Vec<String>, String> {
         .collect())
 }
 
-/// One round: the chat seated, posts through the action API, the relay restarted, the chat read.
+/// One round: the chat set up, posts through the action API, the relay restarted, the chat read.
 async fn round(seed: u64) {
     let mut draw = seed | 1;
     let mut next = |below: u64| {

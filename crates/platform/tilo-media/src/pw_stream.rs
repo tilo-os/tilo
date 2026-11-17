@@ -1083,13 +1083,13 @@ mod native {
         status: Arc<StreamStatus>,
     ) -> Result<(Rc<std::cell::Cell<bool>>, impl Sized), StreamError> {
         let cookie_valid = Rc::new(std::cell::Cell::new(expected_cookie.is_none()));
-        let cookie_gate = cookie_valid.clone();
+        let cookie_check = cookie_valid.clone();
         let core_status = status;
         let core_listener = core
             .add_listener_local()
             .info(move |info| {
                 let valid = expected_cookie.is_none_or(|expected| expected == info.cookie());
-                cookie_gate.set(valid);
+                cookie_check.set(valid);
                 if !valid {
                     core_status.fail("the observed audio daemon changed");
                 }

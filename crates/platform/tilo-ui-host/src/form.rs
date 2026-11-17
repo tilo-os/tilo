@@ -59,7 +59,7 @@ impl Shown {
         }
         let ready = Rc::new(Cell::new(form.ready));
         let answers = Rc::new(Answers::default());
-        let gate = Rc::clone(&ready);
+        let check = Rc::clone(&ready);
         let submit = Rc::clone(&answers);
         let cancel = Rc::clone(&answers);
         let mut sheet = ModalDialog::new(form.title.clone(), Pane::new(fields))
@@ -69,7 +69,7 @@ impl Shown {
             .secondary_action(crate::i18n::t("tilolang-form-cancel"), move || {
                 cancel.cancel.set(true);
             })
-            .primary_enabled_if(move |_| gate.get())
+            .primary_enabled_if(move |_| check.get())
             .with_foot_sheet()
             .open(true);
         let mut shown = Self {

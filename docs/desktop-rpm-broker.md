@@ -5,7 +5,7 @@ or OIDC access. A separate protected `desktop-v*` push job requests signed copie
 only after both native package lanes succeed. Host-session tests consume those
 signed copies on tags; ordinary main/manual host-session verification continues
 to consume the original unsigned candidate. Publication requires the same signed
-session result. No build, install test or current-head gate is removed.
+session result. No build, install test or current-head check is removed.
 
 `dist/rpm/sign-rpms.sh` invokes the public-artifact broker client. The executable
 is fixed at `/usr/local/libexec/tilo-desktop-rpm-broker`; it and every parent must
@@ -82,7 +82,7 @@ branch app's signing identity. Protected-tag release verification and installed
 runtime trust admission remain separate requirements.
 RPM runtime staging explicitly requires a valid bundle signature. The verifier's
 default mode accepts unsigned bundles, so a publisher field or valid content
-hashes alone cannot satisfy this staging gate. Development builds can still use
+hashes alone cannot satisfy this staging check. Development builds can still use
 their generated package-local signer; production authority is a separate check.
 
 ## Exact separate live approval boundary

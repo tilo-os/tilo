@@ -20,7 +20,7 @@ use crate::wire::{self, AccountView, AppLink, SetupView, Snapshot};
 
 mod consent;
 mod flow;
-mod gate;
+mod guard;
 mod identity;
 mod records;
 mod serve;
@@ -31,7 +31,7 @@ mod whatsapp;
 pub use serve::listen;
 
 use flow::Flow;
-use gate::{Gate, Running};
+use guard::{AccountGuard, Running};
 use identity::{Credential, Custody, Identity};
 
 /// The service's four flows.
@@ -192,7 +192,7 @@ impl Service {
         let accounts = running
             .iter()
             .map(|account| {
-                let id = account.gate().account();
+                let id = account.guard().account();
                 AccountView {
                     state: self.messaging.account_state(&id),
                     groups: self.messaging.groups(&id).is_some(),
@@ -218,24 +218,24 @@ impl Service {
         }
     }
 
-    /// A new running account for `identity`, gated by its grant and the
+    /// A new running account for `identity`, guarded by its grant and the
     /// person's records, registered with the apps' client.
     pub(crate) fn account<A: Running + 'static>(
         &self,
         identity: &Identity,
         credential: Credential,
         scope: &str,
-        make: impl FnOnce(Arc<Gate>, Arc<AccountSupervisor>) -> A,
+        make: impl FnOnce(Arc<AccountGuard>, Arc<AccountSupervisor>) -> A,
     ) -> Result<Arc<A>, SendError> {
         let identity = identity.running();
         let authority =
             records::CurrentAuthority::new(&identity, &credential, scope, self.session.clone())?;
-        let gate = Gate::new(identity, credential, authority)?;
+        let guard = AccountGuard::new(identity, credential, authority)?;
         let supervisor =
-            AccountSupervisor::new_with_authority(&gate.identity.owner, Some(gate.clone()))?;
-        let account = Arc::new(make(gate, supervisor));
+            AccountSupervisor::new_with_authority(&guard.identity.owner, Some(guard.clone()))?;
+        let account = Arc::new(make(guard, supervisor));
         self.registry
-            .register(account.gate().account(), account.client())
+            .register(account.guard().account(), account.client())
             .map_err(|_| SendError::AlreadyReserved)?;
         self.running
             .lock()
@@ -250,7 +250,7 @@ impl Service {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .iter()
-            .any(|running| &running.gate().account() == account)
+            .any(|running| &running.guard().account() == account)
     }
 
     /// The directory an account's private state lives in; never named by a

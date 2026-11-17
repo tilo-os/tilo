@@ -9,7 +9,7 @@ use tilo_user_identity::{
 
 /// What a test's session with this host runs in: `workspaces`, served by
 /// `own`, a device of `user`, with fresh trust and revocations and every
-/// other gate closed.
+/// other hold closed.
 fn peer_context(workspaces: WorkspaceRegistry, user: [u8; 32], own: &DeviceCert) -> PeerContext {
     PeerContext {
         workspaces,
@@ -69,14 +69,14 @@ pub(super) fn certified_device(
 
 /// The trust one test's connection answers at, kept alive beside the
 /// context that borrows them.
-struct Gates {
+struct Holds {
     trust: Arc<std::sync::RwLock<crate::policy::TrustPolicy>>,
     revocations: Arc<std::sync::RwLock<RevocationList>>,
     metrics: Arc<crate::metrics::Metrics>,
 }
 
-impl Gates {
-    /// Gates that admit this relay's own person's devices and revoke nobody.
+impl Holds {
+    /// Holds that admit this relay's own person's devices and revoke nobody.
     fn open() -> Self {
         Self {
             trust: Arc::new(std::sync::RwLock::new(
@@ -87,7 +87,7 @@ impl Gates {
         }
     }
 
-    /// What `who`'s connection is handled in, with every gate a test does not
+    /// What `who`'s connection is handled in, with every hold a test does not
     /// vary left closed.
     fn ctx<'a>(
         &'a self,
@@ -606,8 +606,8 @@ async fn retained_replay_failure_and_duplicate_retirement_are_recoverable() {
     )])));
     let (outbound, _rx) = mpsc::channel(8);
     let (disconnect, _) = mpsc::channel(1);
-    let gates = Gates::open();
-    let session = gates.ctx(
+    let holds = Holds::open();
+    let session = holds.ctx(
         &registry,
         &outbound,
         &disconnect,
@@ -795,8 +795,8 @@ async fn fresh_membership_read_releases_routing_lock_and_fences_replaced_session
     }
     let wr = Arc::new(AsyncMutex::new(wr));
     let registry = Arc::new(AsyncMutex::new(HashMap::from([(id, wr.clone())])));
-    let gates = Gates::open();
-    let session = gates.ctx(&registry, &atx, &disconnect, (&user.public_key, &a.cert));
+    let holds = Holds::open();
+    let session = holds.ctx(&registry, &atx, &disconnect, (&user.public_key, &a.cert));
     let frame = tilo_actions::remote::RemoteActionFrame::new(
         tilo_actions::remote::RemoteActionMessage::CatalogueRequest {
             correlation: 1,
@@ -881,8 +881,8 @@ async fn authorization_rechecks_certificates_after_blocking_membership_read() {
     }
     let wr = Arc::new(AsyncMutex::new(wr));
     let registry = Arc::new(AsyncMutex::new(HashMap::from([(id, wr.clone())])));
-    let gates = Gates::open();
-    let session = gates.ctx(&registry, &atx, &disconnect, (&user.public_key, &a.cert));
+    let holds = Holds::open();
+    let session = holds.ctx(&registry, &atx, &disconnect, (&user.public_key, &a.cert));
     let frame = || {
         tilo_actions::remote::RemoteActionFrame::new(
             tilo_actions::remote::RemoteActionMessage::CatalogueRequest {
@@ -919,9 +919,9 @@ async fn authorization_rechecks_certificates_after_blocking_membership_read() {
     // Each end is rechecked after its membership read: the sender's
     // certificate, then the target's.
     for device in [a.device_public_key, b.device_public_key] {
-        *gates.revocations.write().unwrap() = RevocationList::new();
+        *holds.revocations.write().unwrap() = RevocationList::new();
         let (release, reached) = crate::store::test_barrier::install(&root_path, "membership-read");
-        let list = gates.revocations.clone();
+        let list = holds.revocations.clone();
         let entry = revocation(device);
         let handle = tokio::runtime::Handle::current();
         let revoke = std::thread::spawn(move || {
@@ -974,7 +974,7 @@ impl crate::app_serving::AppActionServer for CountingServer {
 }
 #[tokio::test]
 async fn a_device_presence_frame_rearms_its_live_checkpoint() {
-    // Wiring for the per-device live checkpoint gate: after a device has been served one live
+    // Wiring for the per-device live checkpoint hold: after a device has been served one live
     // checkpoint the relay stops fanning checkpoints to it; a presence frame
     // from that device (the browser's hello / SyncReq / rejected-checkpoint
     // path) must re-arm exactly that device so the native's fresh
@@ -1007,8 +1007,8 @@ async fn a_device_presence_frame_rearms_its_live_checkpoint() {
 
     let wr = Arc::new(AsyncMutex::new(wr));
     let registry = Arc::new(AsyncMutex::new(HashMap::from([(id, wr.clone())])));
-    let gates = Gates::open();
-    let session = gates.ctx(&registry, &btx, &bdis, (&user.public_key, &browser.cert));
+    let holds = Holds::open();
+    let session = holds.ctx(&registry, &btx, &bdis, (&user.public_key, &browser.cert));
     // The browser sends a SyncReq as presence.
     handle_presence(
         &browser,

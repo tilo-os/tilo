@@ -1383,14 +1383,14 @@ for (const attachSignal of [false, true]) test(`leaving a page joins peer storag
   runtime.profile_value = (profile, device, key) => values.get(`${profile}/${device}/${key}`);
   runtime.set_profile_value = (profile, device, key, bytes) => values.set(`${profile}/${device}/${key}`, bytes);
   let release, begun, reentered, releases = 0;
-  const gate = new Promise(resolve => {release = resolve;});
+  const hold = new Promise(resolve => {release = resolve;});
   const started = new Promise(resolve => {begun = resolve;});
   const controller = new AbortController();
   const desktop = {
     async openProfileStorage() {
       return {
         async flush() {},
-        async release() { releases++; begun(); reentered = peer.dispose(); await gate; },
+        async release() { releases++; begun(); reentered = peer.dispose(); await hold; },
       };
     },
   };

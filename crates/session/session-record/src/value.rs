@@ -1,7 +1,7 @@
 //! The report's values, and the two ways the report prints them: JSON as
 //! `json.dumps(indent=2, sort_keys=True)` writes it (the format the report has
 //! always had, which scripts and tests read), and the `repr` form the render
-//! gate's log lines use.
+//! check's log lines use.
 
 use std::fmt::Write as _;
 

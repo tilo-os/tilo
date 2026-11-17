@@ -3,7 +3,7 @@
 //
 // - fakeIndexedDB: databases shared between "agents" (page, workers), one
 //   transaction at a time per database, request callbacks on later ticks, an
-//   auto-commit that tests can gate, and a put failure hook.
+//   auto-commit that tests can check, and a put failure hook.
 // - fakeLocks: a Web Locks manager shared between agents; a terminated agent
 //   releases its locks asynchronously like a real user agent.
 // - fakeWorkers: Worker-shaped objects over MessageChannel that run the real
@@ -20,7 +20,7 @@ const compareKeys=(a,b)=>{
 const domError=(name,message=`${name} simulated`)=>Object.assign(Error(message),{name});
 
 export function fakeIndexedDB(){
-  const databases=new Map(),log=[],hooks={commitGate:null,failPut:null},pending=new Set();
+  const databases=new Map(),log=[],hooks={commitHold:null,failPut:null},pending=new Set();
   function createTransaction(db,owner,mode,options){
     const tx=new EventTarget();
     const entry={owner,mode,durability:options.durability??'default',outcome:'pending',keys:[],reads:[]};log.push(entry);
@@ -51,7 +51,7 @@ export function fakeIndexedDB(){
       await later();
       if(finished||pumping)return;
       if(queue.length){void pump();return;}
-      if(hooks.commitGate){const gate=hooks.commitGate;hooks.commitGate=null;gate.reached();await gate.released;if(finished)return;}
+      if(hooks.commitHold){const check=hooks.commitHold;hooks.commitHold=null;check.reached();await check.released;if(finished)return;}
       finish('complete');
     };
     const schedule=(work,request={onsuccess:null,onerror:null,result:undefined,error:null})=>{queue.push({request,work});void pump();return request;};
@@ -116,7 +116,7 @@ export function fakeIndexedDB(){
     terminate(owner){for(const control of [...pending])if(control.owner===owner)control.abort(domError('AbortError','agent terminated'));},
     rows:(name='tilo-browser-records-v1',store='records')=>[...(databases.get(name)?.stores.get(store)?.rows.values()??[])],
     transactions:()=>log,
-    gateNextCommit(){let reached,release;const held=new Promise(resolve=>{reached=resolve;}),released=new Promise(resolve=>{release=resolve;});hooks.commitGate={reached,released};return {held,release};},
+    holdNextCommit(){let reached,release;const held=new Promise(resolve=>{reached=resolve;}),released=new Promise(resolve=>{release=resolve;});hooks.commitHold={reached,released};return {held,release};},
     failNextPut(name){hooks.failPut=domError(name);},
   };
 }

@@ -133,7 +133,7 @@ impl<R: BufRead, W: Write> Session<R, W> {
         })
     }
 
-    /// Send on exactly this account after the host's durable gate has opened.
+    /// Send on exactly this account after the host's durable check has opened.
     pub fn send<J: SendJournal>(
         &mut self,
         journal: &mut J,

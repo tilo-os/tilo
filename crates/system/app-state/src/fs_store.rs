@@ -5,7 +5,7 @@
 //!
 //! - a record is `<root>/<app>/workspaces/<workspace>/records/<record>/`
 //!   holding `state.automerge`, the writer identity in `actor` and the
-//!   single-owner gate `canonical.lock`;
+//!   single-owner check `canonical.lock`;
 //! - a view is `<root>/instance-views/<hex device>/<hex workspace>/<n>.postcard`.
 //!
 //! Writes return at once. One background thread per store coalesces each
@@ -32,8 +32,8 @@ use durable_store::{
 };
 
 use crate::{
-    ACTOR_FILE, CANONICAL_GATE, DEFAULT_DEBOUNCE, DOCUMENT_FILE, DOCUMENT_SUCCESSOR_CLAIM,
-    DOCUMENTS_DIR, LOAD_HINT_FILE, LOCK_FILE, StoreError, WORKSPACES_DIR, acquire_gate,
+    ACTOR_FILE, CANONICAL_LOCK, DEFAULT_DEBOUNCE, DOCUMENT_FILE, DOCUMENT_SUCCESSOR_CLAIM,
+    DOCUMENTS_DIR, LOAD_HINT_FILE, LOCK_FILE, StoreError, WORKSPACES_DIR, acquire_lock,
     acquire_writer_lock, checked_app_id, claim_marker, ensure_state_dir, io_err, open_directory,
     same_file, sync_directory_ancestors, validate_absolute_directory, validate_document_key,
 };
@@ -185,7 +185,7 @@ struct Writing {
 
 struct Batch {
     // A queued commit keeps its view slot exclusive even after the caller drops.
-    view_gate: Option<Arc<advisory_lock::FileLock>>,
+    view_lock: Option<Arc<advisory_lock::FileLock>>,
     /// The lease a document's write was accepted under, kept until it
     /// commits: a caller that may not wait (a frame loop closing an app)
     /// lets go of its lease before the write lands, and the document must
@@ -218,8 +218,8 @@ struct KeyStatus {
 struct Files {
     /// The document's directory and its handle; `None` for a view.
     directory: Option<(PathBuf, File)>,
-    /// The single-owner gate (`canonical.lock`, or a view slot's `.lock`).
-    gate: File,
+    /// The single-owner check (`canonical.lock`, or a view slot's `.lock`).
+    check: File,
     /// The primary shared writer's lock file, for [`prepared::Access::Shared`].
     writer_lock: Option<File>,
 }
@@ -227,7 +227,7 @@ struct Files {
 struct Owner {
     directory: PathBuf,
     handle: File,
-    gate: advisory_lock::FileLock,
+    check: advisory_lock::FileLock,
     exclusive: bool,
     /// Held by the primary shared writer: the actor sidecar is its alone.
     /// Kept open, never read, for the lock it holds.
@@ -238,7 +238,7 @@ impl Owner {
     fn check(&self) -> Result<(), StoreError> {
         for (opened, path) in [
             (&self.handle, self.directory.clone()),
-            (self.gate.file(), self.directory.join(CANONICAL_GATE)),
+            (self.check.file(), self.directory.join(CANONICAL_LOCK)),
         ] {
             if !same_file(opened, &path) {
                 return Err(StoreError::SourceChanged { path });
@@ -249,7 +249,7 @@ impl Owner {
 }
 
 struct FsLease {
-    _view_gate: Option<Arc<advisory_lock::FileLock>>,
+    _view_lock: Option<Arc<advisory_lock::FileLock>>,
     key: StorageKey,
     owner: Option<Arc<Owner>>,
     shared: Weak<Shared>,
@@ -277,7 +277,7 @@ impl Drop for FsLease {
 }
 
 enum Target {
-    /// A directory holding `state.automerge`, its actor sidecar and gates.
+    /// A directory holding `state.automerge`, its actor sidecar and checks.
     Document(PathBuf),
     View(PathBuf),
 }
@@ -763,7 +763,7 @@ impl DurableStore for FsStore {
                 snapshot.apply(&op, writer);
             }
             let writer = writer.map(<[u8]>::to_vec);
-            let view_gate = state.view_leases.get(key).cloned();
+            let view_lock = state.view_leases.get(key).cloned();
             let owner = state.owners.get(key).and_then(|live| live.first()).cloned();
             if let Some(batch) = state.queue.get_mut(key) {
                 batch.op.coalesce(op);
@@ -776,7 +776,7 @@ impl DurableStore for FsStore {
                 state.queue.insert(
                     key.clone(),
                     Batch {
-                        view_gate,
+                        view_lock,
                         owner,
                         first: revision,
                         last: revision,
@@ -934,13 +934,13 @@ impl DurableStore for FsStore {
                 if let Some(parent) = path.parent() {
                     fs::create_dir_all(parent).map_err(|e| io_err("creating view directory", e))?;
                 }
-                // Never unlink this gate: an old handle and a new pathname
+                // Never unlink this check: an old handle and a new pathname
                 // must not admit two writers to the same bounded slot.
-                let gate = Arc::new(acquire_gate(&path.with_extension("lock"), true)?);
-                state.view_leases.insert(key.clone(), gate.clone());
+                let check = Arc::new(acquire_lock(&path.with_extension("lock"), true)?);
+                state.view_leases.insert(key.clone(), check.clone());
                 drop(state);
                 Ok(Box::new(FsLease {
-                    _view_gate: Some(gate),
+                    _view_lock: Some(check),
                     key: key.clone(),
                     owner: None,
                     shared: Arc::downgrade(&self.shared),
@@ -1142,25 +1142,25 @@ impl FsStore {
         } else {
             advisory_lock::LockMode::Exclusive
         };
-        let gate =
-            advisory_lock::FileLock::try_lock(files.gate, mode).map_err(|error| match error {
+        let check =
+            advisory_lock::FileLock::try_lock(files.check, mode).map_err(|error| match error {
                 advisory_lock::TryLockError::WouldBlock => SeamError::Busy(key.to_string()),
                 advisory_lock::TryLockError::Error(error) => SeamError::Failed {
-                    context: format!("acquiring the gate of {key}"),
+                    context: format!("acquiring the check of {key}"),
                     message: error.to_string(),
                 },
             })?;
         let Some((directory, handle)) = files.directory else {
-            let gate = Arc::new(gate);
+            let check = Arc::new(check);
             let mut state = lock(&self.shared.state);
             if state.view_leases.contains_key(key) {
                 return Err(SeamError::Busy(key.to_string()));
             }
-            state.view_leases.insert(key.clone(), Arc::clone(&gate));
+            state.view_leases.insert(key.clone(), Arc::clone(&check));
             state.cache.insert(key.clone(), prepared.snapshot);
             drop(state);
             let lease: Lease = Box::new(FsLease {
-                _view_gate: Some(gate),
+                _view_lock: Some(check),
                 key: key.clone(),
                 owner: None,
                 shared: Arc::downgrade(&self.shared),
@@ -1186,7 +1186,7 @@ impl FsStore {
         let owner = Arc::new(Owner {
             directory,
             handle,
-            gate,
+            check,
             exclusive: access == Access::Exclusive,
             writer_lock,
         });
@@ -1216,7 +1216,7 @@ impl FsStore {
         }
         drop(state);
         Ok(FsLease {
-            _view_gate: None,
+            _view_lock: None,
             key: key.clone(),
             owner: Some(owner),
             shared: Arc::downgrade(&self.shared),
@@ -1400,11 +1400,11 @@ fn open_owner(directory: &Path) -> Result<Owner, StoreError> {
     fs::create_dir_all(directory).map_err(|e| io_err("creating canonical directory", e))?;
     let handle =
         open_directory(directory, false).map_err(|e| io_err("opening canonical directory", e))?;
-    let gate = acquire_gate(&directory.join(CANONICAL_GATE), true)?;
+    let check = acquire_lock(&directory.join(CANONICAL_LOCK), true)?;
     let owner = Owner {
         directory: directory.to_path_buf(),
         handle,
-        gate,
+        check,
         exclusive: true,
         writer_lock: None,
     };
@@ -1416,13 +1416,13 @@ fn open_owner(directory: &Path) -> Result<Owner, StoreError> {
     Ok(owner)
 }
 
-/// Join a document's shared writers: the shared gate keeps exclusive owners
+/// Join a document's shared writers: the shared check keeps exclusive owners
 /// out, and whoever wins the writer lock is primary.
 fn open_shared_owner(directory: &Path) -> Result<Owner, StoreError> {
     ensure_state_dir(directory)?;
     let handle =
         open_directory(directory, false).map_err(|e| io_err("opening state directory", e))?;
-    let gate = acquire_gate(&directory.join(CANONICAL_GATE), false)?;
+    let check = acquire_lock(&directory.join(CANONICAL_LOCK), false)?;
     let writer_lock = acquire_writer_lock(&directory.join(LOCK_FILE));
     if writer_lock.is_none() {
         // Designed, not a fault: the instance that won the writer lock is the
@@ -1436,7 +1436,7 @@ fn open_shared_owner(directory: &Path) -> Result<Owner, StoreError> {
     let owner = Owner {
         directory: directory.to_path_buf(),
         handle,
-        gate,
+        check,
         exclusive: false,
         writer_lock,
     };
@@ -1559,7 +1559,7 @@ fn writer_loop(shared: &Shared) {
         let result = commit(shared, &taken);
         guard.current = None;
         // Release the owner's handles before waking flushers: a caller that
-        // then drops its lease must find the gate free.
+        // then drops its lease must find the check free.
         let Taken {
             key,
             mut batch,
@@ -1568,7 +1568,7 @@ fn writer_loop(shared: &Shared) {
             ..
         } = taken;
         drop(owner);
-        drop(batch.view_gate.take());
+        drop(batch.view_lock.take());
         finish(shared, &key, &batch, &op, result, started);
     }
     guard.finished = true;
@@ -2154,7 +2154,7 @@ mod tests {
             assert!(matches!(peer.lease(&key), Err(SeamError::Busy(_))));
             store.flush(Some(&key)).unwrap();
             assert_eq!(store.durability(&key, revision), Durability::Durable);
-            // The worker must release the gate before flush wakes its caller.
+            // The worker must release the check before flush wakes its caller.
             let _next = peer.lease(&key).unwrap();
             assert_eq!(peer.read(&key).unwrap().unwrap().bytes, b"evidence");
         }
@@ -2297,8 +2297,8 @@ mod tests {
                 let directory =
                     DocStore::workspace_document_dir_at(tmp.path(), "so.tilo.test", "workspace-a", "rec")
                         .unwrap();
-                fs::remove_file(directory.join(CANONICAL_GATE)).unwrap();
-                fs::write(directory.join(CANONICAL_GATE), b"replacement").unwrap();
+                fs::remove_file(directory.join(CANONICAL_LOCK)).unwrap();
+                fs::write(directory.join(CANONICAL_LOCK), b"replacement").unwrap();
                 store
                     .write(&key, WriteOp::Replace(b"forbidden".to_vec()), None)
                     .unwrap();
@@ -2345,7 +2345,7 @@ mod tests {
         release.send(()).unwrap();
         let worker = tilo_test_env::recv("the preparation's wake", &notified);
         assert_ne!(worker, thread::current().id());
-        for name in [CANONICAL_GATE, LOCK_FILE] {
+        for name in [CANONICAL_LOCK, LOCK_FILE] {
             assert!(directory.join(name).is_file(), "{name} was not created");
         }
         let lease = fs.lease_shared(&key).unwrap();
@@ -2430,10 +2430,10 @@ mod tests {
         });
     }
 
-    /// A gate another process holds refuses the lease once the store's
+    /// A check another process holds refuses the lease once the store's
     /// thread has opened it, as it does a caller that waits.
     #[test]
-    fn a_lease_without_waiting_is_refused_while_another_process_holds_the_gate() {
+    fn a_lease_without_waiting_is_refused_while_another_process_holds_the_check() {
         let tmp = TempDir::new().unwrap();
         let fs = FsStore::with_debounce(tmp.path(), Duration::ZERO);
         let key = record("held");
@@ -2441,10 +2441,10 @@ mod tests {
             panic!("a record is a document");
         };
         fs::create_dir_all(&directory).unwrap();
-        // Another open of the gate is another description: its lock
+        // Another open of the check is another description: its lock
         // conflicts as another process's would.
         let _elsewhere = advisory_lock::FileLock::open(
-            &directory.join(CANONICAL_GATE),
+            &directory.join(CANONICAL_LOCK),
             advisory_lock::LockMode::Exclusive,
         )
         .unwrap();
@@ -2529,12 +2529,12 @@ mod tests {
                 fs::read_to_string(directory.join(ACTOR_FILE)).unwrap(),
                 sidecar_text(&[0xab, 0x01], this_machine())
             );
-            assert!(directory.join(CANONICAL_GATE).is_file());
+            assert!(directory.join(CANONICAL_LOCK).is_file());
             assert_eq!(
                 fs::read(tmp.path().join("instance-views/44/41/3.postcard")).unwrap(),
                 b"view"
             );
-            // The gate is the one legacy and canonical openers already respect.
+            // The check is the one legacy and canonical openers already respect.
             assert!(matches!(
                 DocStore::open_canonical_at("so.tilo.test", &directory),
                 Err(StoreError::WriterBusy { .. })

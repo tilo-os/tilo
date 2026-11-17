@@ -665,7 +665,7 @@ pub struct FrameHarness {
     /// Re-entrancy guard for the geometry check, whose forced rebuild runs through `try_relayout`
     /// itself.
     verifying_geometry: bool,
-    /// Concrete type of `root` when it was mounted through [`FrameHarness::for_root`]; gates
+    /// Concrete type of `root` when it was mounted through [`FrameHarness::for_root`]; checks
     /// [`FrameHarness::root`].
     root_type: Option<std::any::TypeId>,
     /// How the node the root is laid out in is sized and styled.
@@ -3882,7 +3882,7 @@ impl FrameHarness {
         // enabled state the user would see. A quiet frame that kept its
         // composition and focus would write what the last frame wrote.
         // What the tree has was drawn from the permissions of that frame.
-        // A change since moves what gated widgets paint with nothing in the
+        // A change since moves what guarded widgets paint with nothing in the
         // tree marking it: the retained drawings go, and this frame draws
         // the widgets again instead of showing the last drawing.
         if self.permissions_moved() {
@@ -11071,7 +11071,7 @@ mod tests {
     }
 
     #[test]
-    fn a_tap_seats_the_caret_and_a_double_tap_selects_the_word() {
+    fn a_tap_places_the_caret_and_a_double_tap_selects_the_word() {
         let tapped = |taps: usize| {
             let mut driver = FrameHarness::new_with_controlled_inputs(
                 State::new(),

@@ -651,7 +651,7 @@ mod tests {
             assert_eq!(
                 discard.contract.confirmation,
                 tilo_actions::ConfirmationPolicy::Confirm,
-                "agent/palette discard must pass the host confirmation gate"
+                "agent/palette discard must pass the host confirmation check"
             );
             assert_eq!(discard.contract.risk, tilo_actions::RiskLevel::Destructive);
         }

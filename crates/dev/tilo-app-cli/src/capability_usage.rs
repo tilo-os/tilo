@@ -2,7 +2,7 @@
 //! `tilo-app.toml` declares.
 //!
 //! The evidence table is `tools/policy/app_capability_usage.toml`, which the
-//! repository's policy gate (`tools/policy/check_app_capabilities.py`) reads
+//! repository's policy check (`tools/policy/check_app_capabilities.py`) reads
 //! too: production dependencies, `package/feature` selections, source paths
 //! (also inside `use a::{..}` groups) and method calls, each naming the
 //! capability it implies. The code read is the portability lint's: the

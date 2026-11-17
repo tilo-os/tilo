@@ -3,7 +3,7 @@
 // and the page copies a prompt. What the prompt tells an agent to run runs
 // here, headless, as an agent would run it: `tilo login <code>` with the
 // `tilo` command this commit builds (the installer's download is the release
-// pipeline's to prove, not this gate's). The tab must follow each step and
+// pipeline's to prove, not this check's). The tab must follow each step and
 // end in the person's own workspace, with the agent there and what it does
 // shown beside its name.
 //
@@ -290,21 +290,21 @@ const commandOf = prompt => {
 // reads as one run-together line.
 const followSteps = async (tab, done) => {
   await tab.evaluate(`(() => {
-    const seen = globalThis.__gateSteps ??= [];
+    const seen = globalThis.__checkSteps ??= [];
     const read = () => {
       for (const item of document.querySelectorAll('#first-run-steps li')) {
         const line = item.textContent.trim();
         if (line && !seen.includes(line)) seen.push(line);
       }
     };
-    globalThis.__gateStepsWatch ??= new MutationObserver(read);
-    globalThis.__gateStepsWatch.observe(document.documentElement, {subtree: true, childList: true, characterData: true});
+    globalThis.__checkStepsWatch ??= new MutationObserver(read);
+    globalThis.__checkStepsWatch.observe(document.documentElement, {subtree: true, childList: true, characterData: true});
     read();
   })()`).catch(error => fail(`the tab's steps could not be followed: ${error.message}`));
   // The watch above keeps every line the list held; the wait ends when the
   // screen says it is done, or a step's worth of steps has gone by.
   await tab.waitFor(`!!(${done})`, {timeout: stepLimit(4)}).catch(() => {});
-  return tab.evaluate('globalThis.__gateSteps ?? []').catch(() => []);
+  return tab.evaluate('globalThis.__checkSteps ?? []').catch(() => []);
 };
 // The person the page is, by their root, and the workspace in front.
 // The person is who the page keeps its memberships as, on the relay's host.
@@ -414,7 +414,7 @@ let answers = '';
 server.stdout.on('data', chunk => { answers += chunk; report.mcp = answers.slice(-2000); });
 server.stderr.on('data', chunk => { answers += chunk; report.mcp = answers.slice(-2000); });
 for (const line of [
-  {jsonrpc: '2.0', id: 1, method: 'initialize', params: {protocolVersion: '2025-06-18', capabilities: {}, clientInfo: {name: 'gate', version: '1'}}},
+  {jsonrpc: '2.0', id: 1, method: 'initialize', params: {protocolVersion: '2025-06-18', capabilities: {}, clientInfo: {name: 'check', version: '1'}}},
   {jsonrpc: '2.0', method: 'notifications/initialized'},
   {jsonrpc: '2.0', id: 2, method: 'tools/call', params: {name: 'tilo_ls', arguments: {}}},
 ]) server.stdin.write(`${JSON.stringify(line)}\n`);
@@ -461,7 +461,7 @@ const call = async (name, args) => {
   if (answer.error || answer.result?.isError) await fail(`the second agent's ${name} ${JSON.stringify(args)} failed: ${said}`);
   return said;
 };
-await ask('initialize', {protocolVersion: '2025-06-18', capabilities: {}, clientInfo: {name: 'gate-second', version: '1'}});
+await ask('initialize', {protocolVersion: '2025-06-18', capabilities: {}, clientInfo: {name: 'check-second', version: '1'}});
 otherAgent.stdin.write(`${JSON.stringify({jsonrpc: '2.0', method: 'notifications/initialized'})}\n`);
 const noteTitle = 'Hello from the second agent';
 await call('tilo_do', {path: 'notes#open'});

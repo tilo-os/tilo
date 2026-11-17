@@ -282,11 +282,11 @@ fn session_task(
     // The transport this session settles its own keys over; none when the device's service does.
     let governance = keys.is_none().then(HostGovernance::default);
     let workspace_keys = keys.unwrap_or_else(|| {
-        let gates = Arc::new(tilo_workspace_keys::Gates::default());
+        let checks = Arc::new(tilo_workspace_keys::SealChecks::default());
         tilo_workspace_keys::SharedKeys::new(if lent {
-            keyless_keys(&replicas, &gates)
+            keyless_keys(&replicas, &checks)
         } else {
-            open_keys(&replicas, &key_state, vault, &signer, &gates)
+            open_keys(&replicas, &key_state, vault, &signer, &checks)
         })
     });
     let engine = Arc::new(crate::engine::Engine::holding(
@@ -2230,7 +2230,7 @@ fn open_keys(
     state: &crate::custody::StoredKeys,
     vault: [u8; 32],
     signer: &Arc<dyn DeviceSigner>,
-    gates: &Arc<tilo_workspace_keys::Gates>,
+    checks: &Arc<tilo_workspace_keys::SealChecks>,
 ) -> tilo_workspace_keys::WorkspaceKeys {
     let directory = || {
         Box::new(crate::workspace_keys::OwnerDirectory::reader(
@@ -2245,10 +2245,10 @@ fn open_keys(
             role: tilo_workspace_keys::KeyRole::Follower,
         },
         directory(),
-        Arc::clone(gates) as Arc<dyn tilo_workspace_keys::GateRegistry>,
+        Arc::clone(checks) as Arc<dyn tilo_workspace_keys::SealCheckRegistry>,
     )
     .unwrap_or_else(|_| {
-        tilo_workspace_keys::WorkspaceKeys::without_store(directory(), Arc::clone(gates) as _)
+        tilo_workspace_keys::WorkspaceKeys::without_store(directory(), Arc::clone(checks) as _)
     })
 }
 
@@ -2258,13 +2258,13 @@ fn open_keys(
 /// key in each workspace's group is its engine's.
 fn keyless_keys(
     replicas: &crate::replica::Replicas,
-    gates: &Arc<tilo_workspace_keys::Gates>,
+    checks: &Arc<tilo_workspace_keys::SealChecks>,
 ) -> tilo_workspace_keys::WorkspaceKeys {
     tilo_workspace_keys::WorkspaceKeys::without_store(
         Box::new(crate::workspace_keys::OwnerDirectory::reader(
             replicas.owner(),
         )),
-        Arc::clone(gates) as Arc<dyn tilo_workspace_keys::GateRegistry>,
+        Arc::clone(checks) as Arc<dyn tilo_workspace_keys::SealCheckRegistry>,
     )
 }
 

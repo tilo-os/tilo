@@ -2598,12 +2598,12 @@ mod tests {
     /// A key whose signatures wait for the test to let them go: a write that signs through it is
     /// under way until then, whatever the machine's speed.
     #[derive(Default)]
-    struct Gate {
+    struct Hold {
         held: std::sync::atomic::AtomicBool,
         waiting: std::sync::Mutex<Vec<std::task::Waker>>,
     }
 
-    impl Gate {
+    impl Hold {
         fn held(&self) -> bool {
             self.held.load(std::sync::atomic::Ordering::SeqCst)
         }
@@ -2614,20 +2614,20 @@ mod tests {
 
         fn open(&self) {
             self.held.store(false, std::sync::atomic::Ordering::SeqCst);
-            let waiting = std::mem::take(&mut *self.waiting.lock().expect("the gate"));
+            let waiting = std::mem::take(&mut *self.waiting.lock().expect("the hold"));
             for waker in waiting {
                 waker.wake();
             }
         }
     }
 
-    /// A device key signing behind a [`Gate`].
-    struct GatedSigner {
+    /// A device key signing behind a [`Hold`].
+    struct HeldSigner {
         key: ed25519_dalek::SigningKey,
-        gate: Arc<Gate>,
+        hold: Arc<Hold>,
     }
 
-    impl collab_types::signer::DeviceSigner for GatedSigner {
+    impl collab_types::signer::DeviceSigner for HeldSigner {
         fn device_public_key(&self) -> [u8; 32] {
             self.key.verifying_key().to_bytes()
         }
@@ -2638,14 +2638,14 @@ mod tests {
 
         fn sign(&self, message: Vec<u8>) -> collab_types::signer::SignFuture<'_> {
             let signature = ed25519_dalek::Signer::sign(&self.key, &message).to_bytes();
-            let gate = Arc::clone(&self.gate);
+            let hold = Arc::clone(&self.hold);
             Box::pin(std::future::poll_fn(move |context| {
-                if gate.held() {
-                    gate.waiting
+                if hold.held() {
+                    hold.waiting
                         .lock()
-                        .expect("the gate")
+                        .expect("the hold")
                         .push(context.waker().clone());
-                    if gate.held() {
+                    if hold.held() {
                         return std::task::Poll::Pending;
                     }
                 }
@@ -2687,13 +2687,13 @@ mod tests {
         let root = SigningKey::from_bytes(&[0x30; 32]);
         let key = SigningKey::from_bytes(&[0x31; 32]);
         let cert = tilo_peer_state::owner::testing::certificate(&root, &key, "Laptop");
-        let gate = Arc::new(Gate::default());
-        let theirs = Arc::clone(&gate);
+        let hold = Arc::new(Hold::default());
+        let theirs = Arc::clone(&hold);
         let engine = Arc::new(
             Engine::open(
                 tilo_identity_host::custody::HostIdentity::kept(
                     cert.clone(),
-                    GatedSigner { key, gate: theirs },
+                    HeldSigner { key, hold: theirs },
                 ),
                 Some(state.path()),
                 std::iter::empty(),
@@ -2760,7 +2760,7 @@ mod tests {
         let layout = (workspace, Route::layout());
         // The write's signature waits for the test: it is under way, so nothing of it can have been
         // taken in here.
-        gate.hold();
+        hold.hold();
         desktops.capture(&engine, &tree);
         assert!(
             desktops.held(&layout, |held| matches!(
@@ -2788,7 +2788,7 @@ mod tests {
 
         // The task answers, and the change it wrote is one step of the person's in the layout's
         // history, on any of their devices.
-        gate.open();
+        hold.open();
         heard
             .recv_timeout(std::time::Duration::from_secs(30))
             .expect("the write wakes the loop once it is done");
@@ -2828,10 +2828,10 @@ mod tests {
             .for_each(|strip| strip.name = "Moved".to_owned());
         let standing = Standing::of(&engine);
         let _ = desktops.settled(standing, &tree);
-        gate.hold();
+        hold.hold();
         desktops.capture(&engine, &tree);
         desktops.follow(&engine, "", &mut tree.clone());
-        gate.open();
+        hold.open();
         heard
             .recv_timeout(std::time::Duration::from_secs(30))
             .expect("the write wakes the loop once it is done");

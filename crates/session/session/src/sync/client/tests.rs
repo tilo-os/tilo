@@ -584,7 +584,7 @@ tilo_test_env::scenario! {
 }
 
 /// Two relays nobody listens on: this endpoint never has a home relay to be published with, so the
-/// directory gate cannot open, and nothing here waits on a network.
+/// directory hold cannot open, and nothing here waits on a network.
 fn unused_relays() -> iroh::RelayMap {
     ["http://127.0.0.1:9/", "http://127.0.0.1:10/"]
         .into_iter()
@@ -602,11 +602,11 @@ tilo_test_env::scenario! {
             .enable_all()
             .build()
             .expect("a runtime for the collaboration endpoint");
-        // The endpoint the real client binds, its directory gated and its relays held back.
-        let gate = tilo_endpoint_reachability::collaborating();
+        // The endpoint the real client binds, its directory held and its relays held back.
+        let hold = tilo_endpoint_reachability::collaborating();
         let (endpoint, reachability) = runtime.block_on(async {
             let endpoint = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
-                .address_lookup(gate.clone())
+                .address_lookup(hold.clone())
                 .relay_mode(iroh::RelayMode::Custom(iroh::RelayMap::empty()))
                 .bind_addr((std::net::Ipv4Addr::LOCALHOST, 0))
                 .expect("a loopback address")
@@ -634,7 +634,7 @@ tilo_test_env::scenario! {
         // and number 0's directory is told nothing of this device.
         assert!(reachability.is_dormant());
         assert_eq!(reachability.holders(), (None, None));
-        assert!(!gate.is_open());
+        assert!(!hold.is_open());
         assert_eq!(endpoint.addr().relay_urls().count(), 0);
 
         // Someone else is here: what could dial this device starts.

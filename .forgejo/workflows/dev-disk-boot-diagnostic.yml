@@ -15,7 +15,7 @@ on:
         required: false
         default: ""
       check_boot_performance:
-        description: "Run the checked-out 20 second boot gate after the dev image upgrade."
+        description: "Run the checked-out 20 second boot check after the dev image upgrade."
         required: false
         default: "false"
       dev_uki_boot:
@@ -437,8 +437,8 @@ jobs:
             sshpass -p "$TILO_PASS" scp -q -P 2222 \
               -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
               -o PreferredAuthentications=password -o PubkeyAuthentication=no \
-              os/tests/boot_performance_gate.sh "$TILO_USER@127.0.0.1:/tmp/boot-performance-gate.sh"
-            ./os/dev/vm.sh ssh "printf '%s\n' '$TILO_PASS' | sudo -S -p '' bash /tmp/boot-performance-gate.sh" > "$TILO_RUN/boot-performance.log" 2>&1
+              os/tests/boot_performance_check.sh "$TILO_USER@127.0.0.1:/tmp/boot-performance-check.sh"
+            ./os/dev/vm.sh ssh "printf '%s\n' '$TILO_PASS' | sudo -S -p '' bash /tmp/boot-performance-check.sh" > "$TILO_RUN/boot-performance.log" 2>&1
           fi
           # A broken update must roll itself back on this disk's own boot chain.
           # It ends booted on the deployment that came back, so the greeter

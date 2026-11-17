@@ -1030,7 +1030,7 @@ impl ChatApp {
             }
             Hit::Dismiss => self.on_hit_dismiss(),
             // MessageMenu is a right-click affordance and drag handles are
-            // handled at press time; permission-gated fallthroughs are no-ops.
+            // handled at press time; permission-guarded fallthroughs are no-ops.
             _ => {}
         }
         self.reload(doc);
@@ -1813,7 +1813,7 @@ impl ChatApp {
     }
 
     fn send_focused(&mut self, doc: &mut ui::widget::Edits<'_>) {
-        // Sending is a write into the workspace: gated by the OS permission
+        // Sending is a write into the workspace: guarded by the OS permission
         // context (a View-only / ungranted peer can read but not send).
         if !self.can_participate() {
             return;

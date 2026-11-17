@@ -726,12 +726,12 @@ if [ -e /var/lib/tilo/image-trust/required ]; then
      && [ -s /var/lib/tilo/image-trust/time.state ] \
      && systemctl cat bootc-fetch-apply-updates.service 2>/dev/null \
           | grep -Fq 'ExecStart=/usr/libexec/tilo-verified-update --quiet'; then
-    ok "owner identity image-endorsement gate is armed for automatic updates"
+    ok "owner identity image-endorsement check is armed for automatic updates"
   else
-    warn "owner image trust is required but its root-owned artifacts or update gate are incomplete"
+    warn "owner image trust is required but its root-owned artifacts or update check are incomplete"
   fi
 else
-  note "owner identity image-endorsement gate is not enabled; official Cosign policy remains mandatory"
+  note "owner identity image-endorsement check is not enabled; official Cosign policy remains mandatory"
 fi
 
 # systemd-homed available (per-user encrypted homes; homed users get a

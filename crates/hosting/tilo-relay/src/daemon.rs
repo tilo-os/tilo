@@ -875,7 +875,7 @@ impl Relay {
     /// Atomically replace the native governor's exact member devices and the
     /// user roots those devices need at the relay handshake. This is a
     /// trusted, server-local reconciliation API: roots open only the global
-    /// handshake, while the exact device set continues to gate this workspace.
+    /// handshake, while the exact device set continues to check this workspace.
     ///
     /// Removals narrow live workspace access before disk I/O and additions become
     /// reachable only after one crash-safe access record commits. The global

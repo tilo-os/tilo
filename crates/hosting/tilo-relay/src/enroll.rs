@@ -874,7 +874,7 @@ fn commit_staged_personal_enrollment(
     {
         bail!("staged personal enrollment no longer validates");
     }
-    // The first callback is the requester-liveness gate in production. Keep
+    // The first callback is the requester-liveness check in production. Keep
     // it before even creating the user identity directory so a compositor
     // that died while approval was in flight causes no publication mutation.
     checkpoint(PersonalCommitCheckpoint::Record)?;

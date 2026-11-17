@@ -5,7 +5,7 @@
 //! unshare -m --propagation private target/debug/examples/code-refresh-mount-probe
 //! ```
 //!
-//! Only the development VM gate is bypassed and one bind can be made to fail.
+//! Only the development VM check is bypassed and one bind can be made to fail.
 //! Missing privileges, mount support or isolation are failures, never skips.
 
 use std::fs;
@@ -29,7 +29,7 @@ impl Guest for Scratch {
     fn root(&self) -> PathBuf {
         self.root.clone()
     }
-    fn gate(&self) -> Result<()> {
+    fn check(&self) -> Result<()> {
         Ok(())
     }
     fn command(&self, argv: &[&str]) -> Result<String> {

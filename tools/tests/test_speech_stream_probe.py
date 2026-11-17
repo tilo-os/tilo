@@ -40,7 +40,7 @@ class PublicSpeechStressTests(unittest.TestCase):
         for text in ["L'accident", 'العربية', '中文', 'é', '25', '👋 hello']:
             self.assertTrue(probe.has_lexical_text(text), repr(text))
 
-    def test_small_review_model_reaches_private_namespace_gate_without_execution(self):
+    def test_small_review_model_reaches_private_namespace_check_without_execution(self):
         import os
         import subprocess
         environment = dict(os.environ)

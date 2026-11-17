@@ -4,7 +4,7 @@
 //!
 //! The host holds no authority: it decides nothing and writes no record, and everything its
 //! programs read or change comes back over the program connection to the API, which does it as
-//! the program's author, through the same gate as every other call ([`crate::mcp_tilo`]). What
+//! the program's author, through the same check as every other call ([`crate::mcp_tilo`]). What
 //! differs between hosts is what a program may name there: the apps of the workspace the task
 //! runs in, which [`TaskCatalogue`] answers.
 

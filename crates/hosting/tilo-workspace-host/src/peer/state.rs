@@ -227,7 +227,7 @@ impl StateSource {
     }
 }
 
-// Return only channels subject to the ordinary once-per-request live gate.
+// Return only channels subject to the ordinary once-per-request live check.
 // This is delivery policy, not authority: callers must first revalidate the
 // current authenticated source and retain all recipient/session fences.
 /// The devices a retained message goes to live when only they can use it
@@ -247,7 +247,7 @@ pub(super) fn live_audience(
     runtime.store.payloads().audience(&body)
 }
 
-pub(super) fn gated_checkpoint_channel(
+pub(super) fn guarded_checkpoint_channel(
     payloads: &dyn crate::payloads::ShellPayloads,
     envelope: &Arc<Envelope>,
     source: Option<&StateSource>,
@@ -260,7 +260,7 @@ pub(super) fn gated_checkpoint_channel(
     let crate::coedit::CoeditPayload::Checkpoint { channel, body } = payload else {
         return None;
     };
-    // Unknown wrapper suffixes retain the generic checkpoint gate.
+    // Unknown wrapper suffixes retain the generic checkpoint check.
     if outer_trailing.is_empty()
         && let Some(checkpoint) = payloads.checkpoint(&channel, &body)
     {

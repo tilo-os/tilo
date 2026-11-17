@@ -138,7 +138,7 @@ What a relay costs per active member is measured, not estimated:
   for the delta and its presence. Run with
   `cargo run --locked -p tilo-relay --example keystroke_writes`.
   This scheduling-sensitive budget fails the scheduled job directly;
-  the normal gate tests exact one- and two-write schedules at the production
+  the normal check tests exact one- and two-write schedules at the production
   writer and separately checks complete network delivery without a timed budget.
 
 ```bash

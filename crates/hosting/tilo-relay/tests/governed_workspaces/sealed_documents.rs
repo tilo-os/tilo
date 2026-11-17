@@ -202,12 +202,12 @@ async fn a_sealed_write_to_a_governed_record_never_keeps_the_next_person_out() {
     )
     .await
     .expect("a sealed record write keeps nobody out");
-    let seated = |members: &[tilo_peer_state::Member], person: [u8; 32]| {
+    let is_member = |members: &[tilo_peer_state::Member], person: [u8; 32]| {
         members
             .iter()
             .any(|member| member.root() == Some(person) && !member.removed)
     };
-    assert!(seated(
+    assert!(is_member(
         &workspaces
             .summary(&workspace.workspace)
             .await
@@ -226,7 +226,7 @@ async fn a_sealed_write_to_a_governed_record_never_keeps_the_next_person_out() {
     join(&relay, &laptop, &workspace.workspace, &dan, &watch, [9; 32])
         .await
         .expect("a reopened workspace with a sealed record keeps nobody out");
-    assert!(seated(
+    assert!(is_member(
         &relay
             .workspaces()
             .unwrap()

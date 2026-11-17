@@ -4,12 +4,12 @@
 ``presets::N0`` is iroh's "everything at number 0's": its public relays and a
 DNS directory that signs this device's key in on the spot and republishes it
 every five minutes, whatever the endpoint is doing. What Tilo decided instead: keep
-the relays and the directory, and gate what is published — by the same
+the relays and the directory, and check what is published — by the same
 condition that holds the relays back — in
 ``crates/system/endpoint-reachability/src/directory.rs``.
 
 A durable endpoint that binds ``presets::N0`` therefore quietly restores the
-ungated behaviour. This check refuses it in production code and points at the
+unguarded behaviour. This check refuses it in production code and points at the
 preset's replacement. Two kinds of endpoint are exempt, because they are not
 a device's identity:
 

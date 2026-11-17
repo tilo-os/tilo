@@ -1467,14 +1467,14 @@ fn poll_queued<T>(
 mod scheduling_tests {
     use super::*;
 
-    struct GatedWrite {
+    struct HeldWrite {
         started: Option<tokio::sync::oneshot::Sender<()>>,
         release: tokio::sync::oneshot::Receiver<()>,
         released: bool,
         bytes: Arc<Mutex<Vec<u8>>>,
     }
 
-    impl tokio::io::AsyncWrite for GatedWrite {
+    impl tokio::io::AsyncWrite for HeldWrite {
         fn poll_write(
             mut self: std::pin::Pin<&mut Self>,
             cx: &mut std::task::Context<'_>,
@@ -1493,7 +1493,7 @@ mod scheduling_tests {
                     Poll::Ready(Ok(())) => self.released = true,
                     Poll::Ready(Err(_)) => {
                         return Poll::Ready(Err(std::io::Error::other(
-                            "gated write release dropped",
+                            "guarded write release dropped",
                         )));
                     }
                     Poll::Pending => return Poll::Pending,
@@ -1586,7 +1586,7 @@ mod scheduling_tests {
         let (started_tx, started_rx) = tokio::sync::oneshot::channel();
         let (release_tx, release_rx) = tokio::sync::oneshot::channel();
         let written = Arc::new(Mutex::new(Vec::new()));
-        let writer = GatedWrite {
+        let writer = HeldWrite {
             started: Some(started_tx),
             release: release_rx,
             released: false,
@@ -1716,7 +1716,7 @@ mod scheduling_tests {
         state_tx.send(Envelope::Ping).await.unwrap();
         let (started_tx, started_rx) = tokio::sync::oneshot::channel();
         let (release_tx, release_rx) = tokio::sync::oneshot::channel();
-        let writer = GatedWrite {
+        let writer = HeldWrite {
             started: Some(started_tx),
             release: release_rx,
             released: false,

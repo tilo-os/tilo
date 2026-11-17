@@ -1,7 +1,7 @@
 //! Final external-route checks against Tilo's canonical account registry.
 //! This never selects an active/default account or resolves contacts by name.
 //! The broker supplies current linked-device authority from its adapter, not
-//! from editable account config. These checks complement its capability gate.
+//! from editable account config. These checks complement its capability check.
 
 use crate::journal::Owner;
 use crate::{Route, Service};

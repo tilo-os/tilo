@@ -970,7 +970,7 @@ async fn a_members_key_posts_a_long_history_into_the_lounges_chat() {
     let on_relay = api_on_relay(ISSUER).await;
     let api = Arc::clone(&on_relay.api);
     let lobby = on_relay.lobby.clone();
-    // Its chat, as the operator seats it, with the channel posts go to.
+    // Its chat, as the operator sets it up, with the channel posts go to.
     let workspaces = on_relay.hosted.relay.workspaces().unwrap();
     let serving = workspaces.serving_certificate().clone();
     workspaces

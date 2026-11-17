@@ -1533,7 +1533,7 @@ mod tests {
                     ))
                 }
                 state => Err(format!(
-                    "Native proof fixture failed other readiness gates: {state:?}"
+                    "Native proof fixture failed other readiness checks: {state:?}"
                 )),
             },
         )

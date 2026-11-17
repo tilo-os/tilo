@@ -2,26 +2,26 @@
 # Validation-only SSH access to a sealed release disk.
 #
 # The release image ships no SSH server (the runtime crypto policy forbids
-# one), yet the release gate drives the installed system over `vm.sh ssh`.
-# This prepares, for one gate run only:
+# one), yet the release check drives the installed system over `vm.sh ssh`.
+# This prepares, for one check run only:
 #
 #   OUTDIR/tilo-validation.raw  a system extension DDI carrying sshd from the
 #                               frozen RPM snapshot, dm-verity protected and
 #                               signed with a key generated here and discarded
 #                               as soon as the image is signed
-#   OUTDIR/etc/                 files for the gate's OWN copy of the installed
+#   OUTDIR/etc/                 files for the check's OWN copy of the installed
 #                               disk (disk-image.sh --etc-overlay): the
 #                               signing certificate in /etc/verity.d, a unit
 #                               that merges exactly that extension with a
 #                               signed-only image policy and starts sshd, and
 #                               sshd's PAM stack
 #   OUTDIR/etc-edits.txt        every file the overlay adds, with its SHA-256,
-#                               for the gate log
+#                               for the check log
 #
 # Nothing here touches the image, its UKI, its kernel command line or any
 # published artifact. The sealed image merges no extension by itself
 # (os/Containerfile masks systemd-sysext); the overlay's unit is what merges
-# this one, and the certificate it trusts exists only in the gate's disk copy.
+# this one, and the certificate it trusts exists only in the check's disk copy.
 #
 # Usage: os/dev/validation-access.sh prepare OUTDIR IMAGE RPMS_REF
 #   IMAGE     the release image in rootless Podman storage
@@ -64,7 +64,7 @@ os_version=$(. "$work/os-release" && printf '%s' "${VERSION_ID:-}")
 [ -n "$os_id" ] || die "the image's os-release has no ID"
 
 cat > "$work/sshd_config" <<'EOF'
-# Validation-only sshd for the CI release gate. Never part of a release.
+# Validation-only sshd for the CI release check. Never part of a release.
 Port 22
 HostKey /etc/ssh/ssh_host_ed25519_key
 PermitRootLogin no
@@ -174,10 +174,10 @@ install -d "$etc/systemd/system/multi-user.target.wants"
 # The device unit is the systemd escape of /dev/disk/by-id/virtio-tilo-validation,
 # the serial vm.sh gives the extension disk.
 cat > "$etc/systemd/system/$UNIT" <<'EOF'
-# Validation-only SSH access, written into the CI gate's copy of the disk by
+# Validation-only SSH access, written into the CI check's copy of the disk by
 # os/dev/validation-access.sh. Never part of the image or a published disk.
 [Unit]
-Description=Validation-only SSH access for the release gate
+Description=Validation-only SSH access for the release check
 BindsTo=dev-disk-by\x2did-virtio\x2dtilo\x2dvalidation.device
 After=dev-disk-by\x2did-virtio\x2dtilo\x2dvalidation.device network.target basic.target
 # The merge gives /usr a fresh mtime (systemd-sysext stamps it). After
@@ -185,8 +185,8 @@ After=dev-disk-by\x2did-virtio\x2dtilo\x2dvalidation.device network.target basic
 # sysusers, hwdb) have all seen the image's own /usr, as on a user's boot.
 After=systemd-update-done.service
 # Off multi-user.target's ordering: a target waits for the units it wants
-# unless they opt out, and this gate-only service would otherwise add its own
-# sysext refresh and host-key generation to the boot time the gate measures.
+# unless they opt out, and this check-only service would otherwise add its own
+# sysext refresh and host-key generation to the boot time the check measures.
 DefaultDependencies=no
 Conflicts=shutdown.target
 Before=shutdown.target
@@ -197,11 +197,11 @@ ExecStartPre=/usr/bin/test -r /etc/verity.d/tilo-validation.crt
 ExecStartPre=/usr/bin/mkdir -p /run/extensions
 ExecStartPre=/usr/bin/ln -sfn /dev/disk/by-id/virtio-tilo-validation /run/extensions/tilo-validation.raw
 # Only a verity-signed root partition, verified against /etc/verity.d.
-# Keep the signed-Verity diagnostics on this disposable gate disk: systemd's
+# Keep the signed-Verity diagnostics on this disposable check disk: systemd's
 # normal log level hides whether the userspace /etc/verity.d certificate
 # fallback was attempted after kernel ENOKEY. Only for the refresh: sshd and
 # every login it serves would otherwise inherit debug logging and flood the
-# journal the gate's failure diagnostics print.
+# journal the check's failure diagnostics print.
 ExecStartPre=/usr/bin/env SYSTEMD_LOG_LEVEL=debug /usr/bin/systemd-sysext refresh --no-reload --image-policy=root=signed+absent:usr=absent:=unused+absent
 ExecStartPre=/usr/bin/systemd-sysusers /usr/lib/sysusers.d/openssh-server.conf
 ExecStartPre=/usr/bin/ssh-keygen -A
@@ -215,11 +215,11 @@ ln -s "../$UNIT" "$etc/systemd/system/multi-user.target.wants/$UNIT"
 
 # A boot can reach the serial login while greetd and validation SSH are both
 # unavailable. Record bounded service state on the VM serial line in that case.
-# This exists only in the gate's disk overlay, never in the release image.
+# This exists only in the check's disk overlay, never in the release image.
 cat > "$etc/tilo-validation-diagnostics.sh" <<'EOF'
 #!/usr/bin/bash
 sleep 45
-# early once, then late every 30 s: the gate prints the serial tail when its
+# early once, then late every 30 s: the check prints the serial tail when its
 # SSH wait fails, about two to three minutes after boot, so the newest late
 # report covers its connection attempts.
 for phase in early late late late late late late late late; do
@@ -260,9 +260,9 @@ done
 EOF
 chmod 0644 "$etc/tilo-validation-diagnostics.sh"
 cat > "$etc/systemd/system/tilo-validation-diagnostics.service" <<'EOF'
-# Serial diagnostics for this gate's private installed disk copy only.
+# Serial diagnostics for this check's private installed disk copy only.
 [Unit]
-Description=Release boot gate diagnostics on the VM serial line
+Description=Release boot check diagnostics on the VM serial line
 After=basic.target
 
 [Service]

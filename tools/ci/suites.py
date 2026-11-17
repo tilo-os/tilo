@@ -30,7 +30,7 @@ MANIFEST = "tools/ci/suites.toml"
 SECURITY_MANIFEST = "tools/security-boundary-invariants.txt"
 # Files whose change can alter which suites run or how, so every suite runs.
 CONTROL_INPUTS = frozenset({MANIFEST, "tools/ci/suites.py", "tools/tests/test_suites.py"})
-# Always-run gates: a suite referenced here already runs on every applicable change.
+# Always-run checks: a suite referenced here already runs on every applicable change.
 ALWAYS_RUN_SOURCES = ("tools/policy/run.sh", "tools/policy/steps.toml")
 # Test-shaped files outside these directories must be classified. Python tests
 # in tools/tests and .codex/hooks are discovered by tools/policy/run.sh.
@@ -351,7 +351,7 @@ def in_scope(path: str) -> bool:
 
 def always_run(root: Path) -> set[str]:
     """Suites that already run on every applicable change."""
-    gated = {
+    guarded = {
         line.strip() for line in (root / SECURITY_MANIFEST).read_text(encoding="utf-8").splitlines()
         if line.strip() and not line.lstrip().startswith("#")
     }
@@ -360,14 +360,14 @@ def always_run(root: Path) -> set[str]:
         if source.endswith(".toml"):
             # The policy steps' commands, not the files they list as inputs.
             text = "\n".join(step["run"] for step in tomllib.loads(text).get("step", []))
-        gated.update(re.findall(r"[A-Za-z0-9_./-]+\.(?:py|sh)\b", text))
-    return gated
+        guarded.update(re.findall(r"[A-Za-z0-9_./-]+\.(?:py|sh)\b", text))
+    return guarded
 
 
 def change_checks(root: Path) -> set[str]:
     """The checks t.toml runs for a change: its default ones and those it names `default = true`.
 
-    A check that only names an `on` runs there and when asked, so it gates no change.
+    A check that only names an `on` runs there and when asked, so it checks no change.
     """
     declared = tomllib.loads((root / "t.toml").read_text(encoding="utf-8")).get("check", [])
     return {
@@ -386,7 +386,7 @@ def audit(root: Path, tracked: list[str], manifest: Manifest | None = None,
     manifest = manifest or load(root)
     problems: list[str] = []
     tracked_set = set(tracked)
-    gated = always_run(root) | {
+    guarded = always_run(root) | {
         path for path in tracked
         if path.rpartition("/")[0] in DISCOVERED_PYTHON_DIRS
         and fnmatch.fnmatchcase(path.rpartition("/")[2], "test_*.py")
@@ -395,12 +395,12 @@ def audit(root: Path, tracked: list[str], manifest: Manifest | None = None,
     for suite in sorted(required | set(manifest.covered) | set(manifest.unrequired) | set(manifest.checks)):
         if suite not in tracked_set:
             problems.append(f"{suite}: listed in {MANIFEST} but not a tracked file")
-        elif suite in gated:
+        elif suite in guarded:
             problems.append(f"{suite}: already runs on every change; remove it from {MANIFEST}")
     if manifest.checks:
-        check_gates = change_checks(root)
+        change_check_names = change_checks(root)
         for suite, check in sorted(manifest.checks.items()):
-            if check not in check_gates:
+            if check not in change_check_names:
                 problems.append(
                     f"{suite}: covering check {check} is not a check t.toml runs for a change")
     for suite in sorted(required & tracked_set):
@@ -408,7 +408,7 @@ def audit(root: Path, tracked: list[str], manifest: Manifest | None = None,
             text = (root / suite).read_text(encoding="utf-8")
             if re.search(r"\bTestCase\b", text) and "unittest.main(" not in text:
                 problems.append(f"{suite}: defines unittest cases but never calls unittest.main()")
-    # Cargo's integration tests are gates too: what discovery builds, or the
+    # Cargo's integration tests are checks too: what discovery builds, or the
     # files one `tests/it.rs` binary compiles as modules. Require a tracked
     # package manifest, an actual test, and an explicit reader declaration so
     # covered drivers also participate in selection.
@@ -426,20 +426,20 @@ def audit(root: Path, tracked: list[str], manifest: Manifest | None = None,
             if (reader in tracked_set
                     and Path(reader).parent.as_posix() == f"{directory}/tests"
                     and re.search(r"#\[test\]", (root / reader).read_text(encoding="utf-8"))):
-                gated.add(reader)
+                guarded.add(reader)
     for suite, by in sorted(manifest.covered.items()):
-        if by not in gated and by not in required:
-            problems.append(f"{suite}: covering suite {by} is not itself gated")
+        if by not in guarded and by not in required:
+            problems.append(f"{suite}: covering suite {by} is not itself guarded")
         elif by not in tracked_set or not (root / by).is_file():
             problems.append(f"{suite}: covering suite {by} is not a tracked file on disk")
         elif not re.search(
                 rf"\b{re.escape(Path(suite).stem)}\b", (root / by).read_text(encoding="utf-8")):
             problems.append(f"{suite}: {by} does not reference it")
-    classified = gated | required | set(manifest.covered) | set(manifest.unrequired) | set(manifest.checks)
+    classified = guarded | required | set(manifest.covered) | set(manifest.unrequired) | set(manifest.checks)
     for path in sorted(tracked):
         if in_scope(path) and path not in classified:
             problems.append(
-                f"{path}: test-shaped file is neither gated nor listed in {MANIFEST} "
+                f"{path}: test-shaped file is neither guarded nor listed in {MANIFEST} "
                 "(add it to a group, or to [[covered]]/[[unrequired]] with a reason)")
     problems.extend(audit_cargo(root, tracked, manifest, staged))
     return problems

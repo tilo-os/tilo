@@ -239,7 +239,7 @@ COPY \
     os/usr/lib/systemd/system/tilo-device-vpn.service \
     os/usr/lib/systemd/system/tilo-device-vpn-reset.service \
     /usr/lib/systemd/system/
-# NTFS drives: the kernel driver loads only when the consent-gated mount
+# NTFS drives: the kernel driver loads only when the consent-guarded mount
 # service asks for it, and UDisks may not mount one around that service.
 COPY os/etc/modprobe.d/tilo-ntfs.conf /etc/modprobe.d/tilo-ntfs.conf
 COPY os/usr/lib/tmpfiles.d/tilo-ntfs-mount.conf /usr/lib/tmpfiles.d/tilo-ntfs-mount.conf
@@ -576,7 +576,7 @@ RUN chmod 0755 /usr/libexec/tilo-rollback-common /usr/libexec/tilo-rollback-conf
         /usr/lib/dracut/modules.d/92tilo-sibling-unlock/module-setup.sh \
         /usr/lib/dracut/modules.d/94tilo-greeter/module-setup.sh \
         /usr/libexec/tilo-rollback-harden /usr/libexec/tilo-rollback-boot-check \
-        /usr/libexec/tilo/boot-units-gate.sh \
+        /usr/libexec/tilo/boot-units-check.sh \
  && install -d -m 0755 /usr/share/tilo/pcr-predictions
 
 # ---------------------------------------------------------------------------

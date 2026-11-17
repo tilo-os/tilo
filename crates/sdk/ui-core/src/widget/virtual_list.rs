@@ -1654,7 +1654,7 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
         self.pill_widths = crate::text_render::with_layout_renderer(theme, |text| {
             crate::widget::conversation::Jump::ALL.map(|jump| jump.width(text, theme))
         });
-        // A way back the list no longer offers holds no seat: what was the keyboard's is gone.
+        // A way back the list no longer offers keeps no focus: what was the keyboard's is gone.
         self.jump_focused &= self.jump().is_some();
         self.motion = self.feel.over(theme.motion());
         self.groups.theme(theme, self.interaction);

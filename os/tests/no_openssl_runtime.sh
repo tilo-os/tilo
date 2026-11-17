@@ -367,18 +367,18 @@ grep -Fq 'tilo-crypto sign-efi' "$secureboot" \
 grep -Fq 'tilo-crypto verify-efi' "$deployment" \
   || bad 'deployment repair path does not verify its newly signed EFI image'
 
-elf_gate="$repo/os/scripts/verify-elf-hardening.sh"
-grep -Fq "direct OpenSSL ABI dependency (DT_NEEDED libssl/libcrypto)" "$elf_gate" \
+elf_check="$repo/os/scripts/verify-elf-hardening.sh"
+grep -Fq "direct OpenSSL ABI dependency (DT_NEEDED libssl/libcrypto)" "$elf_check" \
   || bad 'final Tilo ELF artifacts are not checked for OpenSSL ABI linkage'
 grep -Fq 'os/scripts/verify-elf-hardening.sh "$out"' "$repo/os/image/compile.sh" \
   || bad 'final Tilo ELF linkage verifier is not part of the image build'
 
-runtime_package_gate="$repo/os/scripts/verify-runtime-crypto-packages.sh"
-grep -Fq 'unreviewed runtime packages directly requiring libssl' "$runtime_package_gate" \
-  && grep -Fq 'unreviewed runtime packages directly requiring libcrypto' "$runtime_package_gate" \
+runtime_package_check="$repo/os/scripts/verify-runtime-crypto-packages.sh"
+grep -Fq 'unreviewed runtime packages directly requiring libssl' "$runtime_package_check" \
+  && grep -Fq 'unreviewed runtime packages directly requiring libcrypto' "$runtime_package_check" \
   && grep -Fq 'bash /usr/local/bin/verify-runtime-crypto-packages.sh' "$repo/os/Containerfile" \
   && grep -Fq 'rm -f /usr/local/bin/verify-runtime-crypto-packages.sh' "$repo/os/Containerfile" \
-  || bad 'finished rootfs does not enforce and retire its residual OpenSSL ABI allowlist gate'
+  || bad 'finished rootfs does not enforce and retire its residual OpenSSL ABI allowlist check'
 grep -Fq -- "-path '*/ossl-modules/legacy.so'" "$repo/os/Containerfile" \
   && grep -Fq -- "-path '*/engines-3/*.so'" "$repo/os/Containerfile" \
   && grep -Fq -- "-path '*/gstreamer-1.0/libgstdtls.so'" "$repo/os/Containerfile" \
@@ -393,16 +393,16 @@ grep -Fq -- "-path '*/ossl-modules/legacy.so'" "$repo/os/Containerfile" \
 rootfs_end_line="$(grep -n '^FROM rootfs AS split' "$repo/os/Containerfile" | cut -d: -f1)"
 last_package_mutation_line="$(rg -n 'dnf .*\b(install|remove)\b|rpm -[ei]' "$repo/os/Containerfile" \
   | awk -F: -v end="$rootfs_end_line" '$1 < end { line=$1 } END { print line+0 }')"
-runtime_gate_line="$(grep -n 'bash /usr/local/bin/verify-runtime-crypto-packages.sh' \
+runtime_check_line="$(grep -n 'bash /usr/local/bin/verify-runtime-crypto-packages.sh' \
   "$repo/os/Containerfile" | cut -d: -f1)"
-if [ "$runtime_gate_line" -gt "$last_package_mutation_line" ] \
-   && [ "$runtime_gate_line" -lt "$rootfs_end_line" ]; then
-  ok 'residual OpenSSL ABI gate runs after the final rootfs package mutation'
+if [ "$runtime_check_line" -gt "$last_package_mutation_line" ] \
+   && [ "$runtime_check_line" -lt "$rootfs_end_line" ]; then
+  ok 'residual OpenSSL ABI check runs after the final rootfs package mutation'
 else
-  bad 'residual OpenSSL ABI gate does not inspect the finished rootfs'
+  bad 'residual OpenSSL ABI check does not inspect the finished rootfs'
 fi
 
-if python3 "$repo/os/tests/test_runtime_crypto_packages.py" --gate "$runtime_package_gate"; then
+if python3 "$repo/os/tests/test_runtime_crypto_packages.py" --check "$runtime_package_check"; then
   ok 'finished-rootfs RPM policy enforces conditional desktop/VM exceptions and rejects unknown consumers'
 else
   bad 'finished-rootfs RPM policy fixtures failed'

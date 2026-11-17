@@ -5,7 +5,7 @@
 //! task, started by the session ([`TaskHosts`]) on the task's first `tilo` call and living as long
 //! as this connection. The host holds the task's `let`s and no records. It compiles each program
 //! against every installed app and runs it; what the program reads and changes comes back here on
-//! the task's program connection, and this API does it as the task, with the gate, attribution
+//! the task's program connection, and this API does it as the task, with the check, attribution
 //! and grants of every other call:
 //!
 //! - a read is the app's own `read`, as the task, in the app; a resource that does not read
@@ -1284,7 +1284,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
 
     /// Who a program sent now is written by, as the task's host names it: `{actor, agent,
     /// on_behalf_of}`, the caller this session acts as. The host decides nothing by it; every
-    /// read and change still comes back here and passes the gate as that caller.
+    /// read and change still comes back here and passes the check as that caller.
     fn program_author(&self) -> Value {
         let caller = self.execution_caller();
         let acting = caller.acting();

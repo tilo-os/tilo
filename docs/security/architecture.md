@@ -491,7 +491,7 @@ follows. Each operation carries a sequence number so a replayed operation is rej
 
 ### 7.3 Why both
 
-The hop check gates the *connection*. The operation check gates the *change*. A relay passes the
+The hop check checks the *connection*. The operation check checks the *change*. A relay passes the
 hop check by being an admitted peer; the operations it carries still verify independently against
 their authors. Neither is redundant.
 

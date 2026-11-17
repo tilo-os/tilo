@@ -1,6 +1,6 @@
 # Test suites outside Cargo, and when the required CI checks run them.
 #
-# Every file that looks like a test (see tools/ci/suites.py: SCOPE) is gated by
+# Every file that looks like a test (see tools/ci/suites.py: SCOPE) is guarded by
 # exactly one of:
 #
 #   * tools/security-boundary-invariants.txt or tools/policy/run.sh, which run
@@ -8,14 +8,14 @@
 #   * a [[group]] below: a cheap, hermetic suite (no root-only host state, KVM,
 #     built image or network) that check.yml runs whenever
 #     a changed path matches one of the group's inputs or the suite itself;
-#   * a [[covered]] entry: exercised by the named, already gated suite, or,
+#   * a [[covered]] entry: exercised by the named, already guarded suite, or,
 #     with `check = "<name>"`, by the named t check, which runs it in its own
 #     image; or
 #   * an [[unrequired]] entry with the reason it cannot be a required check.
 #
 # `tools/ci/suites.py check` (part of tools/policy/run.sh) rejects a
 # test-shaped file in none of these, so a new suite cannot silently stay
-# ungated.
+# unguarded.
 #
 # Inputs are repository paths: "dir/" matches everything below it, a pattern
 # containing * ? or [ is an fnmatch pattern (* also matches "/"), anything else
@@ -254,7 +254,7 @@ suites = [
   "os/tests/windows_direct_install_orchestrator_test.py",
   "os/tests/nearby_privileged_processes_test.sh",
   "os/tests/nearby_cleanup_test.py",
-  "os/tests/vm_release_gate_invariants.sh",
+  "os/tests/vm_release_check_invariants.sh",
   "os/tests/windows_guest_powershell_syntax.py",
 ]
 
@@ -294,8 +294,8 @@ suites = ["os/tests/test_pipewire_echo_cancel.py"]
 
 [[group]]
 name = "no-cisco-openh264"
-# No Tilo image ships Cisco's OpenH264: the frozen snapshot, its gate, the
-# finished-rootfs gate, and the CI/developer environments that alone may carry it.
+# No Tilo image ships Cisco's OpenH264: the frozen snapshot, its check, the
+# finished-rootfs check, and the CI/developer environments that alone may carry it.
 inputs = ["os/", "dist/ci/install-build-deps.sh"]
 suites = ["os/tests/test_no_cisco_openh264.py"]
 
@@ -508,7 +508,7 @@ inputs = [
   # benchmarks, and vm-acceptance-perf's groups equal to the
   # budgets' lanes and the A/B groups.
   "tools/ci/perf-scheduled.sh", "tools/ci/perf-compare.sh",
-  # tools/perf/test_adapters.py keeps kpi-budgets.toml equal to the gate's SLOs
+  # tools/perf/test_adapters.py keeps kpi-budgets.toml equal to the check's SLOs
   # and the WORKSPACE-SWITCH parser equal to the compositor's line.
   "crates/system/fs/tests/performance_timing.rs",
   # ... the FILES-NAME-INDEX parser equal to the Files search test's line,
@@ -585,7 +585,7 @@ suites = [
 
 [[unrequired]]
 suite = "crates/browser/tilo-browser-runtime/web/pairing.test.mjs"
-reason = "its country names come from Intl.DisplayNames, which the ci-fast image's node lacks (it answers the region code); browsers ship it. Gate it once the suite's node carries full ICU"
+reason = "its country names come from Intl.DisplayNames, which the ci-fast image's node lacks (it answers the region code); browsers ship it. Check it once the suite's node carries full ICU"
 
 [[unrequired]]
 suite = "crates/platform/tilo-media/web/tilo-media-edit.test.mjs"
@@ -1167,7 +1167,7 @@ inputs = [
 readers = [
   "crates/packaging/launcher/src/hardening.rs",
   "crates/packaging/launcher/src/manifest.rs",
-  "crates/packaging/launcher/src/netgate.rs",
+  "crates/packaging/launcher/src/egress_proxy.rs",
   "crates/packaging/launcher/src/sandbox_view.rs",
   "crates/packaging/launcher/src/seccomp.rs",
   "crates/packaging/launcher/src/services.rs",
@@ -1235,7 +1235,7 @@ inputs = [
   "examples/apps/", "examples/README.md",
   # Task guides are embedded by the CLI from the published documentation.
   "docs/developers/tasks/",
-  # The portability lint compiles in the policy gate's rules table and counts
+  # The portability lint compiles in the policy check's rules table and counts
   # against its baseline; the capability check reads the table of what each
   # capability's code uses.
   "tools/policy/app_portability_rules.toml", "tools/policy/app_portability_baseline.toml",
@@ -1609,7 +1609,7 @@ package = "tilo-test-env"
 inputs = [".config/nextest.toml", "tools/test-env-setup.sh", "tools/with-headless-audio.sh", "tools/with-test-environment.sh"]
 readers = ["crates/dev/test-env/tests/run_environment.rs"]
 
-# Exercised by a suite that is already gated.
+# Exercised by a suite that is already guarded.
 
 [[covered]]
 suite = "os/tests/test_require_cosign_authority.py"
@@ -1656,7 +1656,7 @@ suite = "os/tests/tls_registry_fixture.py"
 by = "os/tests/test_tls_registry_fixture.py"
 
 # Cannot be a required check. "fails on main" entries are hermetic enough to
-# gate but do not pass today; fix the suite, then move it into a group.
+# check but do not pass today; fix the suite, then move it into a group.
 
 [[unrequired]]
 suite = "scripts/test-cloud-rystic.py"
@@ -1672,7 +1672,7 @@ reason = "needs the built web entry image"
 
 [[unrequired]]
 suite = "os/containers/tilo-lounge/test-e2e.sh"
-reason = "the e2e check runs it on main's newest head with spare room (`on = [\"idle\"]`), bisecting a failure to the commit that broke it, and tilo-sh-admits-a-page runs its entry flow there too: with the Lounge gate's release builds it needs, about 2 core-hours a head"
+reason = "the e2e check runs it on main's newest head with spare room (`on = [\"idle\"]`), bisecting a failure to the commit that broke it, and tilo-sh-admits-a-page runs its entry flow there too: with the Lounge check's release builds it needs, about 2 core-hours a head"
 
 [[unrequired]]
 suite = "os/containers/tilo-sh/test-vm-host.sh"
@@ -1754,19 +1754,19 @@ reason = "requires a native ARM KVM host and QEMU"
 
 [[unrequired]]
 suite = "os/dev/test-joined-device-startup.sh"
-reason = "boots the gated dev disk in a VM and signs in"
+reason = "boots the guarded dev disk in a VM and signs in"
 
 [[unrequired]]
 suite = "os/dev/test-nearby-pairing.sh"
-reason = "boots three VMs (KVM) from the gated dev disk, the third pairing through a device without the identity key; with --unlock (os/dev/nearby-unlock-phase.sh) encrypts one and reboots it through sibling unlock; --wake (os/dev/nearby-wake-phase.sh) also proves suspend, wake and link-cut reconnect"
+reason = "boots three VMs (KVM) from the guarded dev disk, the third pairing through a device without the identity key; with --unlock (os/dev/nearby-unlock-phase.sh) encrypts one and reboots it through sibling unlock; --wake (os/dev/nearby-wake-phase.sh) also proves suspend, wake and link-cut reconnect"
 
 [[unrequired]]
 suite = "os/dev/test-device-admin-reach.sh"
-reason = "boots three VMs (KVM) from the gated dev disk on separate networks; two reach each other only through a relay the third runs"
+reason = "boots three VMs (KVM) from the guarded dev disk on separate networks; two reach each other only through a relay the third runs"
 
 [[unrequired]]
 suite = "os/dev/test-installed-desktop.sh"
-reason = "boots the gated dev disk in a VM and signs in at its greeter"
+reason = "boots the guarded dev disk in a VM and signs in at its greeter"
 
 [[unrequired]]
 suite = "os/dev/test-installer-cycle.sh"
@@ -1806,11 +1806,11 @@ suite = "os/tests/boot_chain_invariants.sh"
 reason = "needs a built image root (OS_ROOT)"
 
 [[unrequired]]
-suite = "os/tests/boot_performance_gate.sh"
+suite = "os/tests/boot_performance_check.sh"
 reason = "needs a running installed image"
 
 [[unrequired]]
-suite = "os/tests/boot_units_gate.sh"
+suite = "os/tests/boot_units_check.sh"
 reason = "runs inside a booted guest, as root"
 
 [[unrequired]]
@@ -1819,7 +1819,7 @@ reason = "needs a booted image (SSH into a VM)"
 
 [[unrequired]]
 suite = "os/tests/booted_app_update.sh"
-reason = "drives a booted, logged-in dev VM over SSH (the dev image gate)"
+reason = "drives a booted, logged-in dev VM over SSH (the dev image check)"
 
 [[unrequired]]
 suite = "os/tests/booted_flatpak_lifecycle.sh"
@@ -2203,7 +2203,7 @@ readers = ["crates/system/tilo-cli/src/aliases.rs", "crates/system/tilo-cli/src/
 
 # The Python SDK's suite runs as `uv run --frozen --offline pytest` in the ci-sdk image by the
 # sdk-python check, which carries uv and the SDK's locked dependencies. The integration test is
-# gated with it and skips unless an API server is named by TILO_TEST_API_URL and TILO_TEST_KEY.
+# guarded with it and skips unless an API server is named by TILO_TEST_API_URL and TILO_TEST_KEY.
 [[covered]]
 suite = "sdk/python/tests/test_host.py"
 check = "sdk-python"

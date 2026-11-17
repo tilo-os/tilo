@@ -203,7 +203,7 @@ fn tab_content(shared: &Shared, shown_tab: &Rc<std::cell::Cell<Tab>>) -> Switch<
 
 #[allow(
     clippy::struct_excessive_bools,
-    reason = "independent flags: sampling gate, publishing and a capture's reveal"
+    reason = "independent flags: sampling check, publishing and a capture's reveal"
 )]
 pub(crate) struct MonitorState {
     model: MonitorModel,

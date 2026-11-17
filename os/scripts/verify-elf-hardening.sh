@@ -8,7 +8,7 @@
 #   verify-elf-hardening.sh a.out b.out    # named files
 #
 # Exits non-zero on the first binary that fails a required property, so this
-# can gate an image build.
+# can check an image build.
 set -uo pipefail
 
 fail=0

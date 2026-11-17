@@ -279,5 +279,5 @@ Exit code:
 - `2` — cryptographically valid but the publisher isn't trusted.
 - `1` — cryptographic failure (broken signature, wrong hash).
 
-Use `verify --trusted-key` in CI pipelines that gate `tilo-install`
+Use `verify --trusted-key` in CI pipelines that check `tilo-install`
 without maintaining a persistent trust registry.

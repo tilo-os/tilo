@@ -1,4 +1,4 @@
-//! The workspace gate: which action in a workspace a message from another member is, and whether
+//! The workspace check: which action in a workspace a message from another member is, and whether
 //! the workspace's policy lets them do it.
 //! One exhaustive match decides the action, with no default arm. Appending a variant to the wire
 //! vocabulary therefore fails to compile here until someone states what the new message demands, so
@@ -40,7 +40,7 @@ pub fn allows(
 /// when it is never admitted as a workspace's traffic.
 /// Publishing media, injecting input, granting control, writing documents and changing the
 /// workspace are active collaboration actions and never ride on read access. `None` covers retired
-/// generations and the messages settled before the gate (identity, codec adverts, the person's own
+/// generations and the messages settled before the check (identity, codec adverts, the person's own
 /// list): one of those reaching it means that earlier path was bypassed, and it is refused rather
 /// than admitted on some default.
 pub fn required_workspace_action(msg: &NeighbourMsg) -> Option<WorkspaceAction> {
@@ -86,7 +86,7 @@ pub fn required_workspace_action(msg: &NeighbourMsg) -> Option<WorkspaceAction> 
         | NeighbourMsg::MlsAccessRequest { .. } => {
             Some((TreePath::root(), ActionKind::Read))
         }
-        // Settled before the gate: identity is how a sender becomes known at all; a codec advert,
+        // Settled before the check: identity is how a sender becomes known at all; a codec advert,
         // the person's workspace list, a device's verdicts on its siblings' writes and its ask for
         // a group's frames travel only between the person's own devices, never in a workspace.
         NeighbourMsg::IdentityHello { .. }
@@ -152,7 +152,7 @@ mod tests {
         ))
     }
 
-    /// One message of every variant with the action the gate must decide it as. The gate's own
+    /// One message of every variant with the action the check must decide it as. The check's own
     /// match is exhaustive; this table pins each decision.
     #[allow(
         clippy::too_many_lines,

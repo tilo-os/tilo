@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""The nearby gate's shared Ethernet segment for more than two VMs.
+"""The nearby check's shared Ethernet segment for more than two VMs.
 
 Each VM's segment NIC is a QEMU UDP socket netdev on loopback
 (os/dev/_common.sh, TILO_VM_LAN_*) whose peer is this hub: every frame one VM

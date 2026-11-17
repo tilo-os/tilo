@@ -164,8 +164,8 @@ tilo_test_env::scenario! {
     // finish, not in the order asked: a `tilo_status` and a `tilo_cancel`
     // answer while two invokes of the same connection wait.
     {
-        use tilo_mcp::test_hosts::{GatedHost, overlapping_lines};
-        let host = GatedHost::default();
+        use tilo_mcp::test_hosts::{HeldHost, overlapping_lines};
+        let host = HeldHost::default();
         let search = std::sync::Arc::new(tilo_os_search::OsSearch::new(
             std::sync::Arc::new(host.clone()),
             tilo_actions::remote::Caller::local_person("owner").in_workspace("workspace"),

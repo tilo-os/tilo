@@ -677,12 +677,12 @@ mod tests {
             let mut opening = Opening::default();
             let closed = Arc::new(AtomicBool::new(false));
             let worker_closed = closed.clone();
-            let (release, gate) = mpsc::channel();
+            let (release, check) = mpsc::channel();
             let (wake, receive) = wake();
             opening
                 .start(
                     move || {
-                        gate.recv().unwrap();
+                        check.recv().unwrap();
                         Ok(TestView(worker_closed))
                     },
                     Some(wake),

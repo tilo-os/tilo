@@ -28,4 +28,4 @@ COPY \
     os/usr/lib/systemd/system/tilo-rollback-harden.timer \
     /usr/lib/systemd/system/
 COPY os/tests/rollback-boot-check.sh /usr/libexec/tilo-rollback-boot-check
-COPY os/tests/boot_units_gate.sh /usr/libexec/tilo/boot-units-gate.sh
+COPY os/tests/boot_units_check.sh /usr/libexec/tilo/boot-units-check.sh

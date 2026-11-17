@@ -2373,7 +2373,7 @@ impl ActionSpec {
     /// writes only the comments, a deletion changes the document). The
     /// declared [`ActionContract::kind`] and [`ActionContract::field`] stay
     /// the least any invocation is, which is what a host offers the action
-    /// under; every gate that admits an invocation asks
+    /// under; every check that admits an invocation asks
     /// [`need_for`](Self::need_for) too.
     #[must_use]
     pub fn with_need_of(
@@ -2462,7 +2462,7 @@ impl ActionSpec {
     /// The confirmation one invocation with these bound arguments needs: the
     /// declared policy when there is one, else
     /// [`Confirm`](ConfirmationPolicy::Confirm) when
-    /// [`risk_for`](Self::risk_for) requires confirmation. Every gate that
+    /// [`risk_for`](Self::risk_for) requires confirmation. Every check that
     /// admits an invocation asks this, never the declared policy alone.
     pub fn confirmation_for_args(&self, args: &ActionArgs) -> ConfirmationPolicy {
         if self.contract.confirmation != ConfirmationPolicy::None || self.risk_of.is_none() {

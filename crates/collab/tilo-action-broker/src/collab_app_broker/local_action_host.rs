@@ -712,7 +712,7 @@ fn certified_page(mut page: CataloguePage) -> CataloguePage {
 }
 
 // Registered workspace services now all retain original host admission. The
-// live dispatcher, not this syntactic provider gate, resolves the descriptor.
+// live dispatcher, not this syntactic provider check, resolves the descriptor.
 fn certified_target(provider: &str, _address: &tilo_actions::ActionAddress) -> bool {
     certified_provider(provider)
 }

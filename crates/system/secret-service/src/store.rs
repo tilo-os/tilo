@@ -1,5 +1,5 @@
 //! The store: the vault, sealed at rest under a key the device identity
-//! releases, and every operation on it gated by the caller's identity.
+//! releases, and every operation on it guarded by the caller's identity.
 //!
 //! The store is **locked** until its key can be derived. The key comes from
 //! the machine's device identity (see [`DeviceIdentityKey`]), which the

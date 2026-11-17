@@ -15,7 +15,7 @@ setup::import_view::tests::every_import_scenario_stages_real_worker_results_in_f
 setup::import_view::tests::failed_checkpoints_never_report_completion_or_create_output	Wine cannot protect a directory ACL
 setup::import_view::tests::import_resources_and_status_publish_reviewed_endpoints_from_real_events	Wine cannot protect a directory ACL
 setup::import_view::tests::issue_detail_pages_publish_restore_and_refuse_when_closed	Wine cannot protect a directory ACL
-setup::import_view::tests::journey_copy_later_restart_keeps_identity_gate_and_completion_destinations	Wine cannot protect a directory ACL
+setup::import_view::tests::journey_copy_later_restart_keeps_identity_check_and_completion_destinations	Wine cannot protect a directory ACL
 setup::import_view::tests::journey_import_screenshots_follow_trusted_fixture_readiness_across_themes	its fixtures need the import state Wine cannot protect
 setup::import_view::tests::journey_portal_refusal_is_observed_and_can_be_retried	Wine cannot protect a directory ACL
 setup::import_view::tests::retained_and_continuation_actions_keep_revision_identities	Wine cannot protect a directory ACL

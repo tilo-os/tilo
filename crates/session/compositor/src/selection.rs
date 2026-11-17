@@ -8,7 +8,7 @@
 //! | `zwlr_data_control_manager_v1` | trusted clients only | clipboard managers |
 //! | `ext_data_control_manager_v1` | trusted clients only | ditto, the successor |
 //!
-//! `wl_data_device` is focus-gated by the protocol itself, so every client may
+//! `wl_data_device` is focus-guarded by the protocol itself, so every client may
 //! bind it. Data control sees every selection unconditionally, which would
 //! let a sandboxed app harvest one-time codes and passwords off the
 //! clipboard, so only clients the session trusts see it (a clipboard

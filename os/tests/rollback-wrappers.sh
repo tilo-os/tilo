@@ -4,7 +4,7 @@
 # These wrappers decide whether a machine discards its rollback fallback, so
 # "it looked right" is not good enough. What is testable without a booted machine
 # is the LUKS reasoning and the argument handling; the parts that need a real root
-# filesystem (device-mapper discovery) and a real boot (the health gate) are called
+# filesystem (device-mapper discovery) and a real boot (the health check) are called
 # out at the end rather than faked.
 #
 #   ./os/tests/rollback-wrappers.sh [path-to-tilo-rollback-binary]
@@ -81,7 +81,7 @@ else
   bad "enrolling a generation must not hide the recovery keyslot"
 fi
 
-# Now the pathological case the gate exists for: every keyslot claimed by a
+# Now the pathological case the check exists for: every keyslot claimed by a
 # tilo-rollback token, so there is nothing left that does not need the TPM.
 luks_image "$W/two.img" "$W/gen.key"
 cat > "$W/token0.json" <<'JSON'
@@ -94,7 +94,7 @@ cat > "$W/token0.json" <<'JSON'
 JSON
 cryptsetup token import --token-id 0 --json-file "$W/token0.json" "$W/two.img"
 if rollback_has_independent_keyslot "$W/two.img"; then
-  bad "a disk whose only keyslot is TPM-sealed must NOT pass the gate"
+  bad "a disk whose only keyslot is TPM-sealed must NOT pass the check"
 else
   ok "a disk whose only keyslot is TPM-sealed is refused"
 fi
@@ -102,7 +102,7 @@ fi
 # A device that is not LUKS at all must not pass.
 truncate -s 1M "$W/plain.img"
 if rollback_has_independent_keyslot "$W/plain.img"; then
-  bad "a non-LUKS file must not pass the gate"
+  bad "a non-LUKS file must not pass the check"
 else
   ok "a non-LUKS file is refused"
 fi

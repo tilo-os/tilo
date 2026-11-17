@@ -1706,7 +1706,7 @@ fn refuse_in_process(release: &LocalModelRelease) -> Result<(), String> {
 
 /// Install then start one signed release in the detached worker, recording
 /// any failure in the service state Settings observes. An in-process model
-/// is only installed: no runtime, hardware gate or service applies to it.
+/// is only installed: no runtime, hardware check or service applies to it.
 fn run_install_worker(
     service: &mut LocalModelService<ManagerTransport, SystemdSupervisor>,
     catalog: &CatalogPayload,

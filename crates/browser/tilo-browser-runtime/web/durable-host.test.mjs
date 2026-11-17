@@ -64,13 +64,13 @@ test('accepted writes commit on their own in strict transactions and are acknowl
 test('flush resolves only once the commit is durable',async()=>{
   const h=harness();
   const storage=await h.host.open('p','d');
-  const gate=h.idb.gateNextCommit();
+  const hold=h.idb.holdNextCommit();
   h.runtime.write('p','d','doc','draft');
   let flushed=false;const flush=storage.flush().then(()=>{flushed=true;});
-  await gate.held;await settle();
+  await hold.held;await settle();
   assert.equal(flushed,false,'not before IndexedDB commits');
   assert.equal(storage.status.persistence,'pending');
-  gate.release();await flush;
+  hold.release();await flush;
   assert.deepEqual(h.stored(),{doc:'draft'});
   await storage.release();
 });

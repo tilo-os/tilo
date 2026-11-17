@@ -1,10 +1,10 @@
-//! The registration gate between a host and a child the host admits by a
+//! The hold between a host and a child the host admits by a
 //! launch record.
 //!
 //! A host records each launch (pid, start time, app, workspace) so the
 //! broker can attest the process when it connects. `Command::spawn` returns
 //! only after the child exists, and a fast child could connect before the
-//! host recorded it. The gate closes that race at the source: the host hands
+//! host recorded it. The hold closes that race at the source: the host hands
 //! the child one end of a private socket pair, the child blocks on it before
 //! it reaches the session, and the host releases it only after the record
 //! exists. The broker can then attest once, with no retry, and an unrecorded
@@ -23,7 +23,7 @@
 //! and a copy-on-write fault on each page its own threads touch next — where
 //! without one it uses `posix_spawn`, whose cost does not grow with the host.
 //! The child puts `/dev/null` on its stdin once released ([`wait_on_stdin`]),
-//! so nothing it runs inherits the gate.
+//! so nothing it runs inherits the hold.
 
 #[cfg(not(target_os = "linux"))]
 use std::io::Read as _;
@@ -42,9 +42,9 @@ pub const LAUNCH_REGISTRATION_STDIN_ENV: &str = "TILO_INTERNAL_LAUNCH_REGISTRATI
 pub const LAUNCH_REGISTRATION_FD_ENV: &str = "TILO_INTERNAL_LAUNCH_REGISTRATION_FD";
 
 #[derive(Debug)]
-pub struct RegistrationGate(UnixStream);
+pub struct LaunchHold(UnixStream);
 
-impl RegistrationGate {
+impl LaunchHold {
     /// Let the child go on. Call only once the launch is recorded.
     pub fn release(mut self) -> io::Result<()> {
         self.0.write_all(&[1])
@@ -70,27 +70,27 @@ pub fn take_window_link() -> Option<OwnedFd> {
     )
 }
 
-/// Make `command` start gated: its child's stdin is a private socket, named by
+/// Make `command` start held: its child's stdin is a private socket, named by
 /// [`LAUNCH_REGISTRATION_STDIN_ENV`], that it waits on before it reaches the
-/// session, until the returned gate is released. This replaces any stdin set
+/// session, until the returned hold is released. This replaces any stdin set
 /// before.
 ///
 /// Drop `command` once it has spawned: it holds the child's end until then.
-pub fn install(command: &mut Command) -> io::Result<RegistrationGate> {
+pub fn install(command: &mut Command) -> io::Result<LaunchHold> {
     let (release, wait) = UnixStream::pair()?;
     command
         .env_remove(LAUNCH_REGISTRATION_FD_ENV)
         .env(LAUNCH_REGISTRATION_STDIN_ENV, "1")
         .stdin(Stdio::from(OwnedFd::from(wait)));
-    Ok(RegistrationGate(release))
+    Ok(LaunchHold(release))
 }
 
-pub fn install_external(command: &mut Command) -> io::Result<(RegistrationGate, OwnedFd)> {
+pub fn install_external(command: &mut Command) -> io::Result<(LaunchHold, OwnedFd)> {
     let (release, wait) = UnixStream::pair()?;
     command
         .env_remove(LAUNCH_REGISTRATION_FD_ENV)
         .env(LAUNCH_REGISTRATION_STDIN_ENV, "1");
-    Ok((RegistrationGate(release), OwnedFd::from(wait)))
+    Ok((LaunchHold(release), OwnedFd::from(wait)))
 }
 
 /// The child's side of [`install`]: wait for the host's release on stdin,
@@ -100,13 +100,13 @@ pub fn install_external(command: &mut Command) -> io::Result<(RegistrationGate, 
 ///
 /// # Errors
 ///
-/// End-of-file when the host dropped the gate unreleased, or the error of
+/// End-of-file when the host dropped the hold unreleased, or the error of
 /// reading stdin or of replacing it. The child must not go on after any.
 pub fn wait_on_stdin() -> io::Result<()> {
     read_release()?;
     let null = std::fs::File::open("/dev/null")?;
     // SAFETY: both are descriptors this process owns. Replacing fd 0 closes
-    // the gate in one step, so no later child can inherit it.
+    // the hold in one step, so no later child can inherit it.
     if unsafe { libc::dup2(null.as_raw_fd(), 0) } == -1 {
         return Err(io::Error::last_os_error());
     }
@@ -115,10 +115,10 @@ pub fn wait_on_stdin() -> io::Result<()> {
 
 #[cfg(target_os = "linux")]
 fn read_release() -> io::Result<()> {
-    // SAFETY: fd 0 is the gate the host handed over, open until `dup2`
+    // SAFETY: fd 0 is the socket the host handed over, open until `dup2`
     // replaces it after this returns.
-    let gate = unsafe { std::os::fd::BorrowedFd::borrow_raw(0) };
-    if let Some(link) = read_release_from(gate)? {
+    let hold = unsafe { std::os::fd::BorrowedFd::borrow_raw(0) };
+    if let Some(link) = read_release_from(hold)? {
         *WINDOW_LINK
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(link);
@@ -127,9 +127,9 @@ fn read_release() -> io::Result<()> {
 }
 
 #[cfg(target_os = "linux")]
-fn read_release_from(gate: std::os::fd::BorrowedFd<'_>) -> io::Result<Option<OwnedFd>> {
+fn read_release_from(hold: std::os::fd::BorrowedFd<'_>) -> io::Result<Option<OwnedFd>> {
     let mut release = [0_u8; 1];
-    let Some((1, fds)) = crate::message::receive(gate, &mut release)? else {
+    let Some((1, fds)) = crate::message::receive(hold, &mut release)? else {
         return Err(io::ErrorKind::UnexpectedEof.into());
     };
     Ok(fds.into_iter().next())
@@ -137,11 +137,11 @@ fn read_release_from(gate: std::os::fd::BorrowedFd<'_>) -> io::Result<Option<Own
 
 #[cfg(not(target_os = "linux"))]
 fn read_release() -> io::Result<()> {
-    // SAFETY: fd 0 is the gate the host handed over. The `File` is never
+    // SAFETY: fd 0 is the socket the host handed over. The `File` is never
     // dropped, so the descriptor stays open until `dup2` replaces it below.
-    let mut gate = std::mem::ManuallyDrop::new(unsafe { std::fs::File::from_raw_fd(0) });
+    let mut hold = std::mem::ManuallyDrop::new(unsafe { std::fs::File::from_raw_fd(0) });
     let mut release = [0_u8; 1];
-    gate.read_exact(&mut release)
+    hold.read_exact(&mut release)
 }
 
 #[cfg(test)]
@@ -153,22 +153,22 @@ mod tests {
     use super::*;
 
     /// Set only in the child this module's tests start.
-    const CHILD_ENV: &str = "TILO_REGISTRATION_GATE_TEST_CHILD";
-    const CHILD_TEST: &str = "registration_gate::tests::gated_child";
+    const CHILD_ENV: &str = "TILO_LAUNCH_HOLD_TEST_CHILD";
+    const CHILD_TEST: &str = "launch_hold::tests::held_child";
 
     /// The child side, run in a copy of this test binary: announce that it
-    /// is waiting, wait on the gate as the launcher does, report what it
+    /// is waiting, wait on the hold as the launcher does, report what it
     /// read and what its stdin is afterwards. Without [`CHILD_ENV`] it is not
     /// the child and has nothing to do.
     #[test]
-    fn gated_child() {
+    fn held_child() {
         if std::env::var_os(CHILD_ENV).is_none() {
             return;
         }
         assert_eq!(
             std::env::var(LAUNCH_REGISTRATION_STDIN_ENV).as_deref(),
             Ok("1"),
-            "the gate is named"
+            "the hold is named"
         );
         assert!(
             std::env::var_os(LAUNCH_REGISTRATION_FD_ENV).is_none(),
@@ -180,7 +180,7 @@ mod tests {
             return;
         }
         println!("released");
-        // `/dev/null`: end-of-file at once, where the gate would have
+        // `/dev/null`: end-of-file at once, where the hold would have
         // blocked or handed over another byte.
         let mut rest = Vec::new();
         // SAFETY: fd 0 is this process's stdin; the `File` is not dropped.
@@ -200,15 +200,15 @@ mod tests {
             if read == 0 && same {
                 "null-stdin"
             } else {
-                "gate-still-stdin"
+                "hold-still-stdin"
             }
         );
     }
 
-    fn spawn_gated() -> (
+    fn spawn_held() -> (
         std::process::Child,
         BufReader<std::process::ChildStdout>,
-        RegistrationGate,
+        LaunchHold,
     ) {
         let mut command = Command::new(std::env::current_exe().expect("this test binary"));
         command
@@ -218,11 +218,11 @@ mod tests {
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::null());
-        let gate = install(&mut command).expect("install the gate");
-        let mut child = command.spawn_locked().expect("spawn the gated child");
+        let hold = install(&mut command).expect("install the hold");
+        let mut child = command.spawn_locked().expect("spawn the held child");
         drop(command);
         let stdout = BufReader::new(child.stdout.take().expect("child stdout"));
-        (child, stdout, gate)
+        (child, stdout, hold)
     }
 
     fn next_line(stdout: &mut BufReader<std::process::ChildStdout>) -> String {
@@ -239,7 +239,7 @@ mod tests {
                 "released",
                 "closed",
                 "null-stdin",
-                "gate-still-stdin",
+                "hold-still-stdin",
             ]
             .into_iter()
             .find(|report| line.ends_with(report))
@@ -249,26 +249,26 @@ mod tests {
         }
     }
 
-    /// The gated child goes no further than the gate until the host
+    /// the held child goes no further until the host
     /// releases it — the host records the launch in between — its stdin is
-    /// `/dev/null` from then on, and a gate dropped unreleased refuses the
+    /// `/dev/null` from then on, and a hold dropped unreleased refuses the
     /// child instead of letting it on.
     #[test]
-    fn a_gated_child_waits_for_its_release() {
-        let (mut child, mut stdout, gate) = spawn_gated();
+    fn a_held_child_waits_for_its_release() {
+        let (mut child, mut stdout, hold) = spawn_held();
         assert_eq!(next_line(&mut stdout), "waiting");
         assert!(
             child.try_wait().expect("child status").is_none(),
-            "the child is held at the gate"
+            "the child is held"
         );
-        gate.release().expect("release the child");
+        hold.release().expect("release the child");
         assert_eq!(next_line(&mut stdout), "released");
         assert_eq!(next_line(&mut stdout), "null-stdin");
         assert!(child.wait().expect("child exit").success());
 
-        let (mut child, mut stdout, gate) = spawn_gated();
+        let (mut child, mut stdout, hold) = spawn_held();
         assert_eq!(next_line(&mut stdout), "waiting");
-        drop(gate);
+        drop(hold);
         assert_eq!(next_line(&mut stdout), "closed");
         assert!(child.wait().expect("child exit").success());
     }
@@ -279,22 +279,22 @@ mod tests {
     #[test]
     fn the_window_link_comes_with_the_release() {
         use std::os::fd::AsFd as _;
-        let (release, wait) = UnixStream::pair().expect("gate");
+        let (release, wait) = UnixStream::pair().expect("socket pair");
         let (link, _app) = UnixStream::pair().expect("link");
-        RegistrationGate(release)
+        LaunchHold(release)
             .release_with_window_link(link.as_fd())
             .expect("release");
         assert!(read_release_from(wait.as_fd()).expect("released").is_some());
 
-        let (release, wait) = UnixStream::pair().expect("gate");
-        RegistrationGate(release).release().expect("release");
+        let (release, wait) = UnixStream::pair().expect("socket pair");
+        LaunchHold(release).release().expect("release");
         assert!(read_release_from(wait.as_fd()).expect("released").is_none());
 
-        let (release, wait) = UnixStream::pair().expect("gate");
-        drop(RegistrationGate(release));
+        let (release, wait) = UnixStream::pair().expect("socket pair");
+        drop(LaunchHold(release));
         assert!(
             read_release_from(wait.as_fd()).is_err(),
-            "an unreleased gate refuses"
+            "an unreleased hold refuses"
         );
     }
 }

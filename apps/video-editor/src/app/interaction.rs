@@ -492,7 +492,7 @@ impl VideoEditorApp {
                 if rect.contains(p) {
                     self.selected_media = Some(mid);
                     // When this same item was last *clicked*, not programmatically
-                    // selected: both the double-click and the rename are gated on it, so a
+                    // selected: both the double-click and the rename depend on it, so a
                     // freshly imported, auto-selected item is never renamed on first click.
                     let since = self.last_click_media.and_then(|(m, t)| {
                         (m == mid).then(|| ui::time::now().saturating_duration_since(t).as_millis())
@@ -799,7 +799,7 @@ impl VideoEditorApp {
             return;
         }
         // The project's format is project-level too, so it answers whether or
-        // not a clip is selected -- above the `l.valid` gate, which is what
+        // not a clip is selected -- above the `l.valid` check, which is what
         // marks "a clip's controls were laid out".
         for ((w, h), rect) in l.project_frames.clone() {
             if rect.contains(p) {

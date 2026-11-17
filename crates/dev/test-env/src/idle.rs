@@ -7,7 +7,7 @@
 //! [`context_switches`], [`asleep_runs`]), or a whole process tree, such as a compositor the test
 //! spawned and every app it started ([`idle_wakeups`] samples every thread of it over a window, as
 //! [`Wakeups`]). Linux only: the counts come from `/proc`. Elsewhere the process-level calls return
-//! an error instead of an empty sample, so a gate that cannot observe its subject fails instead of
+//! an error instead of an empty sample, so a check that cannot observe its subject fails instead of
 //! passing.
 
 #![allow(

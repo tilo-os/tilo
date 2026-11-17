@@ -383,9 +383,9 @@ pub enum StartError {
         /// The system's refusal.
         source: std::io::Error,
     },
-    /// The gate that holds the app until the session recorded its launch could not be made: without
+    /// The hold that keeps the app back until the session recorded its launch could not be made: without
     /// it the app could reach the session ahead of its record, so it is not started at all.
-    Gate(std::io::Error),
+    Hold(std::io::Error),
 }
 
 impl std::fmt::Display for StartError {
@@ -396,9 +396,9 @@ impl std::fmt::Display for StartError {
             Self::Spawn { program, source } => {
                 write!(formatter, "{} did not start: {source}", program.display())
             }
-            Self::Gate(error) => write!(
+            Self::Hold(error) => write!(
                 formatter,
-                "the gate holding the app until its launch is recorded: {error}"
+                "the hold keeping the app back until its launch is recorded: {error}"
             ),
         }
     }
@@ -790,7 +790,7 @@ impl Surfaces {
         // before it is: this holds it at its stdin until then, as the launcher is held for an app
         // the session opens.
         let registration =
-            launcher::registration_gate::install(&mut command).map_err(StartError::Gate)?;
+            launcher::launch_hold::install(&mut command).map_err(StartError::Hold)?;
         // Safety: this runs in the child between `fork` and `exec` , where the app has done nothing
         // yet; it touches no memory the parent shares with other threads. The actions descriptor is
         // moved out of the range the fixed ones take before either is placed, so handing over one

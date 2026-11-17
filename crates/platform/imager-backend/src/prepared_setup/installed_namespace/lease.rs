@@ -20,7 +20,7 @@ pub struct InstalledRecordLease {
     snapshot: Vec<u8>,
 }
 impl InstalledRecordLease {
-    /// Open only through the native root-role and controlled-parent gate.
+    /// Open only through the native root-role and controlled-parent check.
     /// The returned bytes still require the caller's closed typed validation.
     pub fn open(path: &Path, id: &str) -> io::Result<Self> {
         operation(id)?;

@@ -104,29 +104,32 @@ fn two_people_on_two_devices_each_meet_in_one_workspace() {
     }
 
     // Every session says who is here, both ways: each of the other devices in the workspace, by
-    // the publisher it goes by, and no row for the seat it is at — a roster lists the others, and
-    // the person at this seat is not one of them.
+    // the publisher it goes by, and no row for itself — a roster lists the others, and
+    // the person at this device is not one of them.
     let everyone = [&ada_laptop, &ada_phone, &bob_laptop, &bob_phone];
-    let seats: Vec<String> = everyone
+    let publishers: Vec<String> = everyone
         .iter()
         .filter_map(|device| device.publisher())
         .collect();
     assert_eq!(
-        seats.len(),
+        publishers.len(),
         everyone.len(),
-        "every device says which seat it is: {seats:?}"
+        "every device says which publisher it is: {publishers:?}"
     );
     for device in everyone {
-        let mine = device.publisher().expect("the seat this device is at");
-        for other in seats.iter().filter(|seat| **seat != mine) {
+        let mine = device.publisher().expect("this device's publisher");
+        for other in publishers.iter().filter(|publisher| **publisher != mine) {
             device.wait_present(&site.workspace, other);
         }
         let present = device.present(&site.workspace);
-        let mut here: Vec<String> = present.iter().map(|(seat, _)| seat.clone()).collect();
-        here.sort();
-        let mut wanted: Vec<String> = seats
+        let mut here: Vec<String> = present
             .iter()
-            .filter(|seat| **seat != mine)
+            .map(|(publisher, _)| publisher.clone())
+            .collect();
+        here.sort();
+        let mut wanted: Vec<String> = publishers
+            .iter()
+            .filter(|publisher| **publisher != mine)
             .cloned()
             .collect();
         wanted.sort();
@@ -135,10 +138,10 @@ fn two_people_on_two_devices_each_meet_in_one_workspace() {
             "{} says exactly the other devices are here, once each: {present:?}",
             device.label
         );
-        for (seat, label) in &present {
+        for (publisher, label) in &present {
             assert!(
                 !label.trim().is_empty(),
-                "{} says what the workspace calls {seat}: {present:?}",
+                "{} says what the workspace calls {publisher}: {present:?}",
                 device.label
             );
         }
@@ -165,17 +168,17 @@ fn two_peoples_own_desktops_see_each_other_come_and_go_without_a_site() {
     bob_desktop.wait_holding(&workspace);
     bob_desktop.wait_showing(&workspace);
 
-    let ada_seat = ada_desktop.publisher().expect("the seat Ada is at");
-    let bob_seat = bob_desktop.publisher().expect("the seat Bob is at");
-    ada_desktop.wait_present(&workspace, &bob_seat);
-    bob_desktop.wait_present(&workspace, &ada_seat);
+    let ada_publisher = ada_desktop.publisher().expect("Ada's publisher");
+    let bob_publisher = bob_desktop.publisher().expect("Bob's publisher");
+    ada_desktop.wait_present(&workspace, &bob_publisher);
+    bob_desktop.wait_present(&workspace, &ada_publisher);
 
     bob_desktop.stop();
     tilo_test_env::wait_until(format!("Ada's desktop says Bob left {workspace}"), || {
         !ada_desktop
             .present(&workspace)
             .iter()
-            .any(|(seat, _)| *seat == bob_seat)
+            .any(|(publisher, _)| *publisher == bob_publisher)
     });
 }
 

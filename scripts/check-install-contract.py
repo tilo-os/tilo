@@ -148,14 +148,14 @@ assert "brew tap tilo/" not in imager_workflow
 
 # Every host/architecture the install contract declares is one the release
 # workflow builds and requires, and every download it declares is a file the
-# publication gate carries and the landing-page promotion links. A host whose
+# publication check carries and the landing-page promotion links. A host whose
 # artifacts are declared and built but never mapped is how Windows ARM64 stayed
 # declared, built, and absent from the download matrix.
 required_matrix = imager_workflow.split("          required=(\n", 1)[1].split("          )\n", 1)[0]
 required_assets = {
     line.strip() for line in required_matrix.splitlines() if line.strip()
 }
-assert required_assets, "the publication gate requires no artifact"
+assert required_assets, "the publication check requires no artifact"
 
 declared_entries = {}
 for host in contract["imager"]["hosts"]:
@@ -182,7 +182,7 @@ for host in contract["imager"]["hosts"]:
             declared_entries[entry] = release_file
 
 # Windows ARM64 was the host this gap dropped: declared, built by its own
-# runner, required by the publication gate, and absent from the page.
+# runner, required by the publication check, and absent from the page.
 assert {
     entry: release_file
     for entry, release_file in declared_entries.items()
@@ -357,7 +357,7 @@ for name, page in (
     ("docs/release-pipeline.md", release_pipeline),
 ):
     assert "when enabled" not in page, name
-    assert "not release-gated" not in page, name
+    assert "not release-guarded" not in page, name
 assert "releases build and install-test ARM64" in getting_started
 assert "x86-64 currently" in getting_started
 assert "not a qualified public platform yet" in getting_started
@@ -391,7 +391,7 @@ for name, page in (
     ("docs/release-pipeline.md", release_pipeline),
 ):
     assert "when enabled" not in page, name
-    assert "not release-gated" not in page, name
+    assert "not release-guarded" not in page, name
 assert "releases build and install-test ARM64" in getting_started
 assert "x86-64 currently" in getting_started
 assert "not a qualified public platform yet" in getting_started

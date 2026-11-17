@@ -9,7 +9,7 @@ from functools import lru_cache
 from pathlib import Path
 
 # An attribute that compiles what follows only for tests; group 1 is `!`
-# for the inner form that gates its whole file.
+# for the inner form that checks its whole file.
 TEST_ATTRIBUTE = re.compile(r"#(!?)\[(?:cfg\((?:test|all\(test\b)|test\])")
 LINE_COMMENT = re.compile(r"(?m)^[ \t]*//.*$")
 # `tilo_test_env::scenario! { fn name; phase ...; { ... } }` expands to one
@@ -67,7 +67,7 @@ def blank_test_items(code: str) -> str:
 
 
 def test_item_end(code: str, start: int) -> int:
-    """End of the item gated by the attribute at `start`: its attributes, then
+    """End of the item guarded by the attribute at `start`: its attributes, then
     up to a `;` or `,`, the close of its first top-level block, or the close
     of the enclosing one."""
     depth: list[str] = []
@@ -355,7 +355,7 @@ def strip_tests(text: str, code: str) -> Pruned:
     modules: list[tuple[str, str | None]] = []
     position = 0
     while attribute := OUTER_ATTRIBUTE.search(code, position):
-        # The run of attributes on one item: any test attribute gates it all.
+        # The run of attributes on one item: any test attribute checks it all.
         first_close = matching(code, attribute.end() - 1)
         run_end, is_test = attribute.start(), False
         while run := OUTER_ATTRIBUTE.match(code, run_end):

@@ -127,9 +127,9 @@ fn open(path: &std::path::Path) -> Option<(PdfApp, ui::State)> {
 fn helper_sets_appearance_text() -> bool {
     const WHAT: &str = "appearance text in the helper's pinned fonts";
     match tilo_pdf::sandboxed_for_test(tilo_pdf::Engine::shared(), WHAT) {
-        tilo_pdf::HelperGate::Sandboxed(_) => true,
-        tilo_pdf::HelperGate::StandDown => false,
-        tilo_pdf::HelperGate::Failed(e) => {
+        tilo_pdf::HelperCheck::Sandboxed(_) => true,
+        tilo_pdf::HelperCheck::StandDown => false,
+        tilo_pdf::HelperCheck::Failed(e) => {
             eprintln!("SKIPPING {WHAT}: no PDF engine on this host ({e})");
             false
         }

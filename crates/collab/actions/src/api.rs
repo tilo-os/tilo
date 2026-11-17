@@ -1524,7 +1524,7 @@ mod tests {
             &registry(),
             &mut transport,
         )
-        .expect("a policy gate may explicitly attest confirmation");
+        .expect("a policy check may explicitly attest confirmation");
         assert_eq!(
             doc.get(&ROOT, "starred").unwrap().unwrap().0.as_bool(),
             Some(true)
@@ -1766,7 +1766,7 @@ mod tests {
         }
 
         phase a_confirmed_invocation_inside_a_run_is_recorded_with_its_group;
-        // A destructive operation an agent run performs after its policy gate
+        // A destructive operation an agent run performs after its policy check
         // confirmed it is recorded within the run, exactly like an unconfirmed
         // one — consent is not a reason to lose whose task the change belongs to.
         {

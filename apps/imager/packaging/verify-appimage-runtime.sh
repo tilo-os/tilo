@@ -9,7 +9,7 @@ output="${2:?usage: verify-appimage-runtime.sh APPIMAGE OUTPUT_DIR}"
   || { printf 'AppImage is missing or not executable: %s\n' "$appimage" >&2; exit 1; }
 mkdir -p "$output"
 
-# Keep extraction as a separate compatibility gate even when FUSE works. This
+# Keep extraction as a separate compatibility check even when FUSE works. This
 # covers the documented escape hatch used by locked-down container hosts.
 APPIMAGE_EXTRACT_AND_RUN=1 "$appimage" \
   --shots "$output/appimage-extracted.png" \

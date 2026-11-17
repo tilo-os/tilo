@@ -166,7 +166,7 @@ impl Guest for Fixture {
             .push(argv.iter().map(|word| (*word).to_owned()).collect());
         (self.respond)(argv)
     }
-    fn gate(&self) -> Result<()> {
+    fn check(&self) -> Result<()> {
         Ok(())
     }
     fn lock(&self) -> Result<fs::File> {

@@ -52,7 +52,7 @@ pub const SYSTEM_READ_PATHS: &[&str] = &[
     "/etc/os-release",
     "/usr/share/zoneinfo",
     "/etc/localtime",
-    // TLS trust: whether an app reaches the network is decided by `[sandbox.net]` and the egress gate.
+    // TLS trust: whether an app reaches the network is decided by `[sandbox.net]` and the egress proxy.
     "/etc/alternatives/libnssckbi.so",
     "/etc/alternatives/libnssckbi.so.x86_64",
     "/etc/alternatives/libnssckbi.so.aarch64",

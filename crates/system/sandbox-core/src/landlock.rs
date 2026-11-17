@@ -495,9 +495,9 @@ mod tests {
                 assert_eq!(denied.handled_net.bits(), 0b11);
                 assert!(denied.connect_ports.is_empty());
 
-                let gated = RulesetSpec::application(rules, NetRestriction::ConnectOnly(4711));
-                assert_eq!(gated.handled_net.bits(), 0b11);
-                assert_eq!(gated.connect_ports, vec![4711]);
+                let guarded = RulesetSpec::application(rules, NetRestriction::ConnectOnly(4711));
+                assert_eq!(guarded.handled_net.bits(), 0b11);
+                assert_eq!(guarded.connect_ports, vec![4711]);
             }
         }
 

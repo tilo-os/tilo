@@ -3,7 +3,7 @@
 //! A Tilo session's compositor serves its action broker to agents at
 //! `$XDG_RUNTIME_DIR/tilo-session/agent.sock` (the session's *MCP server*):
 //! the person admits each connection as an agent member of a workspace, and
-//! every call then passes the broker's ordinary gate as that agent. A
+//! every call then passes the broker's ordinary check as that agent. A
 //! `--connect` client inside the login relays to that server. It never starts
 //! a standalone runtime there: a second, empty authority beside the desktop
 //! would answer every question about the desktop wrongly, and silently.
@@ -424,7 +424,7 @@ pub fn client_connected(stream: &std::os::unix::net::UnixStream) -> bool {
 /// checked: read its `initialize`, `ask` the person (with a probe that says
 /// whether the client is still there), and only once they admit it answer
 /// that `initialize` and every later request as the admitted agent, over
-/// `host`'s ordinary gate. Before then the server reads nothing more, so no
+/// `host`'s ordinary check. Before then the server reads nothing more, so no
 /// request a client queued behind its `initialize` can run unadmitted. A
 /// refusal answers the `initialize` with a JSON-RPC error and closes.
 ///

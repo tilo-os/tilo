@@ -182,7 +182,7 @@ mod tests {
         })
     }
 
-    /// The session's own actions are its broker's: the person at this seat is offered the
+    /// The session's own actions are its broker's: the person at this device is offered the
     /// layout's `place` on the session's own provider, read on the loop's pass and listed
     /// by the broker — one catalogue, whichever API the caller came in by. Its invocation, and
     /// the turn's admission of it, are proven against a real tracker in the broker's own

@@ -21,8 +21,8 @@ mod iroh_idle;
 mod native_sync_bench;
 #[path = "native_tier1.rs"]
 mod native_tier1;
-#[path = "performance_gate.rs"]
-mod performance_gate;
+#[path = "performance_check.rs"]
+mod performance_check;
 #[path = "performance_timing.rs"]
 mod performance_timing;
 #[path = "session_media.rs"]

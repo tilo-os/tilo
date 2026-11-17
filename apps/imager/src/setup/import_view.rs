@@ -156,7 +156,7 @@ pub struct ImportApp {
     navigation: super::journey_navigation::Navigation,
     actions: Option<ui::framework::Actions<Imager>>,
     review_request: Option<(usize, mpsc::Receiver<Result<Continuation, String>>)>,
-    gate_request: Option<(ImportCommand, mpsc::Receiver<Result<(), String>>)>,
+    check_request: Option<(ImportCommand, mpsc::Receiver<Result<(), String>>)>,
     batch: Vec<usize>,
     store: Option<Arc<MigrationStore>>,
     writer: Option<StoreWriter>,
@@ -205,7 +205,7 @@ impl ImportApp {
         *self = match MigrationStore::open_default().and_then(Self::with_store) {
             Ok(mut app) => {
                 if app.continuation.is_some()
-                    && let Err(error) = app.request_identity_gate(ImportCommand::CheckIdentity)
+                    && let Err(error) = app.request_identity_check(ImportCommand::CheckIdentity)
                 {
                     app.status = error;
                     app.status_is_error = true;
@@ -223,7 +223,7 @@ impl ImportApp {
             identity_ready: false,
             navigation: super::journey_navigation::Navigation::default(),
             actions: None,
-            gate_request: None,
+            check_request: None,
             review_request: None,
             batch: Vec::new(),
             store: None,
@@ -584,7 +584,7 @@ impl ImportApp {
             identity_ready: false,
             navigation: super::journey_navigation::Navigation::default(),
             actions: None,
-            gate_request: None,
+            check_request: None,
             review_request: None,
             batch: Vec::new(),
             store: Some(Arc::clone(&store)),
@@ -660,7 +660,7 @@ impl ImportApp {
             .is_some_and(|record| record.state() == OperationState::AwaitingReview)
             && self.worker.is_none()
             && self.review_request.is_none()
-            && self.gate_request.is_none()
+            && self.check_request.is_none()
             && self.pending_copy_invocation.is_none()
             && self.pending_review_invocation.is_none()
             && self.pending_prepare_invocation.is_none()
@@ -680,7 +680,7 @@ impl ImportApp {
             && self.store.is_some()
             && self.worker.is_none()
             && self.review_request.is_none()
-            && self.gate_request.is_none()
+            && self.check_request.is_none()
             && self.picker.is_none()
             && self.pending_copy_invocation.is_none()
             && self.pending_review_invocation.is_none()
@@ -695,7 +695,7 @@ impl ImportApp {
             ImportStatusPhase::Copying
         } else if self.review_request.is_some() {
             ImportStatusPhase::Reviewing
-        } else if self.gate_request.is_some() {
+        } else if self.check_request.is_some() {
             ImportStatusPhase::CheckingIdentity
         } else if self.picker.is_some() {
             ImportStatusPhase::ChoosingFolder
@@ -813,17 +813,17 @@ impl ImportApp {
                         picker_available: review_available && self.picker.is_none(),
                         mode_available: self.worker.is_none()
                             && self.review_request.is_none()
-                            && self.gate_request.is_none(),
+                            && self.check_request.is_none(),
                     }
                 })
                 .collect();
             ContinuationProjection {
                 identity_ready: self.identity_ready,
-                identity_check_available: !self.identity_ready && self.gate_request.is_none(),
+                identity_check_available: !self.identity_ready && self.check_request.is_none(),
                 start_batch_available: self.can_start_continued_batch(),
                 later_all_available: self.worker.is_none()
                     && self.review_request.is_none()
-                    && self.gate_request.is_none(),
+                    && self.check_request.is_none(),
                 folders,
             }
         });
@@ -1002,7 +1002,9 @@ impl ImportApp {
             }
             ImportEffect::PrepareReview => ImportCommand::PrepareReview,
             ImportEffect::CheckIdentity => {
-                if self.continuation.is_none() || self.identity_ready || self.gate_request.is_some()
+                if self.continuation.is_none()
+                    || self.identity_ready
+                    || self.check_request.is_some()
                 {
                     return self.refuse_semantic(super::strings::t(
                         "imager-import-error-identity-check-unavailable",
@@ -1022,7 +1024,7 @@ impl ImportApp {
                 if self.continuation.is_none()
                     || self.worker.is_some()
                     || self.review_request.is_some()
-                    || self.gate_request.is_some()
+                    || self.check_request.is_some()
                 {
                     return self.refuse_semantic(super::strings::t(
                         "imager-import-error-later-all-unavailable",
@@ -1169,7 +1171,7 @@ impl ImportApp {
                 };
                 if self.worker.is_some()
                     || self.review_request.is_some()
-                    || self.gate_request.is_some()
+                    || self.check_request.is_some()
                 {
                     return self.refuse_semantic(super::strings::t(
                         "imager-import-error-folder-mode-unavailable",
@@ -1259,7 +1261,7 @@ impl ImportApp {
         if self.pending_prepare_invocation.is_some()
             || self.pending_review_invocation.is_some()
             || self.pending_copy_invocation.is_some()
-            || self.gate_request.is_some()
+            || self.check_request.is_some()
             || self.picker.is_some()
         {
             return Err("Wait for the previous folder action to finish.".into());
@@ -1373,7 +1375,7 @@ impl ImportApp {
         if !self.identity_ready {
             return Err("Finish identity setup in Tilo first.".into());
         }
-        if self.worker.is_some() || self.review_request.is_some() || self.gate_request.is_some() {
+        if self.worker.is_some() || self.review_request.is_some() || self.check_request.is_some() {
             return Err("Wait for the active copy or folder review.".into());
         }
         let c = self.continuation.as_ref().ok_or("No saved folder review")?;
@@ -1481,7 +1483,7 @@ impl ImportApp {
     }
 
     fn save_continued_mode(&mut self, index: usize, mode: ChoiceMode) -> Result<(), String> {
-        if self.worker.is_some() || self.gate_request.is_some() {
+        if self.worker.is_some() || self.check_request.is_some() {
             return Err("Stop the running copy before changing folder choices.".into());
         }
         let c = self.continuation.as_mut().ok_or("No saved folder review")?;
@@ -1495,8 +1497,8 @@ impl ImportApp {
         Ok(())
     }
 
-    fn request_identity_gate(&mut self, command: ImportCommand) -> Result<(), String> {
-        if self.gate_request.is_some() {
+    fn request_identity_check(&mut self, command: ImportCommand) -> Result<(), String> {
+        if self.check_request.is_some() {
             return Err("Waiting for the Tilo session check.".into());
         }
         let identity_checker = self.identity_checker;
@@ -1507,7 +1509,7 @@ impl ImportApp {
                 let _ = tx.send(identity_checker());
             })
             .map_err(|e| e.to_string())?;
-        self.gate_request = Some((command, rx));
+        self.check_request = Some((command, rx));
         self.status = super::strings::t("imager-import-status-checking-identity");
         Ok(())
     }
@@ -1726,8 +1728,8 @@ impl ImportApp {
         }
     }
 
-    fn poll_identity_gate(&mut self, changed: &mut bool) {
-        if let Some((command, rx)) = &self.gate_request {
+    fn poll_identity_check(&mut self, changed: &mut bool) {
+        if let Some((command, rx)) = &self.check_request {
             let result = match rx.try_recv() {
                 Ok(r) => Some(r),
                 Err(mpsc::TryRecvError::Disconnected) => Some(Err(super::strings::t(
@@ -1737,7 +1739,7 @@ impl ImportApp {
             };
             if let Some(result) = result {
                 let command = *command;
-                self.gate_request = None;
+                self.check_request = None;
                 self.identity_ready = result.is_ok();
                 match result {
                     Ok(()) => self.apply_authorized_command(command),
@@ -1884,7 +1886,7 @@ impl ImportApp {
         } else {
             reviewed
         };
-        self.poll_identity_gate(&mut changed);
+        self.poll_identity_check(&mut changed);
         let mut terminal = false;
         for _ in 0..2 {
             let Some((index, worker)) = &mut self.worker else {
@@ -1987,7 +1989,7 @@ impl ImportApp {
                     | ImportCommand::PickContinuedDestination(_)
             )
         {
-            if let Err(e) = self.request_identity_gate(command) {
+            if let Err(e) = self.request_identity_check(command) {
                 self.status = e;
                 self.status_is_error = true;
             }
@@ -2459,7 +2461,7 @@ impl ImportApp {
         self.review_request.is_none()
             && self.identity_ready
             && self.worker.is_none()
-            && self.gate_request.is_none()
+            && self.check_request.is_none()
             && self.pending_copy_invocation.is_none()
             && self.pending_prepare_invocation.is_none()
             && self.pending_review_invocation.is_none()
@@ -2475,7 +2477,7 @@ impl ImportApp {
     }
 
     fn continuation_idle(&self) -> bool {
-        self.worker.is_none() && self.review_request.is_none() && self.gate_request.is_none()
+        self.worker.is_none() && self.review_request.is_none() && self.check_request.is_none()
     }
 
     fn continuation_card(&self, c: &Continuation) -> Section {
@@ -2494,7 +2496,7 @@ impl ImportApp {
                     "imager-import-action-check-identity",
                     ImportCommand::CheckIdentity,
                 )
-                .with_enabled(self.gate_request.is_none()),
+                .with_enabled(self.check_request.is_none()),
             ));
         }
         let idle = self.continuation_idle();
@@ -2742,7 +2744,7 @@ impl Widget for ImportApp {
     fn needs_idle_sync(&self) -> bool {
         self.worker.is_some()
             || self.review_request.is_some()
-            || self.gate_request.is_some()
+            || self.check_request.is_some()
             || self.picker.is_some()
             || self.pending_copy_invocation.is_some()
             || self.pending_review_invocation.is_some()
@@ -2805,8 +2807,8 @@ impl ImportApp {
             });
         }
         if cancellation_requested && self.pending_copy_invocation.as_ref().is_some() {
-            if self.gate_request.is_some() {
-                self.gate_request = None;
+            if self.check_request.is_some() {
+                self.check_request = None;
                 self.batch.clear();
                 self.pending_copy_invocation = None;
                 return Some(JobOutcome::Cancelled {
@@ -2831,8 +2833,8 @@ impl ImportApp {
                 }
                 return None;
             }
-            if self.gate_request.is_some() || self.picker.is_some() {
-                self.gate_request = None;
+            if self.check_request.is_some() || self.picker.is_some() {
+                self.check_request = None;
                 self.picker = None;
                 self.pending_review_invocation = None;
                 return Some(JobOutcome::Cancelled {
@@ -2841,7 +2843,9 @@ impl ImportApp {
             }
         }
         if let Some(pending) = self.pending_review_invocation.as_ref() {
-            if self.gate_request.is_some() || self.review_request.is_some() || self.picker.is_some()
+            if self.check_request.is_some()
+                || self.review_request.is_some()
+                || self.picker.is_some()
             {
                 return None;
             }
@@ -2912,7 +2916,7 @@ impl ImportApp {
             return Some(update);
         }
         let pending = self.pending_copy_invocation.as_ref()?;
-        if self.gate_request.is_some()
+        if self.check_request.is_some()
             || self.worker.as_ref().is_some_and(|(index, _)| {
                 self.operations
                     .get(*index)
@@ -3786,8 +3790,8 @@ mod tests {
                 std::thread::yield_now();
             };
             assert!(
-                app.gate_request.is_none(),
-                "identity gate must have resolved"
+                app.check_request.is_none(),
+                "identity check must have resolved"
             );
             assert!(
                 app.picker.is_none(),
@@ -4062,10 +4066,10 @@ mod tests {
 
             let pending = invoke_action(&mut app, &start_batch).unwrap();
             assert_eq!(pending["phase"], "checking_identity");
-            assert!(app.gate_request.is_some());
+            assert!(app.check_request.is_some());
             assert!(app.worker.is_none());
             let deadline = tilo_test_env::hang_deadline();
-            while app.gate_request.is_some() {
+            while app.check_request.is_some() {
                 app.poll_background();
                 assert!(ui::time::now() < deadline, "identity check did not finish");
                 std::thread::yield_now();
@@ -4161,10 +4165,10 @@ mod tests {
             let start = action(&root_resource(&app), "start-reviewed-folders");
 
             assert_eq!(start_action(&mut app, &start).unwrap(), Admitted::Job);
-            assert!(app.gate_request.is_some());
+            assert!(app.check_request.is_some());
             let update = app.settle(true);
             assert!(matches!(update, Some(JobOutcome::Cancelled { .. })));
-            assert!(app.gate_request.is_none());
+            assert!(app.check_request.is_none());
             app.poll_background();
             assert!(app.worker.is_none());
             assert_eq!(app.operations[0].state(), OperationState::AwaitingReview);

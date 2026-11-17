@@ -768,7 +768,7 @@ tilo_test_env::scenario! {
     }
 
     phase a_member_leaves_their_workspace_without_being_able_to_remove_anyone;
-    // Leaving is the one membership change no grant gates: whoever removes
+    // Leaving is the one membership change no grant checks: whoever removes
     // themselves does it by being who they are, even while restricted, and they
     // reach nobody else by it.
     {

@@ -2,7 +2,7 @@
 //! wrote, delivered all together or not at all.
 //!
 //! A commit arrives inside the signed payload of each part's document op
-//! ([`collab_types::WorkspaceCommit`]). The gate here holds a part's event
+//! ([`collab_types::WorkspaceCommit`]). The check here holds a part's event
 //! until every part of its action has arrived, then releases them in the
 //! commit's own order, so an app never applies half an action and every peer
 //! that can read all parts applies them in the same order. A peer that
@@ -60,7 +60,7 @@ pub(crate) enum Delivery {
 /// then hand back all of its parts. `unit` is the (app, record) whose route
 /// the part arrived on, and `claims` the change hashes its signed envelope
 /// claims.
-pub(crate) fn gate(
+pub(crate) fn check(
     state: &BridgeState,
     commit: Option<WorkspaceCommit>,
     claims: &[[u8; 32]],
@@ -307,7 +307,7 @@ mod tests {
     ) -> bool {
         let commit = WorkspaceCommit::of_envelope(op).unwrap();
         let claims: Vec<[u8; 32]> = op.claims.iter().map(|claim| claim.change).collect();
-        match gate(state, commit, &claims, (app, document_id), event(op)) {
+        match check(state, commit, &claims, (app, document_id), event(op)) {
             Delivery::Now(event) => {
                 apply(peer, &event);
                 true
@@ -625,7 +625,7 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        /// What the gate refuses and how much it holds, each case on a bridge state of its own.
+        /// What the check refuses and how much it holds, each case on a bridge state of its own.
         fn a_part_outside_its_action_is_refused_and_held_parts_are_bounded;
 
         phase a_part_the_action_does_not_name_is_refused;
@@ -635,7 +635,7 @@ mod tests {
             let op = publication(&commit, "tasks", "a", &first, 1);
             let claims: Vec<[u8; 32]> = op.claims.iter().map(|claim| claim.change).collect();
             assert!(matches!(
-                gate(
+                check(
                     &state,
                     WorkspaceCommit::of_envelope(&op).unwrap(),
                     &claims,
@@ -645,7 +645,7 @@ mod tests {
                 Delivery::Refused(_)
             ));
             assert!(matches!(
-                gate(
+                check(
                     &state,
                     WorkspaceCommit::of_envelope(&op).unwrap(),
                     &[[0; 32]],

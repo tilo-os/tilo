@@ -379,7 +379,7 @@ fn kernel_checks(
                 if p99 < Duration::from_millis(50) {
                     Outcome::Yes(detail)
                 } else {
-                    Outcome::No(format!("{detail} (gate: p99 < 50 ms)"))
+                    Outcome::No(format!("{detail} (check: p99 < 50 ms)"))
                 }
             }
             Err(e) => Outcome::No(e.to_string()),

@@ -995,7 +995,7 @@ impl VideoEditorApp {
     }
 
     /// A fact about the section in its own right: keying a parameter from its default
-    /// leaves the constant at the aspect-fit, so a summary gated on the constants reported
+    /// leaves the constant at the aspect-fit, so a summary depending on the constants reported
     /// nothing about a clip whose picture crosses the frame.
     pub(super) fn transform_is_animated(clip: &Clip) -> bool {
         [
@@ -1148,7 +1148,7 @@ impl VideoEditorApp {
         }
     }
 
-    /// `export_status` was read only inside the `show_export` gate, so an assistive
+    /// `export_status` was read only inside the `show_export` check, so an assistive
     /// technology whose user had dismissed the dialog was told nothing about a render still
     /// going. This is the same live region whenever the dialog is not there to carry it, so
     /// a running export is announced exactly once and never zero times.
@@ -1328,7 +1328,7 @@ impl VideoEditorApp {
         self.clamp_pane_cursor();
     }
 
-    /// Gated on the host having given this widget the keyboard: a ring pointing at a control
+    /// Depends on the host having given this widget the keyboard: a ring pointing at a control
     /// the next key will not reach is the opposite of a focus indicator. The other panes keep
     /// their cursors so Tab returns to them, but they paint no ring.
     pub(super) fn shows_focus_cursor(&self, pane: Pane) -> bool {

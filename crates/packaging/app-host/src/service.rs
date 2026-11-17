@@ -1739,8 +1739,8 @@ mod dev_override_tests {
     #[test]
     fn a_release_build_keeps_the_image_launcher() {
         let default = "/usr/libexec/tilo/tilo-launcher";
-        let gated = dev_override_from(false, LAUNCHER_BIN_ENV, Some("/tmp/attacker".into()));
-        assert_eq!(path_or_default(gated, default), PathBuf::from(default));
+        let guarded = dev_override_from(false, LAUNCHER_BIN_ENV, Some("/tmp/attacker".into()));
+        assert_eq!(path_or_default(guarded, default), PathBuf::from(default));
         let honoured = dev_override_from(true, LAUNCHER_BIN_ENV, Some("/dev/overlay".into()));
         assert_eq!(
             path_or_default(honoured, default),

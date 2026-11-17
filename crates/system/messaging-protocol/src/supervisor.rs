@@ -1,4 +1,4 @@
-//! Native lifecycle gate for one existing certified account assembly.
+//! Native lifecycle check for one existing certified account assembly.
 //! It owns no credentials and creates no grants. The caller supplies an already
 //! authenticated adapter and retains current account/credential authority.
 use std::sync::{Arc, Mutex};

@@ -156,7 +156,7 @@ short-lived release signer, verifies its protected fingerprint, and uses
 `virt-fw-vars` to create a disposable enforcing OVMF store which trusts that
 exact certificate. The installed target must then cold-boot and unlock with the
 configured short PIN. Manual rehearsals have no signing lease and therefore do
-not claim this proof. This gate intentionally does not run on ARM64 until a
+not claim this proof. This check intentionally does not run on ARM64 until a
 specific measured AAVMF build and stable PCR behavior have been qualified.
 
 ### Firmware: only the 4 MB OVMF build can measure
@@ -358,14 +358,14 @@ unset TILO_INSTALLER_DEV_PASSWORD
 
 `--selinux-audit-ssh` requires `sshpass` on the VM host and `auditctl` and
 `ausearch` in the guest. Guest inspection runs through
-`os/dev/installer-selinux-audit.sh` so the release-gate cycle script stays free
+`os/dev/installer-selinux-audit.sh` so the release-check cycle script stays free
 of guest-shell channels. It fails unless the installer is enforcing, its
 live-only policy is loaded, kernel audit is enabled with zero lost records,
 and both audit records and the system journal contain no AVC or USER_AVC. The
 existing cycle then proves the Finish screen, encrypted target boot, first
 login, and a second cold boot. The diagnostic medium adds SSH and a temporary
 wheel account, so this result complements the release workflow's graphical
-cycle on the SSH-disabled published medium; it does not replace that gate.
+cycle on the SSH-disabled published medium; it does not replace that check.
 
 The installed system's update origin defaults to
 `registry.tilo.so/tilo/tilo:latest`. `TILO_TARGET_IMGREF` may select a tag or digest
@@ -418,7 +418,7 @@ guard still requires source/VM evidence and its separate developer admission.
 The final-source `receipt` and final-copy `execute` commands accept explicit
 `--development` admission. Supply the board/generic child manifests and raw
 configs, their internal `os-dev.yml` run IDs, the board/generic installer run
-IDs, both tested profile media and `--dev-setup-handoff`. The gate rechecks live
+IDs, both tested profile media and `--dev-setup-handoff`. The check rechecks live
 CI publication and media metadata, hashes both CI backing disks, verifies that
 the overlays change only the authorized Wi-Fi/SSH tail, and requires board
 proof v4 plus complete generic encrypted first-boot proof v3 from the same CI

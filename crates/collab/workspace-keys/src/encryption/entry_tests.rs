@@ -10,7 +10,7 @@ use crate::encryption::{
     GovernanceTransport, InboundGovernance, KeyAccess, KeyDir, KeyDirectory, KeyRole, KeysConfig,
     WorkspaceKeys,
 };
-use crate::gates::{GateRegistry, Gates};
+use crate::seal_checks::{SealCheckRegistry, SealChecks};
 use crate::testing::{Directory, Endpoint, Policy, Workspace, key, public};
 
 /// A device that holds nothing of the workspace's governance yet.
@@ -39,7 +39,7 @@ fn service(
             role,
         },
         directory,
-        Arc::new(Gates::default()) as Arc<dyn GateRegistry>,
+        Arc::new(SealChecks::default()) as Arc<dyn SealCheckRegistry>,
     )
     .unwrap()
 }

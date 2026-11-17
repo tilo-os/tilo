@@ -106,7 +106,7 @@ impl Bot {
     }
 }
 
-/// The MLS group of the bot's call, from the external sender's seat.
+/// The MLS group of the bot's call, from the external sender's side.
 struct Mls {
     signer: SignatureKeyPair,
     external: Vec<u8>,

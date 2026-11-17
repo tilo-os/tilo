@@ -643,7 +643,7 @@ def write(args):
                 fail('selected removable disk changed immediately before write')
             # Even a timed-out/failed transition may have reached the device.
             # Mark cleanup required before invoking it; the finally path uses
-            # the same unique-ID/count/number gate to return only this disk online.
+            # the same unique-ID/count/number check to return only this disk online.
             offlined = True
             set_offline(expected['unique_id'], expected['number'], True)
             offline_disk = find_disk(disk_inventory(), expected['number'])

@@ -749,7 +749,7 @@ macro_rules! flow_builders {
             self
         }
 
-        /// Gate this layout behind a permission scope.
+        /// Check this layout behind a permission scope.
         #[must_use]
         pub fn with_permission_scope(
             mut self,
@@ -798,7 +798,7 @@ macro_rules! flow_widget_methods {
                 .flow
                 .draw_cached(scene, transform, text_renderer, theme, presence)
             {
-                $crate::widget::draw_gate_and_peer_focus(self, scene, transform, theme, presence);
+                $crate::widget::draw_permission_scrim_and_peer_focus(self, scene, transform, theme, presence);
             }
         }
 
@@ -937,7 +937,7 @@ macro_rules! flow_capabilities {
             }
         }
 
-        impl $crate::permissions::capability::PermissionGated for $ty {
+        impl $crate::permissions::capability::PermissionGuarded for $ty {
             fn permission_scope(&self) -> Option<$crate::permissions::PermissionScope> {
                 self.flow.permission_scope.clone()
             }

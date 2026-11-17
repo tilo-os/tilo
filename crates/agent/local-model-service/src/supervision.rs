@@ -744,7 +744,7 @@ pub fn developer_cleanup_probe(
         container_exists(&owned_container(&target)?.container_id)?;
     if !target_exists_after_manager_stop {
         return Err(ServiceError::Backend(
-            "manager-only stop removed the target container object before the cleanup gate".into(),
+            "manager-only stop removed the target container object before the cleanup check".into(),
         ));
     }
     // Process liveness and container-object existence are different observations.

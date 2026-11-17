@@ -732,7 +732,7 @@ async fn certified_local_host_verifies_once_per_open_listing_and_invocation() {
 
 /// The real signer waits for a separate UI thread to perform its ordinary
 /// lookup, cancellation and enqueue calls. A ledger held across signing would
-/// deadlock that thread before it can acknowledge the gate.
+/// deadlock that thread before it can acknowledge the check.
 #[tokio::test(flavor = "current_thread")]
 async fn stalled_eager_signing_keeps_ui_enqueue_responsive_and_uuid_reserved() {
     tokio::task::LocalSet::new()

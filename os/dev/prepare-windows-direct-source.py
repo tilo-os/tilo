@@ -397,7 +397,7 @@ def make_receipt(args):
             and raw.stat().st_size == plan["windows_disk"]["size_bytes"],
             "VM-installed source raw size differs from reviewed disk")
     if getattr(args, "development", False):
-        ci_provenance, checked, dual_gate = direct.development.verify(args)
+        ci_provenance, checked, dual_check = direct.development.verify(args)
         index_digest = child_digest = args.ci_image.split("@", 1)[1]
     else:
         require(args.verify_key is not None and args.ci_index_manifest is not None,
@@ -412,10 +412,10 @@ def make_receipt(args):
         if kind == "lenovo-83ed":
             require(checked["schema"] == provenance.PROOF_SCHEMA_V2,
                     "Lenovo physical source requires backend-derived signed target proof v2")
-            dual_gate = provenance.dual_ci_medium_gate(
+            dual_check = provenance.dual_ci_medium_check(
                 args, checked, child_digest, ci_provenance["source_revision"])
         else:
-            dual_gate = {}
+            dual_check = {}
     with raw.open("rb", buffering=0) as stream:
         disk_guid, actual = direct.read_gpt(stream, raw.stat().st_size)
         require(direct.same_gpt_content(actual, rows),
@@ -446,7 +446,7 @@ def make_receipt(args):
                "vm_proof_checked_sha256": hashlib.sha256(
                    args.vm_proof_checked.read_bytes()).hexdigest(),
                "installed_uki_sha256": uki_hash}
-    receipt.update(dual_gate)
+    receipt.update(dual_check)
     direct.stage.atomic_json(args.output, receipt)
     authority = "live development CI" if getattr(args, "development", False) else "CI signature"
     print(f"VM source readback and {authority} receipt: {args.output}")

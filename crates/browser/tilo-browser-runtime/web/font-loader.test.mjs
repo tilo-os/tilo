@@ -84,19 +84,19 @@ test('a verified font carries the page digest the runtime checks instead of hash
 });
 
 test('optional demands are deduplicated and bounded to two concurrent fetches',async()=>{
-  const manifest=await descriptor(),gates=new Map(),starts=[];let concurrent=0,peak=0;
+  const manifest=await descriptor(),checks=new Map(),starts=[];let concurrent=0,peak=0;
   const loader=createFontLoader({baseURL:'https://example.test/app/',crypto:webcrypto,fetch:async url=>{
     if(String(url).endsWith('fonts.json'))return response(manifest);
     const name=new URL(url).pathname.split('/').at(-1).replace('.ttf','');starts.push(name);concurrent++;peak=Math.max(peak,concurrent);
-    await new Promise(resolve=>gates.set(name,resolve));concurrent--;return response(bytes[name]);
+    await new Promise(resolve=>checks.set(name,resolve));concurrent--;return response(bytes[name]);
   }});
   await loader.manifest();
   const arabicA=loader.request('arabic.ttf'),arabicB=loader.request('arabic.ttf');
   const cjk=loader.request('cjk.ttf'),emoji=loader.request('emoji.ttf');
   await new Promise(resolve=>setTimeout(resolve,0));
   assert.strictEqual(arabicA,arabicB);assert.equal(peak,2);assert.deepEqual(starts,['arabic','cjk']);
-  gates.get('arabic')();await arabicA;await new Promise(resolve=>setTimeout(resolve,0));assert.deepEqual(starts,['arabic','cjk','emoji']);
-  gates.get('cjk')();gates.get('emoji')();await Promise.all([cjk,emoji]);assert.equal(peak,2);
+  checks.get('arabic')();await arabicA;await new Promise(resolve=>setTimeout(resolve,0));assert.deepEqual(starts,['arabic','cjk','emoji']);
+  checks.get('cjk')();checks.get('emoji')();await Promise.all([cjk,emoji]);assert.equal(peak,2);
 });
 
 test('CacheStorage cannot block verified startup font readiness',async()=>{

@@ -198,7 +198,7 @@ struct LaunchSession {
 }
 
 fn session_environment() -> Vec<(OsString, OsString)> {
-    // Do not inherit launcher-registration gates, developer flags, proxy credentials or arbitrary
+    // Do not inherit launcher-registration checks, developer flags, proxy credentials or arbitrary
     // loader settings.
     [
         "HOME",

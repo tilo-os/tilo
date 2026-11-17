@@ -1130,7 +1130,7 @@ mod tests {
 
     /// Hold the real disk reader before its first read, without blocking
     /// failure-status writes or requiring a FIFO to be released on failure.
-    fn gate_status_watcher(
+    fn check_status_watcher(
         pairing: &mut NearbyPairing,
         fixture: &Fixture,
     ) -> (mpsc::Sender<()>, std::thread::JoinHandle<()>) {
@@ -1177,12 +1177,12 @@ mod tests {
                     },
                     PROCESS_BOUND,
                 );
-                let (release, watcher) = gate_status_watcher(&mut pairing, &fixture);
+                let (release, watcher) = check_status_watcher(&mut pairing, &fixture);
                 if exited {
                     pairing.child.as_mut().expect("child").wait().expect("exit");
                 }
                 // Even an identity already on disk cannot be accepted until the
-                // watcher verifies it. The reader remains gated throughout.
+                // watcher verifies it. The reader remains guarded throughout.
                 joined_record(&fixture, [7; 32]);
                 runtime_identity::set_active_identity(&fixture.identity_dir, "identity-joined")
                     .expect("active identity");
@@ -1219,7 +1219,7 @@ mod tests {
             for valid in [false, true] {
                 let fixture = fixture();
                 let mut pairing = helper(&fixture, "exit 0", PROCESS_BOUND);
-                let (release, watcher) = gate_status_watcher(&mut pairing, &fixture);
+                let (release, watcher) = check_status_watcher(&mut pairing, &fixture);
                 pairing.child.as_mut().expect("child").wait().expect("exit");
                 // Hold the polling clock within grace while the real worker runs;
                 // scheduling delay is not the timeout behavior this test proves.

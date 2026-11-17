@@ -1,4 +1,4 @@
-//! Short-lived, capability-gated `PipeWire` audio diagnostics and transforms.
+//! Short-lived, capability-guarded `PipeWire` audio diagnostics and transforms.
 //!
 //! Every process or virtual node created here has exactly one owner: dropping its
 //! session kills or waits for the process, or restores the physical default and

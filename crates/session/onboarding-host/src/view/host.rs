@@ -448,7 +448,7 @@ impl OnboardingView {
                     self.acknowledgements.borrow_mut().push((kind, checked));
                     // The acknowledgement settles into the document before
                     // the next frame: what was asked after it waits for
-                    // that frame, so it meets the gate as it was left.
+                    // that frame, so it meets the check as it was left.
                     self.deferred_asks = asked.collect();
                     break;
                 }

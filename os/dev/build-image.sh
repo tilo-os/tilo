@@ -777,7 +777,7 @@ if [ "${TILO_DISK_RAW:-0}" = 1 ]; then
   disk_args+=(--raw)
   TILO_DISK="$OUTDIR/disk.raw"
 fi
-# Release gate only: the /etc half of os/dev/validation-access.sh, written into
+# Release check only: the /etc half of os/dev/validation-access.sh, written into
 # this disk copy; `vm.sh boot` attaches the signed extension it trusts
 # (TILO_VM_VALIDATION_SYSEXT).
 if [ -n "${TILO_VALIDATION_ETC:-}" ]; then

@@ -66,7 +66,7 @@ fn a_generated_app_goes_from_new_to_a_release_awaiting_review() {
     } else {
         "linux"
     };
-    // The full gate the generated CI's first job runs: structure, format,
+    // The full check the generated CI's first job runs: structure, format,
     // Clippy, the app's tests (undo, persistence, a viewer's refused edit,
     // collaboration, the native contract), certification of the production
     // root without a window, and the audited headless scenario.

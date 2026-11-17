@@ -178,7 +178,7 @@ python3 /test.py --helper /helper --runtime /runtime --proton /proton \
 
 FEX/guest production packaging, complete native helper bindings, and the full
 outer capsule/Landlock launch remain acceptance requirements. The standalone
-container test does not establish those gates or graphical application support.
+container test does not establish those checks or graphical application support.
 
 ## Private capsule identity and generated namespace probes
 
@@ -227,7 +227,7 @@ a fresh Proton prefix, and required Windows to create the expected marker.
 It retained the generated private runtime lock, identity files, descriptor
 handoff and network namespace. Missing locale-generation inputs, session-bus
 IPC fallback, and the diagnostic container's machine-id warning remain visible
-in the log; this console result does not establish those acceptance gates.
+in the log; this console result does not establish those acceptance checks.
 
 ## Managed C-drive initialization
 

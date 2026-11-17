@@ -119,7 +119,7 @@ fn serve(
     // An interrupted/poisoned READY transcript is not permission to tear down
     // FUSE while root owns a placed clone. Keep both actual background and
     // invalidation lifetimes here; the existing canonical NamespaceOwner stops
-    // this exact init only after its private exposure gate permits teardown.
+    // this exact init only after its private exposure check permits teardown.
     // Backend authority checks still deny every revoked operation immediately.
     let _lifetimes = (background, invalidation_worker);
     loop {

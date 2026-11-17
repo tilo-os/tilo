@@ -8,7 +8,7 @@
 //!   and local presentation controls. Current stream state comes from the
 //!   native service; durable voice rows are replayable history.
 //! * [`CallAction`] — the enumerable surface of call actions. Chat's live UI
-//!   gates them through [`crate::permissions::ChatPermissions`] from the
+//!   checks them through [`crate::permissions::ChatPermissions`] from the
 //!   host-provided permission context; this module does not grant access or
 //!   implement an ACL.
 
@@ -16,7 +16,7 @@ use vello::kurbo::{Rect, Size};
 
 /// A discrete call action that flows through the permission seam before it
 /// takes effect. Keeping these in one enum means a future real permission
-/// system gates a single, enumerable surface.
+/// system checks a single, enumerable surface.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CallAction {
     /// Connect to a voice channel.

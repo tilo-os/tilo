@@ -369,7 +369,7 @@ done
 fi
 
 # --- report ----------------------------------------------------------------
-msg "shipped ${#shipped[@]} size-gated package(s) into $STORE"
+msg "shipped ${#shipped[@]} size-guarded package(s) into $STORE"
 for m in ${missing[@]+"${missing[@]}"}; do msg "  skipped: $m"; done
 for f in ${failed[@]+"${failed[@]}"};  do msg "  FAILED:  $f"; done
 

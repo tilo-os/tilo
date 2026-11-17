@@ -81,7 +81,7 @@ struct AppHandler {
     native_input_origin: Option<Instant>,
     native_input_pointer_passthrough: bool,
     native_input_route_isolation: bool,
-    /// `None` until the first `resumed` — every modern platform gates window
+    /// `None` until the first `resumed` — every modern platform checks window
     /// creation behind an `ActiveEventLoop`.
     window: Option<Arc<Window>>,
     /// `None` again in `exiting`, after the worker is joined, so its surface
@@ -147,7 +147,7 @@ struct AppHandler {
     /// `None` waits for the next primary submission; `Some(sequence)` waits
     /// until that exact-or-newer frame is reported Presented by the worker.
     floating_source_clear_frames: std::collections::HashMap<String, Option<u64>>,
-    /// Reverse ownership gate: a suspended native surface stays covered by its compositor-frozen
+    /// Reverse ownership check: a suspended native surface stays covered by its compositor-frozen
     /// final frame until one primary frame with the reattached widget is reported Presented.
     floating_destination_present_frames: std::collections::HashMap<String, Option<u64>>,
     /// Maps one-finger taps onto the existing pointer event contract so every
@@ -1643,7 +1643,7 @@ impl AppHandler {
         // another event on the hidden child.
         if let Some(id) = self.floating_ime_return_continuation.as_deref()
             // The initial Suspended message precedes primary relayout. Its
-            // gate becomes Some only after that returned frame is submitted.
+            // check becomes Some only after that returned frame is submitted.
             && self
                 .floating_destination_present_frames
                 .get(id)
@@ -2404,7 +2404,7 @@ impl AppHandler {
                 }
             }
         }
-        let cleared = completed_primary_frame_gates(
+        let cleared = completed_primary_frame_checks(
             &self.floating_source_clear_frames,
             self.last_primary_frame_presented,
         );
@@ -2422,7 +2422,7 @@ impl AppHandler {
                 self.floating_source_clear_frames.remove(&id);
             }
         }
-        let destinations_presented = completed_primary_frame_gates(
+        let destinations_presented = completed_primary_frame_checks(
             &self.floating_destination_present_frames,
             self.last_primary_frame_presented,
         );
@@ -4405,7 +4405,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         // Reduced motion is applied where motion is decided — each widget
         // reads `Theme::motion()` and settles instead of asking — never by
         // starving the pump: a fade that replaces a slide still needs its
-        // frames, and gating here froze every reduced-motion app that waited
+        // frames, and guarding here froze every reduced-motion app that waited
         // on one.
         // A motion started outside the polled tree (a menu its owner draws in
         // its own overlay pass) asks through the motion clock.

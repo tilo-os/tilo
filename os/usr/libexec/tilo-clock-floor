@@ -10,7 +10,7 @@
 # but chrony is the time authority and timesyncd is masked.
 #
 # Only time chrony has synchronised from the NTS-only source set counts (the
-# same gate image trust uses): an unsynchronised clock, or one an
+# same check image trust uses): an unsynchronised clock, or one an
 # unauthenticated source moved, must never become a floor, since a floor in
 # the future could not be undone by the network later. The floor never moves
 # back.

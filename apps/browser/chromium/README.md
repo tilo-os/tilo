@@ -1045,7 +1045,7 @@ to a successor. With a host that does not take compositions
 (`ime_composition`), ordinary composition and OSK remain closed outside this
 voice session. Real Wayland protocol and bound native App dispatch tests qualify those
 separate production boundaries; a complete standalone-window/microphone journey
-remains an acceptance gate.
+remains an acceptance check.
 
 The mounted `browser-text-input-qualification` example exercises the real
 retained `Framed` host with both a direct `WebView` and a production `Decorator`

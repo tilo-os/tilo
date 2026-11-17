@@ -22,7 +22,7 @@ def run(*args):
 
 
 def load_daemon():
-    # Reuse the immutable bootstrap's exact VM/PID1/development/port gate.
+    # Reuse the immutable bootstrap's exact VM/PID1/development/port check.
     path = ROOT / 'tilo-installer-code-refresh.py'
     spec = importlib.util.spec_from_file_location('code_bootstrap_daemon', path)
     daemon = importlib.util.module_from_spec(spec)
@@ -32,7 +32,7 @@ def load_daemon():
 
 def start():
     daemon = load_daemon()
-    daemon.gate()
+    daemon.check()
     receipt_path = ROOT / 'receipt.json'
     require(receipt_path.is_file() and not receipt_path.is_symlink()
             and receipt_path.stat().st_uid == 0 and receipt_path.stat().st_size <= 65536,

@@ -6,7 +6,7 @@
 //! The frames are read one at a time: each frame the harness draws is rasterised, and a band of
 //! it compared with another frame, so a motion is a series of values rather than a single
 //! before and after. `the_frames_a_person_sees` writes those frames as PNGs; it is ignored by
-//! default because it is there to look at, not to gate.
+//! default because it is there to look at, not to check.
 
 #![allow(
     clippy::unwrap_used,

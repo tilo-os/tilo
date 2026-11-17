@@ -1,4 +1,4 @@
-//! The toolkit's permission gate.
+//! The toolkit's permission check.
 //!
 //! Two questions, each answered by the one model that owns it:
 //!
@@ -194,7 +194,7 @@ pub enum Denial {
 }
 
 /// The authority and sandbox a frame's permission checks are decided against.
-/// Held by `App`, consulted by `app::dispatch_gated_event` before a gated
+/// Held by `App`, consulted by `app::dispatch_guarded_event` before a guarded
 /// widget ever sees an event.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PermissionContext {

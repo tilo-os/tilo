@@ -1658,14 +1658,14 @@ def agent_in_branch(ctx, res):
            f"initialize was not answered after the person allowed it: {str(reply)[:300]}")
     agent.send("notifications/initialized", notify=True)
     res.metrics["sheet"] = dialog
-    # The shell seats the agent in the branch's environment: the session whose environment_id is
+    # The shell registers the agent in the branch's environment: the session whose environment_id is
     # the TILO_ENVIRONMENT its shell reads (the agent API is the MCP server since a3a6caf4255).
     environment = agent.hello.get("environment", "")
-    seated = wait_until(lambda: [a for a in ae.agent_sessions(ctx) if a.get("stoppable", True)
+    registered = wait_until(lambda: [a for a in ae.agent_sessions(ctx) if a.get("stoppable", True)
                                  and environment and a.get("environment_id") == environment] or None,
                         30, interval=1.0) or []
-    res.metrics["seated"] = [{k: a.get(k) for k in ("key", "name", *ae.WHERE)} for a in seated]
-    problems.want(len(seated) == 1, f"the shell seats {len(seated)} agents in {environment!r}: "
+    res.metrics["registered"] = [{k: a.get(k) for k in ("key", "name", *ae.WHERE)} for a in registered]
+    problems.want(len(registered) == 1, f"the shell registers {len(registered)} agents in {environment!r}: "
                                     f"{[{k: a.get(k) for k in ('key', 'name', *ae.WHERE)} for a in ae.agent_sessions(ctx)]}")
     problems.want(environment.startswith(f"{tid}/"),
                   f"the agent's TILO_ENVIRONMENT {environment!r} is not of its branch {tid}")

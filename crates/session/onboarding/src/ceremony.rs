@@ -63,7 +63,7 @@ const VIEWPORT_GUTTER: f32 = 24.0;
 pub(crate) const FOOTER_HEIGHT: f32 = 57.0;
 /// A labelled checkbox has a 44 px minimum target. Decision pages pin that
 /// acknowledgement above the ordinary action row so large text and compact
-/// displays never hide the gate inside scrolling explanatory copy.
+/// displays never hide the check inside scrolling explanatory copy.
 pub(crate) const ACKNOWLEDGEMENT_FOOTER_EXTRA_HEIGHT: f32 = 72.0;
 /// `s3` top pad, eyebrow row, gap, padded 8 px progress track, and gap below
 /// the sticky header. The pad keeps the eyebrow off the panel's top edge

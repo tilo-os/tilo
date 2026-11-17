@@ -326,7 +326,7 @@ if [[ $stage == upload ]]; then
 fi
 
 # Archived screenshots are served directly through the existing public proxy.
-# Include them in the same availability/type gate before signing any entry.
+# Include them in the same availability/type check before signing any entry.
 jq -r --arg base "$registry_url/artifacts/$owner/generic/tilo-app-metadata/$VERSION/" \
   '.images.en[] | select(.url | startswith($base) | not) | [(.url | split("/") | last), .url] | @tsv' \
   "$registry_metadata"/*.json >> "$registry_media_urls"

@@ -145,7 +145,7 @@ where
     }
 
     /// Terminally close this exact authenticated channel before waiting for
-    /// callbacks. The source provider observes peer death at native effect gates.
+    /// callbacks. The source provider observes peer death at native effect checks.
     pub(crate) fn revoke(&self) {
         self.0.live.store(false, Ordering::Release);
         let _ = self.0.transport.shutdown(std::net::Shutdown::Both);

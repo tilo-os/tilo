@@ -28,8 +28,8 @@ os/tests/installer_cycle_graphics.py
 os/tests/test_foreign_boot_fixture.py
 apps/imager/packaging/test_generate_winget.py
 os/tests/kernel_module_signing_test.sh
-os/tests/boot_performance_gate_test.sh
-os/tests/boot_units_gate_test.sh
+os/tests/boot_performance_check_test.sh
+os/tests/boot_units_check_test.sh
 os/tests/unit_sandbox_paths.py
 os/tests/media_subprocess_invariants.sh
 os/tests/os_actions_subprocess_invariants.sh
@@ -38,7 +38,7 @@ os/tests/fs_subprocess_invariants.sh
 os/tests/disks_subprocess_invariants.sh
 os/tests/secret_service_subprocess_invariants.sh
 os/tests/secureboot_signing_test.sh
-os/tests/image_trust_update_gate.sh
+os/tests/image_trust_update_check.sh
 os/tests/update_channel.sh
 os/tests/update_subprocess_invariants.sh
 os/tests/release_security_invariants.sh

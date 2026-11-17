@@ -395,8 +395,8 @@ enum GrantTarget {
 }
 
 /// One entry in the composer's "what does this allow" picker. Every entry produces a capability an
-/// enforcement point actually reads (devices gate the portal, `NetHost` gates egress, `FsPath`
-/// gates the sandbox binds and the filesystem, `Workspace` gates administration).
+/// enforcement point actually reads (devices check the portal, `NetHost` checks egress, `FsPath`
+/// checks the sandbox binds and the filesystem, `Workspace` checks administration).
 pub struct GrantChoice {
     /// What the choice is named by: the same key every host uses.
     pub key: &'static str,

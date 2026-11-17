@@ -3,7 +3,7 @@
 //! through as the sheet's Join does.
 //! What the person decided is theirs, and is kept with their workspaces: a later session here, and
 //! every other computer of theirs, joins nothing on its own once they joined the community — or
-//! joined it and left. A seat that could not be reached is asked once more when the machine's
+//! joined it and left. A directory that could not be reached is asked once more when the machine's
 //! network comes back, and never in a loop.
 
 use std::cell::{Cell, RefCell};
@@ -373,7 +373,7 @@ fn a_community_that_could_not_be_reached_is_asked_again_when_a_network_comes_bac
         None,
         "and the community's workspace is nowhere yet"
     );
-    // The cable is plugged in, and the seat has room again.
+    // The cable is plugged in, and the directory takes people again.
     admits.store(true, Ordering::SeqCst);
     cable.plugged_in();
     wait_until(

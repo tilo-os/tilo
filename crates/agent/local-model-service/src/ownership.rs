@@ -1,4 +1,4 @@
-//! Persisted container custody and observed cleanup gates for the local runtime.
+//! Persisted container custody and observed cleanup checks for the local runtime.
 //! No container name or caller-supplied selector grants lifecycle authority.
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -315,9 +315,9 @@ mod tests {
 
     tilo_test_env::scenario! {
         /// The checks that decide whether a container or unit is this service's to act on.
-        fn ownership_gates_pass_only_the_exact_container_selector_and_quiescent_unit;
+        fn ownership_checks_pass_only_the_exact_container_selector_and_quiescent_unit;
 
-        phase exact_container_gate_refuses_foreign_identity_image_or_labels;
+        phase exact_container_check_refuses_foreign_identity_image_or_labels;
         {
             let owned = owned();
             let body = observed(&owned);

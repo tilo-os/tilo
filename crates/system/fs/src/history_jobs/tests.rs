@@ -111,7 +111,7 @@ async fn remote_content_hydrates_in_a_job_and_the_next_request_commits() {
     let bytes = pseudo(JOB_BYTES, 0x24a);
     let hash = remote.content(&bytes).await;
     let jobs = HistoryJobs::default();
-    let gate = jobs.hold();
+    let check = jobs.hold();
     let key = new_key();
 
     assert_eq!(
@@ -133,7 +133,7 @@ async fn remote_content_hydrates_in_a_job_and_the_next_request_commits() {
         Readiness::Mismatch
     );
 
-    gate.add_permits(1);
+    check.add_permits(1);
     assert_eq!(settled(&jobs, key).await, Some(State::Ready));
     assert_eq!(
         remote.hydrator.local_len(hash).await,
@@ -158,7 +158,7 @@ async fn cancel_stops_hydration() {
     let remote = Remote::new().await;
     let hash = remote.content(&pseudo(JOB_BYTES, 0x24b)).await;
     let jobs = HistoryJobs::default();
-    let gate = jobs.hold();
+    let check = jobs.hold();
     let key = new_key();
     assert_eq!(
         jobs.ensure_local(key, &remote.hydrator, &[hash]),
@@ -176,9 +176,9 @@ async fn cancel_stops_hydration() {
         }
     })
     .await;
-    gate.add_permits(1);
+    check.add_permits(1);
     assert_eq!(
-        gate.available_permits(),
+        check.available_permits(),
         1,
         "the aborted job took the permit"
     );
@@ -214,7 +214,7 @@ async fn unreachable_content_fails_once_and_jobs_are_bounded() {
     );
     assert_eq!(jobs.state(key), None);
 
-    let _gate = jobs.hold();
+    let _check = jobs.hold();
     let hash = remote.content(b"bounded").await;
     let first = new_key();
     assert_eq!(

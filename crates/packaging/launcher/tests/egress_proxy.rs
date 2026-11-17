@@ -20,22 +20,22 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 use tilo_test_env::SpawnUnderEnvLock as _;
 
-use launcher::netgate::{EgressDecision, EgressPolicy, NetGate, reply};
-use launcher::sandbox::NetGateBind;
+use launcher::egress_proxy::{EgressDecision, EgressPolicy, EgressProxy, reply};
+use launcher::sandbox::EgressProxyBind;
 
 use crate::support::bwrap;
 
-/// Sandbox-side path of the bind-mounted gate socket.
-const ENV_SOCKET: &str = "TILO_NETGATE_PROBE_SOCKET";
+/// Sandbox-side path of the bind-mounted proxy socket.
+const ENV_SOCKET: &str = "TILO_EGRESS_PROXY_PROBE_SOCKET";
 /// Port of the server the probe should be able to reach.
-const ENV_ALLOWED_PORT: &str = "TILO_NETGATE_PROBE_ALLOWED_PORT";
+const ENV_ALLOWED_PORT: &str = "TILO_EGRESS_PROXY_PROBE_ALLOWED_PORT";
 /// Port of a second server, for the raw-TCP reachability checks.
-const ENV_OTHER_PORT: &str = "TILO_NETGATE_PROBE_OTHER_PORT";
+const ENV_OTHER_PORT: &str = "TILO_EGRESS_PROXY_PROBE_OTHER_PORT";
 /// Set when the probe should also exercise the loopback relay.
-const ENV_RELAY: &str = "TILO_NETGATE_PROBE_RELAY";
+const ENV_RELAY: &str = "TILO_EGRESS_PROXY_PROBE_RELAY";
 
-/// Where the gate socket appears inside the sandbox.
-const SANDBOX_SOCKET_PATH: &str = "/run/tilo-gate.sock";
+/// Where the proxy socket appears inside the sandbox.
+const SANDBOX_SOCKET_PATH: &str = "/run/tilo-proxy.sock";
 
 /// Loopback port for the relay inside the sandbox.
 const PROBE_RELAY_PORT: u16 = 19050;
@@ -58,7 +58,7 @@ fn netns_probe() {
         .parse()
         .expect("port parses");
 
-    // Raw TCP, no gate involved: under an unshared namespace these hit the sandbox's own empty
+    // Raw TCP, no proxy involved: under an unshared namespace these hit the sandbox's own empty
     // loopback; under `--share-net` they reach the servers.
     println!("PROBE raw_allowed={}", describe(raw_get(allowed_port)));
     println!("PROBE raw_other={}", describe(raw_get(other_port)));
@@ -77,21 +77,21 @@ fn netns_probe() {
         return;
     };
 
-    // Through the gate, by name: the allowlisted host.
+    // Through the proxy, by name: the allowlisted host.
     println!(
-        "PROBE gate_by_name={}",
+        "PROBE proxy_by_name={}",
         describe(socks_get(&socket, ALLOWED_NAME, allowed_port))
     );
 
-    // Through the gate, by address literal: the SAME server.
+    // Through the proxy, by address literal: the SAME server.
     println!(
-        "PROBE gate_by_literal={}",
+        "PROBE proxy_by_literal={}",
         describe(socks_get(&socket, "127.0.0.1", allowed_port))
     );
 
-    // Through the gate, a name that is not on the list.
+    // Through the proxy, a name that is not on the list.
     println!(
-        "PROBE gate_by_other_name={}",
+        "PROBE proxy_by_other_name={}",
         describe(socks_get(&socket, BLOCKED_NAME, 80))
     );
 
@@ -112,11 +112,11 @@ fn netns_probe() {
 
     // The loopback relay — the path an unmodified HTTP client takes via ALL_PROXY.
     if std::env::var(ENV_RELAY).is_ok() {
-        let gate = PathBuf::from(&socket);
+        let proxy = PathBuf::from(&socket);
         let listener =
             TcpListener::bind(("127.0.0.1", PROBE_RELAY_PORT)).expect("bind the relay port");
         std::thread::spawn(move || {
-            let _ = launcher::netgate::serve_relay(listener, &gate);
+            let _ = launcher::egress_proxy::serve_relay(listener, &proxy);
         });
         println!(
             "PROBE relay_by_name={}",
@@ -132,10 +132,10 @@ fn netns_probe() {
 /// Companion probe for the kernel-property test.
 #[test]
 fn proof_probe() {
-    let Ok(socket) = std::env::var("TILO_NETGATE_PROOF_SOCKET") else {
+    let Ok(socket) = std::env::var("TILO_EGRESS_PROXY_PROOF_SOCKET") else {
         return;
     };
-    let port: u16 = std::env::var("TILO_NETGATE_PROOF_PORT")
+    let port: u16 = std::env::var("TILO_EGRESS_PROXY_PROOF_PORT")
         .expect("port")
         .parse()
         .expect("parses");
@@ -179,9 +179,9 @@ fn proof_probe() {
 enum Outcome {
     /// The HTTP body that came back.
     Body(String),
-    /// The gate refused with this SOCKS5 reply code.
+    /// The proxy refused with this SOCKS5 reply code.
     Refused(u8),
-    /// The gate refused with this HTTP status code.
+    /// The proxy refused with this HTTP status code.
     HttpStatus(u16),
     /// Something else went wrong.
     Failed(String),
@@ -196,12 +196,12 @@ fn describe(o: Outcome) -> String {
     }
 }
 
-/// HTTP `CONNECT` through the gate, then an HTTP request down the tunnel — what an ordinary client does
+/// HTTP `CONNECT` through the proxy, then an HTTP request down the tunnel — what an ordinary client does
 /// with `HTTPS_PROXY` set.
 fn http_connect(socket: &str, host: &str, port: u16) -> Outcome {
     let mut s = match UnixStream::connect(socket) {
         Ok(s) => s,
-        Err(e) => return Outcome::Failed(format!("connect gate: {:?}", e.kind())),
+        Err(e) => return Outcome::Failed(format!("connect proxy: {:?}", e.kind())),
     };
     if s.write_all(format!("CONNECT {host}:{port} HTTP/1.1\r\nHost: {host}\r\n\r\n").as_bytes())
         .is_err()
@@ -246,11 +246,11 @@ fn raw_get(port: u16) -> Outcome {
     }
 }
 
-/// SOCKS5 CONNECT over the gate's unix socket, then an HTTP request.
+/// SOCKS5 CONNECT over the proxy's unix socket, then an HTTP request.
 fn socks_get(socket: &str, host: &str, port: u16) -> Outcome {
     match UnixStream::connect(socket) {
         Ok(mut s) => socks_exchange(&mut s, host, port),
-        Err(e) => Outcome::Failed(format!("connect gate: {:?}", e.kind())),
+        Err(e) => Outcome::Failed(format!("connect proxy: {:?}", e.kind())),
     }
 }
 
@@ -272,7 +272,7 @@ fn socks_exchange<S: Read + Write>(s: &mut S, host: &str, port: u16) -> Outcome 
         return Outcome::Failed("greeting read".into());
     }
 
-    // CONNECT, by domain name — including for an address literal, so the gate sees exactly what the
+    // CONNECT, by domain name — including for an address literal, so the proxy sees exactly what the
     // app asked for.
     let Ok(host_len) = u8::try_from(host.len()) else {
         return Outcome::Failed("host name too long for SOCKS5".into());
@@ -343,7 +343,7 @@ fn serve(body: &'static str) -> u16 {
 /// A short, process-private test directory.
 fn runtime_scratch_dir() -> PathBuf {
     let dir = PathBuf::from(format!(
-        "/tmp/tilo-netgate-{}-{}",
+        "/tmp/tilo-egress_proxy-{}-{}",
         rustix::process::getuid().as_raw(),
         std::process::id()
     ));
@@ -396,7 +396,7 @@ fn probe_test_name(probe: &str) -> String {
 /// Run the probe inside a sandbox whose network shape is decided by the production [`EgressDecision`].
 fn run_probe(
     decision: &EgressDecision,
-    gate_socket: Option<&Path>,
+    proxy_socket: Option<&Path>,
     allowed_port: u16,
     other_port: u16,
     with_relay: bool,
@@ -423,14 +423,14 @@ fn run_probe(
     // be hidden by it.
     argv.extend(["--ro-bind".into(), exe_s.clone(), exe_s.clone()]);
 
-    // The gate bind + proxy environment, written by production code.
-    if let Some(host_socket) = gate_socket {
-        let bind = NetGateBind {
+    // The proxy bind + proxy environment, written by production code.
+    if let Some(host_socket) = proxy_socket {
+        let bind = EgressProxyBind {
             host_socket: host_socket.to_path_buf(),
             sandbox_socket: PathBuf::from(SANDBOX_SOCKET_PATH),
             port: PROBE_RELAY_PORT,
         };
-        launcher::sandbox::push_net_gate(&mut argv, &bind);
+        launcher::sandbox::push_egress_proxy(&mut argv, &bind);
     }
 
     argv.push(exe_s);
@@ -446,7 +446,7 @@ fn run_probe(
     cmd.args(&argv)
         .env(ENV_ALLOWED_PORT, allowed_port.to_string())
         .env(ENV_OTHER_PORT, other_port.to_string());
-    if gate_socket.is_some() {
+    if proxy_socket.is_some() {
         cmd.env(ENV_SOCKET, SANDBOX_SOCKET_PATH);
     } else {
         cmd.env_remove(ENV_SOCKET);
@@ -475,22 +475,22 @@ fn report_from(output: &std::process::Output) -> ProbeReport {
     ProbeReport { stdout, stderr }
 }
 
-/// Start a gate on a unique per-test socket path.
-fn start_gate(name: &str, policy: EgressPolicy) -> (NetGate, PathBuf) {
+/// Start a proxy on a unique per-test socket path.
+fn start_proxy(name: &str, policy: EgressPolicy) -> (EgressProxy, PathBuf) {
     let path = runtime_scratch_dir().join(format!("{name}.sock"));
-    let gate = NetGate::start(&path, policy).expect("gate starts");
-    (gate, path)
+    let proxy = EgressProxy::start(&path, policy).expect("proxy starts");
+    (proxy, path)
 }
 
 // Device-local is network: Tilo's own services (e.g.
 
 /// `IP:PORT` of a service on the host's loopback.
-const ENV_LOCAL_LOOPBACK: &str = "TILO_NETGATE_LOCAL_LOOPBACK";
+const ENV_LOCAL_LOOPBACK: &str = "TILO_EGRESS_PROXY_LOCAL_LOOPBACK";
 /// `IP:PORT` of the same service on the host's own LAN address, or unset when the machine has no
 /// non-loopback address.
-const ENV_LOCAL_LAN: &str = "TILO_NETGATE_LOCAL_LAN";
-/// Name to ask the gate for, when a gate is present.
-const ENV_LOCAL_NAME: &str = "TILO_NETGATE_LOCAL_NAME";
+const ENV_LOCAL_LAN: &str = "TILO_EGRESS_PROXY_LOCAL_LAN";
+/// Name to ask the proxy for, when a proxy is present.
+const ENV_LOCAL_NAME: &str = "TILO_EGRESS_PROXY_LOCAL_NAME";
 
 /// The in-sandbox half of the device-local tests.
 #[test]
@@ -506,7 +506,7 @@ fn device_local_probe() {
     if let (Ok(socket), Ok(name)) = (std::env::var(ENV_SOCKET), std::env::var(ENV_LOCAL_NAME)) {
         let port: u16 = loopback.rsplit(':').next().unwrap().parse().unwrap();
         println!(
-            "PROBE gate_by_name={}",
+            "PROBE proxy_by_name={}",
             describe(socks_get(&socket, &name, port))
         );
         println!(
@@ -562,7 +562,7 @@ fn serve_on(ip: std::net::IpAddr, body: &'static str) -> u16 {
 /// Run [`device_local_probe`] in a sandbox shaped by `decision`.
 fn run_device_local_probe(
     decision: &EgressDecision,
-    gate_socket: Option<&Path>,
+    proxy_socket: Option<&Path>,
     loopback: &str,
     lan: Option<&str>,
     name: Option<&str>,
@@ -587,13 +587,13 @@ fn run_device_local_probe(
     // After the tmpfs: a test binary under /tmp (t runs archived binaries from there) would otherwise
     // be hidden by it.
     argv.extend(["--ro-bind".into(), exe_s.clone(), exe_s.clone()]);
-    if let Some(host_socket) = gate_socket {
-        let bind = NetGateBind {
+    if let Some(host_socket) = proxy_socket {
+        let bind = EgressProxyBind {
             host_socket: host_socket.to_path_buf(),
             sandbox_socket: PathBuf::from(SANDBOX_SOCKET_PATH),
             port: PROBE_RELAY_PORT,
         };
-        launcher::sandbox::push_net_gate(&mut argv, &bind);
+        launcher::sandbox::push_egress_proxy(&mut argv, &bind);
     }
     argv.push(exe_s);
     argv.extend([
@@ -614,7 +614,7 @@ fn run_device_local_probe(
         Some(n) => cmd.env(ENV_LOCAL_NAME, n),
         None => cmd.env_remove(ENV_LOCAL_NAME),
     };
-    match gate_socket {
+    match proxy_socket {
         Some(_) => cmd.env(ENV_SOCKET, SANDBOX_SOCKET_PATH),
         None => cmd.env_remove(ENV_SOCKET),
     };
@@ -624,9 +624,9 @@ fn run_device_local_probe(
 }
 
 tilo_test_env::scenario! {
-    fn the_sandbox_reaches_only_granted_hosts_through_the_gate;
+    fn the_sandbox_reaches_only_granted_hosts_through_the_proxy;
 
-    phase without_a_gate_the_sandbox_has_no_network_and_fails_closed;
+    phase without_a_proxy_the_sandbox_has_no_network_and_fails_closed;
     {
         {
             let dir = runtime_scratch_dir();
@@ -674,8 +674,8 @@ tilo_test_env::scenario! {
                     "--test-threads",
                     "1",
                 ])
-                .env("TILO_NETGATE_PROOF_SOCKET", SANDBOX_SOCKET_PATH)
-                .env("TILO_NETGATE_PROOF_PORT", host_port.to_string())
+                .env("TILO_EGRESS_PROXY_PROOF_SOCKET", SANDBOX_SOCKET_PATH)
+                .env("TILO_EGRESS_PROXY_PROOF_PORT", host_port.to_string())
                 .output_locked()
                 .expect("spawn bwrap");
 
@@ -707,18 +707,18 @@ tilo_test_env::scenario! {
             let policy = EgressPolicy::from_grants([ALLOWED_NAME]);
             // `/proc` is not writable, so creating the parent directory fails before any bind is
             // attempted.
-            let impossible = PathBuf::from("/proc/tilo-netgate-nope/gate.sock");
-            let err = NetGate::start(&impossible, policy).expect_err("binding here must fail");
+            let impossible = PathBuf::from("/proc/tilo-egress_proxy-nope/proxy.sock");
+            let err = EgressProxy::start(&impossible, policy).expect_err("binding here must fail");
 
             let rendered = err.to_string();
             assert!(
-                rendered.contains("gate socket"),
-                "the error must name the gate so an operator can act on it: {rendered}"
+                rendered.contains("proxy socket"),
+                "the error must name the proxy so an operator can act on it: {rendered}"
             );
 
             // And the launch-level consequence: a refusal that says what was granted, and how to
             // deliberately choose the unfiltered path.
-            let run_err = launcher::run::RunError::EgressGate {
+            let run_err = launcher::run::RunError::EgressProxy {
                 hosts: vec![ALLOWED_NAME.to_string()],
                 source: err,
             };
@@ -728,7 +728,7 @@ tilo_test_env::scenario! {
                 "the launch must be refused, not downgraded: {msg}"
             );
             assert!(
-                msg.contains(launcher::run::NET_GATE_ENV),
+                msg.contains(launcher::run::EGRESS_PROXY_ENV),
                 "the refusal must name the explicit opt-out so the fallback is a decision on the \
              record rather than a default: {msg}"
             );
@@ -743,13 +743,13 @@ tilo_test_env::scenario! {
 
             let decision = EgressDecision::resolve("off", &[], &[ALLOWED_NAME.to_string()]);
             let policy = decision.policy().expect("a named host is filtered").clone();
-            let (gate, socket) = start_gate("one-host", policy);
+            let (proxy, socket) = start_proxy("one-host", policy);
 
             let report = run_probe(&decision, Some(&socket), allowed_port, other_port, true);
             report.dump("granted: localhost");
 
             assert_eq!(
-                report.get("gate_by_name"),
+                report.get("proxy_by_name"),
                 "BODY:ALLOWED-SERVER",
                 "a granted host must actually be reachable — a filter that denies everything is not \
              enforcement, it is breakage"
@@ -763,7 +763,7 @@ tilo_test_env::scenario! {
             // Does NOT reach the same server addressed as a literal — identical reachability, so a
             // different outcome can only be the policy.
             assert_eq!(
-                report.get("gate_by_literal"),
+                report.get("proxy_by_literal"),
                 format!("REFUSED:{:#04x}", reply::HOST_UNREACHABLE),
                 "an address literal must not satisfy a hostname grant, even when it is the very \
              server the grant names — otherwise anyone who controls a DNS answer turns a \
@@ -778,7 +778,7 @@ tilo_test_env::scenario! {
             // Does not reach an unlisted name; the refusal is `HOST_UNREACHABLE`, the same as an
             // unresolvable host, a state the app already handles.
             assert_eq!(
-                report.get("gate_by_other_name"),
+                report.get("proxy_by_other_name"),
                 format!("REFUSED:{:#04x}", reply::HOST_UNREACHABLE),
                 "an unlisted host must be refused as unreachable, not as forbidden"
             );
@@ -804,11 +804,11 @@ tilo_test_env::scenario! {
              reach it rather than as a forbidden request"
             );
 
-            // No route beside the gate.
+            // No route beside the proxy.
             assert_eq!(
                 report.get("raw_public"),
                 "NetworkUnreachable",
-                "the namespace must stay empty — the gate is the only way out"
+                "the namespace must stay empty — the proxy is the only way out"
             );
             assert!(
                 report.get("raw_allowed").starts_with("ERR:"),
@@ -817,14 +817,14 @@ tilo_test_env::scenario! {
             );
 
             assert!(
-                gate.stats().allowed() >= 3,
-                "gate should have allowed the by-name connections on both protocols, saw {}",
-                gate.stats().allowed()
+                proxy.stats().allowed() >= 3,
+                "proxy should have allowed the by-name connections on both protocols, saw {}",
+                proxy.stats().allowed()
             );
             assert!(
-                gate.stats().denied() >= 5,
-                "gate should have denied both literals and the unlisted name over both protocols, saw {}",
-                gate.stats().denied()
+                proxy.stats().denied() >= 5,
+                "proxy should have denied both literals and the unlisted name over both protocols, saw {}",
+                proxy.stats().denied()
             );
         }
         {
@@ -838,7 +838,7 @@ tilo_test_env::scenario! {
                 "no manifest network and no grant must resolve to blocked"
             );
 
-            // Blocked means no gate is started at all, so there is no socket to bind into the sandbox.
+            // Blocked means no proxy is started at all, so there is no socket to bind into the sandbox.
             let report = run_probe(&decision, None, allowed_port, other_port, false);
             report.dump("granted: nothing");
 
@@ -859,7 +859,7 @@ tilo_test_env::scenario! {
             assert_eq!(
                 decision,
                 EgressDecision::Unrestricted,
-                "a grant for `*` is unrestricted and needs no gate"
+                "a grant for `*` is unrestricted and needs no proxy"
             );
 
             let report = run_probe(&decision, None, allowed_port, other_port, false);
@@ -878,8 +878,8 @@ tilo_test_env::scenario! {
 
             // Control: the exact request the strict policy refused.
             let strict = EgressDecision::resolve("off", &[], &[ALLOWED_NAME.to_string()]);
-            let (strict_gate, strict_socket) =
-                start_gate("breakage-strict", strict.policy().unwrap().clone());
+            let (strict_proxy, strict_socket) =
+                start_proxy("breakage-strict", strict.policy().unwrap().clone());
             let refused = run_probe(
                 &strict,
                 Some(&strict_socket),
@@ -889,24 +889,24 @@ tilo_test_env::scenario! {
             );
             refused.dump("control: filter on");
             assert_eq!(
-                refused.get("gate_by_literal"),
+                refused.get("proxy_by_literal"),
                 format!("REFUSED:{:#04x}", reply::HOST_UNREACHABLE)
             );
             // Exactly the two by-name requests plus the four naming the literal/unlisted host — the
             // control run (relay disabled) accounts for every connection.
             assert_eq!(
-                strict_gate.stats().allowed(),
+                strict_proxy.stats().allowed(),
                 2,
                 "only the by-name requests (SOCKS5 and HTTP CONNECT) should have been allowed"
             );
             assert_eq!(
-                strict_gate.stats().denied(),
+                strict_proxy.stats().denied(),
                 4,
                 "the literal and the unlisted name should have been denied on both protocols"
             );
 
             // Filter disabled: allowlist permits everything, nothing else changed.
-            let (open_gate, open_socket) = start_gate("breakage-open", EgressPolicy::Any);
+            let (open_proxy, open_socket) = start_proxy("breakage-open", EgressPolicy::Any);
             let open_decision = EgressDecision::Filtered(EgressPolicy::Any);
             let passed = run_probe(
                 &open_decision,
@@ -918,7 +918,7 @@ tilo_test_env::scenario! {
 
             passed.dump("breakage: filter off");
             assert_eq!(
-                passed.get("gate_by_literal"),
+                passed.get("proxy_by_literal"),
                 "BODY:ALLOWED-SERVER",
                 "with the filter open, the previously-refused connection must carry traffic — if it \
              still failed, the negative assertion above was proving nothing"
@@ -926,7 +926,7 @@ tilo_test_env::scenario! {
             // A refused host and an unreachable one answer identically — the app must not tell a policy
             // decision from an absence of network.
             assert_eq!(
-                passed.get("gate_by_other_name"),
+                passed.get("proxy_by_other_name"),
                 format!("REFUSED:{:#04x}", reply::HOST_UNREACHABLE),
                 "an unresolvable name is unreachable, the same answer a refused one gets"
             );
@@ -945,10 +945,10 @@ tilo_test_env::scenario! {
              allowed it"
             );
             assert!(
-                open_gate.stats().allowed() > strict_gate.stats().allowed(),
-                "the open gate must have allowed strictly more than the strict one: {} vs {}",
-                open_gate.stats().allowed(),
-                strict_gate.stats().allowed()
+                open_proxy.stats().allowed() > strict_proxy.stats().allowed(),
+                "the open proxy must have allowed strictly more than the strict one: {} vs {}",
+                open_proxy.stats().allowed(),
+                strict_proxy.stats().allowed()
             );
         }
     }
@@ -1015,7 +1015,7 @@ tilo_test_env::scenario! {
                 "the grant must cover the name, or the refusal below proves nothing about \
              device-local filtering"
             );
-            let (covered_gate, covered_socket) = start_gate("device-local-covered", covered.clone());
+            let (covered_proxy, covered_socket) = start_proxy("device-local-covered", covered.clone());
             let refused = run_device_local_probe(
                 &EgressDecision::Filtered(covered),
                 Some(&covered_socket),
@@ -1025,9 +1025,9 @@ tilo_test_env::scenario! {
             );
             refused.dump("covered grant");
             assert_eq!(
-                refused.get("gate_by_name"),
+                refused.get("proxy_by_name"),
                 format!("REFUSED:{:#04x}", reply::HOST_UNREACHABLE),
-                "a name that resolves to this device must be unreachable through the gate when the \
+                "a name that resolves to this device must be unreachable through the proxy when the \
              grant only covers it"
             );
             assert_eq!(
@@ -1037,14 +1037,14 @@ tilo_test_env::scenario! {
             );
             assert!(
                 refused.get("raw_loopback").starts_with("ERR:"),
-                "the namespace is still empty, so there is no route beside the gate: {}",
+                "the namespace is still empty, so there is no route beside the proxy: {}",
                 refused.get("raw_loopback")
             );
-            let _ = covered_gate;
+            let _ = covered_proxy;
 
             // Same everything, an exact grant: the service is reached.
             let named = EgressPolicy::from_grants(["localhost"]);
-            let (named_gate, named_socket) = start_gate("device-local-named", named.clone());
+            let (named_proxy, named_socket) = start_proxy("device-local-named", named.clone());
             let allowed = run_device_local_probe(
                 &EgressDecision::Filtered(named),
                 Some(&named_socket),
@@ -1054,12 +1054,12 @@ tilo_test_env::scenario! {
             );
             allowed.dump("exact grant");
             assert_eq!(
-                allowed.get("gate_by_name"),
+                allowed.get("proxy_by_name"),
                 "BODY:BROKER-STANDIN",
                 "an exact grant for a device-local host must reach it — the rule narrows what a \
              pattern covers, it does not ban local services outright"
             );
-            let _ = named_gate;
+            let _ = named_proxy;
         }
     }
 }

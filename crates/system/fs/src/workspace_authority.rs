@@ -607,8 +607,8 @@ pub fn serve_local_authority(
     }))
 }
 
-/// Submit or query a local authority service; the Unix permissions are the first gate, the signed
-/// envelope the authority gate.
+/// Submit or query a local authority service; the Unix permissions are the first check, the signed
+/// envelope the authority check.
 #[cfg(unix)]
 pub async fn local_authority_request(
     socket: &std::path::Path,

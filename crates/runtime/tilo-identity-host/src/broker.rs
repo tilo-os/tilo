@@ -1,4 +1,4 @@
-//! Capability-gated identity metadata and signing service for app sandboxes.
+//! Capability-guarded identity metadata and signing service for app sandboxes.
 
 use std::collections::HashMap;
 use std::io::{self, Write};

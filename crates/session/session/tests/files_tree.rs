@@ -287,7 +287,7 @@ fn a_shared_workspaces_tree_reaches_each_member() {
     for device in [&ada_laptop, &bob_laptop, &cyd_laptop] {
         let warnings = device.warnings();
         assert!(
-            !warnings.contains("a document op its channel's gate does not take"),
+            !warnings.contains("a document op its channel's check does not take"),
             "{} refused a plaintext op of the sealed tree:\n{warnings}",
             device.label,
         );

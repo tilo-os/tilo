@@ -55,7 +55,7 @@
 //!
 //! ## Authority is upstream and unchanged
 //!
-//! Every listing is built from a [`Catalogue`] that was already gated: a
+//! Every listing is built from a [`Catalogue`] that was already guarded: a
 //! denied operation is **absent** from `offers`, so it is absent from every
 //! tool result, absent from the enum, and unnameable. Nothing in this module
 //! asks a permission question and nothing in it can widen one.
@@ -1231,7 +1231,7 @@ pub fn answer(name: &str, input: &Value, catalogue: &Catalogue, revealed: &mut R
     }
 }
 
-/// One structural gate for discovery, regardless of transport or dispatcher.
+/// One structural check for discovery, regardless of transport or dispatcher.
 fn validate_discovery_input(name: &str, input: &Value) -> Result<(), String> {
     let definition = match name {
         LIST_APPLICATIONS => list_applications_definition(),
@@ -1801,7 +1801,7 @@ fn describe_arguments(s: &mut String, offer: &Offer, id: &str) {
 // The answer
 // ---------------------------------------------------------------------------
 
-/// Read a [`PLAN`] call's input into the answer the gate checks.
+/// Read a [`PLAN`] call's input into the answer the check checks.
 ///
 /// `Err` names what was wrong with it, in words that go in a log line and
 /// back to the model ([`plan_refused`]); an unshown id comes with the shown

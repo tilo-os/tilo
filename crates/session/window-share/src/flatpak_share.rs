@@ -303,7 +303,7 @@ pub struct SharedFlatpakSession {
     throttle: Arc<Mutex<StreamingThrottle>>,
     /// Frames a second a changing window is streamed at.
     rate_hz: AtomicU32,
-    /// Owner-side gate for a viewer's remote input; shared with
+    /// Owner-side check for a viewer's remote input; shared with
     /// the compositor's `State` via `Arc` so input routing sees the same
     /// permissions.
     share_registry: Arc<Mutex<ShareRegistry>>,
@@ -1351,8 +1351,8 @@ mod tests {
     }
 
     #[test]
-    fn viewer_membership_gates_remote_input() {
-        // Phase `viewer_registration_gates_remote_input`.
+    fn viewer_membership_checks_remote_input() {
+        // Phase `viewer_launch_holds_remote_input`.
         {
             let s = SharedFlatpakSession::start(1, "x", 7, 64, 64, &cfg_software()).expect("start");
             let peer: PeerId = 99;

@@ -271,12 +271,12 @@ tilo_test_env::scenario! {
     phase late_exchanged_tokens_after_cancel_are_never_persisted;
     {
         let (_directory, server, _opener, urls, mut controller) = setup(true);
-        let gate = server.hold_token_exchange();
+        let hold = server.hold_token_exchange();
         controller.command(AccountsCommand::Add(request())).unwrap();
         let _ = tilo_test_env::recv("the authorization URL", &urls);
-        assert!(gate.wait_for_exchange(tilo_test_env::hang_bound()));
+        assert!(hold.wait_for_exchange(tilo_test_env::hang_bound()));
         controller.command(AccountsCommand::SkipOffline).unwrap();
-        gate.release();
+        hold.release();
         until(|| !controller.worker_alive.load(Ordering::Acquire));
         assert!(controller.poll() == AccountsStatus::Ready);
         assert!(controller.selected().is_empty());

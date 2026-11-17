@@ -58,9 +58,9 @@ mod session_actions;
 // actions: the session keeps them in its settings service, so the answer is this host's.
 #[cfg(target_os = "linux")]
 mod settings_steps;
-// What a message from another member is, and whether the workspace's policy grants it: the gate
-// table every host asks, named here as the session always has.
-pub use tilo_session_client::gate as workspace_gate;
+// What a message from another member is, and whether the workspace's policy grants it: the
+// table every host asks.
+pub use tilo_session_client::message_policy;
 // This device's workspaces, and the sealed channels their records travel in.
 pub use tilo_session_client::{engine, membership, workspace_keys};
 

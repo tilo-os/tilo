@@ -4,7 +4,7 @@
 Tilo's standard motions live in ``crates/sdk/ui-core/src/motion/`` (``ui::motion``):
 appear, drill, disclose, panel slide, cross-fade, list change, snap, zoom,
 window motion, feedback, attention. A call site names the motion; how it moves
-is decided there, once. This gate fails on the ways an animation gets hand
+is decided there, once. This check fails on the ways an animation gets hand
 rolled instead, anywhere else in the toolkit, the shell and the apps:
 
 * easing math: a ``Curve::…`` value, a call to or a definition of an

@@ -848,7 +848,7 @@ struct OwingCounter {
     card: CounterCard,
     seen: i64,
     /// Lets the worker reply; the test holds the other end.
-    gate: Option<std::sync::mpsc::Receiver<()>>,
+    check: Option<std::sync::mpsc::Receiver<()>>,
     replies: Option<std::sync::mpsc::Receiver<i64>>,
     worker: Rc<RefCell<Option<std::thread::JoinHandle<()>>>>,
     taken: Rc<Cell<Option<i64>>>,
@@ -870,11 +870,11 @@ impl Widget for OwingCounter {
             return;
         }
         self.seen = count;
-        if let Some(gate) = self.gate.take() {
+        if let Some(check) = self.check.take() {
             let owed = crate::wake::WakeHandle::new().owe();
             let (reply, replies) = std::sync::mpsc::channel();
             *self.worker.borrow_mut() = Some(std::thread::spawn(move || {
-                let _ = gate.recv();
+                let _ = check.recv();
                 let _ = reply.send(count);
                 drop(owed);
             }));
@@ -910,7 +910,7 @@ impl Widget for OwingCounter {
 /// window's own frames go on.
 #[test]
 fn a_delivered_action_answers_once_the_work_it_caused_has_landed() {
-    let (go, gate) = std::sync::mpsc::channel();
+    let (go, check) = std::sync::mpsc::channel();
     let taken = Rc::new(Cell::new(None));
     let worker = Rc::new(RefCell::new(None));
     let scope = crate::wake::WakeScope::new();
@@ -919,7 +919,7 @@ fn a_delivered_action_answers_once_the_work_it_caused_has_landed() {
         Box::new(OwingCounter {
             card: CounterCard::new(),
             seen: 0,
-            gate: Some(gate),
+            check: Some(check),
             replies: None,
             worker: Rc::clone(&worker),
             taken: Rc::clone(&taken),

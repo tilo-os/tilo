@@ -428,7 +428,7 @@ pub struct ChatApp {
     /// to a question says it was pressed on.
     pub(crate) device: Option<String>,
 
-    // The OS permission gate: routes channel participation + file-embed
+    // The OS permission check: routes channel participation + file-embed
     // hydration through the toolkit's permission model. Refreshed from the
     // `PermissionContext` the compositor scopes around `draw`.
     pub(crate) perms: ChatPermissions,
@@ -945,7 +945,7 @@ impl ChatApp {
     }
 
     /// Whether a call action is permitted, routed through the real OS
-    /// permission gate for the active workspace. A View-only / ungranted peer
+    /// permission check for the active workspace. A View-only / ungranted peer
     /// is blocked from join/speak/camera/screen-share; leaving is always
     /// allowed so a downgraded peer can drop out.
     pub(crate) fn call_allows(&self, action: crate::call::CallAction) -> bool {
@@ -985,7 +985,7 @@ impl ChatApp {
 
     /// Whether the local peer may post / react / start a call in the active
     /// workspace (an Edit grant). The permissive default allows; a restricted
-    /// context gates writes while still letting the peer read.
+    /// context checks writes while still letting the peer read.
     pub(crate) fn can_participate(&self) -> bool {
         self.perms.can_participate()
     }

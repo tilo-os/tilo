@@ -1096,15 +1096,15 @@ mod tests {
     fn vault_key_is_created_once_and_owner_only() {
         {
             let root = temp_root();
-            let gate = std::sync::Arc::new(std::sync::Barrier::new(4));
+            let check = std::sync::Arc::new(std::sync::Barrier::new(4));
             // Spawn every member before joining: interleaving spawn/join
             // would deadlock the barrier.
             let mut workers = Vec::with_capacity(4);
             for _ in 0..4 {
                 let root = root.clone();
-                let gate = std::sync::Arc::clone(&gate);
+                let check = std::sync::Arc::clone(&check);
                 workers.push(std::thread::spawn(move || {
-                    gate.wait();
+                    check.wait();
                     local_file_key(&root).unwrap()
                 }));
             }
@@ -1245,13 +1245,13 @@ mod tests {
 
         {
             let root = temp_root();
-            let gate = std::sync::Arc::new(std::sync::Barrier::new(4));
+            let check = std::sync::Arc::new(std::sync::Barrier::new(4));
             let mut workers = Vec::new();
             for _ in 0..4 {
                 let root = root.clone();
-                let gate = gate.clone();
+                let check = check.clone();
                 workers.push(std::thread::spawn(move || {
-                    gate.wait();
+                    check.wait();
                     load_or_create_key(&root, SecretCustody::WindowsDpapi).unwrap()
                 }));
             }

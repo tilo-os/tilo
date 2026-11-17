@@ -85,10 +85,10 @@ struct Server {
     hold_flush_after_selection: bool,
     publications: Vec<u32>,
     selection: Option<wl_data_source::WlDataSource>,
-    selection_gate: Option<SelectionGate>,
+    selection_hold: Option<SelectionHold>,
 }
 
-struct SelectionGate {
+struct SelectionHold {
     entered: Arc<AtomicBool>,
     release: Arc<AtomicBool>,
 }
@@ -350,9 +350,9 @@ impl Dispatch<wl_data_device::WlDataDevice, ()> for Server {
         {
             state.selection = Some(source);
             assert!(state.seats.iter().any(|seat| seat.surface.is_some()));
-            if let Some(gate) = &state.selection_gate {
-                gate.entered.store(true, Ordering::Release);
-                while !gate.release.load(Ordering::Acquire) {
+            if let Some(hold) = &state.selection_hold {
+                hold.entered.store(true, Ordering::Release);
+                while !hold.release.load(Ordering::Acquire) {
                     std::thread::park_timeout(Duration::from_millis(1));
                 }
             }
@@ -1103,12 +1103,12 @@ tilo_test_env::scenario! {
 
         let entered = Arc::new(AtomicBool::new(false));
         let release = Arc::new(AtomicBool::new(false));
-        let gate = SelectionGate {
+        let hold = SelectionHold {
             entered: Arc::clone(&entered),
             release: Arc::clone(&release),
         };
-        harness.operation(move |state, _| state.selection_gate = Some(gate));
-        harness.query(|state| assert!(state.selection_gate.is_some()));
+        harness.operation(move |state, _| state.selection_hold = Some(hold));
+        harness.query(|state| assert!(state.selection_hold.is_some()));
 
         let png = super::encode_png(1, 1, &[0xff, 0, 0x80, 0xff]).expect("small image");
         let (reply, result) = mpsc::channel();
@@ -1178,7 +1178,7 @@ tilo_test_env::scenario! {
         );
         harness.wait(
             || harness.query(|state| state.publications == [state.serial]),
-            "focus-gated publication",
+            "focus-held publication",
         );
     }
 
@@ -1357,12 +1357,12 @@ tilo_test_env::scenario! {
         let harness = focused_harness();
         let entered = Arc::new(AtomicBool::new(false));
         let release = Arc::new(AtomicBool::new(false));
-        let gate = SelectionGate {
+        let hold = SelectionHold {
             entered: Arc::clone(&entered),
             release: Arc::clone(&release),
         };
-        harness.operation(move |state, _| state.selection_gate = Some(gate));
-        harness.query(|state| assert!(state.selection_gate.is_some()));
+        harness.operation(move |state, _| state.selection_hold = Some(hold));
+        harness.query(|state| assert!(state.selection_hold.is_some()));
 
         std::thread::scope(|scope| {
             let copy = scope.spawn(|| harness.backend().set_image(1, 1, &[0xff, 0, 0x80, 0xff]));

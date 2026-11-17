@@ -420,7 +420,7 @@ fn placed(path: &Path, from: &str, to: &str) -> Option<PathBuf> {
         app_state::ACTOR_FILE,
         app_state::LOAD_HINT_FILE,
         app_state::LOCK_FILE,
-        app_state::CANONICAL_GATE,
+        app_state::CANONICAL_LOCK,
         "successor-claim",
     ]
     .contains(&name)

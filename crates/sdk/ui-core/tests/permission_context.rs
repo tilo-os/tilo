@@ -54,7 +54,7 @@ type CheckCase = (
 );
 
 tilo_test_env::scenario! {
-    fn permission_contexts_decide_checks_gates_and_grants;
+    fn permission_contexts_decide_checks_guards_and_grants;
 
     // Role ceilings and scoped shares decide every check: `allowed` is what
     // `check` answers, `feedback` (when the case pins it) what
@@ -176,27 +176,27 @@ tilo_test_env::scenario! {
         assert!(tilo_ui::permissions::capability::permission_scope(&w).is_none());
     }
 
-    phase gated_widget_fires_only_when_its_scope_is_granted;
+    phase guarded_widget_fires_only_when_its_scope_is_granted;
     {
         let cases = [
             (
-                "gated_widget_rejected_by_framework_helper",
+                "guarded_widget_rejected_by_framework_helper",
                 viewer_ctx("alice"),
                 false,
             ),
             (
-                "gated_widget_allowed_when_role_grants_edit",
+                "guarded_widget_allowed_when_role_grants_edit",
                 editor_ctx("bob"),
                 true,
             ),
         ];
         for (case, ctx, want) in cases {
-            let w = GatedButton {
+            let w = GuardedButton {
                 clicked: false,
                 scope: PermissionScope::app_kind(AppKind::Terminal, ActionKind::Undoable),
             };
             let mut fired = false;
-            let allowed = tilo_ui::app::dispatch_gated_event(&ctx, &w, || {
+            let allowed = tilo_ui::app::dispatch_guarded_event(&ctx, &w, || {
                 fired = true;
             });
             assert_eq!(allowed, want, "case {case}: allowed");
@@ -322,18 +322,18 @@ impl tilo_ui::widget::Widget for NoOpWidget {
 
 use tilo_ui::permissions::PermissionScope as PS;
 
-struct GatedButton {
+struct GuardedButton {
     clicked: bool,
     scope: PS,
 }
 
-impl tilo_ui::widget::Widget for GatedButton {
-    tilo_ui::provides!(dyn tilo_ui::permissions::capability::PermissionGated);
+impl tilo_ui::widget::Widget for GuardedButton {
+    tilo_ui::provides!(dyn tilo_ui::permissions::capability::PermissionGuarded);
 
     #[allow(
         clippy::unimplemented,
         reason = "test-only Widget stub; build_layout is never invoked by these tests (they \
-                  exercise dispatch_gated_event via handle_event)"
+                  exercise dispatch_guarded_event via handle_event)"
     )]
     fn build_layout(
         &mut self,
@@ -351,11 +351,11 @@ impl tilo_ui::widget::Widget for GatedButton {
         self.clicked = true;
     }
     fn name(&self) -> &'static str {
-        "gated"
+        "guarded"
     }
 }
 
-impl tilo_ui::permissions::capability::PermissionGated for GatedButton {
+impl tilo_ui::permissions::capability::PermissionGuarded for GuardedButton {
     fn permission_scope(&self) -> Option<PS> {
         Some(self.scope.clone())
     }

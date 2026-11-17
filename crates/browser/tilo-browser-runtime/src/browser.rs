@@ -458,7 +458,7 @@ pub(crate) struct Mount {
     /// Which statuses carry the semantics tree: unchanged trees are omitted,
     /// content-only changes are throttled, focus and structure changes go out
     /// at once.
-    semantics: RefCell<crate::semantics_status::SemanticsGate>,
+    semantics: RefCell<crate::semantics_status::SemanticsPublisher>,
     window: Arc<Window>,
     canvas: web_sys::HtmlCanvasElement,
     frame: FrameHarness,
@@ -1877,7 +1877,7 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
         .unwrap_or(crate::semantics_status::SEMANTICS_WINDOW_MS);
     let mount = Mount {
         metrics: RefCell::default(),
-        semantics: RefCell::new(crate::semantics_status::SemanticsGate::new(
+        semantics: RefCell::new(crate::semantics_status::SemanticsPublisher::new(
             ui::time::Duration::from_millis(window_ms),
         )),
         window: Arc::clone(&window),
@@ -2620,8 +2620,8 @@ impl Mount {
         // [`crate::frame_pacing::LOST_AFTER`]. A slow GPU is not a lost one:
         // the device's own `lost` and errors say that, below.
         if matches!(
-            pacing::gate(&mut gpu.pacing, &mut self.held, &self.window),
-            pacing::Gate::Hold
+            pacing::check(&mut gpu.pacing, &mut self.held, &self.window),
+            pacing::FrameDecision::Hold
         ) {
             return Ok(());
         }
@@ -3240,7 +3240,7 @@ impl Mount {
 
     /// Whether a frame's tree stays unbuilt: only a frame that laid nothing
     /// out (while no held tree is due) or moved laid-out content (while
-    /// the gate defers it, or the frame replayed windows its tree would
+    /// the check defers it, or the frame replayed windows its tree would
     /// need drawn again) may leave it.
     fn tree_unbuilt(&self, change: FrameChange, ime: Option<&ui::ime::ImeWindowState>) -> bool {
         if change == FrameChange::Other || self.error.is_some() {
@@ -3276,7 +3276,7 @@ impl Mount {
             self.metric_end("tree_held:replayed", self.metric_start());
             true
         } else {
-            self.metric_end("tree_built:gate", self.metric_start());
+            self.metric_end("tree_built:check", self.metric_start());
             false
         }
     }
@@ -3312,9 +3312,9 @@ impl Mount {
     /// Publish the status of a frame. `change` says what the frame changed
     /// ([`Self::draw`]); `presented`, that it is the frame just drawn, whose
     /// tree is built in a task after it
-    /// ([`crate::semantics_status::SemanticsGate::after_frame`]). The tree of a frame that laid
+    /// ([`crate::semantics_status::SemanticsPublisher::after_frame`]). The tree of a frame that laid
     /// nothing out is not built: it is the last one. Nor is that of a frame
-    /// that only moved laid-out content, a content-only change: the gate's
+    /// that only moved laid-out content, a content-only change: the check's
     /// deadline delivers it as it then is. Neither changes the focus
     /// presence or the place in the workspace either.
     fn publish_frame(&mut self, id: u64, change: FrameChange, presented: bool) {
@@ -3440,8 +3440,8 @@ impl Mount {
             // Splice the already serialized tree or patch into the status
             // object instead of parsing it back into a value and
             // serializing twice.
-            let gate = self.semantics.borrow();
-            if let Ok(members) = std::str::from_utf8(gate.text()) {
+            let check = self.semantics.borrow();
+            if let Ok(members) = std::str::from_utf8(check.text()) {
                 text.pop();
                 text.push(',');
                 text.push_str(members);

@@ -705,7 +705,7 @@ tilo_test_env::scenario! {
         authority.allowed.store(false, Ordering::Release);
         assert!(
             permit.revalidate().is_err(),
-            "the pre-spawn gate must reject revoked policy without consuming a new claim"
+            "the pre-spawn check must reject revoked policy without consuming a new claim"
         );
         drop(permit);
         authority.allowed.store(true, Ordering::Release);

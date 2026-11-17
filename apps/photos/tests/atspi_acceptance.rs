@@ -1,4 +1,4 @@
-//! The installed-image AT-SPI scenario in `tilo-app.toml`, run headlessly. The release gate opens
+//! The installed-image AT-SPI scenario in `tilo-app.toml`, run headlessly. The release hold is released
 //! Photos on a freshly installed profile, finds the manifest's `required` names, activates `action`
 //! and waits for every `after_action` name.
 

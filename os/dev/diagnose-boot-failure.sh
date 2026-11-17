@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Bounded CI evidence for a VM that failed before the greeter gate. Raw serial
+# Bounded CI evidence for a VM that failed before the greeter check. Raw serial
 # may carry secrets, so only selected boot markers reach the job log.
 set -euo pipefail
 

@@ -1301,7 +1301,7 @@ fn one_painted_banner(
         .expect("the banner painted its card")
 }
 
-/// Measurement: how long one paint takes while five banners reflow into four. Not a gate; run with
+/// Measurement: how long one paint takes while five banners reflow into four. Not a check; run with
 /// `--ignored --nocapture` . A debug build paints slower than a person's, so the numbers bound the
 /// cost.
 #[test]

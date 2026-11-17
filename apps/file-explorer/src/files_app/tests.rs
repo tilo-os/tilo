@@ -869,7 +869,7 @@ mod command_path_tests {
             context_menu_exposes_the_sort_section_including_type();
             context_select_targets_the_clicked_row_not_a_stale_selection();
             a_screen_reader_opens_a_rows_menu_on_the_row_it_names();
-            context_menu_gates_new_file_on_templates_existing();
+            context_menu_checks_new_file_on_templates_existing();
             large_text_view_menu_clamps_inside_the_live_window();
         }
 
@@ -2097,7 +2097,7 @@ mod command_path_tests {
             );
         }
 
-        phase conflict_resolution_is_explicit_and_merge_preflight_gated;
+        phase conflict_resolution_is_explicit_and_merge_preflight_guarded;
         {
             open_text_conflict_menu_requires_review_before_an_exact_merge();
             merge_review_only_enables_apply_after_a_safe_daemon_preflight();
@@ -3606,7 +3606,7 @@ mod command_path_tests {
         );
     }
 
-    fn context_menu_gates_new_file_on_templates_existing() {
+    fn context_menu_checks_new_file_on_templates_existing() {
         let (w, _cfg) = hermetic();
         let has_new_file = |spec: &[(String, Option<FileCommand>)]| {
             spec.iter().any(|(label, _)| label.starts_with("New file"))

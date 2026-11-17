@@ -8,10 +8,10 @@
 
 #[path = "bus_filters.rs"]
 mod bus_filters;
+#[path = "egress_proxy.rs"]
+mod egress_proxy;
 #[path = "launcher_smoke.rs"]
 mod launcher_smoke;
-#[path = "netgate_egress.rs"]
-mod netgate_egress;
 #[path = "sandbox_environment.rs"]
 mod sandbox_environment;
 #[path = "support.rs"]

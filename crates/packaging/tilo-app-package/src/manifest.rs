@@ -22,7 +22,7 @@ pub struct Manifest {
     pub continuity: ContinuityContract,
     /// Signed external accessibility acceptance evidence. This is deliberately
     /// package metadata rather than a source-only test list: the installed
-    /// image gate must drive the exact manifest/payload pair that was packed.
+    /// image check must drive the exact manifest/payload pair that was packed.
     #[serde(default, skip_serializing_if = "Accessibility::is_empty")]
     pub accessibility: Accessibility,
     /// `[actions]` block — what the app may do on the session's action API

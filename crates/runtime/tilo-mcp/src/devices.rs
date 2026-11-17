@@ -5,7 +5,7 @@
 //! on [`ALPN`], to B's MCP server, where the person — or B's own setting —
 //! admits it as an agent delegated by them, via A. Nothing else is new
 //! authority: B serves the connection as it serves a program of its own login
-//! ([`crate::session_api`]), through its broker's ordinary gate, in one
+//! ([`crate::session_api`]), through its broker's ordinary check, in one
 //! workspace, under an agent id that names A ([`agent_id`]).
 //!
 //! B knows who dials from the transport alone. The connection's endpoint id is
@@ -1091,7 +1091,7 @@ mod tests {
                 forward_request(br#"{"jsonrpc":"2.0","id":1,"method":"initialize"}"#),
                 None
             );
-            assert_eq!(forward_request(br#"{"op":"agent_seat"}"#), None);
+            assert_eq!(forward_request(br#"{"op":"agent_place"}"#), None);
             assert_eq!(
                 forward_request(br#"{"forward":{"device":"studio","as":"person"}}"#),
                 None,

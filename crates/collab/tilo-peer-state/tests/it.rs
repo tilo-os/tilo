@@ -4,7 +4,7 @@
 //
 // The workspace engine's integration tests join a workspace through its host's
 // enrollment answer, which the fixtures and internals behind `test-support`
-// carry: the one target is gated on it.
+// carry: the one target depends on it.
 
 #[path = "common/mod.rs"]
 mod common;

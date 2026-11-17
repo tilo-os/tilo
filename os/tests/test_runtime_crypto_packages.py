@@ -13,9 +13,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'tools/tests'))
 from hang import HANG_BOUND  # noqa: E402
 
 parser = argparse.ArgumentParser()
-parser.add_argument('--gate', type=Path, default=Path(__file__).resolve().parents[1] / 'scripts/verify-runtime-crypto-packages.sh')
+parser.add_argument('--check', type=Path, default=Path(__file__).resolve().parents[1] / 'scripts/verify-runtime-crypto-packages.sh')
 args, remaining = parser.parse_known_args()
-GATE = args.gate.resolve()
+CHECK = args.check.resolve()
 sys.argv = [sys.argv[0], *remaining]
 
 MOCK = r'''#!/usr/bin/env python3
@@ -43,7 +43,7 @@ class PackagePolicy(unittest.TestCase):
             fixture = root / 'fixture.json'
             fixture.write_text(json.dumps(dict(installed=installed, requirements=requirements, fail=fail)))
             calls = root / 'calls'
-            result = subprocess.run(['bash', str(GATE)], capture_output=True, text=True, timeout=HANG_BOUND,
+            result = subprocess.run(['bash', str(CHECK)], capture_output=True, text=True, timeout=HANG_BOUND,
                 env=dict(os.environ, TILO_RPM_BIN=str(rpm), RPM_FIXTURE=str(fixture), RPM_CALLS=str(calls)))
             self.assertEqual(result.returncode == 0, success, result.stdout + result.stderr)
             if diagnostic:

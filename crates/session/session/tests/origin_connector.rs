@@ -52,10 +52,10 @@ fn youtube_connector_child() {
     // The launcher's release: the descriptor the connector's socket came in on. The stand-in
     // launcher is the launcher's sandbox here: it hands the socket straight into this process,
     // where a real launch would hand it in as the `tilolang-origin` service.
-    if runtime_portal::registration_gate::wait_on_stdin().is_err() {
+    if runtime_portal::launch_hold::wait_on_stdin().is_err() {
         return;
     }
-    let Some(socket) = runtime_portal::registration_gate::take_window_link() else {
+    let Some(socket) = runtime_portal::launch_hold::take_window_link() else {
         return;
     };
     let attachments = std::iter::from_fn(move || {
@@ -140,12 +140,12 @@ fn scripted() -> tilolang_youtube::Scripted {
 }
 
 /// Write the launcher the session starts the apps' connectors through: the stand-in runs this test
-/// binary as the connector process, on the gate the launcher is handed. The apps are the ones
+/// binary as the connector process, on the hold the launcher is handed. The apps are the ones
 /// installed in `home` 's own store ([`crate::common::install_apps_in`]), the `YouTube` client's signed
 /// package among them; its manifest declares the `youtube` origin.
 fn connector_launcher(home: &tilo_test_env::TestHome) -> tilo_test_env::StandIn {
     // The launcher the session starts connectors through: it runs this test binary as the connector
-    // process, keeping the gate it was handed as stdin.
+    // process, keeping the hold it was handed as stdin.
     tilo_test_env::stand_in(
         home.home().join("tilo-launcher"),
         &format!(

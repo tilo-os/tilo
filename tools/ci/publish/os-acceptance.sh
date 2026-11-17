@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # The OS image and its dev image as devices get them, as root in a micro-VM step with a
-# /dev/kvm of its own. Nothing here holds a secret or publishes. A release's gate, and the dev
-# disk's; main's dev images need only os-dev-gate-ARCH.
+# /dev/kvm of its own. Nothing here holds a secret or publishes. A release's check, and the dev
+# disk's; main's dev images need only os-dev-check-ARCH.
 #
 #   os-acceptance.sh ARCH IMAGE DISK OUT   IMAGE: os-image-ARCH's layout, DISK: os-dev-disk-ARCH's
 #                                          output (the dev image installed); reports and logs into
@@ -51,7 +51,7 @@ status=0
 export TILO_VM_ARCH=$arch TMPDIR=/var/tmp TILO_USER=tester TILO_PASS=tilo
 
 # A host without a usable render node boots the guests on the 2D virtio display; the
-# compositor paints on the CPU there, and every gate must pass either way.
+# compositor paints on the CPU there, and every check must pass either way.
 export TILO_VM_DISPLAY=2d
 for node in /dev/dri/renderD*; do
   [[ -c $node && -r $node && -w $node ]] && { TILO_VM_DISPLAY=gl; break; }
@@ -87,7 +87,7 @@ for i in "${!tracks[@]}"; do
   fi
 done
 # A failed check keeps no outputs, so the guests' own account of a failure goes to the log:
-# the end of each session's journal and compositor log the gates collected,
+# the end of each session's journal and compositor log the checks collected,
 # without the periodic frame counters and SSH logins that would fill it.
 if ((status != 0)); then
   while IFS= read -r -d '' evidence; do

@@ -20,7 +20,7 @@ pub enum RetirementError {
 }
 
 struct DomainCore {
-    gate: Mutex<()>,
+    check: Mutex<()>,
     requested: AtomicBool,
     retired: AtomicBool,
 }
@@ -60,12 +60,12 @@ impl DomainCore {
         self.request_retirement();
         // Poison is permanent. Recover only to complete negative retirement; never clear
         // poison, invoke a callback, or drop custody under the guard.
-        let guard = self.gate.lock_recover();
+        let guard = self.check.lock_recover();
         self.retired.store(true, Ordering::Release);
         drop(guard);
     }
     fn accepts_new_marker(&self) -> Result<(), RetirementError> {
-        let guard = match self.gate.try_lock() {
+        let guard = match self.check.try_lock() {
             Ok(guard) => guard,
             Err(TryLockError::WouldBlock) => return Err(RetirementError::Busy),
             Err(TryLockError::Poisoned(_)) => return Err(RetirementError::Poisoned),
@@ -86,22 +86,22 @@ impl MarkerRef {
     }
     fn finish_retirement(&self) {
         self.request_retirement();
-        let guard = self.domain.gate.lock_recover();
+        let guard = self.domain.check.lock_recover();
         self.marker.retired.store(true, Ordering::Release);
         drop(guard);
     }
 }
 
 impl RetirementDomain {
-    /// [`RetirementError::Poisoned`] if the fresh gate cannot be initialized.
+    /// [`RetirementError::Poisoned`] if the fresh check cannot be initialized.
     pub fn new() -> Result<Self, RetirementError> {
         let core = Arc::new(DomainCore {
-            gate: Mutex::new(()),
+            check: Mutex::new(()),
             requested: AtomicBool::new(false),
             retired: AtomicBool::new(false),
         });
         {
-            let guard = core.gate.lock().map_err(|_| RetirementError::Poisoned)?;
+            let guard = core.check.lock().map_err(|_| RetirementError::Poisoned)?;
             drop(guard);
         }
         Ok(Self {

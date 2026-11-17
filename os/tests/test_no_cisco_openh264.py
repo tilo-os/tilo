@@ -12,7 +12,7 @@ import tempfile
 import unittest
 
 REPO = Path(__file__).resolve().parents[2]
-GATE = REPO / 'os/scripts/verify-no-cisco-openh264.sh'
+CHECK = REPO / 'os/scripts/verify-no-cisco-openh264.sh'
 CONTAINERFILE = REPO / 'os/Containerfile'
 SNAPSHOT = REPO / 'os/Containerfile.rpms'
 BUILD_DEPS = REPO / 'dist/ci/install-build-deps.sh'
@@ -49,9 +49,9 @@ def code_lines(path):
     return [line for line in path.read_text().splitlines() if not line.lstrip().startswith('#')]
 
 
-class Gate(unittest.TestCase):
-    def run_gate(self, *args, installed=(), owners=None, files=(), rpms=None):
-        with tempfile.TemporaryDirectory(prefix='tilo-openh264-gate-') as directory:
+class Check(unittest.TestCase):
+    def run_check(self, *args, installed=(), owners=None, files=(), rpms=None):
+        with tempfile.TemporaryDirectory(prefix='tilo-openh264-check-') as directory:
             root = Path(directory)
             rpm = root / 'rpm'
             rpm.write_text(MOCK)
@@ -67,7 +67,7 @@ class Gate(unittest.TestCase):
             fixture = root / 'fixture.json'
             fixture.write_text(json.dumps(dict(installed=list(installed), owners=owners or {}, headers=rpms or {})))
             argv = [a.replace('@REPO@', str(repo)) for a in args]
-            return subprocess.run(['bash', str(GATE), *argv], capture_output=True, text=True, timeout=15,
+            return subprocess.run(['bash', str(CHECK), *argv], capture_output=True, text=True, timeout=15,
                                   env=dict(os.environ, TILO_RPM_BIN=str(rpm), RPM_FIXTURE=str(fixture),
                                            TILO_ROOT=str(rootfs)))
 
@@ -79,39 +79,39 @@ class Gate(unittest.TestCase):
     def test_ciscos_packages_are_rejected_in_the_rootfs(self):
         for package in FORBIDDEN:
             with self.subTest(package=package):
-                self.assert_rejected(self.run_gate(installed=['glibc', 'noopenh264', package]), package)
+                self.assert_rejected(self.run_check(installed=['glibc', 'noopenh264', package]), package)
 
     def test_the_stub_passes(self):
         library = 'usr/lib64/libopenh264.so.8'
-        result = self.run_gate(installed=['glibc', 'noopenh264', 'libavcodec-free', 'gstreamer1-plugins-bad-free'],
+        result = self.run_check(installed=['glibc', 'noopenh264', 'libavcodec-free', 'gstreamer1-plugins-bad-free'],
                                owners={'/' + library: 'noopenh264', '/usr/lib64/libopenh264.so.2.6.0': 'noopenh264'},
                                files=[library, 'usr/lib64/libopenh264.so.2.6.0'])
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertEqual(self.run_gate().returncode, 0)
+        self.assertEqual(self.run_check().returncode, 0)
 
     def test_a_library_not_from_the_stub_is_rejected(self):
         library = 'usr/lib64/libopenh264.so.8'
-        self.assert_rejected(self.run_gate(installed=['noopenh264'], owners={'/' + library: 'openh264-renamed'},
+        self.assert_rejected(self.run_check(installed=['noopenh264'], owners={'/' + library: 'openh264-renamed'},
                                            files=[library]), 'openh264-renamed')
-        self.assert_rejected(self.run_gate(installed=['noopenh264'], files=[library]), 'no package')
+        self.assert_rejected(self.run_check(installed=['noopenh264'], files=[library]), 'no package')
 
     def test_the_gstreamer_plugin_file_is_rejected(self):
-        self.assert_rejected(self.run_gate(files=['usr/lib64/gstreamer-1.0/libgstopenh264.so']), 'libgstopenh264.so')
+        self.assert_rejected(self.run_check(files=['usr/lib64/gstreamer-1.0/libgstopenh264.so']), 'libgstopenh264.so')
 
     def test_a_repository_carrying_ciscos_packages_is_rejected(self):
         for package in FORBIDDEN:
             with self.subTest(package=package):
                 rpms = {'noopenh264-2.6.0-4.fc44.x86_64.rpm': 'noopenh264',
                         f'{package}-1-1.fc44.x86_64.rpm': package}
-                self.assert_rejected(self.run_gate('--repo', '@REPO@', rpms=rpms), package)
+                self.assert_rejected(self.run_check('--repo', '@REPO@', rpms=rpms), package)
 
     def test_a_repository_with_the_stub_passes(self):
         rpms = {'noopenh264-2.6.0-4.fc44.x86_64.rpm': 'noopenh264', 'glibc-2.43-1.fc44.x86_64.rpm': 'glibc'}
-        result = self.run_gate('--repo', '@REPO@', rpms=rpms)
+        result = self.run_check('--repo', '@REPO@', rpms=rpms)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
     def test_an_empty_repository_fails_closed(self):
-        self.assertNotEqual(self.run_gate('--repo', '@REPO@').returncode, 0)
+        self.assertNotEqual(self.run_check('--repo', '@REPO@').returncode, 0)
 
 
 class Wiring(unittest.TestCase):
@@ -138,33 +138,33 @@ class Wiring(unittest.TestCase):
         first_resolve = next(i for i, line in enumerate(lines) if '--store=/tmp/tilo-install' in line)
         self.assertLess(configured, first_resolve)
 
-    def test_snapshot_gate_runs_before_the_repository_is_published(self):
+    def test_snapshot_check_runs_before_the_repository_is_published(self):
         text = SNAPSHOT.read_text()
         self.assertIn('COPY os/scripts/verify-no-cisco-openh264.sh /tilo-verify-no-cisco-openh264.sh', text)
-        gate = text.index('bash /tilo-verify-no-cisco-openh264.sh --repo /repo')
-        self.assertLess(text.index('FROM metadata-tools AS repository'), gate)
-        self.assertLess(gate, text.index('createrepo_c --quiet /repo'))
+        check = text.index('bash /tilo-verify-no-cisco-openh264.sh --repo /repo')
+        self.assertLess(text.index('FROM metadata-tools AS repository'), check)
+        self.assertLess(check, text.index('createrepo_c --quiet /repo'))
         self.assertIn('os/scripts/verify-no-cisco-openh264.sh', load_fingerprint().SHAPE_FILES)
 
-    def test_image_runs_the_gate_on_the_finished_rootfs(self):
+    def test_image_runs_the_check_on_the_finished_rootfs(self):
         text = CONTAINERFILE.read_text()
         lines = text.splitlines()
         self.assertIn('    os/scripts/verify-no-cisco-openh264.sh \\', lines)
-        gate = next(i for i, line in enumerate(lines) if 'bash /usr/local/bin/verify-no-cisco-openh264.sh' in line)
+        check = next(i for i, line in enumerate(lines) if 'bash /usr/local/bin/verify-no-cisco-openh264.sh' in line)
         split = next(i for i, line in enumerate(lines) if line.startswith('FROM rootfs AS split'))
         mutation = re.compile(r'dnf .*\b(install|remove)\b|rpm -[ei]')
         last_mutation = max(i for i, line in enumerate(lines[:split]) if mutation.search(line))
-        self.assertLess(last_mutation, gate)
-        self.assertLess(gate, split)
-        # Other final-rootfs gates may run before cleanup. Observe the removal
+        self.assertLess(last_mutation, check)
+        self.assertLess(check, split)
+        # Other final-rootfs checks may run before cleanup. Observe the removal
         # command itself, not its distance in lines from the codec check.
-        tail = '\n'.join(line for line in lines[gate + 1:split]
+        tail = '\n'.join(line for line in lines[check + 1:split]
                          if not line.lstrip().startswith('#'))
         commands = tail.replace('\\\n', ' ').split('&&')
         cleanup = [shlex.split(command.strip()) for command in commands
                    if command.strip().startswith('rm -f ')]
         self.assertTrue(any('/usr/local/bin/verify-no-cisco-openh264.sh' in command[2:]
-                            for command in cleanup), 'finished rootfs must remove the gate script')
+                            for command in cleanup), 'finished rootfs must remove the check script')
 
     def test_no_shipped_image_requests_ciscos_packages(self):
         sources = load_fingerprint().parser.SOURCES

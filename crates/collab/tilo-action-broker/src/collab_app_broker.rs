@@ -9753,7 +9753,7 @@ async fn authenticate_launcher_handoff(
     }
 
     // Every host records a launch before it releases the child's
-    // registration gate (`runtime_portal::registration_gate`), so the record
+    // launch hold (`runtime_portal::launch_hold`), so the record
     // exists before the child can connect, and one look decides. A direct
     // tilo-launcher command never obtains a record and is refused at once
     // instead of becoming a way around admin/admission checks.
@@ -10435,7 +10435,7 @@ pub mod tests {
     }
 
     /// Attestation is one look at the launch record: a launcher whose host
-    /// recorded it (before releasing its registration gate) is attested at
+    /// recorded it (before releasing its launch hold) is attested at
     /// once, and a process with the marker but no record — someone running
     /// tilo-launcher by hand — is refused at once, without a retry window.
     /// The clock is paused, so any wait would show as elapsed time.
@@ -11959,7 +11959,7 @@ pub mod tests {
                 stale_cursor: false,
                 budget_exhausted: false,
             };
-            // A permission the broker does not know: the gate is unreadable.
+            // A permission the broker does not know: the check is unreadable.
             let mut json = serde_json::to_value(&page).expect("test directory page encodes");
             json["rows"][1]["visibility"]["contract"] = serde_json::json!({"kind": "everyone"});
             Box::pin(std::future::ready(runtime_collab::read_directory_answer(
@@ -11981,7 +11981,7 @@ pub mod tests {
 
     /// The visibility contract is the permission that discloses a container
     /// row. One the broker cannot decode refuses the page: the row is never
-    /// listed without its gate, and nothing on that page is listed past it.
+    /// listed without its check, and nothing on that page is listed past it.
     #[tokio::test(flavor = "current_thread")]
     async fn a_row_whose_visibility_cannot_be_decoded_is_not_listed() {
         use tilo_actions::remote::{Caller, CatalogueQuery};

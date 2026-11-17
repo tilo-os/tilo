@@ -255,7 +255,7 @@ async fn actual_whatsapp_inbound_wakes_selected_messages_view_without_shared_pla
 }
 
 struct TwoContacts {
-    primary: tests::Gate,
+    primary: tests::Hold,
     other: Route,
 }
 impl ExternalAuthority for TwoContacts {
@@ -304,7 +304,7 @@ async fn same_whatsapp_stanza_id_from_two_direct_chats_never_merges_people_or_me
     other.association = ui::prelude::Id::from_raw("other-association");
     other.recipient = "12025550124@s.whatsapp.net".into();
     fixture.broker.authority = Arc::new(TwoContacts {
-        primary: tests::Gate {
+        primary: tests::Hold {
             owner: fixture.owner.clone(),
             revoked: fixture.revoked.clone(),
         },

@@ -153,7 +153,7 @@ fn resolve(
             found
         }
     };
-    // The account's gate and its verified adapter supply the link; the
+    // The account's check and its verified adapter supply the link; the
     // records are never credential or admission evidence.
     Ok(Some(Authorization::new(
         directory,

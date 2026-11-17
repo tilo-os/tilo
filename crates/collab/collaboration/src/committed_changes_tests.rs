@@ -194,8 +194,8 @@ fn a_reader_renewed_after_missed_changes_reads_whole() {
     let joins = reader.joins();
     let _ = reader.edit_elsewhere("an edit whose changes are missed", 8);
     let (entered, observed) = mpsc::channel();
-    let (release, gate) = tokio::sync::oneshot::channel();
-    reader.captures.lock().unwrap().committed_ack_gate = Some((entered, gate));
+    let (release, hold) = tokio::sync::oneshot::channel();
+    reader.captures.lock().unwrap().committed_ack_hold = Some((entered, hold));
     reader.wake_waits();
     tilo_test_env::recv(
         "the broker to withhold the changes' acknowledgement",

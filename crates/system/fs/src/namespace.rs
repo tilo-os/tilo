@@ -1623,7 +1623,7 @@ impl Namespace {
     }
 
     /// Absolute path of a stable namespace node id. Node ids exist before a FUSE lookup allocates
-    /// a local inode, so the network content gate can map a requested blob back to every live
+    /// a local inode, so the network content check can map a requested blob back to every live
     /// path that names it without mutating the namespace index.
     pub fn path_for_id(&self, id: &str) -> Option<String> {
         if id == ROOT_ID {

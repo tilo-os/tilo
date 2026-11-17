@@ -206,10 +206,10 @@ fn parse(contents: &str) -> Result<Scenario, String> {
 
 /// Loads a scenario and verifies any opted-in collector's exact source hash.
 pub fn load_from_env() -> Result<Option<Scenario>, String> {
-    let gate = GateConfig::from_env()?;
+    let approval = ApprovalConfig::from_env()?;
     let Some(path) = std::env::var_os("TILO_NATIVE_SCENARIO") else {
-        return if gate.is_some() {
-            Err("native input gate requires a scenario file".into())
+        return if approval.is_some() {
+            Err("native input approval requires a scenario file".into())
         } else {
             Ok(None)
         };
@@ -217,8 +217,8 @@ pub fn load_from_env() -> Result<Option<Scenario>, String> {
     let path = std::path::PathBuf::from(path);
     let contents = std::fs::read_to_string(&path)
         .map_err(|error| format!("cannot read native scenario {}: {error}", path.display()))?;
-    if let Some(gate) = gate {
-        gate.verify_source(&contents)?;
+    if let Some(approval) = approval {
+        approval.verify_source(&contents)?;
     }
     parse(&contents).map(Some)
 }
@@ -226,21 +226,25 @@ pub fn load_from_env() -> Result<Option<Scenario>, String> {
 /// Opt-in diagnostic protocol only.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct GateConfig {
+struct ApprovalConfig {
     fd: i32,
     run_nonce: String,
     scenario_sha256: String,
 }
 
-impl GateConfig {
+impl ApprovalConfig {
     fn from_env() -> Result<Option<Self>, String> {
-        let contents = match std::env::var("TILO_NATIVE_INPUT_GATE") {
+        let contents = match std::env::var("TILO_NATIVE_INPUT_APPROVAL") {
             Ok(contents) => contents,
             Err(std::env::VarError::NotPresent) => return Ok(None),
-            Err(error) => return Err(format!("invalid native input gate environment: {error}")),
+            Err(error) => {
+                return Err(format!(
+                    "invalid native input approval environment: {error}"
+                ));
+            }
         };
         let config: Self = serde_json::from_str(&contents)
-            .map_err(|error| format!("invalid native input gate configuration: {error}"))?;
+            .map_err(|error| format!("invalid native input approval configuration: {error}"))?;
         let hex = |value: &str, size| {
             value.len() == size
                 && value
@@ -248,7 +252,7 @@ impl GateConfig {
                     .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
         };
         if config.fd < 3 || !hex(&config.run_nonce, 32) || !hex(&config.scenario_sha256, 64) {
-            return Err("invalid native input gate descriptor or identity".into());
+            return Err("invalid native input approval descriptor or identity".into());
         }
         Ok(Some(config))
     }
@@ -256,7 +260,7 @@ impl GateConfig {
     fn verify_source(&self, contents: &str) -> Result<(), String> {
         use sha2::{Digest, Sha256};
         if hex::encode(Sha256::digest(contents.as_bytes())) != self.scenario_sha256 {
-            return Err("native input gate scenario byte hash mismatch".into());
+            return Err("native input approval scenario byte hash mismatch".into());
         }
         Ok(())
     }
@@ -265,7 +269,7 @@ impl GateConfig {
 #[cfg(unix)]
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
-struct GateRequest {
+struct ApprovalRequest {
     pid: u32,
     run_nonce: String,
     scenario_sha256: String,
@@ -276,50 +280,53 @@ struct GateRequest {
 #[cfg(unix)]
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct GateReply {
-    request: GateRequest,
+struct ApprovalReply {
+    request: ApprovalRequest,
     approved: bool,
 }
 
-struct InputGate {
+struct InputApproval {
     #[cfg(unix)]
     stream: std::os::unix::net::UnixStream,
-    #[cfg_attr(not(unix), allow(dead_code, reason = "the gate only opens on Unix"))]
-    config: GateConfig,
+    #[cfg_attr(
+        not(unix),
+        allow(dead_code, reason = "the approval only opens on Unix")
+    )]
+    config: ApprovalConfig,
 }
 
-impl InputGate {
+impl InputApproval {
     fn from_env(scenario: &Scenario) -> Result<Option<Self>, String> {
-        let Some(config) = GateConfig::from_env()? else {
+        let Some(config) = ApprovalConfig::from_env()? else {
             return Ok(None);
         };
         // Re-read at thread creation: the exact bytes must match the collector
         // hash, and those bytes must describe the scenario we will schedule.
         let path = std::env::var_os("TILO_NATIVE_SCENARIO")
-            .ok_or("native input gate requires a scenario file")?;
+            .ok_or("native input approval requires a scenario file")?;
         let contents = std::fs::read_to_string(path)
-            .map_err(|error| format!("cannot read gated native scenario: {error}"))?;
+            .map_err(|error| format!("cannot read approved native scenario: {error}"))?;
         config.verify_source(&contents)?;
         let loaded = parse(&contents)?;
         if serde_json::to_value(loaded).map_err(|error| error.to_string())?
             != serde_json::to_value(scenario).map_err(|error| error.to_string())?
         {
-            return Err("native input gate scenario differs from scheduling input".into());
+            return Err("native input approval scenario differs from scheduling input".into());
         }
         #[cfg(not(unix))]
         {
-            Err("native input gate requires Unix stream support".into())
+            Err("native input approval requires Unix stream support".into())
         }
         #[cfg(unix)]
         {
             use std::os::fd::{AsRawFd, FromRawFd};
             // SAFETY: fcntl validates the integer descriptor. A successful dup
-            // gives this gate a distinct owned fd; the inherited original stays
+            // gives this approval a distinct owned fd; the inherited original stays
             // owned by the caller. Drop closes only our duplicate.
             let duplicate = unsafe { libc::fcntl(config.fd, libc::F_DUPFD_CLOEXEC, 3) };
             if duplicate < 0 {
                 return Err(format!(
-                    "cannot duplicate native gate descriptor: {}",
+                    "cannot duplicate native approval descriptor: {}",
                     std::io::Error::last_os_error()
                 ));
             }
@@ -327,7 +334,7 @@ impl InputGate {
             let stream = unsafe { std::os::unix::net::UnixStream::from_raw_fd(duplicate) };
             let mut kind: libc::c_int = 0;
             let mut size = libc::socklen_t::try_from(std::mem::size_of_val(&kind))
-                .map_err(|_| "native gate socket option size overflow")?;
+                .map_err(|_| "native approval socket option size overflow")?;
             // SAFETY: kind/size are live writable outputs with the exact stated
             // size. This rejects files and datagram sockets before any traffic.
             let status = unsafe {
@@ -340,7 +347,7 @@ impl InputGate {
                 )
             };
             if status != 0 || kind != libc::SOCK_STREAM || stream.peer_addr().is_err() {
-                return Err("native gate descriptor is not a connected Unix stream".into());
+                return Err("native approval descriptor is not a connected Unix stream".into());
             }
             stream
                 .set_nonblocking(false)
@@ -349,22 +356,22 @@ impl InputGate {
         }
     }
 
-    /// The permit expires on the producer's monotonic clock. A stalled collector cannot open the gate;
+    /// The permit expires on the producer's monotonic clock. A stalled collector cannot approve;
     /// a stale reply cannot revive it. Denial or EOF revokes a pending request, but cannot retract an
     /// event already released.
     fn approve(&mut self, step_id: usize) -> Result<Instant, String> {
         #[cfg(not(unix))]
         {
             let _ = step_id;
-            Err("native input gate unsupported".into())
+            Err("native input approval unsupported".into())
         }
         #[cfg(unix)]
         {
             use std::io::{Read, Write};
             let expires = crate::time::now()
                 .checked_add(Duration::from_secs(3))
-                .ok_or("native gate deadline overflow")?;
-            let request = GateRequest {
+                .ok_or("native approval deadline overflow")?;
+            let request = ApprovalRequest {
                 pid: std::process::id(),
                 run_nonce: self.config.run_nonce.clone(),
                 scenario_sha256: self.config.scenario_sha256.clone(),
@@ -384,7 +391,7 @@ impl InputGate {
                 let remaining = expires
                     .checked_duration_since(crate::time::now())
                     .filter(|duration| !duration.is_zero())
-                    .ok_or("native gate permit timed out")?;
+                    .ok_or("native approval permit timed out")?;
                 self.stream
                     .set_read_timeout(Some(remaining))
                     .map_err(|error| error.to_string())?;
@@ -394,23 +401,23 @@ impl InputGate {
                     .read(&mut chunk)
                     .map_err(|error| error.to_string())?;
                 if count == 0 {
-                    return Err("native gate collector closed".into());
+                    return Err("native approval collector closed".into());
                 }
                 reply.extend(chunk.into_iter().take(count));
                 if reply.len() > 4096 {
-                    return Err("native gate reply too large".into());
+                    return Err("native approval reply too large".into());
                 }
                 if let Some(end) = reply.iter().position(|byte| *byte == b'\n') {
                     if end != reply.len().saturating_sub(1) {
-                        return Err("native gate has extra queued replies".into());
+                        return Err("native approval has extra queued replies".into());
                     }
                     break;
                 }
             }
-            let reply: GateReply =
+            let reply: ApprovalReply =
                 serde_json::from_slice(&reply).map_err(|error| error.to_string())?;
             if !reply.approved || reply.request != request || crate::time::now() >= expires {
-                return Err("native gate permit denied, stale, or mismatched".into());
+                return Err("native approval permit denied, stale, or mismatched".into());
             }
             Ok(expires)
         }
@@ -437,7 +444,7 @@ pub fn spawn(
     mut deliver: impl FnMut(Packet) -> bool + Send + 'static,
 ) -> Result<std::thread::JoinHandle<()>, String> {
     scenario.validate()?;
-    let mut gate = InputGate::from_env(&scenario)?;
+    let mut approval = InputApproval::from_env(&scenario)?;
     let origin = crate::time::now();
     let packets = scenario
         .steps
@@ -470,11 +477,11 @@ pub fn spawn(
                     std::thread::sleep(remaining);
                 }
                 let expires = if !matches!(packet.input, Input::Hover { .. })
-                    && let Some(gate) = gate.as_mut() {
-                    match gate.approve(packet.id) {
+                    && let Some(approval) = approval.as_mut() {
+                    match approval.approve(packet.id) {
                         Ok(expires) => Some(expires),
                         Err(error) => {
-                            log::emit_json("tilo-native-gate", serde_json::json!({
+                            log::emit_json("tilo-native-approval", serde_json::json!({
                                 "event":"denied", "step_id":packet.id, "reason":error }));
                             break;
                         }
@@ -482,7 +489,7 @@ pub fn spawn(
                 } else { None };
                 (packet.sent_at, packet.sent_host) = host_clock::sample();
                 if expires.is_some_and(|expires| crate::time::now() >= expires) {
-                    log::emit_json("tilo-native-gate", serde_json::json!({
+                    log::emit_json("tilo-native-approval", serde_json::json!({
                         "event":"denied", "step_id":packet.id, "reason":"permit expired before delivery" }));
                     break;
                 }
@@ -504,30 +511,30 @@ mod tests {
     // concurrently running tests. This is the real public load/spawn path.
     #[cfg(unix)]
     #[test]
-    fn gate_subprocess_fixture() {
-        if std::env::var_os("TILO_NATIVE_GATE_TEST_CHILD").is_none() {
+    fn approval_subprocess_fixture() {
+        if std::env::var_os("TILO_NATIVE_APPROVAL_TEST_CHILD").is_none() {
             return;
         }
         let result = load_from_env().and_then(|scenario| {
             let mut scenario = scenario.expect("fixture scenario");
-            if std::env::var("TILO_NATIVE_GATE_TEST_CHILD").as_deref()
+            if std::env::var("TILO_NATIVE_APPROVAL_TEST_CHILD").as_deref()
                 == Ok("changed-scheduling-input")
             {
                 scenario.name = "different scheduling input".into();
             }
             spawn(scenario, |packet| {
-                println!("gate-test-delivered {}", packet.id);
+                println!("approval-test-delivered {}", packet.id);
                 true
             })
         });
         match result {
             Ok(thread) => thread.join().unwrap(),
-            Err(error) => println!("gate-test-refused {error}"),
+            Err(error) => println!("approval-test-refused {error}"),
         }
     }
 
     #[cfg(unix)]
-    struct GateChild {
+    struct ApprovalChild {
         child: std::process::Child,
         socket: std::os::unix::net::UnixStream,
         output: std::path::PathBuf,
@@ -535,7 +542,7 @@ mod tests {
     }
 
     #[cfg(unix)]
-    impl GateChild {
+    impl ApprovalChild {
         fn start(interval_us: u64, mutate: impl FnOnce(&mut serde_json::Value)) -> Self {
             Self::start_mode(interval_us, mutate, "1")
         }
@@ -551,7 +558,7 @@ mod tests {
             let directory = tempfile::tempdir().unwrap();
             let path = directory.path().join("scenario.json");
             let contents = format!(
-                r#"{{"name":"gate fixture","interval_us":{interval_us},"warmup_steps":1,"steps":[{{"kind":"hover","x":1,"y":1}},{{"kind":"click","x":2,"y":2}},{{"kind":"key","key":"enter"}}]}}"#
+                r#"{{"name":"approval fixture","interval_us":{interval_us},"warmup_steps":1,"steps":[{{"kind":"hover","x":1,"y":1}},{{"kind":"click","x":2,"y":2}},{{"kind":"key","key":"enter"}}]}}"#
             );
             std::fs::write(&path, &contents).unwrap();
             let (socket, inherited) = std::os::unix::net::UnixStream::pair().unwrap();
@@ -572,12 +579,12 @@ mod tests {
             command
                 .args([
                     "--exact",
-                    "native_scenario::tests::gate_subprocess_fixture",
+                    "native_scenario::tests::approval_subprocess_fixture",
                     "--nocapture",
                 ])
-                .env("TILO_NATIVE_GATE_TEST_CHILD", mode)
+                .env("TILO_NATIVE_APPROVAL_TEST_CHILD", mode)
                 .env("TILO_NATIVE_SCENARIO", &path)
-                .env("TILO_NATIVE_INPUT_GATE", config.to_string())
+                .env("TILO_NATIVE_INPUT_APPROVAL", config.to_string())
                 .stdout(file.try_clone().unwrap())
                 .stderr(file);
             // SAFETY: in the forked child, clear CLOEXEC only on our live socket;
@@ -625,7 +632,7 @@ mod tests {
     }
 
     #[cfg(unix)]
-    impl Drop for GateChild {
+    impl Drop for ApprovalChild {
         fn drop(&mut self) {
             let _ = self.child.kill();
             let _ = self.child.wait();
@@ -636,7 +643,7 @@ mod tests {
     #[cfg(unix)]
     fn delivered_ids(output: &str) -> Vec<usize> {
         output
-            .split("gate-test-delivered ")
+            .split("approval-test-delivered ")
             .skip(1)
             .map(|rest| {
                 let end = rest
@@ -651,9 +658,9 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn gate_releases_only_exact_current_step_approvals() {
+    fn approval_releases_only_exact_current_step_approvals() {
         {
-            let mut child = GateChild::start(1_000, |_| {});
+            let mut child = ApprovalChild::start(1_000, |_| {});
             let first = child.request();
             assert_eq!(first["step_id"], 1);
             assert_eq!(first["pid"], child.child.id());
@@ -674,7 +681,7 @@ mod tests {
                 "step_id",
                 "challenge",
             ] {
-                let mut child = GateChild::start(1_000, |_| {});
+                let mut child = ApprovalChild::start(1_000, |_| {});
                 let mut request = child.request();
                 match field {
                     "run_nonce" => request[field] = "b".repeat(32).into(),
@@ -687,7 +694,7 @@ mod tests {
                 child.reply(request, field != "approved");
                 assert_eq!(delivered_ids(&child.finish()), [0], "{field}");
             }
-            let mut child = GateChild::start(1_000, |_| {});
+            let mut child = ApprovalChild::start(1_000, |_| {});
             let first = child.request();
             child.reply(first.clone(), true);
             let _second = child.request();
@@ -700,8 +707,8 @@ mod tests {
     #[test]
     fn a_stalled_collector_never_releases_the_click() {
         // The click waits on a permit the collector never writes: it expires
-        // and the producer stops instead of delivering ungated input.
-        let mut child = GateChild::start(1_000, |_| {});
+        // and the producer stops instead of delivering unapproved input.
+        let mut child = ApprovalChild::start(1_000, |_| {});
         let request = child.request();
         assert_eq!(request["step_id"], 1);
         let output = child.finish();
@@ -714,7 +721,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn gate_fails_closed_on_invalid_configuration_and_transport() {
+    fn approval_fails_closed_on_invalid_configuration_and_transport() {
         {
             for (field, value) in [
                 ("fd", serde_json::json!(-1)),
@@ -722,24 +729,24 @@ mod tests {
                 ("run_nonce", serde_json::json!("")),
                 ("scenario_sha256", serde_json::json!("0".repeat(64))),
             ] {
-                let mut child = GateChild::start(1_000, |config| config[field] = value);
+                let mut child = ApprovalChild::start(1_000, |config| config[field] = value);
                 let output = child.finish();
-                assert!(output.contains("gate-test-refused"), "{output}");
+                assert!(output.contains("approval-test-refused"), "{output}");
                 assert!(delivered_ids(&output).is_empty());
             }
         }
 
         {
-            let mut malformed = GateChild::start(1_000, |config| {
-                *config = serde_json::json!("not a gate config")
+            let mut malformed = ApprovalChild::start(1_000, |config| {
+                *config = serde_json::json!("not a approval config")
             });
             let output = malformed.finish();
-            assert!(output.contains("gate-test-refused"), "{output}");
+            assert!(output.contains("approval-test-refused"), "{output}");
             assert!(delivered_ids(&output).is_empty());
             for mode in ["non-socket", "changed-scheduling-input"] {
-                let mut child = GateChild::start_mode(1_000, |_| {}, mode);
+                let mut child = ApprovalChild::start_mode(1_000, |_| {}, mode);
                 let output = child.finish();
-                assert!(output.contains("gate-test-refused"), "{output}");
+                assert!(output.contains("approval-test-refused"), "{output}");
                 assert!(delivered_ids(&output).is_empty());
             }
         }
@@ -747,7 +754,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn closed_or_malformed_gate_never_delivers_non_hover() {
+    fn closed_or_malformed_approval_never_delivers_non_hover() {
         use std::io::Write;
         for bytes in [
             Vec::new(),
@@ -755,7 +762,7 @@ mod tests {
             vec![b'x'; 4097],
             b"{\"approved\":".to_vec(),
         ] {
-            let mut child = GateChild::start(1_000, |_| {});
+            let mut child = ApprovalChild::start(1_000, |_| {});
             let _request = child.request();
             let _ = child.socket.write_all(&bytes);
             child.socket.shutdown(std::net::Shutdown::Write).unwrap();

@@ -32,7 +32,7 @@ impl Auth for CliAuth {
             Ok(output) if output.status.success() => {
                 let people = people::parse(&String::from_utf8_lossy(&output.stdout));
                 // The moment a screen can show who signs in: the boot
-                // performance gate measures the greeter's first frame from it.
+                // performance check measures the greeter's first frame from it.
                 eprintln!("tilo-boot-signin: {} may sign in here", people.len());
                 people
             }

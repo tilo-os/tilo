@@ -110,7 +110,7 @@ test('the own desktop of a stranger under a home taking people by invitation is 
   assert.deepEqual(calls, [['enterViaHost', {workspace: commons}]]);
 });
 
-test('the own desktop opens without a peer for whom the home’s gate is open, or whom its entry just let in', async () => {
+test('the own desktop opens without a peer for whom the home’s hold is open, or whom its entry just let in', async () => {
   const own = () => rules(['own-desktop']).runtime;
   const open = entries({ownDesktopOpen: async () => true});
   assert.deepEqual(await admit({scope: {kind: 'own'}, home: commons, runtime: own(), deps: open.deps}), {peer: null});
@@ -125,7 +125,7 @@ test('the own desktop opens without a peer for whom the home’s gate is open, o
   // gesture) keeps no membership: still nothing of their own.
   const idle = entries({ownDesktopOpen: async () => false, enterViaHost: async () => ({idle: true})});
   await assert.rejects(admit({scope: {kind: 'own'}, home: commons, runtime: own(), deps: idle.deps}), {name: 'AdmissionError', code: 'no-access'});
-  // A home without an entry gates nothing.
+  // A home without an entry holds nothing.
   const bare = entries({ownDesktopOpen: async () => false});
   assert.deepEqual(await admit({scope: {kind: 'own'}, home: {name: 'Team', host: {origin: target.host}}, runtime: own(), deps: bare.deps}), {peer: null});
   assert.deepEqual(bare.calls, []);

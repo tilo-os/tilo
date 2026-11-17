@@ -1982,7 +1982,7 @@ impl GreeterApp {
         ];
         // Explicit host diagnostics must survive greetd's clean session
         // environment. Forward fixed booleans only; never forward scenarios,
-        // input gates, arbitrary environment or caller-supplied session argv.
+        // input checks, arbitrary environment or caller-supplied session argv.
         let flags = diagnostics.unwrap_or_else(|| {
             SESSION_DIAGNOSTICS.map(|(_, name)| std::env::var(name).is_ok_and(|value| value == "1"))
         });

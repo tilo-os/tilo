@@ -1,7 +1,7 @@
 //! Pairing a nearby device with the person's identity, run by the session.
 //! Discovery listens on the LAN for an unprovisioned device announcing itself (`tilo-enroll
 //! discover[-device]`) and answers what it found, with the verification code both screens show.
-//! Approval runs the polkit-gated helper (`tilo-home-peer-control approve-…`), which asks an
+//! Approval runs the polkit-guarded helper (`tilo-home-peer-control approve-…`), which asks an
 //! administrator to authenticate before it admits the device. The helper and its policy are
 //! unchanged; only their caller is the session now, so no sandboxed application starts a privileged
 //! process.

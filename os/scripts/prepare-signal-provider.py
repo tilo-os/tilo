@@ -30,7 +30,7 @@ def prepare(source, output, pin):
     old = "private static final Optional<HttpProxy> systemProxy = Optional.empty();"
     if code.count(old) != 1:
         raise ValueError("Pinned Signal proxy declaration differs")
-    code = code.replace(old, "private static final Optional<HttpProxy> systemProxy = TiloHttpProxy.nativeGate();")
+    code = code.replace(old, "private static final Optional<HttpProxy> systemProxy = TiloHttpProxy.nativeProxy();")
     destination = output / "org/asamk/signal/manager/config/LiveConfig.java"
     destination.parent.mkdir(parents=True, exist_ok=True)
     if destination.exists():

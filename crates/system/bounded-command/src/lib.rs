@@ -755,38 +755,38 @@ mod tests {
         phase stderr_observation_is_live_bounded_and_preserves_exact_capture;
         {
             let directory = tempfile::tempdir().unwrap();
-            let first_gate = directory.path().join("first-gate");
-            let second_gate = directory.path().join("second-gate");
+            let first_hold = directory.path().join("first-check");
+            let second_hold = directory.path().join("second-check");
             let mut command = Command::new("sh");
             command.args([
                 "-c",
                 "printf 'first\\n' >&2; while [ ! -f \"$1\" ]; do sleep 0.01; done; printf 'second\\n' >&2; while [ ! -f \"$2\" ]; do sleep 0.01; done; printf stdout; exit 7",
                 "owned-observer-fixture",
-            ]).arg(&first_gate).arg(&second_gate);
+            ]).arg(&first_hold).arg(&second_hold);
             let mut child =
                 spawn_prepared_observing_stderr(command, None, 4096, UNTESTED_TIMEOUT).unwrap();
             let mut observed = Vec::new();
-            for (expected, gate) in [
-                (b"first\n".as_slice(), first_gate),
-                (b"first\nsecond\n".as_slice(), second_gate),
+            for (expected, check) in [
+                (b"first\n".as_slice(), first_hold),
+                (b"first\nsecond\n".as_slice(), second_hold),
             ] {
                 tilo_test_env::wait_until("the phase's stderr", || {
                     match child.try_stderr() {
                         Some(StderrObservation::Bytes(bytes)) => observed.extend(bytes),
-                        Some(StderrObservation::Overflow) => panic!("small gated output overflowed"),
+                        Some(StderrObservation::Overflow) => panic!("small guarded output overflowed"),
                         None => {}
                     }
                     observed.len() >= expected.len()
                 });
                 assert_eq!(
                     observed, expected,
-                    "the phase is observable before its gate is released"
+                    "the phase is observable before its check is released"
                 );
                 assert!(
                     child.try_wait().is_none(),
                     "the same owned invocation is still running"
                 );
-                fs::write(gate, b"release").unwrap();
+                fs::write(check, b"release").unwrap();
             }
             let output =
                 tilo_test_env::wait_for("the owned child to complete", || child.try_wait()).unwrap();

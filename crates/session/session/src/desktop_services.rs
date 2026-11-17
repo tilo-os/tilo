@@ -153,7 +153,7 @@ impl DesktopServices {
         &self.questions
     }
 
-    /// The person's access decisions, which the portal gates its requests with: another service of
+    /// The person's access decisions, which the portal checks its requests with: another service of
     /// the session that asks about a capability asks through these, so an answer given to one
     /// stands for the other.
     #[must_use]

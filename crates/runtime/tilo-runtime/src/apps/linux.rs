@@ -70,9 +70,8 @@ pub(super) fn launch(
     }
     // The launcher waits here until the caller has recorded its pid, so it
     // can never connect before the broker could attest it.
-    let registration = launcher::registration_gate::install(&mut command).map_err(|error| {
-        format!("refusing to launch: the launcher's registration gate: {error}")
-    })?;
+    let registration = launcher::launch_hold::install(&mut command)
+        .map_err(|error| format!("refusing to launch: the launcher's launch hold: {error}"))?;
     let child = command
         .spawn()
         .map_err(|error| format!("could not start {}: {error}", launcher.display()))?;

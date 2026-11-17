@@ -10,7 +10,7 @@ use std::process::ExitCode;
 use tilo_session_record::report::{self, RenderBudgets};
 
 const USAGE: &str = "usage: tilo-session-report [-h] [--root ROOT] [--previous] [--output OUTPUT] \
-[--render-gate] [--require-direct] [--key-latency] [--render-budget-ms RENDER_BUDGET_MS] \
+[--render-check] [--require-direct] [--key-latency] [--render-budget-ms RENDER_BUDGET_MS] \
 [--frame-work-budget-ms FRAME_WORK_BUDGET_MS] [--key-budget-ms KEY_BUDGET_MS] \
 [--min-damage-limited-percent PERCENT]";
 
@@ -22,15 +22,15 @@ options:
   --root ROOT
   --previous            report the prior login
   --output OUTPUT       write private JSON instead of stdout
-  --render-gate         exit 1 unless presentation meets the render-path contract and budgets
-  --require-direct      with --render-gate: direct GPU scanout must present even if it never started
+  --render-check         exit 1 unless presentation meets the render-path contract and budgets
+  --require-direct      with --render-check: direct GPU scanout must present even if it never started
   --key-latency         print key-to-present latency of typing, per app (from KEY-LATENCY records)
   --render-budget-ms RENDER_BUDGET_MS
   --frame-work-budget-ms FRAME_WORK_BUDGET_MS
   --key-budget-ms KEY_BUDGET_MS
-                        with --render-gate: typed keys show within this at the median, per app
+                        with --render-check: typed keys show within this at the median, per app
   --min-damage-limited-percent PERCENT
-                        with --render-gate: this share of direct frames repairs only its damage
+                        with --render-check: this share of direct frames repairs only its damage
                         or scans a client out";
 
 #[allow(
@@ -41,7 +41,7 @@ struct Options {
     root: PathBuf,
     previous: bool,
     output: Option<PathBuf>,
-    render_gate: bool,
+    render_check: bool,
     require_direct: bool,
     key_latency: bool,
     render_budget_ms: i64,
@@ -73,7 +73,7 @@ fn parse(args: &[String]) -> Result<Options, ExitCode> {
         root: default_root(),
         previous: false,
         output: None,
-        render_gate: false,
+        render_check: false,
         require_direct: false,
         key_latency: false,
         render_budget_ms: 33,
@@ -123,7 +123,7 @@ fn parse(args: &[String]) -> Result<Options, ExitCode> {
                 )?);
             }
             "--previous" if inline.is_none() => options.previous = true,
-            "--render-gate" if inline.is_none() => options.render_gate = true,
+            "--render-check" if inline.is_none() => options.render_check = true,
             "--require-direct" if inline.is_none() => options.require_direct = true,
             "--key-latency" if inline.is_none() => options.key_latency = true,
             other => return Err(usage_error(&format!("unrecognized arguments: {other}"))),
@@ -164,8 +164,8 @@ fn main() -> ExitCode {
         print!("{}", report::key_latency_table(&report));
         return ExitCode::SUCCESS;
     }
-    if options.render_gate {
-        let failures = report::render_gate(
+    if options.render_check {
+        let failures = report::render_check(
             &report,
             RenderBudgets {
                 require_direct: options.require_direct,
@@ -186,22 +186,22 @@ fn main() -> ExitCode {
             )
         };
         println!(
-            "render gate: last phase summary {}",
+            "render check: last phase summary {}",
             shown(flight, "render_phase_last")
         );
         println!(
-            "render gate: last direct scanout status {}",
+            "render check: last direct scanout status {}",
             shown(flight, "direct_scanout_status_last")
         );
         println!(
-            "render gate: main-thread frame work {}",
+            "render check: main-thread frame work {}",
             shown(frames, "frame_work_us")
         );
         for failure in &failures {
-            eprintln!("render gate: FAIL {failure}");
+            eprintln!("render check: FAIL {failure}");
         }
         if failures.is_empty() {
-            println!("render gate: PASS");
+            println!("render check: PASS");
             return ExitCode::SUCCESS;
         }
         return ExitCode::FAILURE;

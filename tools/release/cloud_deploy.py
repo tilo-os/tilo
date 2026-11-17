@@ -32,7 +32,7 @@ release, and the deploy is held to every identity in it: each service's digest,
 the guest the release publishes (digest and the commit it was built from), the
 AMI, the backend and template revision, and the browser runtime release. A
 manifest of any other release is refused, and so is one whose bytes are not the
-manifest digest it names. Enabling a gated feature needs an observation of the
+manifest digest it names. Enabling a guarded feature needs an observation of the
 running release: a manifest that only observed this commit's source is refused
 unless --allow-source says the deploy is not enabling one. The manifest is kept
 beside the plan under its digest, so what a deploy was qualified by can be
@@ -554,7 +554,7 @@ def _short(revision: str | None) -> str:
     return revision[:12] if revision else "revision unknown"
 
 
-# What a qualification can rest on, strongest first. Turning on a gated feature needs an
+# What a qualification can rest on, strongest first. Turning on a guarded feature needs an
 # observation of the running release; a source-only fixture says what the code should do,
 # never what the release about to be deployed does.
 QUALIFICATION_OBSERVATIONS = ("native", "live", "source")
@@ -700,13 +700,13 @@ def guest_of(registry: Registry, revision: str, tag: str) -> str:
     return registry.image(Service("legacy-guest", GUEST_IMAGE, "", ""), tag.format(commit=revision)).digest
 
 
-def gate_qualification(qualification: Qualification, images: Mapping[str, Image],
+def check_qualification(qualification: Qualification, images: Mapping[str, Image],
                        target: Target, guest: str, allow_source: bool) -> None:
     """Hold the evidence to the release about to be deployed, and to what it rests on.
 
     A manifest qualifies the release it names and no other: every service's exact digest and
     the commit the guest was built from are compared before anything is deployed. Turning on
-    a gated feature needs an observation of the running release, so a source-only fixture
+    a guarded feature needs an observation of the running release, so a source-only fixture
     cannot get there whatever else it names.
     """
     for name in qualification.document["services"]:
@@ -725,7 +725,7 @@ def gate_qualification(qualification: Qualification, images: Mapping[str, Image]
         return
     raise PromotionError(
         f"{qualification.path}: it observed {qualification.source_revision} from source only; "
-        f"enabling a gated feature needs a {', '.join(QUALIFICATION_EVIDENCE)} observation of the release")
+        f"enabling a guarded feature needs a {', '.join(QUALIFICATION_EVIDENCE)} observation of the release")
 
 
 def write_qualification(qualification: Qualification, out: Path) -> Path:
@@ -865,7 +865,7 @@ def plan_from(args, source: Source, registry: Registry, git: Git) -> Plan:
     if args.qualification:
         qualification = load_qualification(Path(args.qualification))
         guest = guest_of(registry, plan.revision, target.tag)
-        gate_qualification(qualification, plan.images, target, guest, args.allow_source)
+        check_qualification(qualification, plan.images, target, guest, args.allow_source)
         plan = dataclasses.replace(plan, qualification=qualification)
     return plan
 
@@ -1030,7 +1030,7 @@ def parser() -> argparse.ArgumentParser:
         each.add_argument("--tag", default="sha-{commit}",
                           help="the tag a commit's images are published under (main's: dev-{commit})")
         each.add_argument("--qualification", help="the qualification manifest of the release this deploys "
-                                                  "(required to enable a gated feature)")
+                                                  "(required to enable a guarded feature)")
         each.add_argument("--allow-source", action="store_true",
                           help="accept a manifest that only observed this commit's source, not the release")
         each.add_argument("--out", help="directory for plan.json, message.txt and infra.diff")

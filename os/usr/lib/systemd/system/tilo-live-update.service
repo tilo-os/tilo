@@ -2,7 +2,7 @@
 Description=Apply the staged system update now, without a restart
 Documentation=file:///usr/share/tilo/system-extensions/README.md
 # The update service stages the newest verified image (bootc, the containers
-# policy's Cosign gate and, when armed, the owner's endorsement). This applies
+# policy's Cosign check and, when armed, the owner's endorsement). This applies
 # its changed components at once, by scope: system services restart, apps and
 # the runtime are new at their next start, and what needs the desktop
 # restarted waits for the desktop to ask (tilo-live-update-session.service).

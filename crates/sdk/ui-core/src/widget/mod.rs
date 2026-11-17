@@ -529,9 +529,9 @@ draw_child_of_dyn!(
     crate::jobs::BandApi,
 );
 
-/// What a gated, presence-publishing widget draws over itself once drawn:
+/// What a guarded, presence-publishing widget draws over itself once drawn:
 /// the denied-permission scrim, then the focus ring of the first peer on it.
-pub(crate) fn draw_gate_and_peer_focus(
+pub(crate) fn draw_permission_scrim_and_peer_focus(
     widget: &(impl Widget + ?Sized),
     scene: &mut Scene,
     transform: Affine,

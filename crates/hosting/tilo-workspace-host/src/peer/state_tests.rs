@@ -51,7 +51,7 @@ enum Side {
 
 impl Fixture {
     /// What a connection to this fixture's workspace is handled in, answering
-    /// as `side`, with every gate a test does not vary left closed.
+    /// as `side`, with every check a test does not vary left closed.
     fn ctx<'a>(
         &'a self,
         side: Side,
@@ -448,7 +448,7 @@ async fn ordered_checkpoints_reach_a_device_once_per_channel_until_rearmed() {
     fixture.drained().await;
     assert!(
         fixture.recipient_rx.try_recv().is_ok(),
-        "a large gated checkpoint obstructed the next ordered delta"
+        "a large guarded checkpoint obstructed the next ordered delta"
     );
 
     fixture
@@ -513,7 +513,7 @@ async fn the_hosts_own_checkpoint_reaches_a_device_that_took_one_this_session() 
     fixture.drained().await;
     assert!(
         fixture.recipient_rx.try_recv().is_err(),
-        "a device's own idle checkpoint is still gated"
+        "a device's own idle checkpoint is still guarded"
     );
 }
 
@@ -593,7 +593,7 @@ async fn ordered_checkpoints_remain_live_for_attached_hosts() {
     fixture.drained().await;
     assert!(
         fixture.recipient_rx.try_recv().is_ok(),
-        "an attached host's checkpoint was incorrectly gated"
+        "an attached host's checkpoint was incorrectly guarded"
     );
 }
 

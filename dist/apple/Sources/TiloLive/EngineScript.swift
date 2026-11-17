@@ -4,7 +4,7 @@ import Foundation
 /// start of every document and does nothing on another origin, so no other site's content
 /// reaches the engine through it.
 ///
-/// It tells the engine where the page stands at its site's door and when what the page shows
+/// It tells the engine where the page stands on its site's entry page and when what the page shows
 /// changed, and it hands the engine the page's own mount: the actions the page publishes and
 /// the one entry that invokes them, which is the entry the palette, agents and assistive
 /// technology use. It holds no key and reads none: the device's key stays where the page
@@ -78,7 +78,7 @@ public enum EngineScript {
       Object.defineProperty(document, 'visibilityState', {get: () => 'visible', configurable: true});
       Object.defineProperty(document, 'hidden', {get: () => false, configurable: true});
 
-      // Where the page stands at its site's door, said once per change: the page writes it on
+      // Where the page stands on its site's entry page, said once per change: the page writes it on
       // its root element (`data-entry`, `data-arrival`, `data-pairing-code`) and in its status line.
       const root = document.documentElement;
       let mount;

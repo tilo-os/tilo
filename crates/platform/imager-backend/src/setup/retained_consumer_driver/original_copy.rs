@@ -1,4 +1,4 @@
-//! Installed Copy on the existing private Shell/root request and person gate; source and output work
+//! Installed Copy on the existing private Shell/root request and person check; source and output work
 //! and importer retirement stay owned until an observed stop.
 use super::*;
 use crate::setup::{
@@ -229,7 +229,7 @@ fn run_reviewed(
         Ok(artifacts) if control_error.is_none() && !cancel.load(Ordering::Acquire) => artifacts,
         result => {
             drop(result);
-            // Shut down exactly this importer transport: its gate stop watcher cancels and joins any
+            // Shut down exactly this importer transport: its check stop watcher cancels and joins any
             // owned adoption worker before exit.
             let _ = receiver.stop_installed_copy_transport();
             drop(receiver);

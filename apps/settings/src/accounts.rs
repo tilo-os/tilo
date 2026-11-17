@@ -22,37 +22,37 @@ pub struct AccountRoot {
     explicit: Option<PathBuf>,
     person: Option<PersonAccountsResource>,
     #[cfg(test)]
-    vault_gate: VaultGate,
+    vault_hold: VaultHold,
 }
 
 #[cfg(test)]
 #[derive(Clone, Default)]
-pub struct VaultGate(Option<std::sync::Arc<dyn Fn() + Send + Sync>>);
+pub struct VaultHold(Option<std::sync::Arc<dyn Fn() + Send + Sync>>);
 
 #[cfg(test)]
-impl std::fmt::Debug for VaultGate {
+impl std::fmt::Debug for VaultHold {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("VaultGate")
+        f.write_str("VaultHold")
     }
 }
 
 /// A root is told apart by where its files live, not by what its vault
 /// waits for.
 #[cfg(test)]
-impl PartialEq for VaultGate {
+impl PartialEq for VaultHold {
     fn eq(&self, _: &Self) -> bool {
         true
     }
 }
 
 #[cfg(test)]
-impl Eq for VaultGate {}
+impl Eq for VaultHold {}
 
 #[derive(Clone)]
 pub struct VaultOpener {
     explicit: Option<PathBuf>,
     #[cfg(test)]
-    gate: VaultGate,
+    check: VaultHold,
 }
 
 impl VaultOpener {
@@ -80,17 +80,17 @@ impl VaultOpener {
     }
 
     /// About to reach the vault: never on the UI thread, and in a test only
-    /// once its gate lets it.
+    /// once its check lets it.
     #[cfg_attr(
         not(test),
-        expect(clippy::unused_self, reason = "only a test's gate is kept on it")
+        expect(clippy::unused_self, reason = "only a test's check is kept on it")
     )]
     fn reach(&self) {
         crate::device_read::off_ui_thread();
         #[cfg(test)]
         {
-            if let Some(gate) = &self.gate.0 {
-                gate();
+            if let Some(check) = &self.check.0 {
+                check();
             }
         }
     }
@@ -127,8 +127,8 @@ impl AccountRoot {
 
     #[cfg(test)]
     #[must_use]
-    pub fn with_vault_gate(mut self, gate: impl Fn() + Send + Sync + 'static) -> Self {
-        self.vault_gate = VaultGate(Some(std::sync::Arc::new(gate)));
+    pub fn with_vault_hold(mut self, check: impl Fn() + Send + Sync + 'static) -> Self {
+        self.vault_hold = VaultHold(Some(std::sync::Arc::new(check)));
         self
     }
 
@@ -380,7 +380,7 @@ impl AccountRoot {
         VaultOpener {
             explicit: self.explicit.clone(),
             #[cfg(test)]
-            gate: self.vault_gate.clone(),
+            check: self.vault_hold.clone(),
         }
     }
 

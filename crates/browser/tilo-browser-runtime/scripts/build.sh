@@ -12,7 +12,7 @@
 #                       the Typst editor's fonts), with sizes and hashes
 #   build.json          revision, tools, profile and output hashes
 #
-# usage: build.sh OUTPUT_DIR [--profile release|assert|gate|local|dev|quick] [--[no-]wasm-opt] [--names]
+# usage: build.sh OUTPUT_DIR [--profile release|assert|check|local|dev|quick] [--[no-]wasm-opt] [--names]
 #                 [--bundle runtime|desktop] [--no-split] [--update]
 #                 [--wasm-only | --wasm-from WASM_DIR] [--wasm-steps auto|builder|local]
 # `--profile release` compiles with Cargo's `wasm-release` profile and runs
@@ -23,15 +23,15 @@
 # is the development loop's: Cargo's `wasm-dev` profile (no debug
 # information, light optimisation), whose much smaller module wasm-bindgen
 # and the splitter get through in half the time, and no wasm-opt.
-# `gate` (desktop bundle only) is `release` without its whole-program link
+# `check` (desktop bundle only) is `release` without its whole-program link
 # (Cargo's `wasm-split-gate`, as `lounge-gate` is to the native release): the
 # same opt-level, split and wasm-opt, so a change to one app compiles that app
 # and relinks rather than running fat LTO over every app in one codegen unit.
-# The web-desktop-gate-bundle check builds it; what ships stays `release`.
+# The web-desktop-check-bundle check builds it; what ships stays `release`.
 # `local` (desktop bundle only) is the local tilo.sh stack's
-# (os/containers/tilo-sh/stack.sh): `gate`'s code, compiled incrementally
+# (os/containers/tilo-sh/stack.sh): `check`'s code, compiled incrementally
 # (Cargo's `wasm-split-local`) in a build directory that stays, split as
-# `gate` is, and not wasm-opt'd unless `--wasm-opt`. It takes `--update`, so
+# `check` is, and not wasm-opt'd unless `--wasm-opt`. It takes `--update`, so
 # a module that did not change is neither bound nor split again, a split
 # keeps the modules whose content did not change (split.sh), and a change to
 # bodies alone patches the previous bind instead of binding every body again
@@ -90,7 +90,7 @@ set -euo pipefail
 
 crate=$(cd "$(dirname "$0")/.." && pwd)
 repo=$(cd "$crate/../../.." && pwd)
-usage='usage: build.sh OUTPUT_DIR [--profile release|assert|gate|local|dev|quick] [--[no-]wasm-opt] [--names] [--bundle runtime|desktop|app] [--manifest-path FILE --apps-json FILE] [--no-split] [--update] [--wasm-only | --wasm-from WASM_DIR] [--module-only] [--wasm-steps auto|builder|local]'
+usage='usage: build.sh OUTPUT_DIR [--profile release|assert|check|local|dev|quick] [--[no-]wasm-opt] [--names] [--bundle runtime|desktop|app] [--manifest-path FILE --apps-json FILE] [--no-split] [--update] [--wasm-only | --wasm-from WASM_DIR] [--module-only] [--wasm-steps auto|builder|local]'
 out=${1:?$usage}
 shift
 profile=release
@@ -141,8 +141,8 @@ case "$profile" in
   assert) defines_profile wasm-assert || {
     echo "--profile assert needs a workspace that declares [profile.wasm-assert], as this repository's does" >&2; exit 2; }
     cargo_profile=wasm-assert optimize=${optimize:-1} ;;
-  gate) defines_profile wasm-split-gate || {
-    echo "--profile gate needs a workspace that declares [profile.wasm-split-gate], as this repository's does" >&2; exit 2; }
+  check) defines_profile wasm-split-gate || {
+    echo "--profile check needs a workspace that declares [profile.wasm-split-gate], as this repository's does" >&2; exit 2; }
     cargo_profile=wasm-split-gate optimize=${optimize:-1} ;;
   local) defines_profile wasm-split-local || {
     echo "--profile local needs a workspace that declares [profile.wasm-split-local], as this repository's does" >&2; exit 2; }
@@ -151,9 +151,9 @@ case "$profile" in
   quick) if defines_profile wasm-dev; then cargo_profile=wasm-dev; else cargo_profile=dev; fi; optimize=${optimize:-0} ;;
   *) echo "unsupported profile: $profile" >&2; exit 2 ;;
 esac
-# A release, qualification or gate bundle is always built whole from source
+# A release, qualification or check bundle is always built whole from source
 # and split: what ships, and what is measured.
-[[ $profile != release && $profile != assert && $profile != gate || ( $split == 1 && $update == 0 ) ]] || {
+[[ $profile != release && $profile != assert && $profile != check || ( $split == 1 && $update == 0 ) ]] || {
   echo '--no-split and --update are for dev, quick and local bundles' >&2; exit 2;
 }
 [[ $wasm_only == 0 || -z $wasm_from ]] || { echo '--wasm-only and --wasm-from exclude each other' >&2; exit 2; }
@@ -167,7 +167,7 @@ esac
 # The runtime bundle's profile strips the symbols at link time; the desktop's
 # keeps them for its splitter.
 [[ $names == 0 || $bundle == desktop ]] || { echo '--names is for the desktop bundle' >&2; exit 2; }
-[[ $profile != gate && $profile != local || $bundle == desktop ]] || { echo "--profile $profile is for the desktop bundle" >&2; exit 2; }
+[[ $profile != check && $profile != local || $bundle == desktop ]] || { echo "--profile $profile is for the desktop bundle" >&2; exit 2; }
 # The local stack's bundle loads its apps as the shipped one does.
 [[ $profile != local || $split == 1 ]] || { echo '--no-split is for dev and quick bundles' >&2; exit 2; }
 case "$bundle" in
@@ -406,7 +406,7 @@ else
   if [[ -d "$out/pkg/compute" ]]; then mv "$out/pkg/compute" "$next/compute"; fi
   # A release or qualification bundle ships exactly what it was built from; no
   # stamp.
-  if [[ $profile != release && $profile != assert && $profile != gate && -n "$made_from" ]]; then printf '%s\n' "$made_from" > "$next/.made-from"; fi
+  if [[ $profile != release && $profile != assert && $profile != check && -n "$made_from" ]]; then printf '%s\n' "$made_from" > "$next/.made-from"; fi
   rm -rf "$out/pkg"
   mv "$next" "$out/pkg"
 fi
@@ -434,7 +434,7 @@ shipped = {p.name for p in pathlib.Path(sys.argv[2]).iterdir() if p.suffix in ('
 assert wanted == shipped, f'tilo_typst_fonts::HOST_FONTS and typst-assets differ: {sorted(wanted ^ shipped)}'
 PY
 fi
-# What the app SDK's own web build passes wasm-opt, so the module a size gate
+# What the app SDK's own web build passes wasm-opt, so the module a size check
 # measures is the module the site serves (tools/web/wasm-opt-flags).
 wasm_opt_flags=$(grep -v '^[[:space:]]*#' "$repo/tools/web/wasm-opt-flags" | xargs)
 # With --names, the same passes, writing the name section the splitter keeps
@@ -456,10 +456,10 @@ compute_opt=--no-wasm-opt
 [[ $optimize == 1 ]] && compute_opt=--wasm-opt
 if [[ $module_only == 0 ]] && ! kept pkg/compute; then
   # The same profile the page module is built in.
-  # A gate or local bundle's compute module is the release one: it is small,
+  # A check or local bundle's compute module is the release one: it is small,
   # and separate from the page's module those profiles are about.
   local compute_profile=$profile
-  [[ $profile != gate && $profile != local ]] || compute_profile=release
+  [[ $profile != check && $profile != local ]] || compute_profile=release
   began=$SECONDS
   bash "$repo/crates/browser/tilo-browser-compute/scripts/build.sh" "$out" --profile "$compute_profile" "$compute_opt" --module-only
   took 'compute module' "$began"
