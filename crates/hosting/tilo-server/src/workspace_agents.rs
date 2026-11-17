@@ -67,6 +67,7 @@ use turn_provider::TurnProvider;
 mod answers;
 mod asks;
 mod going;
+mod issue_work;
 mod learned;
 mod mail;
 mod sub_agents;
@@ -663,7 +664,10 @@ impl HostAgents {
                     let workspace = workspace.to_owned();
                     tokio::spawn(async move {
                         let agent = turn.agent.id.0.clone();
-                        let (ended_on, ended) = agents.answer_going(&workspace, &turn, &held).await;
+                        // Boxed, as in `answer`: the task holds a pointer to the turn and
+                        // carries none of it in a future of its own.
+                        let (ended_on, ended) =
+                            Box::pin(agents.answer_going(&workspace, &turn, &held)).await;
                         if let Err(error) = ended {
                             tracing::warn!(%workspace, %agent, %error, "a host agent's turn did not finish");
                         }
@@ -700,9 +704,22 @@ impl HostAgents {
         Ok(Box::pin(self.asks(workspace)).await?.turns)
     }
 
+    /// [`Self::turns`] at `now_ms`: an issue whose wait was to end by then is owed a turn again.
+    ///
+    /// # Errors
+    /// A document could not be read.
+    pub async fn turns_at(&self, workspace: &str, now_ms: i64) -> Result<Vec<Turn>, String> {
+        Ok(Box::pin(self.asks_at(workspace, now_ms)).await?.turns)
+    }
+
     /// What `workspace`'s records ask of the agents its host runs: the turns they owe, and the
     /// turns a person stopped whose work is not ended yet.
     async fn asks(&self, workspace: &str) -> Result<Asks, String> {
+        self.asks_at(workspace, tilo_clock::unix_now_ms_i64()).await
+    }
+
+    /// [`Self::asks`] at `now_ms`.
+    async fn asks_at(&self, workspace: &str, now_ms: i64) -> Result<Asks, String> {
         let agents = self.agents(workspace).await?;
         if agents.is_empty() {
             self.workspaces.note_waiting(workspace, Vec::new());
@@ -714,8 +731,10 @@ impl HostAgents {
             .await
             .map_err(|error| error.to_string())?;
         let mut asks = self.chat_asks(workspace, &agents, &routes).await?;
-        asks.turns
-            .extend(self.issue_turns(workspace, &agents, &routes).await?);
+        asks.turns.extend(
+            self.issue_turns(workspace, &agents, &routes, now_ms)
+                .await?,
+        );
         Ok(asks)
     }
 
@@ -826,12 +845,14 @@ impl HostAgents {
         Ok(asks)
     }
 
-    /// The turns `workspace`'s issues owe `agents`.
+    /// The turns `workspace`'s issues owe `agents` at `now_ms`: an issue that waits is owed one
+    /// again once the latest moment its wait ends has come.
     async fn issue_turns(
         &self,
         workspace: &str,
         agents: &BTreeMap<String, Agent>,
         routes: &[(String, String)],
+        now_ms: i64,
     ) -> Result<Vec<Turn>, String> {
         let mut turns = Vec::new();
         for (app, record) in routes {
@@ -848,14 +869,14 @@ impl HostAgents {
             else {
                 continue;
             };
-            for ask in tasks_model::agent_asks(part.issues.iter()) {
+            for ask in tasks_model::agent_asks_at(part.issues.iter(), now_ms) {
                 let Some(agent) = agents.get(&ask.agent) else {
                     continue;
                 };
                 let Some(issue) = part.issues.get(&ask.issue) else {
                     continue;
                 };
-                let request = issue_request(issue, &ask);
+                let request = issue_work::asked(issue, &ask);
                 turns.push(Turn {
                     agent: agent.clone(),
                     person: ask.person.person_id().unwrap_or_default().to_owned(),
@@ -1013,6 +1034,17 @@ impl HostAgents {
             self.sub_ended(&scope, &turn, &left, false).await;
             return (turn.ask, ended);
         }
+        // An issue is worked on over many agent sessions: its place is made and the session
+        // counted before the model is asked, and one that may not begin ends here with its
+        // plain line.
+        let task = match self.issue_session(workspace, &mut turn, &reply).await {
+            Ok(task) => task,
+            Err(words) => {
+                let ended = reply.finished(&Outcome::Stopped(words)).await;
+                return (turn.ask, ended);
+            }
+        };
+        let clock = Instant::now();
         reply.taken().await;
         self.sub_began(workspace, &turn).await;
         let from_starter = turn.line.as_ref().is_some_and(|line| line.from_starter);
@@ -1039,10 +1071,20 @@ impl HostAgents {
             ),
             (Err(why), _) => (Outcome::Failed(why), 0),
             (Ok(model), _) => {
-                let budget = limit.map(|limit| limit.saturating_sub(spent_before));
+                // The day's limit and the issue's own budget both bound the turn: the smaller.
+                let day_left = limit.map(|limit| limit.saturating_sub(spent_before));
+                let task_left = task.as_ref().and_then(|(_, before)| before.money_left());
+                let budget = match (day_left, task_left) {
+                    (Some(day), Some(task)) => Some(day.min(task)),
+                    (day, task) => day.or(task),
+                };
                 let keeping = keeping.as_ref();
                 work(model, &scope, &mut turn, budget, &mut reply, going, keeping).await
             }
+        };
+        let outcome = match &task {
+            Some((task, before)) => task.ended_as(outcome, cost, clock.elapsed(), before).await,
+            None => outcome,
         };
         if cost > 0 {
             self.charge(workspace, sub_agents::payer(&turn), &day, cost)
@@ -1073,6 +1115,60 @@ impl HostAgents {
         }
         self.sub_ended(&scope, &turn, &outcome, from_starter).await;
         (turn.ask, ended)
+    }
+
+    /// Begin an agent session on the issue `turn` asks about: its place is made when it has
+    /// none, the session is said to have begun, and `turn` is told where the issue's working
+    /// material is and what its note reads now. The issue's work as it read before the session;
+    /// none for a turn that is no issue's, or whose issue is gone.
+    ///
+    /// # Errors
+    /// No session may begin (its budget is used up, or its sessions were lost too often): the
+    /// plain line, which is written on the issue as its stop.
+    async fn issue_session(
+        &self,
+        workspace: &str,
+        turn: &mut Turn,
+        reply: &Reply,
+    ) -> Result<Option<(issue_work::IssueWork, tasks_model::Work)>, String> {
+        let (document, issue) = match &turn.ask {
+            Ask::Issue {
+                record: document,
+                issue,
+                ..
+            } => (document.clone(), issue.clone()),
+            Ask::Message { .. } => return Ok(None),
+        };
+        let id = tilo_resource::Id::from_raw(issue.clone());
+        // Only what a session needs of the issue is taken from its document: an issue's rich
+        // text does not travel between threads, and this turn does.
+        let kept = self
+            .read::<tasks::part::IssuePart>(workspace, TASKS, &document)
+            .await
+            .ok()
+            .flatten()
+            .and_then(|part| part.issues.get(&id).map(issue_work::Kept::of));
+        let Some(kept) = kept else {
+            return Ok(None);
+        };
+        let task = issue_work::IssueWork {
+            service: reply.provider.clone(),
+            caller: reply.caller.clone(),
+            workspace: workspace.to_owned(),
+            document,
+            issue,
+        };
+        if let Some((why, words)) = issue_work::refused(kept.work.as_ref()) {
+            task.stopped(why, &words).await;
+            return Err(words);
+        }
+        let place = task.place(&self.workspaces, &kept).await;
+        if let Err(error) = task.began().await {
+            tracing::warn!(%workspace, issue = %task.issue, %error, "a session on an issue is not said to have begun");
+        }
+        let before = kept.work.unwrap_or_default();
+        turn.request = issue_work::with_place(&turn.request, &before, &place);
+        Ok(Some((task, before)))
     }
 
     /// The model `turn` is worked with, or why none works on it, in words its person reads.
@@ -1623,30 +1719,6 @@ async fn list_agent(
         .map_err(|error| error.to_string())
 }
 
-/// What an agent is told of the issue `ask` gives it.
-fn issue_request(issue: &tasks_model::Issue, ask: &tasks_model::IssueAsk) -> String {
-    let mut request = format!(
-        "Issue #{} \"{}\" in Tasks (`{}`) is assigned to you.",
-        issue.number,
-        issue.title,
-        tasks_model::issue_resource(&ask.issue)
-    );
-    let body = issue.body.text();
-    if !body.trim().is_empty() {
-        request.push_str("\n\nIts description:\n");
-        request.push_str(body.trim());
-    }
-    if !ask.words.trim().is_empty() {
-        request.push_str("\n\nThe newest comment for you:\n");
-        request.push_str(ask.words.trim());
-    }
-    request.push_str(
-        "\n\nDo the work it asks through the workspace's apps. Move the issue to In \
-         progress when you start and to In review when the work is done.",
-    );
-    request
-}
-
 /// Invoke `action` on `resource` of the record at `route` as `caller`, and wait for it to end.
 ///
 /// # Errors
@@ -1659,16 +1731,30 @@ pub async fn invoke_named(
     action: &str,
     arguments: Map<String, Value>,
 ) -> Result<Value, String> {
+    let target = RemoteActionTarget {
+        provider: record_provider(route),
+        address: ActionAddress {
+            resource: resource.to_owned(),
+            action: action.to_owned(),
+        },
+    };
+    invoke_at(provider, caller, target, InvokeArgument::Json(arguments)).await
+}
+
+/// Invoke `target` with `argument` as `caller`, and wait for it to end.
+///
+/// # Errors
+/// The action was refused or failed, or it did not end in time.
+async fn invoke_at(
+    provider: &WorkspaceActionProvider,
+    caller: &Caller,
+    target: RemoteActionTarget,
+    argument: InvokeArgument,
+) -> Result<Value, String> {
     let request = InvokeRequest {
         invocation: InvocationId::new(),
-        target: RemoteActionTarget {
-            provider: record_provider(route),
-            address: ActionAddress {
-                resource: resource.to_owned(),
-                action: action.to_owned(),
-            },
-        },
-        argument: InvokeArgument::Json(arguments),
+        target,
+        argument,
         context: None,
         confirmation: None,
         revision: None,
