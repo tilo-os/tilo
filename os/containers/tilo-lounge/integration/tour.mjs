@@ -377,6 +377,24 @@ const tour = async ({name, width, height, mobile = false, scheme = 'light'}) => 
     await step('settings', async () => { await search('settings', 1); await quiet(); await shoot('settings'); });
   // The person's devices and the agents acting for them, found by name.
   await step('devices-access', async () => { await search('devices and access'); await shoot('search-devices-access'); await opened(); await quiet(); await shoot('devices-access'); });
+  // Its two buttons bring another device or an agent in. Each asks the shell, and the page shows
+  // its own sheet: the pairing link with its code, and the setup an agent runs.
+  const sheet = async (button, shown, label) => {
+    if (!await press(button)) throw new Error(`no “${button}” to press on Devices and access`);
+    await tab.waitFor(shown, {timeout: 60_000});
+    await quiet();
+    await shoot(label);
+    // Away again, as its own Close takes it, so the next press reaches the page.
+    await tab.evaluate(`for (const card of document.querySelectorAll('.tilo-entry-card')) {
+      const close = [...card.querySelectorAll('button')].find(b => /^(Close|Done)$/.test(b.textContent.trim()));
+      if (close) close.click(); else card.remove();
+    }`).catch(() => {});
+    await quiet(300);
+  };
+  await step('add-a-device', () => sheet('Add a device',
+    `!!document.querySelector('[data-card="pair-link"] input[name="pairing-link"]')?.value`, 'add-a-device'));
+  await step('connect-an-agent', () => sheet('Connect an agent or computer',
+    `[...document.querySelectorAll('.tilo-entry-card')].some(card => card.dataset.card !== 'pair-link')`, 'connect-an-agent'));
     await step('chat', async () => { await search('chat', 1); await quiet(); await shoot('chat'); });
     await tab.close().catch(() => {});
     return;
