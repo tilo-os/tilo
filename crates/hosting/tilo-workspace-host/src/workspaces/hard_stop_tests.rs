@@ -5,7 +5,7 @@
     clippy::significant_drop_tightening,
     reason = "the server and the owner's record handle are this test's subject until its last assertion"
 )]
-use super::tests::{governor, test_host};
+use super::tests::{governor, test_host as test_server};
 use super::*;
 
 /// `published` as the workspace's file on disk holds it now: what a start after
@@ -25,7 +25,7 @@ fn published_on_disk(path: &Path) -> usize {
 async fn a_workspace_file_counts_only_durable_changes_as_published() {
     let dir = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
-    let server = test_host(dir.path(), &key, &cert).await;
+    let server = test_server(dir.path(), &key, &cert).await;
     let workspaces = server.workspaces().clone();
     let created = workspaces.create("Public").await.unwrap();
     let records = workspaces.inner.host.records.clone();

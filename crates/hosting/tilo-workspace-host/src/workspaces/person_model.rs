@@ -416,9 +416,56 @@ impl Workspaces {
             models: Arc::clone(&self.inner.models),
             root: self.person_settings_root(&person),
             kind,
+            named: None,
             workspace: None,
             spenders: Vec::new(),
         }
+    }
+
+    /// Whether `person`'s settings on this server hold what `named` names as
+    /// provider/model ([`PersonModel::naming`]): what a skill may name as the
+    /// model its work is done with. It reads the person's settings from disk,
+    /// so an asynchronous caller asks it off the runtime's workers.
+    ///
+    /// # Errors
+    /// Nothing the person linked here is named so. The words say what they
+    /// linked, each provider by its name with the models it offers, and never
+    /// a key.
+    pub fn person_links_model(&self, person: &[u8; 32], named: &str) -> Result<(), String> {
+        let root = self.person_settings_root(person);
+        let linked: Vec<String> = if root.is_dir() {
+            let config = provider_config(&root);
+            if named_selection(&config, named).is_some() {
+                return Ok(());
+            }
+            config
+                .profiles
+                .iter()
+                .filter(|profile| profile.enabled)
+                .map(|profile| {
+                    let offered: Vec<&str> = profile
+                        .models
+                        .iter()
+                        .map(|model| model.id.as_str())
+                        .collect();
+                    format!("{} ({})", profile.display_label(), offered.join(", "))
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+        Err(if linked.is_empty() {
+            format!(
+                "{named:?} names no model: the person linked no provider on this server. \
+                 Leave the model out."
+            )
+        } else {
+            format!(
+                "{named:?} names no model the person linked on this server. Name one as \
+                 provider/model from: {}.",
+                linked.join("; ")
+            )
+        })
     }
 
     /// Let this host's people name providers at addresses off the public
@@ -447,6 +494,9 @@ pub struct PersonModel {
     /// The person's own store on this host.
     root: PathBuf,
     kind: Interaction,
+    /// The model its caller names in place of the person's choice for the
+    /// kind, as provider/model ([`Self::naming`]).
+    named: Option<String>,
     /// The workspace the work is in, when its caller said.
     workspace: Option<WorkspaceId>,
     /// Whose days the calls spend: an agent's, and that of any piece of its
@@ -467,6 +517,24 @@ impl PersonModel {
     #[must_use]
     pub const fn kind(&self) -> Interaction {
         self.kind
+    }
+
+    /// This model, asked with the model `named` names in place of the
+    /// person's choice for the kind: `provider/model`, the provider by its id
+    /// in the person's settings on this server or by the name they gave it,
+    /// whatever the case. It answers only where those settings hold that
+    /// provider, switched on, and it offers that model, so the person's own
+    /// key pays either way. A name that names nothing here changes nothing
+    /// and the choice for the kind answers as before: an agent's model chosen
+    /// on a device of its keeper names a provider of that device's settings,
+    /// which this server may not hold.
+    #[must_use]
+    pub fn naming(mut self, named: Option<&str>) -> Self {
+        self.named = named
+            .map(str::trim)
+            .filter(|named| !named.is_empty())
+            .map(str::to_owned);
+        self
     }
 
     /// This model, asked for work in `workspace`: where what a request
@@ -639,7 +707,7 @@ impl PersonModel {
     fn resolve(&self) -> Result<Resolved, ModelRefusal> {
         resolve(
             &self.root,
-            self.kind,
+            (self.kind, self.named.as_deref()),
             self.models.private_addresses.load(Ordering::Acquire),
             &*self.provider(),
         )
@@ -704,12 +772,31 @@ impl Resolved {
     }
 }
 
+/// The provider and model `named` names in `config`, as provider/model: the
+/// provider by its id or else by the name the person gave it, whatever the
+/// case, switched on, and a model it offers. A model's own name may hold a
+/// slash; a provider is named up to the first.
+fn named_selection<'a>(
+    config: &'a agent_provider_config::ProviderConfig,
+    named: &str,
+) -> Option<(&'a ProviderProfile, &'a ModelDescriptor)> {
+    let (provider, model) = named.trim().split_once('/')?;
+    let (provider, model) = (provider.trim(), model.trim());
+    let on = || config.profiles.iter().filter(|profile| profile.enabled);
+    let profile = on()
+        .find(|profile| profile.id == provider)
+        .or_else(|| on().find(|profile| profile.display_label().eq_ignore_ascii_case(provider)))?;
+    let model = profile.models.iter().find(|offered| offered.id == model)?;
+    Some((profile, model))
+}
+
 /// What the person whose store is `root` chose for `kind`, with its key:
-/// the model chosen for the kind, else their default provider's default
-/// model.
+/// the model `named` names where their settings hold it
+/// ([`PersonModel::naming`]), else the model chosen for the kind, else their
+/// default provider's default model.
 fn resolve(
     root: &Path,
-    kind: Interaction,
+    (kind, named): (Interaction, Option<&str>),
     private_addresses: bool,
     provider: &dyn ModelProvider,
 ) -> Result<Resolved, ModelRefusal> {
@@ -719,8 +806,10 @@ fn resolve(
         return Err(ModelRefusal::NoModelLinked { kind });
     }
     let config = provider_config(root);
-    let (profile, model) = match config.interaction_models.get(kind.id()) {
-        Some(chosen) => {
+    let named = named.and_then(|named| named_selection(&config, named));
+    let (profile, model) = match (named, config.interaction_models.get(kind.id())) {
+        (Some(named), _) => named,
+        (None, Some(chosen)) => {
             config
                 .interaction_selection(kind)
                 .ok_or_else(|| ModelRefusal::ChoiceUnusable {
@@ -734,7 +823,7 @@ fn resolve(
                     model: chosen.model.clone(),
                 })?
         }
-        None => config
+        (None, None) => config
             .active_profile()
             .and_then(|profile| {
                 let default = profile.default_model.as_ref()?;
