@@ -61,10 +61,15 @@ the machinery `tilo device swap` uses on a development machine:
    marks the update failed; it then applies with the next restart of the
    machine, which the session asks for.
 
-The state the session reads is `/run/tilo/live-update/state.json`. Layers
-last until the next boot, which boots the staged deployment that holds them
-all; every boot deletes them, and every apply rebuilds its layer from the
-mounted image.
+The state the session reads is `/run/tilo/live-update/state.json`. A layer is
+immutable once merged, and every apply builds a fresh one from the mounted
+image instead of rewriting one. A layer is removed as soon as nothing mounts it
+any more: an app started before the update keeps the merged `/usr` it started
+with in its own mount namespace, and that mount still reads the layer, so the
+apply keeps it. It goes when the sandbox view built over it is retired, when
+the last app that bound the system profile per path exits, or at the latest
+with the next apply. Every boot deletes them all, because it boots the staged
+deployment that holds them.
 
 ## One version per interface
 

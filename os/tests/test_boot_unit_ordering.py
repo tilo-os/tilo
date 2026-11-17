@@ -252,8 +252,8 @@ class BootOrdering(unittest.TestCase):
         # boot the two conditions above remain the whole early return.
         self.assertIn("    if !wanted && !live_linked && !live_was_merged {\n        return Ok(0);\n", helper)
         live = (REPO / "crates/system/extension-helper/src/live.rs").read_text()
-        self.assertIn('    layout.at("/run/extensions").join(LIVE_NAME)\n', live)
         self.assertIn('    layout.at("/run/tilo/live-update/merged")\n', live)
+        self.assertIn('    let dir = layout.at("/run/extensions");\n', live)
 
     def test_nothing_before_tmpfiles_setup_is_ordered_after_it(self):
         after = after_graph(shipped_units())

@@ -1238,7 +1238,7 @@ fn foreign_extensions(layout: &Layout, ours: &BTreeSet<String>) -> Result<Vec<St
                 && entry.is_file();
             // The live update's layer, linked from /run where only it links, to where only
             // it builds layers from the verified stage.
-            if entry == crate::live::link(layout) && crate::live::linked(layout) {
+            if crate::live::is_link(layout, &entry) {
                 continue;
             }
             if directory == extensions
@@ -1733,10 +1733,6 @@ pub fn main(host: &dyn Host, layout: &Layout, argv: &[String]) -> i32 {
     }
     rustix::process::umask(rustix::fs::Mode::from_raw_mode(0o022));
     if verb == "live" {
-        let Some(phase) = crate::live::Phase::parse(&ident) else {
-            eprintln!("tilo-extension: unknown live phase {ident}");
-            return 2;
-        };
         let lock = match locked(layout, crate::live::LIVE_NAME) {
             Ok(lock) => lock,
             Err(error) => {
@@ -1744,11 +1740,19 @@ pub fn main(host: &dyn Host, layout: &Layout, argv: &[String]) -> i32 {
                 return 1;
             }
         };
-        let code = match crate::live::apply(host, &crate::System, layout, phase) {
-            Ok(code) => code,
-            Err(error) => {
-                eprintln!("tilo-extension: live update: {error}");
-                1
+        let code = if ident == "prune" {
+            crate::live::prune(&crate::System, layout)
+        } else {
+            let Some(phase) = crate::live::Phase::parse(&ident) else {
+                eprintln!("tilo-extension: unknown live phase {ident}");
+                return 2;
+            };
+            match crate::live::apply(host, &crate::System, layout, phase) {
+                Ok(code) => code,
+                Err(error) => {
+                    eprintln!("tilo-extension: live update: {error}");
+                    1
+                }
             }
         };
         drop(lock);

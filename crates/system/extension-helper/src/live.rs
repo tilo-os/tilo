@@ -6,7 +6,8 @@
 //! a developer's `tilo-vm swap` uses: one system extension over `/usr` and the
 //! restarts each component's scope asks for. `live:system` applies what needs no
 //! desktop restart, `live:session` applies the rest and restarts the desktops in
-//! place, and `live:status` prints the state the desktop reads.
+//! place, `live:prune` removes the layers nothing mounts any more, and
+//! `live:status` prints the state the desktop reads.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::{OsStr, OsString};
@@ -46,8 +47,37 @@ const BOOT_PREFIXES: [&str; 7] = [
 const NEXT_BOOT_PREFIXES: [&str; 3] =
     ["/usr/etc/", "/usr/lib/sysimage/rpm/", "/usr/lib/os-release"];
 
-pub fn link(layout: &Layout) -> PathBuf {
-    layout.at("/run/extensions").join(LIVE_NAME)
+/// The links that put our layers in the sysext search path.
+///
+/// Every layer is linked under its own name, so the superblock options of any mount that still
+/// reads an older merge keep naming the layer it reads (see [`layer_in_use`]).
+pub fn links(layout: &Layout) -> Vec<PathBuf> {
+    let dir = layout.at("/run/extensions");
+    let Ok(entries) = fs::read_dir(&dir) else {
+        return Vec::new();
+    };
+    let mut links: Vec<PathBuf> = entries
+        .flatten()
+        .filter(|entry| {
+            entry
+                .file_name()
+                .to_str()
+                .is_some_and(|name| !name.starts_with('.'))
+        })
+        .map(|entry| entry.path())
+        .filter(|path| is_link(layout, path))
+        .collect();
+    links.sort();
+    links
+}
+
+/// Whether `path` is one of our layers' links.
+pub fn is_link(layout: &Layout, path: &Path) -> bool {
+    fs::read_link(path).is_ok_and(|target| target.starts_with(layers(layout)))
+}
+
+pub fn link(layout: &Layout) -> Option<PathBuf> {
+    links(layout).into_iter().next()
 }
 
 pub fn layers(layout: &Layout) -> PathBuf {
@@ -67,9 +97,7 @@ fn mounts(layout: &Layout) -> PathBuf {
 }
 
 pub fn linked(layout: &Layout) -> bool {
-    let link = link(layout);
-    fs::symlink_metadata(&link).is_ok_and(|meta| meta.file_type().is_symlink())
-        && fs::read_link(&link).is_ok_and(|target| target.starts_with(layers(layout)))
+    !links(layout).is_empty()
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -201,7 +229,7 @@ fn apply_from(
     let components = Components::parse(&manifest)?;
     let changes = diff(base_root, new_root).os()?;
     let mut plan = Plan::new(changes, &components);
-    let before = fs::read_link(link(layout)).ok();
+    let before = link(layout).and_then(|link| fs::read_link(link).ok());
     if let Some(previous) = before.as_deref().filter(|previous| previous.is_dir()) {
         plan.settle(
             &components,
@@ -214,8 +242,15 @@ fn apply_from(
         )?;
     }
     let name = layer_name(staged.image(), phase);
-    let layer = layers(layout).join(&name);
-    build_layer(host, live, &plan, phase, new_root, &layer, staged.image())?;
+    let layer = build_layer(
+        host,
+        live,
+        &plan,
+        phase,
+        new_root,
+        &layers(layout).join(name),
+        staged.image(),
+    )?;
     swap_link(layout, &layer)?;
     let mut state = State {
         image: staged.image().to_owned(),
@@ -248,7 +283,7 @@ fn apply_from(
     live.start_no_block(SANDBOX_VIEW_UNIT);
     match outcome {
         Ok(()) => {
-            prune_layers(layout, &layer);
+            prune_layers(live, layout, std::slice::from_ref(&layer));
             write_state(layout, &state)?;
             Ok(0)
         }
@@ -911,7 +946,10 @@ fn layer_paths(layer: &Path) -> io::Result<Vec<String>> {
         }
         Ok(())
     }
-    let release = format!("/usr/lib/extension-release.d/extension-release.{LIVE_NAME}");
+    let release = format!(
+        "/usr/lib/extension-release.d/extension-release.{}",
+        extension_name(layer)
+    );
     let mut out = Vec::new();
     let usr = layer.join("usr");
     if usr.is_dir() {
@@ -927,6 +965,40 @@ fn layer_name(image: &str, phase: Phase) -> String {
     format!("{short}-{}", phase.name())
 }
 
+/// The name a layer's link and its `extension-release` file share.
+///
+/// systemd-sysext names a directory extension after the entry it found and reads the
+/// `extension-release` file named after that, so a layer carries a file of its own name.
+fn extension_name(layer: &Path) -> String {
+    let name = layer
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    format!("{LIVE_NAME}-{name}")
+}
+
+/// The first free name for a layer, so a layer that may still be mounted is never rewritten.
+fn fresh_layer(requested: &Path) -> Result<PathBuf> {
+    let parent = requested
+        .parent()
+        .ok_or_else(|| Error::pack("a layer has no parent directory"))?;
+    let name = requested
+        .file_name()
+        .and_then(OsStr::to_str)
+        .ok_or_else(|| Error::pack("a layer has no usable name"))?;
+    for count in 0..4096 {
+        let candidate = if count == 0 {
+            requested.to_path_buf()
+        } else {
+            parent.join(format!("{name}-{count}"))
+        };
+        if fs::symlink_metadata(&candidate).is_err() {
+            return Ok(candidate);
+        }
+    }
+    Err(Error::pack("too many layers of one image are in use"))
+}
+
 pub fn build_layer(
     host: &dyn Host,
     live: &dyn LiveHost,
@@ -935,7 +1007,8 @@ pub fn build_layer(
     new_root: &Path,
     layer: &Path,
     image: &str,
-) -> Result<()> {
+) -> Result<PathBuf> {
+    let layer = fresh_layer(layer)?;
     let parent = layer
         .parent()
         .ok_or_else(|| Error::pack("a layer has no parent directory"))?;
@@ -963,7 +1036,7 @@ pub fn build_layer(
         let release_dir = staging.join("usr/lib/extension-release.d");
         fs::create_dir_all(&release_dir).at(&release_dir)?;
         let digest = image.strip_prefix("sha256:").unwrap_or(image);
-        let release = release_dir.join(format!("extension-release.{LIVE_NAME}"));
+        let release = release_dir.join(format!("extension-release.{}", extension_name(&layer)));
         fs::write(
             &release,
             format!("ID=_any\nSYSEXT_SCOPE=system\nTILO_LIVE_UPDATE={digest}\n"),
@@ -975,8 +1048,8 @@ pub fn build_layer(
         let _ = remove_tree(&staging);
         return Err(error);
     }
-    remove_tree(layer)?;
-    fs::rename(&staging, layer).at(layer)
+    fs::rename(&staging, &layer).at(&layer)?;
+    Ok(layer)
 }
 
 fn copy_entry(from: &Path, to: &Path) -> Result<()> {
@@ -1004,37 +1077,65 @@ fn remove_tree(path: &Path) -> Result<()> {
 }
 
 fn swap_link(layout: &Layout, layer: &Path) -> Result<()> {
-    let link = link(layout);
-    let dir = link
-        .parent()
-        .ok_or_else(|| Error::pack("the sysext link has no parent directory"))?;
-    fs::create_dir_all(dir).at(dir)?;
-    let next = dir.join(format!(".{LIVE_NAME}.next"));
+    let dir = layout.at("/run/extensions");
+    fs::create_dir_all(&dir).at(&dir)?;
+    // The new link first, so a failure removing the old one leaves the merge the machine has.
+    let name = extension_name(layer);
+    let next = dir.join(format!(".{name}.next"));
     let _ = fs::remove_file(&next);
     symlink(layer, &next).at(&next)?;
-    fs::rename(&next, &link).at(&link)
+    for previous in links(layout) {
+        fs::remove_file(&previous).at(&previous)?;
+    }
+    fs::rename(&next, dir.join(&name)).at(&dir.join(&name))
 }
 
 fn remove_link(layout: &Layout) -> Result<()> {
-    let link = link(layout);
-    match fs::remove_file(&link) {
-        Err(error) if error.kind() != io::ErrorKind::NotFound => {
-            Err(Error::os(&error, Some(&link)))
+    for link in links(layout) {
+        match fs::remove_file(&link) {
+            Err(error) if error.kind() != io::ErrorKind::NotFound => {
+                return Err(Error::os(&error, Some(&link)));
+            }
+            _ => {}
         }
-        _ => Ok(()),
     }
+    Ok(())
 }
 
-fn prune_layers(layout: &Layout, keep: &Path) {
+/// Remove every layer not in `keep` that no mount reads any more.
+///
+/// A layer is immutable once merged. A sandbox started before the update keeps the merged `/usr`
+/// it started with in its own mount namespace, and that mount still reads the layer as its lower
+/// directory: deleting it would make the files the app has not opened yet vanish. The mounts, not
+/// the link, decide what is still alive ([`LiveHost::layer_in_use`]).
+fn prune_layers(live: &dyn LiveHost, layout: &Layout, keep: &[PathBuf]) {
     let Ok(entries) = fs::read_dir(layers(layout)) else {
         return;
     };
     for entry in entries.flatten() {
         let path = entry.path();
-        if path != keep {
+        if !keep.contains(&path) && !live.layer_in_use(&path) {
             let _ = remove_tree(&path);
         }
     }
+}
+
+fn linked_layers(layout: &Layout) -> Vec<PathBuf> {
+    links(layout)
+        .into_iter()
+        .filter_map(|link| fs::read_link(link).ok())
+        .collect()
+}
+
+/// Remove every layer that is neither linked nor mounted.
+///
+/// The launcher runs this when a launch that bound the system profile per path ends, and the
+/// sandbox view's retirement runs it when the last sandbox holding a generation lets go: both are
+/// the moment a layer's last reader may have gone. An applying update holds the live lock, so a
+/// build in progress is never reaped.
+pub fn prune(live: &dyn LiveHost, layout: &Layout) -> i32 {
+    prune_layers(live, layout, &linked_layers(layout));
+    0
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1133,6 +1234,8 @@ pub trait LiveHost {
     fn close(&self, at: &Path);
     fn whiteout(&self, path: &Path) -> Result<()>;
     fn is_whiteout(&self, path: &Path) -> bool;
+    /// Whether a mount in any mount namespace still reads `layer` as a lower directory.
+    fn layer_in_use(&self, layer: &Path) -> bool;
     fn daemon_reload(&self) -> Result<()>;
     fn reload_user(&self, user: &str) -> Result<()>;
     fn try_restart(&self, user: Option<&str>, unit: &str) -> Result<()>;
@@ -1286,6 +1389,75 @@ fn measure_verity(file: &fs::File) -> io::Result<(u16, Vec<u8>)> {
     Ok((arg.digest_algorithm, digest.to_vec()))
 }
 
+/// Whether any process's mount table reads `layer` as an overlay's lower directory.
+///
+/// systemd-sysext binds a directory extension at `/run/systemd/sysext/extensions/<name>` and lists
+/// that name in the overlay's `lowerdir` option; a sandbox started before the update keeps a clone
+/// of the overlay in its own mount namespace, and `/proc/<pid>/mountinfo` reports the superblock's
+/// options in every namespace that holds one. A `/proc` that cannot be read answers "in use", so
+/// nothing is ever deleted on a guess.
+fn layer_mounted(proc_root: &Path, layer: &Path) -> bool {
+    let name = extension_name(layer);
+    let Ok(entries) = fs::read_dir(proc_root) else {
+        return true;
+    };
+    for entry in entries.flatten() {
+        if entry
+            .file_name()
+            .to_str()
+            .and_then(|pid| pid.parse::<u32>().ok())
+            .is_none()
+        {
+            continue;
+        }
+        match fs::read_to_string(entry.path().join("mountinfo")) {
+            Ok(info) => {
+                if mountinfo_reads(&info, layer, &name) {
+                    return true;
+                }
+            }
+            // The process ended between the directory read and this read: its mounts went with it.
+            Err(error) if matches!(error.raw_os_error(), Some(libc::ENOENT | libc::ESRCH)) => {}
+            // Any other reason a namespace cannot be read leaves its mounts unknown: keep the layer.
+            Err(_) => return true,
+        }
+    }
+    false
+}
+
+fn mountinfo_reads(info: &str, layer: &Path, name: &str) -> bool {
+    // sysext names the extension after the link; a version that resolves it first would use the
+    // layer's own directory name instead. Either way the mount's options say which layer they read.
+    let directory = layer
+        .file_name()
+        .and_then(OsStr::to_str)
+        .unwrap_or_default();
+    info.lines().any(|line| {
+        let Some((_, rest)) = line.split_once(" - ") else {
+            return false;
+        };
+        let mut fields = rest.split_whitespace();
+        let (Some(fstype), Some(_source), Some(options)) =
+            (fields.next(), fields.next(), fields.next())
+        else {
+            return false;
+        };
+        fstype == "overlay"
+            && options.split(',').any(|option| {
+                let Some(lower) = option
+                    .strip_prefix("lowerdir=")
+                    .or_else(|| option.strip_prefix("lowerdir+="))
+                else {
+                    return false;
+                };
+                lower.split(':').any(|dir| {
+                    Path::new(dir).starts_with(layer)
+                        || dir.split('/').any(|part| part == name || part == directory)
+                })
+            })
+    })
+}
+
 impl LiveHost for crate::System {
     fn bootc_status(&self) -> Result<String> {
         run_strings(
@@ -1376,6 +1548,10 @@ impl LiveHost for crate::System {
         use std::os::unix::fs::FileTypeExt as _;
         fs::symlink_metadata(path)
             .is_ok_and(|meta| meta.file_type().is_char_device() && meta.rdev() == 0)
+    }
+
+    fn layer_in_use(&self, layer: &Path) -> bool {
+        layer_mounted(Path::new("/proc"), layer)
     }
 
     fn daemon_reload(&self) -> Result<()> {

@@ -6,6 +6,9 @@ Description=Retire sandbox system view %i once no sandbox uses it
 [Service]
 Type=oneshot
 ExecStart=/usr/libexec/tilo/tilo-launcher sandbox-view retire %i
+# The retired generation's mounts kept the live update layer it was built over alive; with the
+# last holder gone, remove any layer nothing mounts any more.
+ExecStartPost=-/usr/libexec/tilo-extension live:prune
 NoNewPrivileges=yes
 RestrictAddressFamilies=AF_UNIX
 LockPersonality=yes

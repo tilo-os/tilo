@@ -2685,7 +2685,21 @@ fn spawn_and_wait(
         child.wait()?
     };
     stop_identity_broker(identity_broker_control, identity_broker_thread);
+    let bound_per_path = system_view.is_none();
     drop(system_view);
+    if bound_per_path {
+        // A launch without the view binds the system profile from the host's merged `/usr`, and
+        // keeps that merge, live update layer included, in its own mount namespace until it ends.
+        // Now it has: let the extension helper remove any layer nothing reads any more (the view's
+        // generations reap themselves when their last holder retires). The helper is serialized
+        // with an applying update, and deletes only what no mount references.
+        let _ = Command::new("/usr/libexec/tilo-extension")
+            .arg("live:prune")
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn();
+    }
     Ok(status)
 }
 
