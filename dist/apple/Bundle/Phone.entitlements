@@ -2,7 +2,10 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <!-- The iPhone app. build.sh writes the signing team for __TEAM__ and the app's identifier for
      __ID__, and adds what a development build carries (get-task-allow). The first keychain group is its own, where WebKit keeps the key
-     that wraps the page's keys; the second is the one place shared between app and extension. -->
+     that wraps the page's keys; the second is the one place shared between app and extension.
+     Where the provisioning profile grants associated domains, build.sh also names the sites
+     whose passkeys the page may use (com.apple.developer.associated-domains, one
+     webcredentials: entry each): a system web view asks for a passkey only for those. -->
 <plist version="1.0"><dict>
   <key>application-identifier</key><string>__TEAM__.__ID__</string>
   <key>com.apple.developer.team-identifier</key><string>__TEAM__</string>

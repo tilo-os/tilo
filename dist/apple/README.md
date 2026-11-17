@@ -215,7 +215,7 @@ is never replaced; quit it first.
 
 `build.sh` reads who signs from `TILO_APPLE_SIGNING_IDENTITY`, the iPhone app's provisioning
 profile from `TILO_APPLE_PROFILE` and the site from `TILO_SHELL_SITE` (default
-`https://tilo.sh`); its head lists the rest. The signing team is read from the identity and
+`https://tilo.sh`); its head lists the rest, among them what passkeys take ("Passkeys" below). The signing team is read from the identity and
 written into the bundles, never into the sources. Without an identity the Mac app is signed by
 nobody: it runs on the Mac that built it, a later build cannot read the keys it kept, and it
 has no share extension.
@@ -228,7 +228,7 @@ the Mac's icon, and the two files the iPhone's `Info.plist` names.
 whether it is sandboxed, whether the web view offers a secure context, WebGPU with an adapter,
 WebTransport and its datagrams, whether a key the page stored is still there on a second run,
 whether a notice and words cross between page and system, what the build opens with the
-settings kept for it on this device, and whether the site and its host answer. `--live` also
+settings kept for it on this device, whether the app may use the site's passkeys, and whether the site and its host answer. `--live` also
 opens and closes one WebTransport session at the host the site names; it opens no stream, so
 no person and no workspace is touched. A simulator has no graphics adapter, so it fails that
 one line and cannot show Tilo; a real iPhone is asked from a Mac:
@@ -237,11 +237,64 @@ one line and cannot show Tilo; a real iPhone is asked from a Mac:
 xcrun devicectl device process launch --console --device <id> so.tilo.assistant.shell --check --quit
 ```
 
+## Passkeys
+
+Tilo's page keeps a person with a passkey and signs them in with one ("Use a passkey"). In a
+browser that is the browser's own business. In an app's web view the system hands the page a
+passkey only for a site the app is associated with, and refuses every other request before
+it shows anything
+([Supporting passkeys](https://developer.apple.com/documentation/authenticationservices/supporting-passkeys),
+"Use passkeys in a web view"). Associated means both of these:
+
+- **The app's signature names the site.** Its entitlement
+  `com.apple.developer.associated-domains` holds `webcredentials:<host>`. `build.sh` writes
+  one entry for each host in `TILO_APPLE_PASSKEY_SITES` (default: the host of
+  `TILO_SHELL_SITE`) and lists the hosts in the bundle's `Info.plist` (`TiloPasskeySites`).
+  It does so only where the provisioning profile grants the entitlement: an iPhone installs
+  no app, and a Mac starts none, whose signature claims more than its profile. Such a profile
+  is made for an App ID of the app's own identifier with the Associated Domains capability.
+  A profile for every identifier of a team (`TEAM.*`), which is what signs a trial build,
+  never grants it. A profile for the app's own identifier covers the app alone, so the
+  iPhone's share extension is then signed with a profile of its own
+  (`TILO_APPLE_SHARE_PROFILE`; the team's profile for every identifier will do). The Mac app
+  runs without a profile and is given one for this alone (`TILO_APPLE_MAC_PROFILE`). A build that may name no site says "no passkeys in this build"
+  and is otherwise the same app.
+- **The site names the app.** `https://<host>/.well-known/apple-app-site-association` lists
+  the app's application identifier (`<team>.<identifier>`) under `webcredentials`. Tilo's web
+  entry serves it once its deployment names its apps (`TILO_WEB_APPLE_APPS`, in
+  [its start script](../../crates/browser/tilo-browser-runtime/container/entrypoint.sh)).
+  Apple's servers fetch it over `https`, following no redirect, and a device asks them when
+  the app is installed and about weekly after. The address has no place for a port: the file
+  is asked for on 443, whatever port the site itself answers on.
+
+A passkey belongs to the name of the site it was made at, because the page names its own host
+as that site (`web/identity.mjs`). `tilo.sh` in a browser and `tilo.sh` in the app are one
+site, so one passkey opens both. The same Tilo under another name is another site, with
+passkeys of its own: one made on a Mac at `tilo.localhost` opens nothing at the name a phone
+reaches that stack by. A site on this computer (plain `http`, a name under `localhost`) is
+associated with no app. A person may name any site in the app's settings, and passkeys work
+at the ones the build was signed for.
+
+**A site Apple's servers cannot reach**, such as a test stack on a private network, is named
+with `?mode=developer` after its host (`TILO_APPLE_PASSKEY_SITES="tilo.example?mode=developer"`),
+and the device then reads the file from the site itself. Apple allows this for a build signed
+with a development profile, on a device where the person switched it on: on an iPhone in
+Settings, Developer, "Associated Domains Development" (the Developer page is there once the
+phone was used with Xcode), on a Mac with `swcutil developer-mode -e true`. A build for a
+store names no site this way.
+
+Where the app is not associated with its site, nothing but the passkey is missing. The page
+says that passkeys cannot be used there, and to add the device from one where the person is
+signed in ("Pair a new device"): the way in that needs nothing from Apple. `--check` says
+which it is, "passkeys of <host>": the app may use them, or the build's signature does not
+name the site, or it does and the system still refuses (the site does not name the app yet,
+or the device has no passcode).
+
 ## Before the App Store
 
 The Mac apps are sandboxed from the start with the entitlements `Bundle/Mac.entitlements`
 explains; they listen on nothing, and update nothing of themselves. Still to do for a store
-build of either: an App ID of its own (push, and an app group in place of the keychain group
+build of either: an App ID of its own (push, Associated Domains for passkeys, and an app group in place of the keychain group
 the phone's share extension uses under a development profile; for Tilo Shell this is the
 moment its identifier changes), a universal Mac binary, an icon drawn for each platform, the
 usage descriptions in every language the app ships, and review notes that say what the page is
@@ -262,4 +315,8 @@ screen, when it is asked to (`TILO_SHOTS_DIR`, `TILO_SHOTS_SITE`).
 Not checked by anything here, because it needs a window or the system's own interface: how
 the page looks in the window, the camera reading a code, the menu-bar item, the settings window, dictation, the share
 extension at run time, a notification shown and answered through the system, and Tilo
-Assistant against a site that has the Assistant app.
+Assistant against a site that has the Assistant app. And a passkey used in an app that is
+associated with its site: that takes an App ID with the Associated Domains capability, which
+nothing here makes. What is checked instead: that a build names its sites exactly when its
+profile grants it, what the system answers a page in a build that names none, and the page's
+sentence for it.

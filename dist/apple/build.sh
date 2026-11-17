@@ -22,6 +22,18 @@
 #                                read the keys it kept, and it has no share extension. An
 #                                iPhone app needs one.
 #   TILO_APPLE_PROFILE           the iPhone app's provisioning profile (a .mobileprovision)
+#   TILO_APPLE_SHARE_PROFILE     the profile of the iPhone app's share extension (default: the
+#                                app's). A profile made for the app's own identifier, which
+#                                passkeys take, covers the app alone.
+#   TILO_APPLE_MAC_PROFILE       the Mac app's provisioning profile (a .provisionprofile). A
+#                                Mac app carries one only to use passkeys.
+#   TILO_APPLE_PASSKEY_SITES     the sites whose passkeys the app may use, as host names with
+#                                spaces between them (default: the host of TILO_SHELL_SITE,
+#                                unless that is this computer). The build names them only
+#                                when its profile grants associated domains, and they work
+#                                only once the site names the app: README.md, "Passkeys". A
+#                                name ending in ?mode=developer is a site Apple's servers
+#                                cannot reach, for a build signed for development.
 #   TILO_APPLE_DEVICE            the iPhone to install on, when more than one is reachable
 #   TILO_APPLE_SIMULATOR         the simulator to ask (default: the newest iPhone installed)
 #   TILO_SHELL_SITE              the Tilo site the build opens (default https://tilo.sh)
@@ -82,6 +94,23 @@ mark="$bundle/AppIcon.svg"
 [[ -z "$shown" || "$shown" =~ ^[a-z0-9]+(\.[a-z0-9][a-z0-9-]*)+$ ]] \
   || die "TILO_SHELL_APP is an application id such as so.tilo.chat"
 
+# The sites whose passkeys the app may use. A system web view lets a page ask for a passkey
+# only for a site its app is associated with: the app's signature names the site, and the
+# site names the app. A site on this computer can be neither, so a build for one names none.
+passkey_sites=()
+if [ -n "${TILO_APPLE_PASSKEY_SITES+set}" ]; then
+  read -r -a passkey_sites <<<"$TILO_APPLE_PASSKEY_SITES"
+elif [[ "$site" == https://* ]]; then
+  passkey_sites=("$(sed -e 's|^https://||' -e 's|:[0-9]*$||' <<<"$site")")
+fi
+a_site='^(\*\.)?[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+(\?mode=(developer|managed|developer\+managed))?$'
+if [ "${#passkey_sites[@]}" -gt 0 ]; then
+  for named in "${passkey_sites[@]}"; do
+    [[ "$named" =~ $a_site ]] \
+      || die "TILO_APPLE_PASSKEY_SITES names sites by host, such as tilo.sh or tilo.example?mode=developer: $named"
+  done
+fi
+
 # The team that signs. The app and its share extension keep their one shared place under it.
 team=""
 if [ "$identity" != - ]; then
@@ -138,6 +167,35 @@ stamp() {
   [ -z "$shown" ] || plist -c "Set :TiloApp $shown" "$1"
 }
 
+# Name the sites whose passkeys the app may use: in the rights its signature claims ($1), and
+# in its Info.plist ($3), where the app's own check reads them. Only as far as its
+# provisioning profile ($2, decoded; empty for none) lets it: a signature that claims what its
+# profile does not grant is not installed on an iPhone and not started on a Mac. A build that
+# may name none says so, because its page can then ask for no passkey.
+associate() { # rights, decoded profile, Info.plist
+  local rights="$1" profile="$2" info="$3" named index=0
+  [ "${#passkey_sites[@]}" -gt 0 ] || return 0
+  if [ -z "$profile" ]; then
+    say "no passkeys in this build: it carries no profile (README.md, \"Passkeys\")"
+    return 0
+  fi
+  if ! plist -c 'Print :Entitlements:com.apple.developer.associated-domains' "$profile" >/dev/null 2>&1; then
+    say "no passkeys in this build: its profile grants no associated domains (README.md, \"Passkeys\")"
+    return 0
+  fi
+  plist -c "Add :com.apple.developer.associated-domains array" "$rights"
+  plist -c "Add :TiloPasskeySites array" "$info"
+  for named in "${passkey_sites[@]}"; do
+    plist -c "Add :com.apple.developer.associated-domains:$index string webcredentials:$named" "$rights"
+    plist -c "Add :TiloPasskeySites:$index string ${named%%\?*}" "$info"
+    index=$((index + 1))
+    case "$named" in
+      *\?mode=*) say "${named%%\?*} is named in ${named##*=} mode: for devices set up for it, never for a store" ;;
+    esac
+  done
+  say "passkeys: the build names ${passkey_sites[*]}"
+}
+
 # Tilo's mark at so many pixels. No picture is kept in the repository: the one drawing in
 # Bundle/ is drawn at each size when a bundle is made.
 draw() { sips -s format png -z "$2" "$2" "$mark" --out "$1" >/dev/null; }
@@ -179,6 +237,27 @@ build_mac() {
     plist -c "Delete :com.apple.security.application-groups" "$rights"
     say "signed by nobody: no share extension, and the next build cannot read this one's keys"
   fi
+  # A Mac app runs without a provisioning profile. It carries one only to use passkeys: being
+  # associated with a site is a right a profile grants, to the app the signature says it is.
+  local profile=""
+  if [ -n "${TILO_APPLE_MAC_PROFILE:-}" ]; then
+    [ -n "$team" ] || die "a profile is for a signed app: name who signs in TILO_APPLE_SIGNING_IDENTITY"
+    [ -f "$TILO_APPLE_MAC_PROFILE" ] || die "TILO_APPLE_MAC_PROFILE names no file"
+    profile="$made/mac/profile.plist"
+    security cms -D -i "$TILO_APPLE_MAC_PROFILE" > "$profile" 2>/dev/null \
+      || die "$TILO_APPLE_MAC_PROFILE is no provisioning profile"
+    [ "$(plist -c 'Print :TeamIdentifier:0' "$profile")" = "$team" ] \
+      || die "the profile is another team's than the signing identity's"
+    local covers
+    covers="$(plist -c 'Print :Entitlements:com.apple.application-identifier' "$profile" 2>/dev/null)" \
+      || die "$TILO_APPLE_MAC_PROFILE is no Mac app's profile"
+    # shellcheck disable=SC2254  # the profile's identifier is a pattern ("TEAM.*")
+    case "$team.$id" in $covers) ;; *) die "the profile covers $covers, not $id" ;; esac
+    cp "$TILO_APPLE_MAC_PROFILE" "$contents/embedded.provisionprofile"
+    plist -c "Add :com.apple.application-identifier string $team.$id" \
+      -c "Add :com.apple.developer.team-identifier string $team" "$rights"
+  fi
+  associate "$rights" "$profile" "$contents/Info.plist"
   "${sign[@]}" --entitlements "$rights" "$app"
   codesign --verify --deep --strict "$app"
 }
@@ -193,42 +272,46 @@ check_mac() {
 
 # One bundle of the iPhone app: what it says of itself, its sentences, the profile that lets
 # it run on the phone, and its signature. The program is already in it.
-phone_part() { # directory, bundle id, Info.plist, entitlements, "app" for the app itself
-  local dir="$1" rights="$made/iphone/$2.entitlements" sdk covers
+phone_part() { # directory, bundle id, Info.plist, entitlements, profile, "app" for the app itself
+  local dir="$1" rights="$made/iphone/$2.entitlements" profile="$5" decoded="$made/iphone/$2.profile.plist" sdk covers
+  security cms -D -i "$profile" > "$decoded" 2>/dev/null || die "$profile is no provisioning profile"
+  [ "$(plist -c 'Print :TeamIdentifier:0' "$decoded")" = "$team" ] \
+    || die "$profile is another team's than the signing identity's"
   sdk="$(xcrun --sdk iphoneos --show-sdk-version)"
-  covers="$(plist -c 'Print :Entitlements:application-identifier' "$made/iphone/profile.plist")"
+  covers="$(plist -c 'Print :Entitlements:application-identifier' "$decoded")"
   # shellcheck disable=SC2254  # the profile's identifier is a pattern ("TEAM.*")
-  case "$team.$2" in $covers) ;; *) die "the profile covers $covers, not $2" ;; esac
+  local hint=""
+  [ "${6:-}" = app ] || hint=": name the profile of the share extension in TILO_APPLE_SHARE_PROFILE"
+  case "$team.$2" in $covers) ;; *) die "the profile covers $covers, not $2$hint" ;; esac
   fill "$3" "$dir/Info.plist"
-  stamp "$dir/Info.plist" "${5:-}"
+  stamp "$dir/Info.plist" "${6:-}"
   plist -c "Add :DTPlatformName string iphoneos" -c "Add :DTPlatformVersion string $sdk" \
     -c "Add :DTSDKName string iphoneos$sdk" "$dir/Info.plist"
   cp -R "$bundle/en.lproj" "$dir/"
-  cp "$TILO_APPLE_PROFILE" "$dir/embedded.mobileprovision"
+  cp "$profile" "$dir/embedded.mobileprovision"
   fill "$4" "$rights"
   # A development profile lets a debugger attach, and the signature has to say the same.
-  if [ "$(plist -c 'Print :Entitlements:get-task-allow' "$made/iphone/profile.plist" 2>/dev/null)" = true ]; then
+  if [ "$(plist -c 'Print :Entitlements:get-task-allow' "$decoded" 2>/dev/null)" = true ]; then
     plist -c "Add :get-task-allow bool true" "$rights"
   fi
+  # The app itself, not its extension, shows the page.
+  [ "${6:-}" != app ] || associate "$rights" "$decoded" "$dir/Info.plist"
   codesign --force --timestamp=none --sign "$identity" --entitlements "$rights" "$dir"
 }
 
 build_iphone() {
   [ -n "$team" ] || die "an iPhone app is signed by someone: name them in TILO_APPLE_SIGNING_IDENTITY"
   [ -f "${TILO_APPLE_PROFILE:-}" ] || die "name the iPhone app's provisioning profile in TILO_APPLE_PROFILE"
-  local bin app="$made/iphone/$name.app" scale
+  local bin app="$made/iphone/$name.app" scale share_profile="${TILO_APPLE_SHARE_PROFILE:-$TILO_APPLE_PROFILE}"
+  [ -f "$share_profile" ] || die "TILO_APPLE_SHARE_PROFILE names no file"
   bin="$(products iphone)"
   local appex="$app/PlugIns/TiloShare.appex"
   rm -rf "$made/iphone"
   mkdir -p "$appex"
-  security cms -D -i "$TILO_APPLE_PROFILE" > "$made/iphone/profile.plist" 2>/dev/null \
-    || die "$TILO_APPLE_PROFILE is no provisioning profile"
-  [ "$(plist -c 'Print :TeamIdentifier:0' "$made/iphone/profile.plist")" = "$team" ] \
-    || die "the profile is another team's than the signing identity's"
 
-  # The extension first, then the app that seals it.
+  # The extension first, then the app that seals it. Each carries the profile that covers it.
   cp "$bin/TiloShare" "$appex/TiloShare"
-  phone_part "$appex" "$id.share" "$bundle/PhoneShare-Info.plist" "$bundle/PhoneShare.entitlements"
+  phone_part "$appex" "$id.share" "$bundle/PhoneShare-Info.plist" "$bundle/PhoneShare.entitlements" "$share_profile"
   cp "$bin/TiloPhone" "$app/$program"
   cp -R "$bundle/Settings.bundle" "$app/"
   # The two files Phone-Info.plist names as the app's icon.
@@ -239,7 +322,7 @@ build_iphone() {
     sips -s format png "$made/iphone/icon.jpg" --out "$app/AppIcon60x60@${scale}x.png" >/dev/null
   done
   rm -f "$made/iphone/icon.png" "$made/iphone/icon.jpg"
-  phone_part "$app" "$id" "$bundle/Phone-Info.plist" "$bundle/Phone.entitlements" app
+  phone_part "$app" "$id" "$bundle/Phone-Info.plist" "$bundle/Phone.entitlements" "$TILO_APPLE_PROFILE" app
   codesign --verify --deep --strict "$app"
 }
 

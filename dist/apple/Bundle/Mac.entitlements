@@ -2,7 +2,11 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <!-- The Mac app, in the App Sandbox from the start: the Mac App Store takes nothing else.
      build.sh writes the signing team for __TEAM__ and the app's identifier for __ID__, and
-     leaves the group out of a build signed by nobody. -->
+     leaves the group out of a build signed by nobody. A build given a provisioning profile
+     also says which app it is (com.apple.application-identifier, the team) and names the
+     sites whose passkeys the page may use (com.apple.developer.associated-domains, one
+     webcredentials: entry each): a system web view asks for a passkey only for those, and a
+     Mac starts an app that claims them only with a profile that grants them. -->
 <plist version="1.0"><dict>
   <key>com.apple.security.app-sandbox</key><true/>
   <!-- The page: its site, its host, the live connection. The app listens on nothing. -->
