@@ -203,6 +203,54 @@ fn the_same_project_with_its_issues_made_as_one_list_takes_a_call_for_them_all()
     assert_eq!(caller.writes, 22);
 }
 
+/// The same project built several issues a call: the project, its issues
+/// with their sub-issues in one list, and the moves and comments together as
+/// one group of the tracker's own actions.
+#[test]
+fn the_same_project_built_several_issues_a_call_takes_three_calls() {
+    let mut caller = Caller::open();
+    caller.tracker(
+        "create-area",
+        json!({ "name": "Launch", "kind": "project" }),
+    );
+    let mut issues = Vec::new();
+    for top in 0..TOP {
+        issues.push(json!({
+            "key": format!("piece-{top}"),
+            "title": format!("Piece {top}"),
+            "project": "Launch",
+            "due_ms": due(top),
+        }));
+        for under in 0..UNDER_EACH {
+            issues.push(json!({
+                "title": format!("Piece {top}, step {under}"),
+                "project": "Launch",
+                "under": format!("piece-{top}"),
+            }));
+        }
+    }
+    let made = caller.write(&chain(), "create-many", json!({ "issues": issues }));
+    assert_eq!(made.len(), ISSUES, "the call answers every issue it made");
+    let moves = made.iter().take(MOVED).map(
+        |issue| json!({ "action": "place", "args": { "issue": issue, "status": "in-progress" } }),
+    );
+    let comments = made
+        .iter()
+        .rev()
+        .take(COMMENTED)
+        .enumerate()
+        .map(|(at, issue)| {
+            json!({ "action": "comment", "args": { "issue": issue, "text": format!("Finding {at}") } })
+        });
+    let actions: Vec<Value> = moves.chain(comments).collect();
+    caller.write(&chain(), "group", json!({ "actions": actions }));
+    assert_the_project_stands(&caller);
+    assert_eq!(
+        caller.writes, 3,
+        "the project, its issues, and their moves and comments as one group"
+    );
+}
+
 /// Reading back where the project stands: the tracker's listing names each
 /// issue and says nothing else of it, so its status, its parent, when it is
 /// wanted and who has it take a read of each issue.

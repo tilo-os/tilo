@@ -2104,8 +2104,11 @@ impl<P: Chained> ResourceApi for ChainState<P> {
             });
         }
         if action.type_id == tilo_resource::group::group_type::<P>() {
+            // As every group's payload is read: one written with what its
+            // members share once reads as the list of them.
             let group: tilo_resource::group::ActionGroup<P::Action> =
-                tilo_actions::decode_json(&action.payload).map_err(|error| error.to_string())?;
+                tilo_actions::decode_payload(&action.type_id, &action.payload)
+                    .map_err(|error| error.to_string())?;
             for member in &group.actions {
                 super::record::not_by_app::<P>(member)?;
             }
