@@ -1006,7 +1006,7 @@ mod tests {
             assert_eq!(kept.launch.app, "org.example.Kept");
             assert_eq!(kept.launch.workspace, "workspace-1");
             assert_eq!(kept.launch.asked.as_deref(), Some("org.example.Kept"));
-            second.attach_kept();
+            second.attach_kept(kept.pid);
             assert_eq!(rig.shown(), (pid, at), "the same process shows on the new desktop");
 
             kill(pid);
@@ -1024,15 +1024,15 @@ mod tests {
             first.end_running(Teardown::InPlaceRestart);
             drop(first);
             let mut second = rig.spawned();
-            assert_eq!(second.adopt_kept().len(), 1);
-            second.attach_kept();
+            let [kept] = second.adopt_kept().try_into().expect("one kept app");
+            second.attach_kept(kept.pid);
             rig.shown();
             // The new desktop never became ready: the update is rolled back, in place again.
             second.end_running(Teardown::InPlaceRestart);
             drop(second);
             let mut third = rig.spawned();
-            assert_eq!(third.adopt_kept().len(), 1);
-            third.attach_kept();
+            let [kept] = third.adopt_kept().try_into().expect("one kept app");
+            third.attach_kept(kept.pid);
             assert_eq!(rig.shown(), (pid, at), "the same process after both");
 
             third.end_running(Teardown::Logout);
@@ -1107,7 +1107,7 @@ mod tests {
             let adopted = spawned.adopt_kept();
             assert_eq!(adopted.len(), 1, "a fresh start takes up a service's keeper too");
             assert!(adopted.first().is_some_and(|kept| kept.launch.service));
-            spawned.attach_kept();
+            spawned.attach_kept(adopted[0].pid);
             let (pid, at) = rig.shown();
             spawned.end_running(Teardown::Logout);
             drop(spawned);
@@ -1228,8 +1228,8 @@ mod tests {
             rig.listening();
             let mut before = rig.spawned();
             before.clear_kept();
-            assert_eq!(before.adopt_kept().len(), 1);
-            before.attach_kept();
+            let [kept] = before.adopt_kept().try_into().expect("one kept app");
+            before.attach_kept(kept.pid);
             let (pid, at) = rig.shown();
             before.end_running(Teardown::InPlaceRestart);
             drop(before);

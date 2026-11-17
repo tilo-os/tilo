@@ -65,6 +65,7 @@ impl Shared {
         // the windows this device left open are being asked for, or there are none to ask for.
         self.restore.borrow_mut().begin();
         let Some(engine) = &self.engine else {
+            self.restore.borrow_mut().without_layouts();
             return;
         };
         self.desktops.attach_engine(engine);
@@ -119,6 +120,9 @@ impl Shared {
             }
             self.handle.replace_tree(tree.clone());
             self.handle.set_opened_by(self.desktops.opened_by());
+        }
+        if self.desktops.all_read(&tree) {
+            self.restore.borrow_mut().layouts_read();
         }
     }
 

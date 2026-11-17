@@ -833,16 +833,17 @@ impl Spawner {
         });
     }
 
-    /// Show the windows of every kept app this spawner holds and has not shown in this run.
-    pub fn attach_kept(&self) {
+    /// Show the windows of the kept app whose keeper is `keeper`, unless they are shown in this
+    /// run already.
+    pub fn attach_kept(&self, keeper: u32) {
         let Some(keeping) = &self.keeping else {
             return;
         };
-        let kept: Vec<Arc<crate::kept::Kept>> = running(&self.running)
+        let kept = running(&self.running)
             .values()
             .filter_map(|app| app.kept.clone())
-            .collect();
-        for kept in kept {
+            .find(|kept| kept.keeper() == keeper);
+        if let Some(kept) = kept {
             kept.attach(&keeping.desktop);
         }
     }

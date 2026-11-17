@@ -796,10 +796,11 @@ impl Apps {
         }
     }
 
-    /// Show the windows of the kept apps this run took back: once their saved tabs wait for them.
+    /// Show the windows of the kept app whose keeper is `keeper`: once its saved tabs wait for
+    /// them.
     #[cfg(target_os = "linux")]
-    pub(crate) fn attach_kept(&self) {
-        self.state.borrow().spawner.attach_kept();
+    pub(crate) fn attach_kept(&self, keeper: u32) {
+        self.state.borrow().spawner.attach_kept(keeper);
     }
 
     /// Start what the desktop queued since the last pass, show what stopped, and start what a
