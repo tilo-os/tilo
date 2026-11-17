@@ -226,6 +226,9 @@ pub struct Declaration {
     /// what the surface publishes of it. A parameter without one is
     /// published as its schema says.
     pub param_types: Vec<(&'static str, ParamFieldType)>,
+    /// For a flattened parameter, its record's fields and their types, by
+    /// name: the verb's own parameters even though the code declares one.
+    pub flat_types: Option<fn(&mut crate::TypeSet) -> Vec<(String, crate::surface::FieldType)>>,
     /// The type of the value it answers with, when the code declares one
     /// ([`JsonSchema::field_type`](crate::JsonSchema::field_type)): what the
     /// surface publishes of its result.
@@ -295,6 +298,7 @@ impl Declaration {
             build,
             invokes: None,
             param_types: Vec::new(),
+            flat_types: None,
             result_type: None,
         }
     }

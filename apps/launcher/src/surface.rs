@@ -739,7 +739,7 @@ impl LauncherSurface {
     fn answer(&mut self, effect: LauncherEffect) -> EffectAnswer {
         let closed = || Err("search is not open".to_owned());
         match effect {
-            LauncherEffect::Open { scope, query } => {
+            LauncherEffect::OpenSearch { scope, query } => {
                 let scope = scope_of(scope.as_deref())?;
                 self.open(scope, query);
             }

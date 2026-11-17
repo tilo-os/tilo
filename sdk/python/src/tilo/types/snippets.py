@@ -17,7 +17,7 @@ all-or-nothing steps, all of them one run.
 from __future__ import annotations
 
 from typing import Any, Literal, NotRequired, TypedDict
-from tilo import Resource, Run
+from tilo import Entry, Resource, Run
 
 __all__ = [
     "Language",
@@ -32,7 +32,7 @@ __all__ = [
     "RemoveTagArgs",
 ]
 
-Language = Literal["text", "shell", "rust", "sql", "git", "python", "javascript", "json", "yaml", "markdown", "html", "css", "toml", "dockerfile"]
+Language = Literal["PlainText", "Shell", "Rust", "Sql", "Git", "Python", "JavaScript", "Json", "Yaml", "Markdown", "Html", "Css", "Toml", "Dockerfile"]
 
 class Snippet(TypedDict):
     title: str
@@ -85,14 +85,14 @@ RemoveTagArgs = TypedDict("RemoveTagArgs", {
 
 class Library(Resource):
     """Snippet library — `snippets.library`."""
-    __surface__ = "so.tilo.snippets@530e3c69f46d7e0c"
-    snippets: list[Snippet]
+    __surface__ = "so.tilo.snippets@ab6662b1374b4cde"
+    snippets: list[Entry[Snippet]]
 
     def new_snippet(self,
         *,
         title: str,
         folder: str | None = None,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         args: dict[str, Any] = {}
         args["title"] = title
@@ -108,7 +108,7 @@ class Library(Resource):
         *,
         snippet: str,
         title: str | None = None,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         args: dict[str, Any] = {}
         args["snippet"] = snippet
@@ -120,7 +120,7 @@ class Library(Resource):
         """Runs `duplicate` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("duplicate", items)
 
-    def delete(self, *, snippet: str) -> Run | None:
+    def delete(self, *, snippet: str) -> None:
         """Runs the app's action."""
         return self.action("delete", snippet=snippet)
 
@@ -128,7 +128,7 @@ class Library(Resource):
         """Runs `delete` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("delete", items)
 
-    def record_use(self, *, snippet: str) -> Run | None:
+    def record_use(self, *, snippet: str) -> None:
         """Runs the app's action."""
         return self.action("record-use", snippet=snippet)
 
@@ -140,7 +140,7 @@ class Library(Resource):
         *,
         folder: str,
         to: str,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         return self.action("rename-folder", folder=folder, to=to)
 
@@ -152,7 +152,7 @@ class Library(Resource):
         *,
         tag: str,
         to: str,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         return self.action("rename-tag", tag=tag, to=to)
 
@@ -160,12 +160,16 @@ class Library(Resource):
         """Runs `rename-tag` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("rename-tag", items)
 
-    def remove_tag(self, *, tag: str) -> Run | None:
+    def remove_tag(self, *, tag: str) -> None:
         """Runs the app's action."""
         return self.action("remove-tag", tag=tag)
 
     def remove_tag_many(self, items: list[RemoveTagArgs]) -> list[dict[str, Any]]:
         """Runs `remove-tag` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("remove-tag", items)
+
+    # The actions a call reaches before the resource is read: `await tracker.create(...)`
+    # needs no `load()` first.
+    __actions__ = frozenset({"new_snippet", "new_snippet_many", "duplicate", "duplicate_many", "delete", "delete_many", "record_use", "record_use_many", "rename_folder", "rename_folder_many", "rename_tag", "rename_tag_many", "remove_tag", "remove_tag_many"})
 
 

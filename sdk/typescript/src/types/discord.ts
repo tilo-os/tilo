@@ -420,13 +420,13 @@ export interface Guild extends tilo.Resource {
   ownership: Ownership;
   token_item: string | null;
   bot_user: string;
-  channels: DChannel[];
-  roles: DRole[];
+  channels: Array<tilo.Entry<DChannel>>;
+  roles: Array<tilo.Entry<DRole>>;
   emojis: Record<string, string>;
-  map: Mapping[];
-  links: Link[];
-  link_offers: LinkOffer[];
-  connects: Connect[];
+  map: Array<tilo.Entry<Mapping>>;
+  links: Array<tilo.Entry<Link>>;
+  link_offers: Array<tilo.Entry<LinkOffer>>;
+  connects: Array<tilo.Entry<Connect>>;
   sign_in_page: string | null;
   avatars: Record<string, string>;
   blocked_personas: string[];
@@ -441,7 +441,7 @@ export interface Guild extends tilo.Resource {
     only_channel?: string;
     mirror_channels?: boolean;
     map_roles?: boolean;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `connect` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   connectMany(items: ConnectArgs[]): Promise<tilo.ActionAnswer[]>;
   observeLayout(args: {
@@ -449,7 +449,7 @@ export interface Guild extends tilo.Resource {
     channels: ChannelInfo[];
     roles: RoleInfo[];
     emojis: EmojiInfo[];
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `observe-layout` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   observeLayoutMany(items: ObserveLayoutArgs[]): Promise<tilo.ActionAnswer[]>;
   // the app's `map` action is named as a field of this kind: run it with
@@ -458,64 +458,64 @@ export interface Guild extends tilo.Resource {
     kind: MappedKind;
     tilo: string;
     keep_apart?: boolean;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `unmap` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   unmapMany(items: UnmapArgs[]): Promise<tilo.ActionAnswer[]>;
   send(args: {
     op: SendOp;
-  }): Promise<unknown | tilo.Run>;
+  }): Promise<unknown>;
   // the app's `edit` action is the SDK's own: run it with `action("edit")`.
   delete(args: {
     op: DeleteOp;
-  }): Promise<unknown | tilo.Run>;
+  }): Promise<unknown>;
   react(args: {
     op: ReactOp;
-  }): Promise<unknown | tilo.Run>;
+  }): Promise<unknown>;
   unreact(args: {
     op: ReactOp;
-  }): Promise<unknown | tilo.Run>;
+  }): Promise<unknown>;
   startThread(args: {
     op: StartThreadOp;
-  }): Promise<unknown | tilo.Run>;
+  }): Promise<unknown>;
   createWebhook(args: {
     op: CreateWebhookOp;
-  }): Promise<unknown | tilo.Run>;
+  }): Promise<unknown>;
   applyChannel(args: {
     op: ChannelSpec;
-  }): Promise<unknown | tilo.Run>;
+  }): Promise<unknown>;
   deleteChannel(args: {
     op: DeleteChannelOp;
-  }): Promise<unknown | tilo.Run>;
+  }): Promise<unknown>;
   arrangeChannels(args: {
     op: ArrangeOp;
-  }): Promise<unknown | tilo.Run>;
+  }): Promise<unknown>;
   applyRole(args: {
     op: RoleSpec;
-  }): Promise<unknown | tilo.Run>;
+  }): Promise<unknown>;
   deleteRole(args: {
     op: DeleteRoleOp;
-  }): Promise<unknown | tilo.Run>;
+  }): Promise<unknown>;
   setMemberRoles(args: {
     op: MemberRolesOp;
-  }): Promise<unknown | tilo.Run>;
+  }): Promise<unknown>;
   kick(args: {
     op: MemberOp;
-  }): Promise<unknown | tilo.Run>;
+  }): Promise<unknown>;
   ban(args: {
     op: MemberOp;
-  }): Promise<unknown | tilo.Run>;
+  }): Promise<unknown>;
   unban(args: {
     op: MemberOp;
-  }): Promise<unknown | tilo.Run>;
+  }): Promise<unknown>;
   setOverwrite(args: {
     op: OverwriteOp;
-  }): Promise<unknown | tilo.Run>;
+  }): Promise<unknown>;
   fetchAsset(args: {
     op: FetchAssetOp;
-  }): Promise<unknown | tilo.Run>;
+  }): Promise<unknown>;
   beginConnect(args: {
     state_sha256: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `begin-connect` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   beginConnectMany(items: BeginConnectArgs[]): Promise<tilo.ActionAnswer[]>;
   offerLink(args: {
@@ -525,7 +525,7 @@ export interface Guild extends tilo.Resource {
     display_name?: string;
     avatar?: string;
     interaction?: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `offer-link` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   offerLinkMany(items: OfferLinkArgs[]): Promise<tilo.ActionAnswer[]>;
   offerSignIn(args: {
@@ -535,81 +535,81 @@ export interface Guild extends tilo.Resource {
     state_sha256: string;
     display_name?: string;
     avatar?: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `offer-sign-in` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   offerSignInMany(items: OfferSignInArgs[]): Promise<tilo.ActionAnswer[]>;
   completeLink(args: {
     proof: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `complete-link` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   completeLinkMany(items: CompleteLinkArgs[]): Promise<tilo.ActionAnswer[]>;
   setSignIn(args: {
     page: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `set-sign-in` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   setSignInMany(items: SetSignInArgs[]): Promise<tilo.ActionAnswer[]>;
   answerInteraction(args: {
     op: AnswerInteractionOp;
-  }): Promise<unknown | tilo.Run>;
+  }): Promise<unknown>;
   renameLink(args: {
     discord_user: string;
     user_name: string;
     display_name?: string;
     avatar?: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `rename-link` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   renameLinkMany(items: RenameLinkArgs[]): Promise<tilo.ActionAnswer[]>;
   setLinkPhoto(args: {
     discord_user: string;
     avatar: string;
     photo: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `set-link-photo` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   setLinkPhotoMany(items: SetLinkPhotoArgs[]): Promise<tilo.ActionAnswer[]>;
   unlink(args: {
     discord_user: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `unlink` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   unlinkMany(items: UnlinkArgs[]): Promise<tilo.ActionAnswer[]>;
   blockPersona(args: {
     discord_user: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `block-persona` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   blockPersonaMany(items: BlockPersonaArgs[]): Promise<tilo.ActionAnswer[]>;
   unblockPersona(args: {
     discord_user: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `unblock-persona` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   unblockPersonaMany(items: UnblockPersonaArgs[]): Promise<tilo.ActionAnswer[]>;
   rememberAvatar(args: {
     hash: string;
     blob: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `remember-avatar` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   rememberAvatarMany(items: RememberAvatarArgs[]): Promise<tilo.ActionAnswer[]>;
   finishImport(args: {
     tilo_only: string[];
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `finish-import` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   finishImportMany(items: FinishImportArgs[]): Promise<tilo.ActionAnswer[]>;
   applyEmoji(args: {
     op: EmojiSpec;
-  }): Promise<unknown | tilo.Run>;
+  }): Promise<unknown>;
   deleteEmoji(args: {
     op: DeleteEmojiOp;
-  }): Promise<unknown | tilo.Run>;
+  }): Promise<unknown>;
   settleEmoji(args: {
     tilo: string;
     result: DiscordResult;
     picture?: string;
     was?: string;
     deleted?: boolean;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `settle-emoji` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   settleEmojiMany(items: SettleEmojiArgs[]): Promise<tilo.ActionAnswer[]>;
   reportVoice(args?: {
     problem?: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `report-voice` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   reportVoiceMany(items: ReportVoiceArgs[]): Promise<tilo.ActionAnswer[]>;
   myLink(): Promise<void>;
@@ -625,8 +625,12 @@ export interface Guild extends tilo.Resource {
   }): Promise<void>;
 }
 
+/** The actions `Guild` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const GUILD_ACTIONS = ["connect", "connectMany", "observeLayout", "observeLayoutMany", "unmap", "unmapMany", "send", "delete", "react", "unreact", "startThread", "createWebhook", "applyChannel", "deleteChannel", "arrangeChannels", "applyRole", "deleteRole", "setMemberRoles", "kick", "ban", "unban", "setOverwrite", "fetchAsset", "beginConnect", "beginConnectMany", "offerLink", "offerLinkMany", "offerSignIn", "offerSignInMany", "completeLink", "completeLinkMany", "setSignIn", "setSignInMany", "answerInteraction", "renameLink", "renameLinkMany", "setLinkPhoto", "setLinkPhotoMany", "unlink", "unlinkMany", "blockPersona", "blockPersonaMany", "unblockPersona", "unblockPersonaMany", "rememberAvatar", "rememberAvatarMany", "finishImport", "finishImportMany", "applyEmoji", "deleteEmoji", "settleEmoji", "settleEmojiMany", "reportVoice", "reportVoiceMany", "myLink", "linkOffer", "planEvent"] as const;
+
 /** The `discord.guild` kind at `path`. */
 export function guild(ws: tilo.Workspace, path: string): Guild {
-  return resourceProxy(ws, path, SURFACE) as unknown as Guild;
+  return resourceProxy(ws, path, SURFACE, GUILD_ACTIONS) as unknown as Guild;
 }
 

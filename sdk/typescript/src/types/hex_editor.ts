@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.hex-editor@232e3b35ec6f1f92";
+export const SURFACE = "so.tilo.hex-editor@5d639d45f7ab2a9b";
 
 /** The arguments of `insert-bytes`. */
 export interface InsertBytesArgs {
@@ -51,25 +51,29 @@ export interface Document extends tilo.Resource {
   insertBytes(args: {
     offset: number;
     bytes: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `insert-bytes` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   insertBytesMany(items: InsertBytesArgs[]): Promise<tilo.ActionAnswer[]>;
   overwriteBytes(args: {
     offset: number;
     bytes: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `overwrite-bytes` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   overwriteBytesMany(items: OverwriteBytesArgs[]): Promise<tilo.ActionAnswer[]>;
   deleteBytes(args: {
     offset: number;
     len: number;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `delete-bytes` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   deleteBytesMany(items: DeleteBytesArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 
+/** The actions `Document` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const DOCUMENT_ACTIONS = ["insertBytes", "insertBytesMany", "overwriteBytes", "overwriteBytesMany", "deleteBytes", "deleteBytesMany"] as const;
+
 /** The `hex-editor.document` kind at `path`. */
 export function hexEditorDocument(ws: tilo.Workspace, path: string): Document {
-  return resourceProxy(ws, path, SURFACE) as unknown as Document;
+  return resourceProxy(ws, path, SURFACE, DOCUMENT_ACTIONS) as unknown as Document;
 }
 

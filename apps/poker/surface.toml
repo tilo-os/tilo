@@ -111,15 +111,15 @@ fields = [
 [[resources.types]]
 name = "Move"
 cases = [
-  { name = "none" },
-  { name = "small_blind" },
-  { name = "big_blind" },
-  { name = "check" },
-  { name = "call" },
-  { name = "bet" },
-  { name = "raise" },
-  { name = "all_in" },
-  { name = "fold" },
+  { name = "None" },
+  { name = "SmallBlind" },
+  { name = "BigBlind" },
+  { name = "Check" },
+  { name = "Call" },
+  { name = "Bet" },
+  { name = "Raise" },
+  { name = "AllIn" },
+  { name = "Fold" },
 ]
 
 [[resources.types]]
@@ -133,11 +133,11 @@ fields = [
 [[resources.types]]
 name = "Street"
 cases = [
-  { name = "idle" },
-  { name = "preflop" },
-  { name = "flop" },
-  { name = "turn" },
-  { name = "river" },
-  { name = "done" },
+  { name = "Idle" },
+  { name = "Preflop" },
+  { name = "Flop" },
+  { name = "Turn" },
+  { name = "River" },
+  { name = "Done" },
 ]
 

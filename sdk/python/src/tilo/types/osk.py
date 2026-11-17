@@ -17,7 +17,7 @@ all-or-nothing steps, all of them one run.
 from __future__ import annotations
 
 from typing import Any, Literal, NotRequired, TypedDict
-from tilo import Resource, Run
+from tilo import Entry, Resource, Run
 
 __all__ = [
     "KeyOffset",
@@ -79,6 +79,10 @@ class Keyboard(Resource):
         """Runs the app's action."""
         return self.action("set-emoji-recents", value=value)
 
+    # The actions a call reaches before the resource is read: `await tracker.create(...)`
+    # needs no `load()` first.
+    __actions__ = frozenset({"set_layout", "set_size", "set_suggestions", "set_autocorrect", "set_typing_language", "set_personalization", "set_emoji_recents"})
+
 
 class Learned(Resource):
     """What the keyboard learned — `osk.learned`."""
@@ -96,7 +100,7 @@ class Learned(Resource):
         """Read only."""
         return self.fields["touch"]
 
-    def learn(self, *, lesson: Lesson) -> Run | None:
+    def learn(self, *, lesson: Lesson) -> None:
         """Runs the app's action."""
         return self.action("learn", lesson=lesson)
 
@@ -104,12 +108,16 @@ class Learned(Resource):
         """Runs `learn` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("learn", items)
 
-    def forget(self) -> Run | None:
+    def forget(self) -> None:
         """Runs the app's action."""
         return self.action("forget")
 
     def forget_many(self, items: list[ForgetArgs]) -> list[dict[str, Any]]:
         """Runs `forget` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("forget", items)
+
+    # The actions a call reaches before the resource is read: `await tracker.create(...)`
+    # needs no `load()` first.
+    __actions__ = frozenset({"learn", "learn_many", "forget", "forget_many"})
 
 

@@ -50,30 +50,34 @@ export interface CloseFileArgs {
 
 /** Typst workspace — `typst-editor.workspace`. */
 export interface Workspace extends tilo.Resource {
-  files: TypstFile[];
+  files: Array<tilo.Entry<TypstFile>>;
   newFile(args: {
     name: string;
     path?: string;
     source?: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `new-file` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   newFileMany(items: NewFileArgs[]): Promise<tilo.ActionAnswer[]>;
   savedAt(args: {
     file: string;
     path: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `saved-at` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   savedAtMany(items: SavedAtArgs[]): Promise<tilo.ActionAnswer[]>;
   // the app's `load` action is the SDK's own: run it with `action("load")`.
   closeFile(args: {
     file: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `close-file` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   closeFileMany(items: CloseFileArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 
+/** The actions `Workspace` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const WORKSPACE_ACTIONS = ["newFile", "newFileMany", "savedAt", "savedAtMany", "closeFile", "closeFileMany"] as const;
+
 /** The `typst-editor.workspace` kind at `path`. */
 export function workspace(ws: tilo.Workspace, path: string): Workspace {
-  return resourceProxy(ws, path, SURFACE) as unknown as Workspace;
+  return resourceProxy(ws, path, SURFACE, WORKSPACE_ACTIONS) as unknown as Workspace;
 }
 

@@ -62,22 +62,22 @@ export interface MoveToTopArgs {
 
 /** Weather — `weather.locations`. */
 export interface Locations extends tilo.Resource {
-  places: Place[];
+  places: Array<tilo.Entry<Place>>;
   default_place: string;
   saveLocation(args: {
     place: PlaceDetails;
     make_default?: boolean;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `save-location` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   saveLocationMany(items: SaveLocationArgs[]): Promise<tilo.ActionAnswer[]>;
   useAsDefault(args: {
     place: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `use-as-default` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   useAsDefaultMany(items: UseAsDefaultArgs[]): Promise<tilo.ActionAnswer[]>;
   moveToTop(args: {
     place: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `move-to-top` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   moveToTopMany(items: MoveToTopArgs[]): Promise<tilo.ActionAnswer[]>;
   // the app's `remove` action is the SDK's own: run it with `action("remove")`.
@@ -90,8 +90,12 @@ export interface Locations extends tilo.Resource {
   }): Promise<void>;
 }
 
+/** The actions `Locations` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const LOCATIONS_ACTIONS = ["saveLocation", "saveLocationMany", "useAsDefault", "useAsDefaultMany", "moveToTop", "moveToTopMany", "refreshLocation", "openLocation"] as const;
+
 /** The `weather.locations` kind at `path`. */
 export function locations(ws: tilo.Workspace, path: string): Locations {
-  return resourceProxy(ws, path, SURFACE) as unknown as Locations;
+  return resourceProxy(ws, path, SURFACE, LOCATIONS_ACTIONS) as unknown as Locations;
 }
 

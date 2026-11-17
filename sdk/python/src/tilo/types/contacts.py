@@ -17,7 +17,7 @@ all-or-nothing steps, all of them one run.
 from __future__ import annotations
 
 from typing import Any, Literal, NotRequired, TypedDict
-from tilo import Resource, Run
+from tilo import Entry, Resource, Run
 
 __all__ = [
     "Address",
@@ -64,10 +64,10 @@ class Contact(TypedDict):
     website: str
     birthday: Any | None
     notes: str
-    phones: list[Labeled]
-    emails: list[Labeled]
-    addresses: list[Address]
-    groups: list[GroupEntry]
+    phones: list[Entry[Labeled]]
+    emails: list[Entry[Labeled]]
+    addresses: list[Entry[Address]]
+    groups: list[Entry[GroupEntry]]
     favorite: bool
     photo: str
 
@@ -95,7 +95,7 @@ class Person(TypedDict):
     phones: list[str]
     emails: list[str]
     photo: str
-    endpoints: list[Endpoint]
+    endpoints: list[Entry[Endpoint]]
 
 class Projected(TypedDict):
     person: str
@@ -202,13 +202,13 @@ ForgetEndpointArgs = TypedDict("ForgetEndpointArgs", {
 class Book(Resource):
     """Contacts — `contacts.book`."""
     __surface__ = "so.tilo.contacts@df7802e5d648a10e"
-    contacts: list[Contact]
+    contacts: list[Entry[Contact]]
     @property
     def removed(self) -> list[str]:
         """Read only."""
         return self.fields["removed"]
 
-    def new_contact(self, *, name: str) -> Run | None:
+    def new_contact(self, *, name: str) -> None:
         """Runs the app's action."""
         return self.action("new-contact", name=name)
 
@@ -216,7 +216,7 @@ class Book(Resource):
         """Runs `new-contact` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("new-contact", items)
 
-    def add_contacts(self, *, contacts: list[Contact]) -> Run | None:
+    def add_contacts(self, *, contacts: list[Contact]) -> None:
         """Runs the app's action."""
         return self.action("add-contacts", contacts=contacts)
 
@@ -224,7 +224,7 @@ class Book(Resource):
         """Runs `add-contacts` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("add-contacts", items)
 
-    def delete_contact(self, *, contact: str) -> Run | None:
+    def delete_contact(self, *, contact: str) -> None:
         """Runs the app's action."""
         return self.action("delete-contact", contact=contact)
 
@@ -237,7 +237,7 @@ class Book(Resource):
         contact: str,
         source: str,
         take_from_source: list[MergeField],
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         return self.action("merge-contacts", contact=contact, source=source, take_from_source=take_from_source)
 
@@ -258,17 +258,21 @@ class Book(Resource):
             args["name"] = name
         return self.action("export-vcard-content", **args)
 
+    # The actions a call reaches before the resource is read: `await tracker.create(...)`
+    # needs no `load()` first.
+    __actions__ = frozenset({"new_contact", "new_contact_many", "add_contacts", "add_contacts_many", "delete_contact", "delete_contact_many", "merge_contacts", "merge_contacts_many", "export_vcard_content"})
+
 
 class Identities(Resource):
     """Contact identities — `tilo.contacts.identities`."""
     __surface__ = "so.tilo.contacts@df7802e5d648a10e"
-    people: list[Person]
+    people: list[Entry[Person]]
 
     def project_contact(self,
         *,
         person: str,
         label: str,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         return self.action("project-contact", person=person, label=label)
 
@@ -276,7 +280,7 @@ class Identities(Resource):
         """Runs `project-contact` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("project-contact", items)
 
-    def remove_contact(self, *, person: str) -> Run | None:
+    def remove_contact(self, *, person: str) -> None:
         """Runs the app's action."""
         return self.action("remove-contact", person=person)
 
@@ -290,7 +294,7 @@ class Identities(Resource):
         endpoint: str,
         service: str,
         recipient: str,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         return self.action("confirm-endpoint", person=person, endpoint=endpoint, service=service, recipient=recipient)
 
@@ -306,7 +310,7 @@ class Identities(Resource):
         scope: str,
         recipient: str,
         revision: str,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         return self.action("confirm-account", person=person, endpoint=endpoint, service=service, scope=scope, recipient=recipient, revision=revision)
 
@@ -321,7 +325,7 @@ class Identities(Resource):
         endpoint: str,
         service: str,
         recipient: str,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         return self.action("replace-endpoint", person=person, previous=previous, endpoint=endpoint, service=service, recipient=recipient)
 
@@ -338,7 +342,7 @@ class Identities(Resource):
         scope: str,
         recipient: str,
         revision: str,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         return self.action("replace-account", person=person, previous=previous, endpoint=endpoint, service=service, scope=scope, recipient=recipient, revision=revision)
 
@@ -350,7 +354,7 @@ class Identities(Resource):
         *,
         person: str,
         phones: list[str],
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         return self.action("project-phones", person=person, phones=phones)
 
@@ -362,7 +366,7 @@ class Identities(Resource):
         *,
         person: str,
         emails: list[str],
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         return self.action("project-emails", person=person, emails=emails)
 
@@ -374,7 +378,7 @@ class Identities(Resource):
         *,
         people: list[Projected],
         removed: list[str],
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         return self.action("project-contacts", people=people, removed=removed)
 
@@ -386,12 +390,16 @@ class Identities(Resource):
         *,
         person: str,
         endpoint: str,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         return self.action("forget-endpoint", person=person, endpoint=endpoint)
 
     def forget_endpoint_many(self, items: list[ForgetEndpointArgs]) -> list[dict[str, Any]]:
         """Runs `forget-endpoint` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("forget-endpoint", items)
+
+    # The actions a call reaches before the resource is read: `await tracker.create(...)`
+    # needs no `load()` first.
+    __actions__ = frozenset({"project_contact", "project_contact_many", "remove_contact", "remove_contact_many", "confirm_endpoint", "confirm_endpoint_many", "confirm_account", "confirm_account_many", "replace_endpoint", "replace_endpoint_many", "replace_account", "replace_account_many", "project_phones", "project_phones_many", "project_emails", "project_emails_many", "project_contacts", "project_contacts_many", "forget_endpoint", "forget_endpoint_many"})
 
 

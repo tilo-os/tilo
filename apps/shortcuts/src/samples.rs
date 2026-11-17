@@ -78,6 +78,7 @@ fn row(
         resource,
         has_children: false,
         visibility: None,
+        surface: None,
     }
 }
 

@@ -102,6 +102,9 @@ pub struct Standalone {
     /// The MCP servers of the person's other devices, dialed from this
     /// runtime's endpoint as the device its store certifies.
     other_devices: Arc<tilo_mcp::devices::OtherDevices>,
+    /// The apps installed for this profile: what each publishes, before it
+    /// runs here.
+    apps: Arc<apps::Apps>,
     _lock: advisory_lock::FileLock,
 }
 
@@ -261,6 +264,7 @@ impl Standalone {
         Ok(Self {
             policy_origin,
             broker,
+            apps,
             other_devices: other_devices(&joined, &personal.sync),
             joined,
             _workspace_keys: group_keys,
@@ -477,6 +481,7 @@ impl RuntimeServices for Standalone {
             broker,
             workspace: self.workspace.clone(),
             joined: Arc::clone(&self.joined),
+            apps: Some(self.apps.clone()),
             session: Some(Arc::new(AdmittedRuntimeSession {
                 policy_time: self.policy_origin.capture().map_err(io::Error::other)?,
                 host,
@@ -554,6 +559,10 @@ pub struct RuntimeActionHost {
     broker: AppActionBroker,
     workspace: String,
     joined: Arc<Joined>,
+    /// The apps installed for this runtime's profile: what one publishes
+    /// before it opens. `None` for a host that serves only the person's
+    /// other devices.
+    apps: Option<Arc<apps::Apps>>,
     // Retains original custody for both owner/search and MCP callers. An
     // owner projection is not a native seat and never acquires seat authority.
     session: Option<Arc<AdmittedRuntimeSession>>,
@@ -688,6 +697,7 @@ impl RuntimeActionHost {
             broker: self.broker.clone(),
             workspace: self.workspace.clone(),
             joined: self.joined.clone(),
+            apps: self.apps.clone(),
             session: Some(Arc::new(AdmittedRuntimeSession {
                 policy_time: policy_time.clone(),
                 host: qualified,
@@ -726,6 +736,14 @@ fn on_this_device(caller: &Caller) -> Caller {
 }
 
 impl ActionHost for RuntimeActionHost {
+    fn installed_surface(&self, app_id: &str) -> tilo_actions::remote::Pending<Option<Vec<u8>>> {
+        tilo_actions::remote::Pending::ready(
+            self.apps
+                .as_ref()
+                .and_then(|apps| apps.installed_surface(app_id)),
+        )
+    }
+
     fn retire_execution(&self, caller: &Caller) {
         if let Some(session) = &self.session {
             if caller
@@ -1377,6 +1395,7 @@ fn serve_key_sessions(
                 broker,
                 workspace: workspace.to_owned(),
                 joined: Arc::clone(joined),
+                apps: None,
                 session: None,
             },
             workspace: workspace.to_owned(),

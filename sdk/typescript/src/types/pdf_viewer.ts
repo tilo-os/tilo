@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.pdf-viewer@07f8831c6e812fb6";
+export const SURFACE = "so.tilo.pdf-viewer@b8426dff6d7c0444";
 
 export interface AdoptedAnnotation {
   id: string;
@@ -76,7 +76,7 @@ export interface Annotation {
 /** One of member, named: an object whose case the app tags it with. */
 export type Author = Record<string, unknown>;
 
-/** One of bool, int, str: an object whose case the app tags it with. */
+/** One of Bool, Int, Str: an object whose case the app tags it with. */
 export type ClipAttr = Record<string, unknown>;
 
 export interface ClipBlock {
@@ -96,7 +96,7 @@ export interface Comment {
   text: string;
   body: ClipBlock[];
   resolved: boolean;
-  replies: Reply[];
+  replies: Array<tilo.Entry<Reply>>;
 }
 
 export interface ExistingMarkup {
@@ -127,7 +127,7 @@ export interface MarkSpan {
   value: MarkValue;
 }
 
-/** One of bool, int, str: an object whose case the app tags it with. */
+/** One of Bool, Int, Str: an object whose case the app tags it with. */
 export type MarkValue = Record<string, unknown>;
 
 /** One of "highlight", "underline", "strikeout", "squiggly". */
@@ -376,10 +376,10 @@ export interface Document extends tilo.Resource {
   readonly source_name: string;
   readonly page_plan_seeded: boolean;
   readonly imported_source: string;
-  pages: PageOccurrence[];
-  annotations: Annotation[];
-  comments: Comment[];
-  signatures: StoredSignature[];
+  pages: Array<tilo.Entry<PageOccurrence>>;
+  annotations: Array<tilo.Entry<Annotation>>;
+  comments: Array<tilo.Entry<Comment>>;
+  signatures: Array<tilo.Entry<StoredSignature>>;
   form_values: Record<string, unknown>;
   readonly adopted: Record<string, unknown>;
   reading_page: string;
@@ -389,78 +389,78 @@ export interface Document extends tilo.Resource {
     page: string;
     fraction: number;
     zoom: number;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `record-reading-position` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   recordReadingPositionMany(items: RecordReadingPositionArgs[]): Promise<tilo.ActionAnswer[]>;
   startPagePlan(args: {
     pages: number;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `start-page-plan` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   startPagePlanMany(items: StartPagePlanArgs[]): Promise<tilo.ActionAnswer[]>;
   pinSource(args: {
     source: unknown;
     name: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `pin-source` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   pinSourceMany(items: PinSourceArgs[]): Promise<tilo.ActionAnswer[]>;
   adoptExisting(args: {
     source: string;
     markup: ExistingMarkup;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `adopt-existing` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   adoptExistingMany(items: AdoptExistingArgs[]): Promise<tilo.ActionAnswer[]>;
   importPages(args: {
     pages: PagePlanEntry[];
     after?: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `import-pages` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   importPagesMany(items: ImportPagesArgs[]): Promise<tilo.ActionAnswer[]>;
   duplicatePage(args: {
     page: string;
     copy?: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `duplicate-page` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   duplicatePageMany(items: DuplicatePageArgs[]): Promise<tilo.ActionAnswer[]>;
   deletePage(args: {
     page: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `delete-page` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   deletePageMany(items: DeletePageArgs[]): Promise<tilo.ActionAnswer[]>;
   movePage(args: {
     page: string;
     after?: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `move-page` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   movePageMany(items: MovePageArgs[]): Promise<tilo.ActionAnswer[]>;
   rotatePage(args: {
     page: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `rotate-page` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   rotatePageMany(items: RotatePageArgs[]): Promise<tilo.ActionAnswer[]>;
   addAnnotation(args: {
     annotation: NewAnnotation;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `add-annotation` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   addAnnotationMany(items: AddAnnotationArgs[]): Promise<tilo.ActionAnswer[]>;
   deleteAnnotation(args: {
     annotation: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `delete-annotation` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   deleteAnnotationMany(items: DeleteAnnotationArgs[]): Promise<tilo.ActionAnswer[]>;
   createNote(args: {
     note: NewNote;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `create-note` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   createNoteMany(items: CreateNoteArgs[]): Promise<tilo.ActionAnswer[]>;
   addNote(args: {
     text: string;
     page?: number;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `add-note` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   addNoteMany(items: AddNoteArgs[]): Promise<tilo.ActionAnswer[]>;
   addComment(args: {
     comment: NewComment;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `add-comment` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   addCommentMany(items: AddCommentArgs[]): Promise<tilo.ActionAnswer[]>;
   reply(args: {
@@ -468,28 +468,28 @@ export interface Document extends tilo.Resource {
     text: string;
     id?: string;
     rich?: ClipBlock[];
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `reply` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   replyMany(items: ReplyArgs[]): Promise<tilo.ActionAnswer[]>;
   deleteComment(args: {
     comment: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `delete-comment` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   deleteCommentMany(items: DeleteCommentArgs[]): Promise<tilo.ActionAnswer[]>;
   addSignature(args: {
     signature: NewSignature;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `add-signature` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   addSignatureMany(items: AddSignatureArgs[]): Promise<tilo.ActionAnswer[]>;
   addTypedSignature(args: {
     signer: string;
     page?: number;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `add-typed-signature` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   addTypedSignatureMany(items: AddTypedSignatureArgs[]): Promise<tilo.ActionAnswer[]>;
   deleteSignature(args: {
     signature: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `delete-signature` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   deleteSignatureMany(items: DeleteSignatureArgs[]): Promise<tilo.ActionAnswer[]>;
   readText(args?: {
@@ -503,9 +503,13 @@ export interface Document extends tilo.Resource {
   }): Promise<void>;
 }
 
+/** The actions `Document` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const DOCUMENT_ACTIONS = ["recordReadingPosition", "recordReadingPositionMany", "startPagePlan", "startPagePlanMany", "pinSource", "pinSourceMany", "adoptExisting", "adoptExistingMany", "importPages", "importPagesMany", "duplicatePage", "duplicatePageMany", "deletePage", "deletePageMany", "movePage", "movePageMany", "rotatePage", "rotatePageMany", "addAnnotation", "addAnnotationMany", "deleteAnnotation", "deleteAnnotationMany", "createNote", "createNoteMany", "addNote", "addNoteMany", "addComment", "addCommentMany", "reply", "replyMany", "deleteComment", "deleteCommentMany", "addSignature", "addSignatureMany", "addTypedSignature", "addTypedSignatureMany", "deleteSignature", "deleteSignatureMany", "readText", "readFormFields", "lookPage"] as const;
+
 /** The `pdf.document` kind at `path`. */
 export function pdfDocument(ws: tilo.Workspace, path: string): Document {
-  return resourceProxy(ws, path, SURFACE) as unknown as Document;
+  return resourceProxy(ws, path, SURFACE, DOCUMENT_ACTIONS) as unknown as Document;
 }
 
 /** Signature — `pdf.signature-profile`. */
@@ -514,18 +518,22 @@ export interface SignatureProfile extends tilo.Resource {
   strokes: Stroke[];
   setSigner(args: {
     name: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `set-signer` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   setSignerMany(items: SetSignerArgs[]): Promise<tilo.ActionAnswer[]>;
   setStrokes(args: {
     strokes: unknown[][];
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `set-strokes` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   setStrokesMany(items: SetStrokesArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 
+/** The actions `SignatureProfile` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const SIGNATUREPROFILE_ACTIONS = ["setSigner", "setSignerMany", "setStrokes", "setStrokesMany"] as const;
+
 /** The `pdf.signature-profile` kind at `path`. */
 export function signatureProfile(ws: tilo.Workspace, path: string): SignatureProfile {
-  return resourceProxy(ws, path, SURFACE) as unknown as SignatureProfile;
+  return resourceProxy(ws, path, SURFACE, SIGNATUREPROFILE_ACTIONS) as unknown as SignatureProfile;
 }
 

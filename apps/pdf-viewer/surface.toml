@@ -307,9 +307,9 @@ cases = [
 [[resources.types]]
 name = "ClipAttr"
 cases = [
-  { name = "bool", fields = [{ name = "0", type = "bool" }] },
-  { name = "int", fields = [{ name = "0", type = "int" }] },
-  { name = "str", fields = [{ name = "0", type = "text" }] },
+  { name = "Bool", fields = [{ name = "0", type = "bool" }] },
+  { name = "Int", fields = [{ name = "0", type = "int" }] },
+  { name = "Str", fields = [{ name = "0", type = "text" }] },
 ]
 
 [[resources.types]]
@@ -382,9 +382,9 @@ fields = [
 [[resources.types]]
 name = "MarkValue"
 cases = [
-  { name = "bool", fields = [{ name = "0", type = "bool" }] },
-  { name = "int", fields = [{ name = "0", type = "int" }] },
-  { name = "str", fields = [{ name = "0", type = "text" }] },
+  { name = "Bool", fields = [{ name = "0", type = "bool" }] },
+  { name = "Int", fields = [{ name = "0", type = "int" }] },
+  { name = "Str", fields = [{ name = "0", type = "text" }] },
 ]
 
 [[resources.types]]

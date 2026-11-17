@@ -22,13 +22,13 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.api-tester@d6b32f527d6a5c3a";
+export const SURFACE = "so.tilo.api-tester@d34f2cdf6de15455";
 
-/** One of "none", "bearer", "basic", "api_key". */
-export type AuthScheme = "none" | "bearer" | "basic" | "api_key";
+/** One of "None", "Bearer", "Basic", "ApiKey". */
+export type AuthScheme = "None" | "Bearer" | "Basic" | "ApiKey";
 
-/** One of "none", "json", "form", "raw". */
-export type BodyMode = "none" | "json" | "form" | "raw";
+/** One of "None", "Json", "Form", "Raw". */
+export type BodyMode = "None" | "Json" | "Form" | "Raw";
 
 export interface Credentials {
   scheme: AuthScheme;
@@ -39,22 +39,22 @@ export interface Credentials {
 
 export interface Environment {
   name: string;
-  variables: Variable[];
+  variables: Array<tilo.Entry<Variable>>;
 }
 
-/** One of "get", "post", "put", "patch", "delete", "head", "options". */
-export type HttpMethod = "get" | "post" | "put" | "patch" | "delete" | "head" | "options";
+/** One of "Get", "Post", "Put", "Patch", "Delete", "Head", "Options". */
+export type HttpMethod = "Get" | "Post" | "Put" | "Patch" | "Delete" | "Head" | "Options";
 
 export interface RequestRecord {
   name: string;
   method: HttpMethod;
   url: string;
-  params: Row[];
-  headers: Row[];
+  params: Array<tilo.Entry<Row>>;
+  headers: Array<tilo.Entry<Row>>;
   auth: Credentials;
   body_mode: BodyMode;
   body: string;
-  form: Row[];
+  form: Array<tilo.Entry<Row>>;
 }
 
 export interface Row {
@@ -65,7 +65,7 @@ export interface Row {
 
 export interface SavedCollection {
   name: string;
-  requests: RequestRecord[];
+  requests: Array<tilo.Entry<RequestRecord>>;
 }
 
 export interface Sent {
@@ -173,62 +173,62 @@ export interface RecordSentArgs {
 
 /** API workspace — `api-tester.workspace`. */
 export interface Workspace extends tilo.Resource {
-  collections: SavedCollection[];
-  environments: Environment[];
+  collections: Array<tilo.Entry<SavedCollection>>;
+  environments: Array<tilo.Entry<Environment>>;
   active_environment: string | null;
   request: RequestRecord;
   readonly opened: string;
-  readonly history: Sent[];
-  newRequest(): Promise<tilo.Run | void>;
+  readonly history: Array<tilo.Entry<Sent>>;
+  newRequest(): Promise<void>;
   /** Runs `new-request` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   newRequestMany(items: NewRequestArgs[]): Promise<tilo.ActionAnswer[]>;
   newCollection(args: {
     name: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `new-collection` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   newCollectionMany(items: NewCollectionArgs[]): Promise<tilo.ActionAnswer[]>;
   deleteCollection(args: {
     collection: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `delete-collection` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   deleteCollectionMany(items: DeleteCollectionArgs[]): Promise<tilo.ActionAnswer[]>;
   addRequest(args: {
     collection: string;
     name: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `add-request` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   addRequestMany(items: AddRequestArgs[]): Promise<tilo.ActionAnswer[]>;
   saveRequest(args: {
     collection: string;
     name?: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `save-request` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   saveRequestMany(items: SaveRequestArgs[]): Promise<tilo.ActionAnswer[]>;
   openRequest(args: {
     collection: string;
     request: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `open-request` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   openRequestMany(items: OpenRequestArgs[]): Promise<tilo.ActionAnswer[]>;
   deleteRequest(args: {
     collection: string;
     request: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `delete-request` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   deleteRequestMany(items: DeleteRequestArgs[]): Promise<tilo.ActionAnswer[]>;
   newEnvironment(args: {
     name: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `new-environment` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   newEnvironmentMany(items: NewEnvironmentArgs[]): Promise<tilo.ActionAnswer[]>;
   deleteEnvironment(args: {
     environment: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `delete-environment` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   deleteEnvironmentMany(items: DeleteEnvironmentArgs[]): Promise<tilo.ActionAnswer[]>;
   useEnvironment(args: {
     environment: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `use-environment` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   useEnvironmentMany(items: UseEnvironmentArgs[]): Promise<tilo.ActionAnswer[]>;
   addVariable(args: {
@@ -236,24 +236,24 @@ export interface Workspace extends tilo.Resource {
     key: string;
     value?: string;
     secret?: boolean;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `add-variable` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   addVariableMany(items: AddVariableArgs[]): Promise<tilo.ActionAnswer[]>;
   openSent(args: {
     sent: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `open-sent` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   openSentMany(items: OpenSentArgs[]): Promise<tilo.ActionAnswer[]>;
   saveSent(args: {
     collection: string;
     sent: string;
     name?: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `save-sent` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   saveSentMany(items: SaveSentArgs[]): Promise<tilo.ActionAnswer[]>;
   deleteSent(args: {
     sent: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `delete-sent` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   deleteSentMany(items: DeleteSentArgs[]): Promise<tilo.ActionAnswer[]>;
   recordSent(args: {
@@ -261,13 +261,17 @@ export interface Workspace extends tilo.Resource {
     url: string;
     status: number;
     duration_ms: number;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `record-sent` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   recordSentMany(items: RecordSentArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 
+/** The actions `Workspace` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const WORKSPACE_ACTIONS = ["newRequest", "newRequestMany", "newCollection", "newCollectionMany", "deleteCollection", "deleteCollectionMany", "addRequest", "addRequestMany", "saveRequest", "saveRequestMany", "openRequest", "openRequestMany", "deleteRequest", "deleteRequestMany", "newEnvironment", "newEnvironmentMany", "deleteEnvironment", "deleteEnvironmentMany", "useEnvironment", "useEnvironmentMany", "addVariable", "addVariableMany", "openSent", "openSentMany", "saveSent", "saveSentMany", "deleteSent", "deleteSentMany", "recordSent", "recordSentMany"] as const;
+
 /** The `api-tester.workspace` kind at `path`. */
 export function workspace(ws: tilo.Workspace, path: string): Workspace {
-  return resourceProxy(ws, path, SURFACE) as unknown as Workspace;
+  return resourceProxy(ws, path, SURFACE, WORKSPACE_ACTIONS) as unknown as Workspace;
 }
 

@@ -77,6 +77,7 @@ mod tests {
             action: None,
             has_children: false,
             visibility: None,
+            surface: None,
         }
     }
 

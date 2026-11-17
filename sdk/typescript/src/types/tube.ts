@@ -73,16 +73,16 @@ export interface Library extends tilo.Resource {
   queue: string[];
   subscriptions: string[];
   comment_likes: string[];
-  replies: Reply[];
+  replies: Array<tilo.Entry<Reply>>;
   replyToComment(args: {
     comment: string;
     text: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `reply-to-comment` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   replyToCommentMany(items: ReplyToCommentArgs[]): Promise<tilo.ActionAnswer[]>;
   retract(args: {
     reply: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `retract` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   retractMany(items: RetractArgs[]): Promise<tilo.ActionAnswer[]>;
   openVideo(args: {
@@ -125,9 +125,13 @@ export interface Library extends tilo.Resource {
   }): Promise<void>;
 }
 
+/** The actions `Library` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const LIBRARY_ACTIONS = ["replyToComment", "replyToCommentMany", "retract", "retractMany", "openVideo", "openCreator", "openPlaylist", "search", "togglePlayback", "seek", "skipSegment", "share", "markWatched", "forgetWatched", "clearHistory", "setPreference", "setPreferredQuality", "setSegmentHandling"] as const;
+
 /** The `tube.library` kind at `path`. */
 export function library(ws: tilo.Workspace, path: string): Library {
-  return resourceProxy(ws, path, SURFACE) as unknown as Library;
+  return resourceProxy(ws, path, SURFACE, LIBRARY_ACTIONS) as unknown as Library;
 }
 
 /** Watch history — `tube.watch-history`. */
@@ -137,33 +141,37 @@ export interface WatchHistory extends tilo.Resource {
   record(args: {
     video: string;
     at_ms: number;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `record` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   recordMany(items: RecordArgs[]): Promise<tilo.ActionAnswer[]>;
   progress(args: {
     video: string;
     position_ms: number;
     duration_ms: number;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `progress` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   progressMany(items: ProgressArgs[]): Promise<tilo.ActionAnswer[]>;
   import(args: {
     watched: unknown[];
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `import` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   importMany(items: ImportArgs[]): Promise<tilo.ActionAnswer[]>;
   forget(args: {
     video: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `forget` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   forgetMany(items: ForgetArgs[]): Promise<tilo.ActionAnswer[]>;
-  clear(): Promise<tilo.Run | void>;
+  clear(): Promise<void>;
   /** Runs `clear` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   clearMany(items: ClearArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 
+/** The actions `WatchHistory` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const WATCHHISTORY_ACTIONS = ["record", "recordMany", "progress", "progressMany", "import", "importMany", "forget", "forgetMany", "clear", "clearMany"] as const;
+
 /** The `tube.watch-history` kind at `path`. */
 export function watchHistory(ws: tilo.Workspace, path: string): WatchHistory {
-  return resourceProxy(ws, path, SURFACE) as unknown as WatchHistory;
+  return resourceProxy(ws, path, SURFACE, WATCHHISTORY_ACTIONS) as unknown as WatchHistory;
 }
 

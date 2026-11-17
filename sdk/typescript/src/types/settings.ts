@@ -22,13 +22,13 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.settings@9d365e8843d611be";
+export const SURFACE = "so.tilo.settings@27961302d579fd33";
 
 /** One of "none", "grayscale", "inverted", "grayscale_inverted". */
 export type ColorFilter = "none" | "grayscale" | "inverted" | "grayscale_inverted";
 
-/** One of "lens", "full_screen". */
-export type MagnifierView = "lens" | "full_screen";
+/** One of "Lens", "FullScreen". */
+export type MagnifierView = "Lens" | "FullScreen";
 
 /** One of "auto", "always", "never". */
 export type OnScreenKeyboard = "auto" | "always" | "never";
@@ -122,14 +122,14 @@ export type Currency = "USD" | "EUR" | "GBP" | "JPY" | "CHF" | "CAD" | "AUD" | "
 /** One of "Language", "ISO", "US", "EU", "Long". */
 export type DateStyle = "Language" | "ISO" | "US" | "EU" | "Long";
 
-/** One of "monday", "sunday", "saturday". */
-export type FirstDayOfWeek = "monday" | "sunday" | "saturday";
+/** One of "Monday", "Sunday", "Saturday". */
+export type FirstDayOfWeek = "Monday" | "Sunday" | "Saturday";
 
-/** One of "metric", "imperial". */
-export type Measurement = "metric" | "imperial";
+/** One of "Metric", "Imperial". */
+export type Measurement = "Metric" | "Imperial";
 
-/** One of "decimal_point", "decimal_comma". */
-export type NumberStyle = "decimal_point" | "decimal_comma";
+/** One of "DecimalPoint", "DecimalComma". */
+export type NumberStyle = "DecimalPoint" | "DecimalComma";
 
 /** One of "Language", "H24", "H12". */
 export type TimeStyle = "Language" | "H24" | "H12";
@@ -569,9 +569,13 @@ export interface Root extends tilo.Resource {
   inspectCalendarChoices(): Promise<void>;
 }
 
+/** The actions `Root` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const ROOT_ACTIONS = ["inspectInputSources", "inspectKeyboardMap", "inspectKeyboardSources", "storageSummary", "searchHubModels", "showHubModel", "discoverThunderbirdAccounts", "chooseThunderbirdMetadata", "inspectThunderbirdImport", "inspectCalendarChoices"] as const;
+
 /** The `settings.root` kind at `path`. */
 export function root(ws: tilo.Workspace, path: string): Root {
-  return resourceProxy(ws, path, SURFACE) as unknown as Root;
+  return resourceProxy(ws, path, SURFACE, ROOT_ACTIONS) as unknown as Root;
 }
 
 /** Appearance — `settings.appearance`. */
@@ -600,19 +604,23 @@ export interface Appearance extends tilo.Resource {
   translucency: number | null;
   chooseTheme(args: {
     theme: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `choose-theme` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   chooseThemeMany(items: ChooseThemeArgs[]): Promise<tilo.ActionAnswer[]>;
   setDarkMode(args: {
     on: boolean;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `set-dark-mode` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   setDarkModeMany(items: SetDarkModeArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 
+/** The actions `Appearance` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const APPEARANCE_ACTIONS = ["chooseTheme", "chooseThemeMany", "setDarkMode", "setDarkModeMany"] as const;
+
 /** The `settings.appearance` kind at `path`. */
 export function appearance(ws: tilo.Workspace, path: string): Appearance {
-  return resourceProxy(ws, path, SURFACE) as unknown as Appearance;
+  return resourceProxy(ws, path, SURFACE, APPEARANCE_ACTIONS) as unknown as Appearance;
 }
 
 /** Appearance on this device — `settings.appearance-device`. */
@@ -620,9 +628,13 @@ export interface AppearanceDevice extends tilo.Resource {
   readonly distribution_defaults: unknown | null;
 }
 
+/** The actions `AppearanceDevice` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const APPEARANCEDEVICE_ACTIONS = [] as const;
+
 /** The `settings.appearance-device` kind at `path`. */
 export function appearanceDevice(ws: tilo.Workspace, path: string): AppearanceDevice {
-  return resourceProxy(ws, path, SURFACE) as unknown as AppearanceDevice;
+  return resourceProxy(ws, path, SURFACE, APPEARANCEDEVICE_ACTIONS) as unknown as AppearanceDevice;
 }
 
 /** Accessibility — `settings.accessibility`. */
@@ -654,19 +666,23 @@ export interface Accessibility extends tilo.Resource {
   dictation_literal: boolean;
   stepMagnifier(args: {
     step: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `step-magnifier` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   stepMagnifierMany(items: StepMagnifierArgs[]): Promise<tilo.ActionAnswer[]>;
   setScreenReader(args: {
     on: boolean;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `set-screen-reader` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   setScreenReaderMany(items: SetScreenReaderArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 
+/** The actions `Accessibility` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const ACCESSIBILITY_ACTIONS = ["stepMagnifier", "stepMagnifierMany", "setScreenReader", "setScreenReaderMany"] as const;
+
 /** The `settings.accessibility` kind at `path`. */
 export function accessibility(ws: tilo.Workspace, path: string): Accessibility {
-  return resourceProxy(ws, path, SURFACE) as unknown as Accessibility;
+  return resourceProxy(ws, path, SURFACE, ACCESSIBILITY_ACTIONS) as unknown as Accessibility;
 }
 
 /** Accessibility on this device — `settings.accessibility-device`. */
@@ -674,9 +690,13 @@ export interface AccessibilityDevice extends tilo.Resource {
   apply_to_sign_in: boolean;
 }
 
+/** The actions `AccessibilityDevice` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const ACCESSIBILITYDEVICE_ACTIONS = [] as const;
+
 /** The `settings.accessibility-device` kind at `path`. */
 export function accessibilityDevice(ws: tilo.Workspace, path: string): AccessibilityDevice {
-  return resourceProxy(ws, path, SURFACE) as unknown as AccessibilityDevice;
+  return resourceProxy(ws, path, SURFACE, ACCESSIBILITYDEVICE_ACTIONS) as unknown as AccessibilityDevice;
 }
 
 /** Input — `settings.input`. */
@@ -707,31 +727,35 @@ export interface Input extends tilo.Resource {
   readonly paste_shortcuts: Record<string, string>;
   setKeyRepeat(args: {
     rate: number;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `set-key-repeat` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   setKeyRepeatMany(items: SetKeyRepeatArgs[]): Promise<tilo.ActionAnswer[]>;
   chooseLayout(args: {
     layout: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `choose-layout` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   chooseLayoutMany(items: ChooseLayoutArgs[]): Promise<tilo.ActionAnswer[]>;
   setLayouts(args: {
     layouts: string[];
     active: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `set-layouts` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   setLayoutsMany(items: SetLayoutsArgs[]): Promise<tilo.ActionAnswer[]>;
   setPasteShortcut(args: {
     app: string;
     shortcut: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `set-paste-shortcut` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   setPasteShortcutMany(items: SetPasteShortcutArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 
+/** The actions `Input` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const INPUT_ACTIONS = ["setKeyRepeat", "setKeyRepeatMany", "chooseLayout", "chooseLayoutMany", "setLayouts", "setLayoutsMany", "setPasteShortcut", "setPasteShortcutMany"] as const;
+
 /** The `settings.input` kind at `path`. */
 export function input(ws: tilo.Workspace, path: string): Input {
-  return resourceProxy(ws, path, SURFACE) as unknown as Input;
+  return resourceProxy(ws, path, SURFACE, INPUT_ACTIONS) as unknown as Input;
 }
 
 /** Input on this device — `settings.input-device`. */
@@ -748,73 +772,73 @@ export interface InputDevice extends tilo.Resource {
   setKeyboardLayouts(args: {
     keyboard: string;
     profile: KeyboardProfile;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `set-keyboard-layouts` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   setKeyboardLayoutsMany(items: SetKeyboardLayoutsArgs[]): Promise<tilo.ActionAnswer[]>;
   useSharedLayouts(args: {
     keyboard: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `use-shared-layouts` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   useSharedLayoutsMany(items: UseSharedLayoutsArgs[]): Promise<tilo.ActionAnswer[]>;
   setKeyboardModel(args: {
     model: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `set-keyboard-model` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   setKeyboardModelMany(items: SetKeyboardModelArgs[]): Promise<tilo.ActionAnswer[]>;
   showKeyboardLayout(args?: {
     layout?: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `show-keyboard-layout` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   showKeyboardLayoutMany(items: ShowKeyboardLayoutArgs[]): Promise<tilo.ActionAnswer[]>;
   inspectKeyboard(args: {
     level: number;
     extra_levels: boolean;
     key: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `inspect-keyboard` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   inspectKeyboardMany(items: InspectKeyboardArgs[]): Promise<tilo.ActionAnswer[]>;
   setTabletOutput(args: {
     device: string;
     output: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `set-tablet-output` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   setTabletOutputMany(items: SetTabletOutputArgs[]): Promise<tilo.ActionAnswer[]>;
   setTabletKeepAspect(args: {
     device: string;
     on: boolean;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `set-tablet-keep-aspect` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   setTabletKeepAspectMany(items: SetTabletKeepAspectArgs[]): Promise<tilo.ActionAnswer[]>;
   setTabletLeftHanded(args: {
     device: string;
     on: boolean;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `set-tablet-left-handed` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   setTabletLeftHandedMany(items: SetTabletLeftHandedArgs[]): Promise<tilo.ActionAnswer[]>;
   setTabletTipFeel(args: {
     device: string;
     feel: number;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `set-tablet-tip-feel` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   setTabletTipFeelMany(items: SetTabletTipFeelArgs[]): Promise<tilo.ActionAnswer[]>;
   setTabletButton(args: {
     device: string;
     button: string;
     action: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `set-tablet-button` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   setTabletButtonMany(items: SetTabletButtonArgs[]): Promise<tilo.ActionAnswer[]>;
   setTabletEraser(args: {
     device: string;
     action: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `set-tablet-eraser` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   setTabletEraserMany(items: SetTabletEraserArgs[]): Promise<tilo.ActionAnswer[]>;
   setPadButton(args: {
     device: string;
     button: number;
     action: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `set-pad-button` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   setPadButtonMany(items: SetPadButtonArgs[]): Promise<tilo.ActionAnswer[]>;
   setPadDial(args: {
@@ -823,14 +847,18 @@ export interface InputDevice extends tilo.Resource {
     index: number;
     mode: number;
     action: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `set-pad-dial` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   setPadDialMany(items: SetPadDialArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 
+/** The actions `InputDevice` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const INPUTDEVICE_ACTIONS = ["setKeyboardLayouts", "setKeyboardLayoutsMany", "useSharedLayouts", "useSharedLayoutsMany", "setKeyboardModel", "setKeyboardModelMany", "showKeyboardLayout", "showKeyboardLayoutMany", "inspectKeyboard", "inspectKeyboardMany", "setTabletOutput", "setTabletOutputMany", "setTabletKeepAspect", "setTabletKeepAspectMany", "setTabletLeftHanded", "setTabletLeftHandedMany", "setTabletTipFeel", "setTabletTipFeelMany", "setTabletButton", "setTabletButtonMany", "setTabletEraser", "setTabletEraserMany", "setPadButton", "setPadButtonMany", "setPadDial", "setPadDialMany"] as const;
+
 /** The `settings.input-device` kind at `path`. */
 export function inputDevice(ws: tilo.Workspace, path: string): InputDevice {
-  return resourceProxy(ws, path, SURFACE) as unknown as InputDevice;
+  return resourceProxy(ws, path, SURFACE, INPUTDEVICE_ACTIONS) as unknown as InputDevice;
 }
 
 /** Spelling and text — `settings.text-assistance`. */
@@ -840,9 +868,13 @@ export interface TextAssistance extends tilo.Resource {
   spelling_language: string;
 }
 
+/** The actions `TextAssistance` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const TEXTASSISTANCE_ACTIONS = [] as const;
+
 /** The `settings.text-assistance` kind at `path`. */
 export function textAssistance(ws: tilo.Workspace, path: string): TextAssistance {
-  return resourceProxy(ws, path, SURFACE) as unknown as TextAssistance;
+  return resourceProxy(ws, path, SURFACE, TEXTASSISTANCE_ACTIONS) as unknown as TextAssistance;
 }
 
 /** Power — `settings.power`. */
@@ -863,19 +895,23 @@ export interface Power extends tilo.Resource {
   critical_action: PowerActionPref;
   setSuspendPluggedIn(args: {
     minutes: number;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `set-suspend-plugged-in` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   setSuspendPluggedInMany(items: SetSuspendPluggedInArgs[]): Promise<tilo.ActionAnswer[]>;
   setSuspendOnBattery(args: {
     minutes: number;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `set-suspend-on-battery` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   setSuspendOnBatteryMany(items: SetSuspendOnBatteryArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 
+/** The actions `Power` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const POWER_ACTIONS = ["setSuspendPluggedIn", "setSuspendPluggedInMany", "setSuspendOnBattery", "setSuspendOnBatteryMany"] as const;
+
 /** The `settings.power` kind at `path`. */
 export function power(ws: tilo.Workspace, path: string): Power {
-  return resourceProxy(ws, path, SURFACE) as unknown as Power;
+  return resourceProxy(ws, path, SURFACE, POWER_ACTIONS) as unknown as Power;
 }
 
 /** Widgets — `settings.widgets`. */
@@ -886,9 +922,13 @@ export interface Widgets extends tilo.Resource {
   system_monitor: WidgetPrefs;
 }
 
+/** The actions `Widgets` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const WIDGETS_ACTIONS = [] as const;
+
 /** The `settings.widgets` kind at `path`. */
 export function widgets(ws: tilo.Workspace, path: string): Widgets {
-  return resourceProxy(ws, path, SURFACE) as unknown as Widgets;
+  return resourceProxy(ws, path, SURFACE, WIDGETS_ACTIONS) as unknown as Widgets;
 }
 
 /** Search history — `settings.search_history`. */
@@ -898,9 +938,13 @@ export interface SearchHistory extends tilo.Resource {
   places: unknown;
 }
 
+/** The actions `SearchHistory` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const SEARCHHISTORY_ACTIONS = [] as const;
+
 /** The `settings.search_history` kind at `path`. */
 export function searchHistory(ws: tilo.Workspace, path: string): SearchHistory {
-  return resourceProxy(ws, path, SURFACE) as unknown as SearchHistory;
+  return resourceProxy(ws, path, SURFACE, SEARCHHISTORY_ACTIONS) as unknown as SearchHistory;
 }
 
 /** Updates — `settings.updates`. */
@@ -909,19 +953,23 @@ export interface Updates extends tilo.Resource {
   readonly last_checked: string;
   recordAutomaticUpdates(args: {
     on: boolean;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `record-automatic-updates` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   recordAutomaticUpdatesMany(items: RecordAutomaticUpdatesArgs[]): Promise<tilo.ActionAnswer[]>;
   recordUpdateCheck(args: {
     at: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `record-update-check` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   recordUpdateCheckMany(items: RecordUpdateCheckArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 
+/** The actions `Updates` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const UPDATES_ACTIONS = ["recordAutomaticUpdates", "recordAutomaticUpdatesMany", "recordUpdateCheck", "recordUpdateCheckMany"] as const;
+
 /** The `settings.updates` kind at `path`. */
 export function updates(ws: tilo.Workspace, path: string): Updates {
-  return resourceProxy(ws, path, SURFACE) as unknown as Updates;
+  return resourceProxy(ws, path, SURFACE, UPDATES_ACTIONS) as unknown as Updates;
 }
 
 /** Notifications — `settings.notifications`. */
@@ -936,20 +984,24 @@ export interface Notifications extends tilo.Resource {
   per_app: Record<string, AppNotificationRule>;
   setDoNotDisturb(args: {
     on: boolean;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `set-do-not-disturb` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   setDoNotDisturbMany(items: SetDoNotDisturbArgs[]): Promise<tilo.ActionAnswer[]>;
   muteApp(args: {
     app: string;
     duration: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `mute-app` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   muteAppMany(items: MuteAppArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 
+/** The actions `Notifications` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const NOTIFICATIONS_ACTIONS = ["setDoNotDisturb", "setDoNotDisturbMany", "muteApp", "muteAppMany"] as const;
+
 /** The `settings.notifications` kind at `path`. */
 export function notifications(ws: tilo.Workspace, path: string): Notifications {
-  return resourceProxy(ws, path, SURFACE) as unknown as Notifications;
+  return resourceProxy(ws, path, SURFACE, NOTIFICATIONS_ACTIONS) as unknown as Notifications;
 }
 
 /** Sound — `settings.audio`. */
@@ -960,19 +1012,23 @@ export interface Audio extends tilo.Resource {
   readonly echo_cancellation: boolean;
   setMonoOutput(args: {
     on: boolean;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `set-mono-output` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   setMonoOutputMany(items: SetMonoOutputArgs[]): Promise<tilo.ActionAnswer[]>;
   setEchoCancellation(args: {
     on: boolean;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `set-echo-cancellation` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   setEchoCancellationMany(items: SetEchoCancellationArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 
+/** The actions `Audio` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const AUDIO_ACTIONS = ["setMonoOutput", "setMonoOutputMany", "setEchoCancellation", "setEchoCancellationMany"] as const;
+
 /** The `settings.audio` kind at `path`. */
 export function audio(ws: tilo.Workspace, path: string): Audio {
-  return resourceProxy(ws, path, SURFACE) as unknown as Audio;
+  return resourceProxy(ws, path, SURFACE, AUDIO_ACTIONS) as unknown as Audio;
 }
 
 /** Sound on this device — `settings.audio-device`. */
@@ -981,19 +1037,23 @@ export interface AudioDevice extends tilo.Resource {
   readonly input_device: string | null;
   rememberOutputDevice(args: {
     device: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `remember-output-device` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   rememberOutputDeviceMany(items: RememberOutputDeviceArgs[]): Promise<tilo.ActionAnswer[]>;
   rememberInputDevice(args: {
     device: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `remember-input-device` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   rememberInputDeviceMany(items: RememberInputDeviceArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 
+/** The actions `AudioDevice` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const AUDIODEVICE_ACTIONS = ["rememberOutputDevice", "rememberOutputDeviceMany", "rememberInputDevice", "rememberInputDeviceMany"] as const;
+
 /** The `settings.audio-device` kind at `path`. */
 export function audioDevice(ws: tilo.Workspace, path: string): AudioDevice {
-  return resourceProxy(ws, path, SURFACE) as unknown as AudioDevice;
+  return resourceProxy(ws, path, SURFACE, AUDIODEVICE_ACTIONS) as unknown as AudioDevice;
 }
 
 /** Displays — `settings.display`. */
@@ -1003,19 +1063,23 @@ export interface Display extends tilo.Resource {
   scale: number;
   setAutomaticBrightness(args: {
     on: boolean;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `set-automatic-brightness` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   setAutomaticBrightnessMany(items: SetAutomaticBrightnessArgs[]): Promise<tilo.ActionAnswer[]>;
   setRotationLock(args: {
     locked: boolean;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `set-rotation-lock` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   setRotationLockMany(items: SetRotationLockArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 
+/** The actions `Display` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const DISPLAY_ACTIONS = ["setAutomaticBrightness", "setAutomaticBrightnessMany", "setRotationLock", "setRotationLockMany"] as const;
+
 /** The `settings.display` kind at `path`. */
 export function display(ws: tilo.Workspace, path: string): Display {
-  return resourceProxy(ws, path, SURFACE) as unknown as Display;
+  return resourceProxy(ws, path, SURFACE, DISPLAY_ACTIONS) as unknown as Display;
 }
 
 /** Night light — `settings.night-light`. */
@@ -1025,9 +1089,13 @@ export interface NightLight extends tilo.Resource {
   night_light_schedule: boolean;
 }
 
+/** The actions `NightLight` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const NIGHTLIGHT_ACTIONS = [] as const;
+
 /** The `settings.night-light` kind at `path`. */
 export function nightLight(ws: tilo.Workspace, path: string): NightLight {
-  return resourceProxy(ws, path, SURFACE) as unknown as NightLight;
+  return resourceProxy(ws, path, SURFACE, NIGHTLIGHT_ACTIONS) as unknown as NightLight;
 }
 
 /** Region and language — `settings.locale`. */
@@ -1040,9 +1108,13 @@ export interface Locale extends tilo.Resource {
   first_day_of_week: FirstDayOfWeek;
 }
 
+/** The actions `Locale` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const LOCALE_ACTIONS = [] as const;
+
 /** The `settings.locale` kind at `path`. */
 export function locale(ws: tilo.Workspace, path: string): Locale {
-  return resourceProxy(ws, path, SURFACE) as unknown as Locale;
+  return resourceProxy(ws, path, SURFACE, LOCALE_ACTIONS) as unknown as Locale;
 }
 
 /** Continuity — `settings.continuity`. */
@@ -1060,20 +1132,24 @@ export interface Continuity extends tilo.Resource {
   readonly audit: AuditEntry[];
   allowContinuity(args: {
     on: boolean;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `allow-continuity` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   allowContinuityMany(items: AllowContinuityArgs[]): Promise<tilo.ActionAnswer[]>;
   allowCapability(args: {
     capability: string;
     on: boolean;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `allow-capability` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   allowCapabilityMany(items: AllowCapabilityArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 
+/** The actions `Continuity` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const CONTINUITY_ACTIONS = ["allowContinuity", "allowContinuityMany", "allowCapability", "allowCapabilityMany"] as const;
+
 /** The `settings.continuity` kind at `path`. */
 export function continuity(ws: tilo.Workspace, path: string): Continuity {
-  return resourceProxy(ws, path, SURFACE) as unknown as Continuity;
+  return resourceProxy(ws, path, SURFACE, CONTINUITY_ACTIONS) as unknown as Continuity;
 }
 
 /** Keyboard shortcuts — `settings.shortcuts`. */
@@ -1083,27 +1159,31 @@ export interface Shortcuts extends tilo.Resource {
   rebind(args: {
     shortcut: string;
     chord: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `rebind` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   rebindMany(items: RebindArgs[]): Promise<tilo.ActionAnswer[]>;
   reset(args: {
     shortcuts: string[];
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `reset` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   resetMany(items: ResetArgs[]): Promise<tilo.ActionAnswer[]>;
-  resetAll(): Promise<tilo.Run | void>;
+  resetAll(): Promise<void>;
   /** Runs `reset-all` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   resetAllMany(items: ResetAllArgs[]): Promise<tilo.ActionAnswer[]>;
   setActionChords(args: {
     chords: unknown;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `set-action-chords` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   setActionChordsMany(items: SetActionChordsArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 
+/** The actions `Shortcuts` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const SHORTCUTS_ACTIONS = ["rebind", "rebindMany", "reset", "resetMany", "resetAll", "resetAllMany", "setActionChords", "setActionChordsMany"] as const;
+
 /** The `settings.shortcuts` kind at `path`. */
 export function shortcuts(ws: tilo.Workspace, path: string): Shortcuts {
-  return resourceProxy(ws, path, SURFACE) as unknown as Shortcuts;
+  return resourceProxy(ws, path, SURFACE, SHORTCUTS_ACTIONS) as unknown as Shortcuts;
 }
 
 /** Shell views — `shell-views`. */
@@ -1115,20 +1195,24 @@ export interface ShellViews extends tilo.Resource {
     app: string;
     view: string;
     on?: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `bind` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   bindMany(items: BindArgs[]): Promise<tilo.ActionAnswer[]>;
   reset(args: {
     part: string;
     on?: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `reset` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   resetMany(items: ShellViewsResetArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 
+/** The actions `ShellViews` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const SHELLVIEWS_ACTIONS = ["bind", "bindMany", "reset", "resetMany"] as const;
+
 /** The `shell-views` kind at `path`. */
 export function shellViews(ws: tilo.Workspace, path: string): ShellViews {
-  return resourceProxy(ws, path, SURFACE) as unknown as ShellViews;
+  return resourceProxy(ws, path, SURFACE, SHELLVIEWS_ACTIONS) as unknown as ShellViews;
 }
 
 /** Desktop controls — `settings.desktop-controls`. */
@@ -1136,9 +1220,13 @@ export interface DesktopControls extends tilo.Resource {
   vim_mode: boolean;
 }
 
+/** The actions `DesktopControls` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const DESKTOPCONTROLS_ACTIONS = [] as const;
+
 /** The `settings.desktop-controls` kind at `path`. */
 export function desktopControls(ws: tilo.Workspace, path: string): DesktopControls {
-  return resourceProxy(ws, path, SURFACE) as unknown as DesktopControls;
+  return resourceProxy(ws, path, SURFACE, DESKTOPCONTROLS_ACTIONS) as unknown as DesktopControls;
 }
 
 /** Desktop controls on this device — `settings.desktop-controls-device`. */
@@ -1146,9 +1234,13 @@ export interface DesktopControlsDevice extends tilo.Resource {
   hide_top_bar: boolean;
 }
 
+/** The actions `DesktopControlsDevice` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const DESKTOPCONTROLSDEVICE_ACTIONS = [] as const;
+
 /** The `settings.desktop-controls-device` kind at `path`. */
 export function desktopControlsDevice(ws: tilo.Workspace, path: string): DesktopControlsDevice {
-  return resourceProxy(ws, path, SURFACE) as unknown as DesktopControlsDevice;
+  return resourceProxy(ws, path, SURFACE, DESKTOPCONTROLSDEVICE_ACTIONS) as unknown as DesktopControlsDevice;
 }
 
 /** Agent model providers — `settings.agent-providers`. */
@@ -1156,19 +1248,23 @@ export interface AgentProviders extends tilo.Resource {
   readonly config: ProviderConfig;
   setProviders(args: {
     config: unknown;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `set-providers` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   setProvidersMany(items: SetProvidersArgs[]): Promise<tilo.ActionAnswer[]>;
   followLocalModels(args: {
     profile: unknown;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `follow-local-models` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   followLocalModelsMany(items: FollowLocalModelsArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 
+/** The actions `AgentProviders` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const AGENTPROVIDERS_ACTIONS = ["setProviders", "setProvidersMany", "followLocalModels", "followLocalModelsMany"] as const;
+
 /** The `settings.agent-providers` kind at `path`. */
 export function agentProviders(ws: tilo.Workspace, path: string): AgentProviders {
-  return resourceProxy(ws, path, SURFACE) as unknown as AgentProviders;
+  return resourceProxy(ws, path, SURFACE, AGENTPROVIDERS_ACTIONS) as unknown as AgentProviders;
 }
 
 /** Hosted agent model providers — `settings.hosted-agent-providers`. */
@@ -1176,14 +1272,18 @@ export interface HostedAgentProviders extends tilo.Resource {
   readonly hosted: HostedProfiles;
   setProviders(args: {
     hosted: unknown;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `set-providers` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   setProvidersMany(items: HostedAgentProvidersSetProvidersArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 
+/** The actions `HostedAgentProviders` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const HOSTEDAGENTPROVIDERS_ACTIONS = ["setProviders", "setProvidersMany"] as const;
+
 /** The `settings.hosted-agent-providers` kind at `path`. */
 export function hostedAgentProviders(ws: tilo.Workspace, path: string): HostedAgentProviders {
-  return resourceProxy(ws, path, SURFACE) as unknown as HostedAgentProviders;
+  return resourceProxy(ws, path, SURFACE, HOSTEDAGENTPROVIDERS_ACTIONS) as unknown as HostedAgentProviders;
 }
 
 /** Default apps — `settings.default-apps`. */
@@ -1192,14 +1292,18 @@ export interface DefaultApps extends tilo.Resource {
   setDefaultAppHandler(args: {
     kind: string;
     app: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `set-default-app-handler` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   setDefaultAppHandlerMany(items: SetDefaultAppHandlerArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 
+/** The actions `DefaultApps` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const DEFAULTAPPS_ACTIONS = ["setDefaultAppHandler", "setDefaultAppHandlerMany"] as const;
+
 /** The `settings.default-apps` kind at `path`. */
 export function defaultApps(ws: tilo.Workspace, path: string): DefaultApps {
-  return resourceProxy(ws, path, SURFACE) as unknown as DefaultApps;
+  return resourceProxy(ws, path, SURFACE, DEFAULTAPPS_ACTIONS) as unknown as DefaultApps;
 }
 
 /** Clock — `settings.clock`. */
@@ -1207,9 +1311,13 @@ export interface Clock extends tilo.Resource {
   automatic_zone: boolean;
 }
 
+/** The actions `Clock` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const CLOCK_ACTIONS = [] as const;
+
 /** The `settings.clock` kind at `path`. */
 export function clock(ws: tilo.Workspace, path: string): Clock {
-  return resourceProxy(ws, path, SURFACE) as unknown as Clock;
+  return resourceProxy(ws, path, SURFACE, CLOCK_ACTIONS) as unknown as Clock;
 }
 
 /** Display layout — `settings.display-placement`. */
@@ -1217,14 +1325,18 @@ export interface DisplayPlacement extends tilo.Resource {
   readonly placement: unknown;
   arrangeDisplays(args: {
     placement: unknown;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `arrange-displays` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   arrangeDisplaysMany(items: ArrangeDisplaysArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 
+/** The actions `DisplayPlacement` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const DISPLAYPLACEMENT_ACTIONS = ["arrangeDisplays", "arrangeDisplaysMany"] as const;
+
 /** The `settings.display-placement` kind at `path`. */
 export function displayPlacement(ws: tilo.Workspace, path: string): DisplayPlacement {
-  return resourceProxy(ws, path, SURFACE) as unknown as DisplayPlacement;
+  return resourceProxy(ws, path, SURFACE, DISPLAYPLACEMENT_ACTIONS) as unknown as DisplayPlacement;
 }
 
 /** Automatic display input — `settings.automatic-display`. */
@@ -1232,14 +1344,18 @@ export interface AutomaticDisplay extends tilo.Resource {
   readonly automatic_display_input: boolean;
   setAutomaticDisplayInput(args: {
     on: boolean;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `set-automatic-display-input` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   setAutomaticDisplayInputMany(items: SetAutomaticDisplayInputArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 
+/** The actions `AutomaticDisplay` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const AUTOMATICDISPLAY_ACTIONS = ["setAutomaticDisplayInput", "setAutomaticDisplayInputMany"] as const;
+
 /** The `settings.automatic-display` kind at `path`. */
 export function automaticDisplay(ws: tilo.Workspace, path: string): AutomaticDisplay {
-  return resourceProxy(ws, path, SURFACE) as unknown as AutomaticDisplay;
+  return resourceProxy(ws, path, SURFACE, AUTOMATICDISPLAY_ACTIONS) as unknown as AutomaticDisplay;
 }
 
 /** Display change — `settings.display-change`. */
@@ -1253,9 +1369,13 @@ export interface DisplayChange extends tilo.Resource {
   readonly message: string | null;
 }
 
+/** The actions `DisplayChange` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const DISPLAYCHANGE_ACTIONS = [] as const;
+
 /** The `settings.display-change` kind at `path`. */
 export function displayChange(ws: tilo.Workspace, path: string): DisplayChange {
-  return resourceProxy(ws, path, SURFACE) as unknown as DisplayChange;
+  return resourceProxy(ws, path, SURFACE, DISPLAYCHANGE_ACTIONS) as unknown as DisplayChange;
 }
 
 /** On-screen keyboard layouts — `settings.osk-sources`. */
@@ -1265,14 +1385,18 @@ export interface OskSources extends tilo.Resource {
   setLayouts(args: {
     layouts: string[];
     active: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `set-layouts` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   setLayoutsMany(items: OskSourcesSetLayoutsArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 
+/** The actions `OskSources` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const OSKSOURCES_ACTIONS = ["setLayouts", "setLayoutsMany"] as const;
+
 /** The `settings.osk-sources` kind at `path`. */
 export function oskSources(ws: tilo.Workspace, path: string): OskSources {
-  return resourceProxy(ws, path, SURFACE) as unknown as OskSources;
+  return resourceProxy(ws, path, SURFACE, OSKSOURCES_ACTIONS) as unknown as OskSources;
 }
 
 /** Your devices as a VPN — `settings.device-vpn`. */
@@ -1285,12 +1409,12 @@ export interface DeviceVpn extends tilo.Resource {
   routeThrough(args: {
     device: string;
     on: boolean;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `route-through` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   routeThroughMany(items: RouteThroughArgs[]): Promise<tilo.ActionAnswer[]>;
   setKillSwitch(args: {
     on: boolean;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `set-kill-switch` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   setKillSwitchMany(items: SetKillSwitchArgs[]): Promise<tilo.ActionAnswer[]>;
   // the app's `stop` action is named as a field of this kind: run it with
@@ -1299,19 +1423,23 @@ export interface DeviceVpn extends tilo.Resource {
     profile: string;
     on: boolean;
     allow_local?: boolean;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `set-profile-kill-switch` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   setProfileKillSwitchMany(items: SetProfileKillSwitchArgs[]): Promise<tilo.ActionAnswer[]>;
   releaseProfile(args: {
     profile: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `release-profile` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   releaseProfileMany(items: ReleaseProfileArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 
+/** The actions `DeviceVpn` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const DEVICEVPN_ACTIONS = ["routeThrough", "routeThroughMany", "setKillSwitch", "setKillSwitchMany", "setProfileKillSwitch", "setProfileKillSwitchMany", "releaseProfile", "releaseProfileMany"] as const;
+
 /** The `settings.device-vpn` kind at `path`. */
 export function deviceVpn(ws: tilo.Workspace, path: string): DeviceVpn {
-  return resourceProxy(ws, path, SURFACE) as unknown as DeviceVpn;
+  return resourceProxy(ws, path, SURFACE, DEVICEVPN_ACTIONS) as unknown as DeviceVpn;
 }
 
 /** Your colour — `settings.identity`. */
@@ -1319,9 +1447,13 @@ export interface Identity extends tilo.Resource {
   colour: string | null;
 }
 
+/** The actions `Identity` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const IDENTITY_ACTIONS = [] as const;
+
 /** The `settings.identity` kind at `path`. */
 export function identity(ws: tilo.Workspace, path: string): Identity {
-  return resourceProxy(ws, path, SURFACE) as unknown as Identity;
+  return resourceProxy(ws, path, SURFACE, IDENTITY_ACTIONS) as unknown as Identity;
 }
 
 /** Data usage — `settings.network-usage`. */
@@ -1336,24 +1468,28 @@ export interface NetworkUsage extends tilo.Resource {
     at: number;
     offset: number;
     boot?: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `count-data-used` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   countDataUsedMany(items: CountDataUsedArgs[]): Promise<tilo.ActionAnswer[]>;
   resetDataUsed(args?: {
     connection?: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `reset-data-used` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   resetDataUsedMany(items: ResetDataUsedArgs[]): Promise<tilo.ActionAnswer[]>;
   forgetDataUsed(args?: {
     connection?: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `forget-data-used` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   forgetDataUsedMany(items: ForgetDataUsedArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 
+/** The actions `NetworkUsage` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const NETWORKUSAGE_ACTIONS = ["countDataUsed", "countDataUsedMany", "resetDataUsed", "resetDataUsedMany", "forgetDataUsed", "forgetDataUsedMany"] as const;
+
 /** The `settings.network-usage` kind at `path`. */
 export function networkUsage(ws: tilo.Workspace, path: string): NetworkUsage {
-  return resourceProxy(ws, path, SURFACE) as unknown as NetworkUsage;
+  return resourceProxy(ws, path, SURFACE, NETWORKUSAGE_ACTIONS) as unknown as NetworkUsage;
 }
 
 /** Agents from your other devices — `settings.mcp-server`. */
@@ -1362,30 +1498,34 @@ export interface McpServer extends tilo.Resource {
   readonly act_without_asking: boolean;
   setAcceptOwnDevices(args: {
     on: boolean;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `set-accept-own-devices` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   setAcceptOwnDevicesMany(items: SetAcceptOwnDevicesArgs[]): Promise<tilo.ActionAnswer[]>;
   setActWithoutAsking(args: {
     on: boolean;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `set-act-without-asking` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   setActWithoutAskingMany(items: SetActWithoutAskingArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 
+/** The actions `McpServer` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const MCPSERVER_ACTIONS = ["setAcceptOwnDevices", "setAcceptOwnDevicesMany", "setActWithoutAsking", "setActWithoutAskingMany"] as const;
+
 /** The `settings.mcp-server` kind at `path`. */
 export function mcpServer(ws: tilo.Workspace, path: string): McpServer {
-  return resourceProxy(ws, path, SURFACE) as unknown as McpServer;
+  return resourceProxy(ws, path, SURFACE, MCPSERVER_ACTIONS) as unknown as McpServer;
 }
 
 /** Accounts — `tilo.accounts`. */
 export interface Accounts extends tilo.Resource {
-  accounts: PersonAccount[];
+  accounts: Array<tilo.Entry<PersonAccount>>;
   active: Record<string, string>;
   publishBrowserIdentity(args: {
     root: string;
     origin: string;
     display_name: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `publish-browser-identity` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   publishBrowserIdentityMany(items: PublishBrowserIdentityArgs[]): Promise<tilo.ActionAnswer[]>;
   saveAccount(args: {
@@ -1395,23 +1535,27 @@ export interface Accounts extends tilo.Resource {
     config: unknown;
     enabled: boolean;
     tint: number;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `save-account` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   saveAccountMany(items: SaveAccountArgs[]): Promise<tilo.ActionAnswer[]>;
   removeAccount(args: {
     account: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `remove-account` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   removeAccountMany(items: RemoveAccountArgs[]): Promise<tilo.ActionAnswer[]>;
   setActiveAccount(args: {
     account: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `set-active-account` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   setActiveAccountMany(items: SetActiveAccountArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 
+/** The actions `Accounts` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const ACCOUNTS_ACTIONS = ["publishBrowserIdentity", "publishBrowserIdentityMany", "saveAccount", "saveAccountMany", "removeAccount", "removeAccountMany", "setActiveAccount", "setActiveAccountMany"] as const;
+
 /** The `tilo.accounts` kind at `path`. */
 export function accounts(ws: tilo.Workspace, path: string): Accounts {
-  return resourceProxy(ws, path, SURFACE) as unknown as Accounts;
+  return resourceProxy(ws, path, SURFACE, ACCOUNTS_ACTIONS) as unknown as Accounts;
 }
 

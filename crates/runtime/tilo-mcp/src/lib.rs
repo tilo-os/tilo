@@ -3126,10 +3126,12 @@ const DIRECTORY_BYTES: usize = 12 * 1024;
 const DIRECTORY_EXPANSIONS: usize = 6;
 const OPENED_NO_PEER: &str = "the workspace did not say which instance it started, so the file is not open; tilo_list_apps shows whether it runs";
 const OPENED_NO_ACTION: &str = "the app offers no open action taking a path, so it started empty; its directory shows what it can do";
-/// How long `tilo_invoke` waits for a terminal update by default, at most,
-/// and how often it looks.
+/// How long `tilo_invoke` waits for a terminal update by default, and how
+/// long it holds at most. The API holds a call for as long as 60 seconds
+/// (`Prefer: wait=60`), so a caller that asks for that is held for it rather
+/// than told the run is still pending after 30.
 const DEFAULT_WAIT_MS: u64 = 5_000;
-const MAX_WAIT_MS: u64 = 30_000;
+const MAX_WAIT_MS: u64 = 60_000;
 /// Actions one `calls` batch runs. A document's edits and its save fit;
 /// more than this is several turns.
 const MAX_CALLS: usize = 32;

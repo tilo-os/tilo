@@ -158,6 +158,7 @@ fn notebook(action: Option<&str>) -> CatalogueRow {
         }),
         has_children: false,
         visibility: None,
+        surface: None,
     }
 }
 

@@ -17,7 +17,7 @@ all-or-nothing steps, all of them one run.
 from __future__ import annotations
 
 from typing import Any, Literal, NotRequired, TypedDict
-from tilo import Resource, Run
+from tilo import Entry, Resource, Run
 
 __all__ = [
     "Bookmark",
@@ -236,7 +236,7 @@ ClearHistoryArgs = TypedDict("ClearHistoryArgs", {
 class Application(Resource):
     """Browser — `browser.application`."""
     __surface__ = "so.tilo.browser@118ee95647821b37"
-    bookmarks: list[Bookmark]
+    bookmarks: list[Entry[Bookmark]]
     preferences: Settings
     @property
     def site_exceptions(self) -> list[str]:
@@ -251,7 +251,7 @@ class Application(Resource):
         *,
         url: str,
         title: str | None = None,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         args: dict[str, Any] = {}
         args["url"] = url
@@ -263,7 +263,7 @@ class Application(Resource):
         """Runs `add-bookmark` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("add-bookmark", items)
 
-    def remove_bookmark(self, *, bookmark: str) -> Run | None:
+    def remove_bookmark(self, *, bookmark: str) -> None:
         """Runs the app's action."""
         return self.action("remove-bookmark", bookmark=bookmark)
 
@@ -275,7 +275,7 @@ class Application(Resource):
         *,
         origin: str,
         enabled: bool,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         return self.action("set-site-protection", origin=origin, enabled=enabled)
 
@@ -290,7 +290,7 @@ class Application(Resource):
         forms: list[RememberedForm],
         whole: bool,
         at: int,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         return self.action("remember-forms", origin=origin, page=page, forms=forms, whole=whole, at=at)
 
@@ -302,7 +302,7 @@ class Application(Resource):
         *,
         origin: str,
         signature: str,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         return self.action("forget-form", origin=origin, signature=signature)
 
@@ -310,7 +310,7 @@ class Application(Resource):
         """Runs `forget-form` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("forget-form", items)
 
-    def forget_site_forms(self, *, origin: str) -> Run | None:
+    def forget_site_forms(self, *, origin: str) -> None:
         """Runs the app's action."""
         return self.action("forget-site-forms", origin=origin)
 
@@ -318,13 +318,17 @@ class Application(Resource):
         """Runs `forget-site-forms` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("forget-site-forms", items)
 
-    def forget_all_forms(self) -> Run | None:
+    def forget_all_forms(self) -> None:
         """Runs the app's action."""
         return self.action("forget-all-forms")
 
     def forget_all_forms_many(self, items: list[ForgetAllFormsArgs]) -> list[dict[str, Any]]:
         """Runs `forget-all-forms` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("forget-all-forms", items)
+
+    # The actions a call reaches before the resource is read: `await tracker.create(...)`
+    # needs no `load()` first.
+    __actions__ = frozenset({"add_bookmark", "add_bookmark_many", "remove_bookmark", "remove_bookmark_many", "set_site_protection", "set_site_protection_many", "remember_forms", "remember_forms_many", "forget_form", "forget_form_many", "forget_site_forms", "forget_site_forms_many", "forget_all_forms", "forget_all_forms_many"})
 
 
 class PersonalBookmarks(Resource):
@@ -355,7 +359,7 @@ class PersonalBookmarks(Resource):
         *,
         url: str,
         title: str,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         return self.action("add-bookmark", url=url, title=title)
 
@@ -367,7 +371,7 @@ class PersonalBookmarks(Resource):
         *,
         url: str,
         observed_tags: list[str],
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         return self.action("remove-bookmark", url=url, observed_tags=observed_tags)
 
@@ -375,7 +379,7 @@ class PersonalBookmarks(Resource):
         """Runs `remove-bookmark` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("remove-bookmark", items)
 
-    def import_bookmarks(self, *, bundle: str) -> Run | None:
+    def import_bookmarks(self, *, bundle: str) -> None:
         """Runs the app's action."""
         return self.action("import-bookmarks", bundle=bundle)
 
@@ -387,13 +391,17 @@ class PersonalBookmarks(Resource):
         *,
         source: str,
         id: str,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         return self.action("remove-imported-node", source=source, id=id)
 
     def remove_imported_node_many(self, items: list[RemoveImportedNodeArgs]) -> list[dict[str, Any]]:
         """Runs `remove-imported-node` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("remove-imported-node", items)
+
+    # The actions a call reaches before the resource is read: `await tracker.create(...)`
+    # needs no `load()` first.
+    __actions__ = frozenset({"add_bookmark", "add_bookmark_many", "remove_bookmark", "remove_bookmark_many", "import_bookmarks", "import_bookmarks_many", "remove_imported_node", "remove_imported_node_many"})
 
 
 class BrowsingHistory(Resource):
@@ -421,7 +429,7 @@ class BrowsingHistory(Resource):
         url: str,
         title: str,
         at: int,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         return self.action("visit", url=url, title=title, at=at)
 
@@ -429,7 +437,7 @@ class BrowsingHistory(Resource):
         """Runs `visit` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("visit", items)
 
-    def import_history_bundle(self, *, bundle: str) -> Run | None:
+    def import_history_bundle(self, *, bundle: str) -> None:
         """Runs the app's action."""
         return self.action("import-history-bundle", bundle=bundle)
 
@@ -441,7 +449,7 @@ class BrowsingHistory(Resource):
         *,
         url: str,
         title: str,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         return self.action("name-visit", url=url, title=title)
 
@@ -449,7 +457,7 @@ class BrowsingHistory(Resource):
         """Runs `name-visit` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("name-visit", items)
 
-    def forget(self, *, url: str) -> Run | None:
+    def forget(self, *, url: str) -> None:
         """Runs the app's action."""
         return self.action("forget", url=url)
 
@@ -457,13 +465,17 @@ class BrowsingHistory(Resource):
         """Runs `forget` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("forget", items)
 
-    def clear_history(self) -> Run | None:
+    def clear_history(self) -> None:
         """Runs the app's action."""
         return self.action("clear-history")
 
     def clear_history_many(self, items: list[ClearHistoryArgs]) -> list[dict[str, Any]]:
         """Runs `clear-history` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("clear-history", items)
+
+    # The actions a call reaches before the resource is read: `await tracker.create(...)`
+    # needs no `load()` first.
+    __actions__ = frozenset({"visit", "visit_many", "import_history_bundle", "import_history_bundle_many", "name_visit", "name_visit_many", "forget", "forget_many", "clear_history", "clear_history_many"})
 
 
 class PageRecord(Resource):
@@ -483,6 +495,6 @@ class AddressBook(Resource):
     """Address book — `browser.address-book`."""
     __surface__ = "so.tilo.browser@118ee95647821b37"
     enabled: bool
-    profiles: list[AddressProfile]
+    profiles: list[Entry[AddressProfile]]
 
 

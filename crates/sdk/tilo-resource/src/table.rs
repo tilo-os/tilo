@@ -2427,6 +2427,10 @@ impl Run<'_> {
 pub struct UnitDesc {
     /// The variants' stored names, in declaration order.
     pub names: &'static [&'static str],
+    /// The names the variants have in a value's JSON form (serde's), in
+    /// declaration order: a caller reads and writes these, while the
+    /// document keeps the stored one.
+    pub wire: &'static [&'static str],
     /// The `#[default]` variant's position.
     pub default: Option<usize>,
     /// The position of a value's variant.
@@ -2470,9 +2474,23 @@ fn unit_name(table: &ModelTable, value: &dyn Any) -> Option<&'static str> {
     unit.names.get((unit.index)(value)?).copied()
 }
 
-/// The position of the variant named `text`.
+/// The name `value`'s variant has in a value's JSON form.
+fn unit_wire_name(table: &ModelTable, value: &dyn Any) -> Option<&'static str> {
+    let unit = table.unit()?;
+    unit.wire.get((unit.index)(value)?).copied()
+}
+
+/// The position of the variant stored as `text`.
 fn unit_named(unit: &UnitDesc, text: &str) -> Result<usize, ModelError> {
     unit.names
+        .iter()
+        .position(|name| *name == text)
+        .ok_or_else(|| ModelError::invalid(format!("unknown variant `{text}`")))
+}
+
+/// The position of the variant whose JSON form is `text`.
+fn unit_wire_named(unit: &UnitDesc, text: &str) -> Result<usize, ModelError> {
+    unit.wire
         .iter()
         .position(|name| *name == text)
         .ok_or_else(|| ModelError::invalid(format!("unknown variant `{text}`")))
@@ -2488,14 +2506,14 @@ pub fn unit_schema(names: &[&str]) -> serde_json::Value {
 pub static UNIT_OPS: ModelOps = ModelOps {
     without_absent: crate::shape::kept_whole,
     to_json: |table, value| {
-        unit_name(table, value).map_or(serde_json::Value::Null, |name| {
+        unit_wire_name(table, value).map_or(serde_json::Value::Null, |name| {
             serde_json::Value::String(name.to_owned())
         })
     },
     from_json: |table, value, out| {
         let unit = units(table)?;
         match value {
-            serde_json::Value::String(text) => (unit.make)(unit_named(unit, text)?, out),
+            serde_json::Value::String(text) => (unit.make)(unit_wire_named(unit, text)?, out),
             serde_json::Value::Null => (UNIT_OPS.missing)(table, out),
             _ => Err(ModelError::shape("a variant name")),
         }
@@ -2560,7 +2578,7 @@ pub static UNIT_OPS: ModelOps = ModelOps {
         }
     },
     collect_text: |table, value, out| {
-        if let Some(name) = unit_name(table, value) {
+        if let Some(name) = unit_wire_name(table, value) {
             out.push(name.to_owned());
         }
     },

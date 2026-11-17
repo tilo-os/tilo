@@ -22,10 +22,10 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.db-client@ff2837e66ce4dd02";
+export const SURFACE = "so.tilo.db-client@4a053ca472a25fb4";
 
-/** One of "sqlite", "postgres", "mysql". */
-export type Engine = "sqlite" | "postgres" | "mysql";
+/** One of "Sqlite", "Postgres", "MySql". */
+export type Engine = "Sqlite" | "Postgres" | "MySql";
 
 export interface SavedConnection {
   name: string;
@@ -69,8 +69,8 @@ export interface RemoveQueryArgs {
 
 /** Database — `db-client.workspace`. */
 export interface Workspace extends tilo.Resource {
-  connections: SavedConnection[];
-  saved_queries: SavedQuery[];
+  connections: Array<tilo.Entry<SavedConnection>>;
+  saved_queries: Array<tilo.Entry<SavedQuery>>;
   sql: string;
   addConnection(args: {
     name: string;
@@ -78,29 +78,33 @@ export interface Workspace extends tilo.Resource {
     location?: string;
     database?: string;
     user?: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `add-connection` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   addConnectionMany(items: AddConnectionArgs[]): Promise<tilo.ActionAnswer[]>;
   removeConnection(args: {
     connection: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `remove-connection` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   removeConnectionMany(items: RemoveConnectionArgs[]): Promise<tilo.ActionAnswer[]>;
   saveQuery(args: {
     name: string;
     sql?: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `save-query` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   saveQueryMany(items: SaveQueryArgs[]): Promise<tilo.ActionAnswer[]>;
   removeQuery(args: {
     query: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `remove-query` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   removeQueryMany(items: RemoveQueryArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 
+/** The actions `Workspace` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const WORKSPACE_ACTIONS = ["addConnection", "addConnectionMany", "removeConnection", "removeConnectionMany", "saveQuery", "saveQueryMany", "removeQuery", "removeQueryMany"] as const;
+
 /** The `db-client.workspace` kind at `path`. */
 export function workspace(ws: tilo.Workspace, path: string): Workspace {
-  return resourceProxy(ws, path, SURFACE) as unknown as Workspace;
+  return resourceProxy(ws, path, SURFACE, WORKSPACE_ACTIONS) as unknown as Workspace;
 }
 

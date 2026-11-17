@@ -265,6 +265,67 @@ fn json_name(ident: &Ident, options: &ItemOptions, rule: Option<&String>) -> syn
     }
 }
 
+/// Serde's `#[serde(rename = "…")]` and `#[serde(rename_all = "…")]`, read
+/// by [`Model`](crate::Model) too: a value's JSON form is the one serde
+/// reads and writes, whatever key the document stores it under.
+#[derive(Default)]
+pub(crate) struct WireOptions {
+    pub(crate) rename: Option<String>,
+    pub(crate) rename_all: Option<String>,
+}
+
+/// The serde names `attrs` give a field or a variant.
+///
+/// Options this derive has no use for are read past; a `rename` that names
+/// a different spelling for reading and writing is left alone, since one
+/// name is what a surface can publish.
+pub(crate) fn wire_options(attrs: &[Attribute]) -> syn::Result<WireOptions> {
+    let mut options = WireOptions::default();
+    for attr in attrs.iter().filter(|attr| attr.path().is_ident("serde")) {
+        attr.parse_nested_meta(|meta| {
+            let path = &meta.path;
+            let value = if meta.input.peek(Token![=]) {
+                Some(meta.value()?.parse::<syn::LitStr>()?.value())
+            } else {
+                None
+            };
+            if path.is_ident("rename") {
+                options.rename = value;
+            } else if path.is_ident("rename_all") {
+                options.rename_all = value;
+            } else if meta.input.peek(Token![=]) {
+                let _: syn::Expr = meta.value()?.parse()?;
+            } else if meta.input.peek(syn::token::Paren) {
+                let _: proc_macro2::Group = meta.input.parse()?;
+            }
+            Ok(())
+        })?;
+    }
+    Ok(options)
+}
+
+/// The name `ident` has in serde's JSON form: its `#[serde(rename)]`, else
+/// its spelling under `rule` (a container's `#[serde(rename_all)]`).
+pub(crate) fn wire_name(
+    ident: &Ident,
+    attrs: &[Attribute],
+    rule: Option<&String>,
+) -> syn::Result<String> {
+    let options = wire_options(attrs)?;
+    let item = ItemOptions {
+        rename: options.rename,
+        rename_all: None,
+        default: false,
+        skip: false,
+    };
+    json_name(ident, &item, rule)
+}
+
+/// The `#[serde(rename_all)]` a container declares.
+pub(crate) fn wire_rule(attrs: &[Attribute]) -> syn::Result<Option<String>> {
+    Ok(wire_options(attrs)?.rename_all)
+}
+
 /// Doc comments as one plain line: rustdoc links keep their text.
 fn plain_doc(attrs: &[Attribute]) -> String {
     let joined = crate::doc_lines(attrs)

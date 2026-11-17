@@ -271,10 +271,10 @@ fields = [
 [[resources.types]]
 name = "InviteStatus"
 cases = [
-  { name = "needs_action" },
-  { name = "accepted" },
-  { name = "tentative" },
-  { name = "declined" },
+  { name = "NeedsAction" },
+  { name = "Accepted" },
+  { name = "Tentative" },
+  { name = "Declined" },
 ]
 
 [[resources.types]]
@@ -318,10 +318,10 @@ cases = [
 [[resources.types]]
 name = "Priority"
 cases = [
-  { name = "none" },
-  { name = "low" },
-  { name = "medium" },
-  { name = "high" },
+  { name = "None" },
+  { name = "Low" },
+  { name = "Medium" },
+  { name = "High" },
 ]
 
 [[resources.types]]
@@ -363,12 +363,12 @@ fields = [
 [[resources.types]]
 name = "Repeat"
 cases = [
-  { name = "none" },
-  { name = "daily" },
-  { name = "weekdays" },
-  { name = "weekly" },
-  { name = "monthly" },
-  { name = "yearly" },
+  { name = "None" },
+  { name = "Daily" },
+  { name = "Weekdays" },
+  { name = "Weekly" },
+  { name = "Monthly" },
+  { name = "Yearly" },
 ]
 
 [[resources.types]]

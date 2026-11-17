@@ -29,8 +29,12 @@ export interface Root extends tilo.Resource {
   listPresets(): Promise<void>;
 }
 
+/** The actions `Root` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const ROOT_ACTIONS = ["listPresets"] as const;
+
 /** The `model-providers.root` kind at `path`. */
 export function root(ws: tilo.Workspace, path: string): Root {
-  return resourceProxy(ws, path, SURFACE) as unknown as Root;
+  return resourceProxy(ws, path, SURFACE, ROOT_ACTIONS) as unknown as Root;
 }
 

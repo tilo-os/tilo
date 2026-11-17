@@ -374,7 +374,7 @@ tilo_test_env::scenario! {
             entries[0]
                 .fields
                 .iter()
-                .any(|(text, _)| text.contains("rust")),
+                .any(|(text, _)| text.to_lowercase().contains("rust")),
             "{:?}",
             entries[0].fields
         );

@@ -78,90 +78,90 @@ export interface ForgetArgs {
 
 /** Folder — `files.folder`. */
 export interface Folder extends tilo.Resource {
-  places: Bookmark[];
+  places: Array<tilo.Entry<Bookmark>>;
   addBookmark(args: {
     place: string;
     at?: number;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `add-bookmark` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   addBookmarkMany(items: AddBookmarkArgs[]): Promise<tilo.ActionAnswer[]>;
   removeBookmark(args: {
     place: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `remove-bookmark` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   removeBookmarkMany(items: RemoveBookmarkArgs[]): Promise<tilo.ActionAnswer[]>;
   newFolder(args: {
     device: string;
     parent: string;
     name: string;
-  }): Promise<unknown | tilo.Run>;
+  }): Promise<unknown>;
   rename(args: {
     device: string;
     folder: string;
     entry: string;
     name: string;
-  }): Promise<unknown | tilo.Run>;
+  }): Promise<unknown>;
   trash(args: {
     device: string;
     folder: string;
     entries: string[];
-  }): Promise<unknown | tilo.Run>;
+  }): Promise<unknown>;
   move(args: {
     device: string;
     from: string;
     entries: string[];
     to: string;
     create?: boolean;
-  }): Promise<unknown | tilo.Run>;
+  }): Promise<unknown>;
   copyInto(args: {
     device: string;
     from: string;
     entries: string[];
     to: string;
-  }): Promise<unknown | tilo.Run>;
+  }): Promise<unknown>;
   importMounted(args: {
     device: string;
     paths: string[];
     folder: string;
-  }): Promise<unknown | tilo.Run>;
+  }): Promise<unknown>;
   cloudImport(args: {
     device: string;
     job_id: string;
     account: string;
     entries: unknown[];
     destination: unknown;
-  }): Promise<unknown | tilo.Run>;
+  }): Promise<unknown>;
   writeFile(args: {
     device: string;
     folder: string;
     name: string;
     text: string;
     replace?: boolean;
-  }): Promise<unknown | tilo.Run>;
+  }): Promise<unknown>;
   compress(args: {
     device: string;
     from: string;
     entries: string[];
     name?: string;
     format?: string;
-  }): Promise<unknown | tilo.Run>;
+  }): Promise<unknown>;
   extract(args: {
     device: string;
     archive: string;
     to?: unknown;
     if_exists?: string;
-  }): Promise<unknown | tilo.Run>;
+  }): Promise<unknown>;
   recordClipboardTransfer(args: {
     device: string;
     receipt: Receipt;
-  }): Promise<unknown | tilo.Run>;
+  }): Promise<unknown>;
   recordTrashRestore(args: {
     device: string;
     receipt: Receipt;
-  }): Promise<unknown | tilo.Run>;
+  }): Promise<unknown>;
   revert(args: {
     op: string;
-  }): Promise<unknown | tilo.Run>;
+  }): Promise<unknown>;
   // the app's `refresh` action is the SDK's own: run it with `action("refresh")`.
   handOver(args: {
     file: string;
@@ -176,18 +176,26 @@ export interface Folder extends tilo.Resource {
   cloudProgress(): Promise<void>;
 }
 
+/** The actions `Folder` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const FOLDER_ACTIONS = ["addBookmark", "addBookmarkMany", "removeBookmark", "removeBookmarkMany", "newFolder", "rename", "trash", "move", "copyInto", "importMounted", "cloudImport", "writeFile", "compress", "extract", "recordClipboardTransfer", "recordTrashRestore", "revert", "handOver", "readText", "copySelection", "clipboardStatus", "openTerminal", "cloudProgress"] as const;
+
 /** The `files.folder` kind at `path`. */
 export function folder(ws: tilo.Workspace, path: string): Folder {
-  return resourceProxy(ws, path, SURFACE) as unknown as Folder;
+  return resourceProxy(ws, path, SURFACE, FOLDER_ACTIONS) as unknown as Folder;
 }
 
 /** Files — `files.tree`. */
 export interface Tree extends tilo.Resource {
 }
 
+/** The actions `Tree` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const TREE_ACTIONS = [] as const;
+
 /** The `files.tree` kind at `path`. */
 export function tree(ws: tilo.Workspace, path: string): Tree {
-  return resourceProxy(ws, path, SURFACE) as unknown as Tree;
+  return resourceProxy(ws, path, SURFACE, TREE_ACTIONS) as unknown as Tree;
 }
 
 /** Recent files — `files.recent`. */
@@ -198,26 +206,30 @@ export interface Recent extends tilo.Resource {
     path: string;
     last_use: RecentUse;
     at_ms: number;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `note` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   noteMany(items: NoteArgs[]): Promise<tilo.ActionAnswer[]>;
   moved(args: {
     device: string;
     from: string;
     to: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `moved` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   movedMany(items: MovedArgs[]): Promise<tilo.ActionAnswer[]>;
   forget(args: {
     device: string;
     path: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `forget` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   forgetMany(items: ForgetArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 
+/** The actions `Recent` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const RECENT_ACTIONS = ["note", "noteMany", "moved", "movedMany", "forget", "forgetMany"] as const;
+
 /** The `files.recent` kind at `path`. */
 export function recent(ws: tilo.Workspace, path: string): Recent {
-  return resourceProxy(ws, path, SURFACE) as unknown as Recent;
+  return resourceProxy(ws, path, SURFACE, RECENT_ACTIONS) as unknown as Recent;
 }
 

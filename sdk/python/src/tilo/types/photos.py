@@ -17,7 +17,7 @@ all-or-nothing steps, all of them one run.
 from __future__ import annotations
 
 from typing import Any, Literal, NotRequired, TypedDict
-from tilo import Resource, Run
+from tilo import Entry, Resource, Run
 
 __all__ = [
     "Album",
@@ -172,15 +172,15 @@ RemoveAlbumArgs = TypedDict("RemoveAlbumArgs", {
 class Library(Resource):
     """Library — `photos.library`."""
     __surface__ = "so.tilo.photos@f9b8a942b600bf8f"
-    photos: list[LibraryPhoto]
-    albums: list[Album]
+    photos: list[Entry[LibraryPhoto]]
+    albums: list[Entry[Album]]
 
     def import_photo(self,
         *,
         image: OpenImage,
         captured_at: str | None = None,
         location: PhotoLocation | None = None,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         args: dict[str, Any] = {}
         args["image"] = image
@@ -199,7 +199,7 @@ class Library(Resource):
         photo: str,
         captured_at: str | None = None,
         location: PhotoLocation | None = None,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         args: dict[str, Any] = {}
         args["photo"] = photo
@@ -213,7 +213,7 @@ class Library(Resource):
         """Runs `refresh-imported-metadata` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("refresh-imported-metadata", items)
 
-    def remove_photo(self, *, photo: str) -> Run | None:
+    def remove_photo(self, *, photo: str) -> None:
         """Runs the app's action."""
         return self.action("remove-photo", photo=photo)
 
@@ -221,7 +221,7 @@ class Library(Resource):
         """Runs `remove-photo` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("remove-photo", items)
 
-    def rotate_right(self, *, photo: str) -> Run | None:
+    def rotate_right(self, *, photo: str) -> None:
         """Runs the app's action."""
         return self.action("rotate-right", photo=photo)
 
@@ -229,7 +229,7 @@ class Library(Resource):
         """Runs `rotate-right` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("rotate-right", items)
 
-    def rotate_left(self, *, photo: str) -> Run | None:
+    def rotate_left(self, *, photo: str) -> None:
         """Runs the app's action."""
         return self.action("rotate-left", photo=photo)
 
@@ -241,7 +241,7 @@ class Library(Resource):
         *,
         photo: str,
         region: Rect01,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         return self.action("crop", photo=photo, region=region)
 
@@ -253,7 +253,7 @@ class Library(Resource):
         *,
         photo: str,
         analysis: ImageAnalysis,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         return self.action("merge-image-analysis", photo=photo, analysis=analysis)
 
@@ -265,7 +265,7 @@ class Library(Resource):
         *,
         person: str,
         photos: list[str],
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         return self.action("set-person-membership", person=person, photos=photos)
 
@@ -277,7 +277,7 @@ class Library(Resource):
         *,
         person: str,
         to: str,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         return self.action("rename-person", person=person, to=to)
 
@@ -285,7 +285,7 @@ class Library(Resource):
         """Runs `rename-person` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("rename-person", items)
 
-    def remove_person(self, *, person: str) -> Run | None:
+    def remove_person(self, *, person: str) -> None:
         """Runs the app's action."""
         return self.action("remove-person", person=person)
 
@@ -293,7 +293,7 @@ class Library(Resource):
         """Runs `remove-person` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("remove-person", items)
 
-    def remove_album(self, *, album: str) -> Run | None:
+    def remove_album(self, *, album: str) -> None:
         """Runs the app's action."""
         return self.action("remove-album", album=album)
 
@@ -304,5 +304,9 @@ class Library(Resource):
     def make_thumbnails(self, *, photos: list[Any]) -> None:
         """Runs the app's action."""
         return self.action("make-thumbnails", photos=photos)
+
+    # The actions a call reaches before the resource is read: `await tracker.create(...)`
+    # needs no `load()` first.
+    __actions__ = frozenset({"import_photo", "import_photo_many", "refresh_imported_metadata", "refresh_imported_metadata_many", "remove_photo", "remove_photo_many", "rotate_right", "rotate_right_many", "rotate_left", "rotate_left_many", "crop", "crop_many", "merge_image_analysis", "merge_image_analysis_many", "set_person_membership", "set_person_membership_many", "rename_person", "rename_person_many", "remove_person", "remove_person_many", "remove_album", "remove_album_many", "make_thumbnails"})
 
 

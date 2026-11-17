@@ -740,7 +740,8 @@ impl AppBrokerState {
             | RemoteActionMessage::SearchRequest { .. }
             | RemoteActionMessage::ChangesRequest { .. }
             // Nor does it wait for another device's workspace to change.
-            | RemoteActionMessage::ChangedRequest { .. } => None,
+            | RemoteActionMessage::ChangedRequest { .. }
+            | RemoteActionMessage::SurfaceRequest { .. } => None,
             RemoteActionMessage::CatalogueResponse { .. }
             | RemoteActionMessage::Receipt(_)
             | RemoteActionMessage::Update { .. }
@@ -758,6 +759,7 @@ impl AppBrokerState {
             | RemoteActionMessage::SearchResponse { .. }
             | RemoteActionMessage::ChangesResponse { .. }
             | RemoteActionMessage::ChangedResponse { .. }
+            | RemoteActionMessage::SurfaceResponse { .. }
             | RemoteActionMessage::CatalogueChanged { .. } => Some(person.clone()),
         };
         permitted.ok_or_else(|| {
@@ -1372,6 +1374,20 @@ impl AppBrokerState {
             if let Some(added) = rows.get_mut(first..) {
                 Self::mark_asks(&workspace, &policy, now, added);
             }
+        }
+        // An application's row carries what its signed package publishes, so
+        // an agent generates the typed client for it without opening it.
+        for row in &mut rows {
+            let Some(app) = row
+                .resource
+                .id
+                .strip_prefix(APPLICATION_RESOURCE_PREFIX)
+                .map(str::to_owned)
+            else {
+                continue;
+            };
+            row.surface = ui::app_surface::bytes_of(&app)
+                .map(|bytes| String::from_utf8_lossy(bytes).into_owned());
         }
         (rows, providers)
     }

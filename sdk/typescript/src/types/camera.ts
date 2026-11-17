@@ -22,13 +22,13 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.camera@334a749412a4e922";
+export const SURFACE = "so.tilo.camera@ce81c8d61f18a2f6";
 
-/** One of "photo", "video". */
-export type CaptureKind = "photo" | "video";
+/** One of "Photo", "Video". */
+export type CaptureKind = "Photo" | "Video";
 
-/** One of "back", "front", "wide". */
-export type Facing = "back" | "front" | "wide";
+/** One of "Back", "Front", "Wide". */
+export type Facing = "Back" | "Front" | "Wide";
 
 export interface ScanEntry {
   raw: string;
@@ -63,18 +63,22 @@ export interface Camera extends tilo.Resource {
   readonly recent: SharedCapture | null;
   registerCapture(args: {
     capture: SharedCapture;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `register-capture` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   registerCaptureMany(items: RegisterCaptureArgs[]): Promise<tilo.ActionAnswer[]>;
   recordScan(args: {
     raw: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `record-scan` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   recordScanMany(items: RecordScanArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 
+/** The actions `Camera` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const CAMERA_ACTIONS = ["registerCapture", "registerCaptureMany", "recordScan", "recordScanMany"] as const;
+
 /** The `camera` kind at `path`. */
 export function camera(ws: tilo.Workspace, path: string): Camera {
-  return resourceProxy(ws, path, SURFACE) as unknown as Camera;
+  return resourceProxy(ws, path, SURFACE, CAMERA_ACTIONS) as unknown as Camera;
 }
 

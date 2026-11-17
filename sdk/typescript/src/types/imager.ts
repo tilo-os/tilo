@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.imager@9efd41f7d0f7c3f4";
+export const SURFACE = "so.tilo.imager@c966cede61f39371";
 
 /** One of "btrfs", "ext4", "xfs". */
 export type Filesystem = "btrfs" | "ext4" | "xfs";
@@ -69,8 +69,8 @@ export interface SourceIdentity {
   file: number;
 }
 
-/** One of "iso_file", "tilo_image". */
-export type SourceKind = "iso_file" | "tilo_image";
+/** One of "IsoFile", "TiloImage". */
+export type SourceKind = "IsoFile" | "TiloImage";
 
 export interface UserAccount {
   full_name: string;
@@ -89,14 +89,14 @@ export interface ClearSourceArgs {
 /** Image sources — `imager.sources`. */
 export interface Sources extends tilo.Resource {
   readonly source: Source | null;
-  readonly recent: RecentSource[];
+  readonly recent: Array<tilo.Entry<RecentSource>>;
   profile: InstallProfile;
   selectSource(args: {
     source: Source;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `select-source` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   selectSourceMany(items: SelectSourceArgs[]): Promise<tilo.ActionAnswer[]>;
-  clearSource(): Promise<tilo.Run | void>;
+  clearSource(): Promise<void>;
   /** Runs `clear-source` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   clearSourceMany(items: ClearSourceArgs[]): Promise<tilo.ActionAnswer[]>;
   status(): Promise<void>;
@@ -107,8 +107,12 @@ export interface Sources extends tilo.Resource {
   }): Promise<void>;
 }
 
+/** The actions `Sources` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const SOURCES_ACTIONS = ["selectSource", "selectSourceMany", "clearSource", "clearSourceMany", "status", "exportConfig", "rescan", "chooseDrive"] as const;
+
 /** The `imager.sources` kind at `path`. */
 export function sources(ws: tilo.Workspace, path: string): Sources {
-  return resourceProxy(ws, path, SURFACE) as unknown as Sources;
+  return resourceProxy(ws, path, SURFACE, SOURCES_ACTIONS) as unknown as Sources;
 }
 

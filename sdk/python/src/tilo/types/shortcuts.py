@@ -17,7 +17,7 @@ all-or-nothing steps, all of them one run.
 from __future__ import annotations
 
 from typing import Any, Literal, NotRequired, TypedDict
-from tilo import Resource, Run
+from tilo import Entry, Resource, Run
 
 __all__ = [
     "Draft",
@@ -49,8 +49,8 @@ __all__ = [
 class Draft(TypedDict):
     name: str
     shortcut_id: str
-    inputs: list[Any]
-    steps: list[StepNode]
+    inputs: list[Entry[Any]]
+    steps: list[Entry[StepNode]]
     output: Any | None
     triggers: list[Any]
     step_timeout_secs: int | None
@@ -192,10 +192,10 @@ RemoveInputArgs = TypedDict("RemoveInputArgs", {
 class Workbench(Resource):
     """Shortcuts — `shortcuts.workbench`."""
     __surface__ = "so.tilo.shortcuts@720723bfb1ff289c"
-    drafts: list[Draft]
+    drafts: list[Entry[Draft]]
     ignored: list[str]
 
-    def draft_proposal(self, *, shortcut: Any) -> Run | None:
+    def draft_proposal(self, *, shortcut: Any) -> None:
         """Runs the app's action."""
         return self.action("draft-proposal", shortcut=shortcut)
 
@@ -203,7 +203,7 @@ class Workbench(Resource):
         """Runs `draft-proposal` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("draft-proposal", items)
 
-    def ignore_proposal(self, *, key: str) -> Run | None:
+    def ignore_proposal(self, *, key: str) -> None:
         """Runs the app's action."""
         return self.action("ignore-proposal", key=key)
 
@@ -211,7 +211,7 @@ class Workbench(Resource):
         """Runs `ignore-proposal` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("ignore-proposal", items)
 
-    def allow_proposal(self, *, key: str) -> Run | None:
+    def allow_proposal(self, *, key: str) -> None:
         """Runs the app's action."""
         return self.action("allow-proposal", key=key)
 
@@ -219,7 +219,7 @@ class Workbench(Resource):
         """Runs `allow-proposal` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("allow-proposal", items)
 
-    def new_draft(self, *, name: str) -> Run | None:
+    def new_draft(self, *, name: str) -> None:
         """Runs the app's action."""
         return self.action("new-draft", name=name)
 
@@ -227,7 +227,7 @@ class Workbench(Resource):
         """Runs `new-draft` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("new-draft", items)
 
-    def duplicate_draft(self, *, draft: str) -> Run | None:
+    def duplicate_draft(self, *, draft: str) -> None:
         """Runs the app's action."""
         return self.action("duplicate-draft", draft=draft)
 
@@ -235,7 +235,7 @@ class Workbench(Resource):
         """Runs `duplicate-draft` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("duplicate-draft", items)
 
-    def draft_shortcut(self, *, shortcut: Any) -> Run | None:
+    def draft_shortcut(self, *, shortcut: Any) -> None:
         """Runs the app's action."""
         return self.action("draft-shortcut", shortcut=shortcut)
 
@@ -243,7 +243,7 @@ class Workbench(Resource):
         """Runs `draft-shortcut` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("draft-shortcut", items)
 
-    def open_shortcut(self, *, shortcut: Any) -> Run | None:
+    def open_shortcut(self, *, shortcut: Any) -> None:
         """Runs the app's action."""
         return self.action("open-shortcut", shortcut=shortcut)
 
@@ -251,7 +251,7 @@ class Workbench(Resource):
         """Runs `open-shortcut` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("open-shortcut", items)
 
-    def duplicate_shortcut(self, *, shortcut: Any) -> Run | None:
+    def duplicate_shortcut(self, *, shortcut: Any) -> None:
         """Runs the app's action."""
         return self.action("duplicate-shortcut", shortcut=shortcut)
 
@@ -265,7 +265,7 @@ class Workbench(Resource):
         enabled: bool,
         hour: int,
         minute: int,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         return self.action("set-schedule", draft=draft, enabled=enabled, hour=hour, minute=minute)
 
@@ -273,7 +273,7 @@ class Workbench(Resource):
         """Runs `set-schedule` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("set-schedule", items)
 
-    def discard(self, *, draft: str) -> Run | None:
+    def discard(self, *, draft: str) -> None:
         """Runs the app's action."""
         return self.action("discard", draft=draft)
 
@@ -286,7 +286,7 @@ class Workbench(Resource):
         draft: str,
         block: str,
         step: Any,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         return self.action("add-step", draft=draft, block=block, step=step)
 
@@ -299,7 +299,7 @@ class Workbench(Resource):
         draft: str,
         path: str,
         step: Any,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         return self.action("replace-step", draft=draft, path=path, step=step)
 
@@ -313,7 +313,7 @@ class Workbench(Resource):
         path: str,
         param: str,
         binding: str,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         return self.action("bind-argument", draft=draft, path=path, param=param, binding=binding)
 
@@ -325,7 +325,7 @@ class Workbench(Resource):
         *,
         draft: str,
         path: str,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         return self.action("remove-step", draft=draft, path=path)
 
@@ -338,7 +338,7 @@ class Workbench(Resource):
         draft: str,
         path: str,
         earlier: bool,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         return self.action("move-step", draft=draft, path=path, earlier=earlier)
 
@@ -351,7 +351,7 @@ class Workbench(Resource):
         draft: str,
         path: str,
         policy: str,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         return self.action("set-step-policy", draft=draft, path=path, policy=policy)
 
@@ -365,7 +365,7 @@ class Workbench(Resource):
         path: str,
         block: str,
         index: int,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         return self.action("set-nested", draft=draft, path=path, block=block, index=index)
 
@@ -377,7 +377,7 @@ class Workbench(Resource):
         *,
         draft: str,
         binding: str,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         return self.action("set-output", draft=draft, binding=binding)
 
@@ -390,7 +390,7 @@ class Workbench(Resource):
         draft: str,
         name: str,
         kind: str,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         return self.action("add-input", draft=draft, name=name, kind=kind)
 
@@ -402,12 +402,16 @@ class Workbench(Resource):
         *,
         draft: str,
         name: str,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         return self.action("remove-input", draft=draft, name=name)
 
     def remove_input_many(self, items: list[RemoveInputArgs]) -> list[dict[str, Any]]:
         """Runs `remove-input` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("remove-input", items)
+
+    # The actions a call reaches before the resource is read: `await tracker.create(...)`
+    # needs no `load()` first.
+    __actions__ = frozenset({"draft_proposal", "draft_proposal_many", "ignore_proposal", "ignore_proposal_many", "allow_proposal", "allow_proposal_many", "new_draft", "new_draft_many", "duplicate_draft", "duplicate_draft_many", "draft_shortcut", "draft_shortcut_many", "open_shortcut", "open_shortcut_many", "duplicate_shortcut", "duplicate_shortcut_many", "set_schedule", "set_schedule_many", "discard", "discard_many", "add_step", "add_step_many", "replace_step", "replace_step_many", "bind_argument", "bind_argument_many", "remove_step", "remove_step_many", "move_step", "move_step_many", "set_step_policy", "set_step_policy_many", "set_nested", "set_nested_many", "set_output", "set_output_many", "add_input", "add_input_many", "remove_input", "remove_input_many"})
 
 

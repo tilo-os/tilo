@@ -17,7 +17,7 @@ all-or-nothing steps, all of them one run.
 from __future__ import annotations
 
 from typing import Any, Literal, NotRequired, TypedDict
-from tilo import Resource, Run
+from tilo import Entry, Resource, Run
 
 __all__ = [
     "Alarm",
@@ -160,9 +160,9 @@ KeepArgs = TypedDict("KeepArgs", {
 class Collection(Resource):
     """Clocks — `clocks.collection`."""
     __surface__ = "so.tilo.clocks@de9ae8048fcfe612"
-    world_clocks: list[WorldClock]
-    alarms: list[Alarm]
-    timers: list[Timer]
+    world_clocks: list[Entry[WorldClock]]
+    alarms: list[Entry[Alarm]]
+    timers: list[Entry[Timer]]
     @property
     def stopwatch(self) -> Stopwatch:
         """Read only."""
@@ -172,7 +172,7 @@ class Collection(Resource):
         *,
         city: str,
         timezone: str,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         return self.action("add-world-clock", city=city, timezone=timezone)
 
@@ -180,7 +180,7 @@ class Collection(Resource):
         """Runs `add-world-clock` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("add-world-clock", items)
 
-    def remove_world_clock(self, *, world_clock: str) -> Run | None:
+    def remove_world_clock(self, *, world_clock: str) -> None:
         """Runs the app's action."""
         return self.action("remove-world-clock", world_clock=world_clock)
 
@@ -194,7 +194,7 @@ class Collection(Resource):
         hour: int,
         minute: int,
         weekdays: list[WeekdayKey],
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         return self.action("add-alarm", label=label, hour=hour, minute=minute, weekdays=weekdays)
 
@@ -206,7 +206,7 @@ class Collection(Resource):
         *,
         alarm: str,
         enabled: bool,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         return self.action("set-alarm-enabled", alarm=alarm, enabled=enabled)
 
@@ -221,7 +221,7 @@ class Collection(Resource):
         hour: int,
         minute: int,
         weekdays: list[WeekdayKey],
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         return self.action("edit-alarm", alarm=alarm, label=label, hour=hour, minute=minute, weekdays=weekdays)
 
@@ -229,7 +229,7 @@ class Collection(Resource):
         """Runs `edit-alarm` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("edit-alarm", items)
 
-    def remove_alarm(self, *, alarm: str) -> Run | None:
+    def remove_alarm(self, *, alarm: str) -> None:
         """Runs the app's action."""
         return self.action("remove-alarm", alarm=alarm)
 
@@ -241,7 +241,7 @@ class Collection(Resource):
         *,
         label: str,
         seconds: int,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         return self.action("add-timer", label=label, seconds=seconds)
 
@@ -249,7 +249,7 @@ class Collection(Resource):
         """Runs `add-timer` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("add-timer", items)
 
-    def pause_timer(self, *, timer: str) -> Run | None:
+    def pause_timer(self, *, timer: str) -> None:
         """Runs the app's action."""
         return self.action("pause-timer", timer=timer)
 
@@ -257,7 +257,7 @@ class Collection(Resource):
         """Runs `pause-timer` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("pause-timer", items)
 
-    def resume_timer(self, *, timer: str) -> Run | None:
+    def resume_timer(self, *, timer: str) -> None:
         """Runs the app's action."""
         return self.action("resume-timer", timer=timer)
 
@@ -265,7 +265,7 @@ class Collection(Resource):
         """Runs `resume-timer` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("resume-timer", items)
 
-    def add_minute(self, *, timer: str) -> Run | None:
+    def add_minute(self, *, timer: str) -> None:
         """Runs the app's action."""
         return self.action("add-minute", timer=timer)
 
@@ -273,7 +273,7 @@ class Collection(Resource):
         """Runs `add-minute` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("add-minute", items)
 
-    def remove_timer(self, *, timer: str) -> Run | None:
+    def remove_timer(self, *, timer: str) -> None:
         """Runs the app's action."""
         return self.action("remove-timer", timer=timer)
 
@@ -281,7 +281,7 @@ class Collection(Resource):
         """Runs `remove-timer` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("remove-timer", items)
 
-    def start_stopwatch(self) -> Run | None:
+    def start_stopwatch(self) -> None:
         """Runs the app's action."""
         return self.action("start-stopwatch")
 
@@ -289,7 +289,7 @@ class Collection(Resource):
         """Runs `start-stopwatch` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("start-stopwatch", items)
 
-    def pause_stopwatch(self) -> Run | None:
+    def pause_stopwatch(self) -> None:
         """Runs the app's action."""
         return self.action("pause-stopwatch")
 
@@ -297,7 +297,7 @@ class Collection(Resource):
         """Runs `pause-stopwatch` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("pause-stopwatch", items)
 
-    def lap(self) -> Run | None:
+    def lap(self) -> None:
         """Runs the app's action."""
         return self.action("lap")
 
@@ -305,13 +305,17 @@ class Collection(Resource):
         """Runs `lap` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("lap", items)
 
-    def reset_stopwatch(self) -> Run | None:
+    def reset_stopwatch(self) -> None:
         """Runs the app's action."""
         return self.action("reset-stopwatch")
 
     def reset_stopwatch_many(self, items: list[ResetStopwatchArgs]) -> list[dict[str, Any]]:
         """Runs `reset-stopwatch` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("reset-stopwatch", items)
+
+    # The actions a call reaches before the resource is read: `await tracker.create(...)`
+    # needs no `load()` first.
+    __actions__ = frozenset({"add_world_clock", "add_world_clock_many", "remove_world_clock", "remove_world_clock_many", "add_alarm", "add_alarm_many", "set_alarm_enabled", "set_alarm_enabled_many", "edit_alarm", "edit_alarm_many", "remove_alarm", "remove_alarm_many", "add_timer", "add_timer_many", "pause_timer", "pause_timer_many", "resume_timer", "resume_timer_many", "add_minute", "add_minute_many", "remove_timer", "remove_timer_many", "start_stopwatch", "start_stopwatch_many", "pause_stopwatch", "pause_stopwatch_many", "lap", "lap_many", "reset_stopwatch", "reset_stopwatch_many"})
 
 
 class OnDevices(Resource):
@@ -323,12 +327,16 @@ class OnDevices(Resource):
         *,
         device: str,
         kept: Any,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         return self.action("keep", device=device, kept=kept)
 
     def keep_many(self, items: list[KeepArgs]) -> list[dict[str, Any]]:
         """Runs `keep` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("keep", items)
+
+    # The actions a call reaches before the resource is read: `await tracker.create(...)`
+    # needs no `load()` first.
+    __actions__ = frozenset({"keep", "keep_many"})
 
 

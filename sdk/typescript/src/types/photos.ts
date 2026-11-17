@@ -161,69 +161,69 @@ export interface RemoveAlbumArgs {
 
 /** Library — `photos.library`. */
 export interface Library extends tilo.Resource {
-  photos: LibraryPhoto[];
-  albums: Album[];
+  photos: Array<tilo.Entry<LibraryPhoto>>;
+  albums: Array<tilo.Entry<Album>>;
   importPhoto(args: {
     image: OpenImage;
     captured_at?: string;
     location?: PhotoLocation;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `import-photo` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   importPhotoMany(items: ImportPhotoArgs[]): Promise<tilo.ActionAnswer[]>;
   refreshImportedMetadata(args: {
     photo: string;
     captured_at?: string;
     location?: PhotoLocation;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `refresh-imported-metadata` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   refreshImportedMetadataMany(items: RefreshImportedMetadataArgs[]): Promise<tilo.ActionAnswer[]>;
   removePhoto(args: {
     photo: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `remove-photo` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   removePhotoMany(items: RemovePhotoArgs[]): Promise<tilo.ActionAnswer[]>;
   rotateRight(args: {
     photo: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `rotate-right` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   rotateRightMany(items: RotateRightArgs[]): Promise<tilo.ActionAnswer[]>;
   rotateLeft(args: {
     photo: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `rotate-left` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   rotateLeftMany(items: RotateLeftArgs[]): Promise<tilo.ActionAnswer[]>;
   crop(args: {
     photo: string;
     region: Rect01;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `crop` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   cropMany(items: CropArgs[]): Promise<tilo.ActionAnswer[]>;
   mergeImageAnalysis(args: {
     photo: string;
     analysis: ImageAnalysis;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `merge-image-analysis` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   mergeImageAnalysisMany(items: MergeImageAnalysisArgs[]): Promise<tilo.ActionAnswer[]>;
   setPersonMembership(args: {
     person: string;
     photos: string[];
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `set-person-membership` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   setPersonMembershipMany(items: SetPersonMembershipArgs[]): Promise<tilo.ActionAnswer[]>;
   renamePerson(args: {
     person: string;
     to: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `rename-person` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   renamePersonMany(items: RenamePersonArgs[]): Promise<tilo.ActionAnswer[]>;
   removePerson(args: {
     person: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `remove-person` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   removePersonMany(items: RemovePersonArgs[]): Promise<tilo.ActionAnswer[]>;
   removeAlbum(args: {
     album: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `remove-album` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   removeAlbumMany(items: RemoveAlbumArgs[]): Promise<tilo.ActionAnswer[]>;
   makeThumbnails(args: {
@@ -231,8 +231,12 @@ export interface Library extends tilo.Resource {
   }): Promise<void>;
 }
 
+/** The actions `Library` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const LIBRARY_ACTIONS = ["importPhoto", "importPhotoMany", "refreshImportedMetadata", "refreshImportedMetadataMany", "removePhoto", "removePhotoMany", "rotateRight", "rotateRightMany", "rotateLeft", "rotateLeftMany", "crop", "cropMany", "mergeImageAnalysis", "mergeImageAnalysisMany", "setPersonMembership", "setPersonMembershipMany", "renamePerson", "renamePersonMany", "removePerson", "removePersonMany", "removeAlbum", "removeAlbumMany", "makeThumbnails"] as const;
+
 /** The `photos.library` kind at `path`. */
 export function library(ws: tilo.Workspace, path: string): Library {
-  return resourceProxy(ws, path, SURFACE) as unknown as Library;
+  return resourceProxy(ws, path, SURFACE, LIBRARY_ACTIONS) as unknown as Library;
 }
 

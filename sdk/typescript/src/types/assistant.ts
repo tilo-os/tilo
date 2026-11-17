@@ -28,8 +28,12 @@ export const SURFACE = "so.tilo.assistant@9374833eab0a7ede";
 export interface Window extends tilo.Resource {
 }
 
+/** The actions `Window` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const WINDOW_ACTIONS = [] as const;
+
 /** The `assistant.window` kind at `path`. */
 export function assistantWindow(ws: tilo.Workspace, path: string): Window {
-  return resourceProxy(ws, path, SURFACE) as unknown as Window;
+  return resourceProxy(ws, path, SURFACE, WINDOW_ACTIONS) as unknown as Window;
 }
 

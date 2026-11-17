@@ -213,7 +213,17 @@ impl AgentMember {
                     }),
                 }
             }
+            // An agent publishes no app surfaces.
+            RemoteActionMessage::SurfaceRequest { correlation, .. } => {
+                RemoteActionMessage::SurfaceResponse {
+                    correlation,
+                    result: Err(ActionHostError::Unavailable {
+                        reason: "an agent keeps no app surfaces".into(),
+                    }),
+                }
+            }
             RemoteActionMessage::FeedbackResponse { .. }
+            | RemoteActionMessage::SurfaceResponse { .. }
             | RemoteActionMessage::ContentPutResponse { .. }
             | RemoteActionMessage::ContentGetResponse { .. }
             | RemoteActionMessage::ContentLinkResponse { .. }

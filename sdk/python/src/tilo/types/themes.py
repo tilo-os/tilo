@@ -17,7 +17,7 @@ all-or-nothing steps, all of them one run.
 from __future__ import annotations
 
 from typing import Any, Literal, NotRequired, TypedDict
-from tilo import Resource, Run
+from tilo import Entry, Resource, Run
 
 __all__ = [
     "Ink",
@@ -118,13 +118,13 @@ SwitchPolarityArgs = TypedDict("SwitchPolarityArgs", {
 class Studio(Resource):
     """Themes — `themes.studio`."""
     __surface__ = "so.tilo.themes@aece4838e9a21ddc"
-    themes: list[Theme]
+    themes: list[Entry[Theme]]
 
     def new_theme(self,
         *,
         id: str,
         base: str,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         return self.action("new-theme", id=id, base=base)
 
@@ -136,7 +136,7 @@ class Studio(Resource):
         *,
         id: str,
         document: str,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         return self.action("import-theme", id=id, document=document)
 
@@ -144,7 +144,7 @@ class Studio(Resource):
         """Runs `import-theme` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("import-theme", items)
 
-    def reset(self, *, theme: str) -> Run | None:
+    def reset(self, *, theme: str) -> None:
         """Runs the app's action."""
         return self.action("reset", theme=theme)
 
@@ -152,7 +152,7 @@ class Studio(Resource):
         """Runs `reset` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("reset", items)
 
-    def delete(self, *, theme: str) -> Run | None:
+    def delete(self, *, theme: str) -> None:
         """Runs the app's action."""
         return self.action("delete", theme=theme)
 
@@ -164,7 +164,7 @@ class Studio(Resource):
         *,
         theme: str,
         dark: bool,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         return self.action("switch-polarity", theme=theme, dark=dark)
 
@@ -175,5 +175,9 @@ class Studio(Resource):
     def export(self, *, theme: str) -> None:
         """Runs the app's action."""
         return self.action("export", theme=theme)
+
+    # The actions a call reaches before the resource is read: `await tracker.create(...)`
+    # needs no `load()` first.
+    __actions__ = frozenset({"new_theme", "new_theme_many", "import_theme", "import_theme_many", "reset", "reset_many", "delete", "delete_many", "switch_polarity", "switch_polarity_many", "export"})
 
 

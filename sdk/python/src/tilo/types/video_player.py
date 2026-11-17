@@ -17,7 +17,7 @@ all-or-nothing steps, all of them one run.
 from __future__ import annotations
 
 from typing import Any, Literal, NotRequired, TypedDict
-from tilo import Resource, Run
+from tilo import Entry, Resource, Run
 
 __all__ = [
     "Playlist",
@@ -116,15 +116,15 @@ StoodArgs = TypedDict("StoodArgs", {
 class Library(Resource):
     """Video Player — `video-player.library`."""
     __surface__ = "so.tilo.video-player@4f05d77ea6c7a710"
-    playlists: list[Playlist]
-    items: list[PlaylistItem]
-    annotations: list[TimestampAnnotation]
+    playlists: list[Entry[Playlist]]
+    items: list[Entry[PlaylistItem]]
+    annotations: list[Entry[TimestampAnnotation]]
     @property
     def transports(self) -> dict[str, SharedTransport]:
         """Read only."""
         return self.fields["transports"]
 
-    def create_playlist(self, *, name: str) -> Run | None:
+    def create_playlist(self, *, name: str) -> None:
         """Runs the app's action."""
         return self.action("create-playlist", name=name)
 
@@ -132,7 +132,7 @@ class Library(Resource):
         """Runs `create-playlist` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("create-playlist", items)
 
-    def delete_playlist(self, *, playlist: str) -> Run | None:
+    def delete_playlist(self, *, playlist: str) -> None:
         """Runs the app's action."""
         return self.action("delete-playlist", playlist=playlist)
 
@@ -145,7 +145,7 @@ class Library(Resource):
         playlist: str,
         media_ref: str,
         title: str,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         return self.action("add-to-playlist", playlist=playlist, media_ref=media_ref, title=title)
 
@@ -157,7 +157,7 @@ class Library(Resource):
         *,
         media_ref: str,
         title: str,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         return self.action("add-to-watch-later", media_ref=media_ref, title=title)
 
@@ -170,7 +170,7 @@ class Library(Resource):
         media_ref: str,
         time_ms: int,
         text: str | None = None,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         args: dict[str, Any] = {}
         args["media_ref"] = media_ref
@@ -183,7 +183,7 @@ class Library(Resource):
         """Runs `add-annotation` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("add-annotation", items)
 
-    def delete_annotation(self, *, annotation: str) -> Run | None:
+    def delete_annotation(self, *, annotation: str) -> None:
         """Runs the app's action."""
         return self.action("delete-annotation", annotation=annotation)
 
@@ -198,7 +198,7 @@ class Library(Resource):
         position_ms: int,
         rate: float,
         epoch_ms: int,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         return self.action("set-transport", media_ref=media_ref, playing=playing, position_ms=position_ms, rate=rate, epoch_ms=epoch_ms)
 
@@ -220,6 +220,10 @@ class Library(Resource):
         """Runs the app's action."""
         return self.action("clear-recent")
 
+    # The actions a call reaches before the resource is read: `await tracker.create(...)`
+    # needs no `load()` first.
+    __actions__ = frozenset({"create_playlist", "create_playlist_many", "delete_playlist", "delete_playlist_many", "add_to_playlist", "add_to_playlist_many", "add_to_watch_later", "add_to_watch_later_many", "add_annotation", "add_annotation_many", "delete_annotation", "delete_annotation_many", "set_transport", "set_transport_many", "open_video", "clear_recent"})
+
 
 class Recent(Resource):
     """Recent videos — `video-player.recent`."""
@@ -230,7 +234,7 @@ class Recent(Resource):
         *,
         device: str,
         rows: Any,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         return self.action("keep", device=device, rows=rows)
 
@@ -243,12 +247,16 @@ class Recent(Resource):
         device: str,
         id: str,
         position_ms: int,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         return self.action("stood", device=device, id=id, position_ms=position_ms)
 
     def stood_many(self, items: list[StoodArgs]) -> list[dict[str, Any]]:
         """Runs `stood` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("stood", items)
+
+    # The actions a call reaches before the resource is read: `await tracker.create(...)`
+    # needs no `load()` first.
+    __actions__ = frozenset({"keep", "keep_many", "stood", "stood_many"})
 
 

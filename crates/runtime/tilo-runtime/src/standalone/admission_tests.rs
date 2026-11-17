@@ -116,6 +116,7 @@ async fn admitted_runtime_factory_preserves_workspace_launcher_and_refuses_retir
         broker,
         workspace: workspace_id.clone(),
         joined,
+        apps: None,
         session: None,
     }
     .session_factory(

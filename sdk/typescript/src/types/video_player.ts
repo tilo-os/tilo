@@ -106,43 +106,43 @@ export interface StoodArgs {
 
 /** Video Player — `video-player.library`. */
 export interface Library extends tilo.Resource {
-  playlists: Playlist[];
-  items: PlaylistItem[];
-  annotations: TimestampAnnotation[];
+  playlists: Array<tilo.Entry<Playlist>>;
+  items: Array<tilo.Entry<PlaylistItem>>;
+  annotations: Array<tilo.Entry<TimestampAnnotation>>;
   readonly transports: Record<string, SharedTransport>;
   createPlaylist(args: {
     name: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `create-playlist` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   createPlaylistMany(items: CreatePlaylistArgs[]): Promise<tilo.ActionAnswer[]>;
   deletePlaylist(args: {
     playlist: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `delete-playlist` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   deletePlaylistMany(items: DeletePlaylistArgs[]): Promise<tilo.ActionAnswer[]>;
   addToPlaylist(args: {
     playlist: string;
     media_ref: string;
     title: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `add-to-playlist` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   addToPlaylistMany(items: AddToPlaylistArgs[]): Promise<tilo.ActionAnswer[]>;
   addToWatchLater(args: {
     media_ref: string;
     title: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `add-to-watch-later` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   addToWatchLaterMany(items: AddToWatchLaterArgs[]): Promise<tilo.ActionAnswer[]>;
   addAnnotation(args: {
     media_ref: string;
     time_ms: number;
     text?: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `add-annotation` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   addAnnotationMany(items: AddAnnotationArgs[]): Promise<tilo.ActionAnswer[]>;
   deleteAnnotation(args: {
     annotation: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `delete-annotation` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   deleteAnnotationMany(items: DeleteAnnotationArgs[]): Promise<tilo.ActionAnswer[]>;
   setTransport(args: {
@@ -151,7 +151,7 @@ export interface Library extends tilo.Resource {
     position_ms: number;
     rate: number;
     epoch_ms: number;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `set-transport` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   setTransportMany(items: SetTransportArgs[]): Promise<tilo.ActionAnswer[]>;
   openVideo(args?: {
@@ -160,9 +160,13 @@ export interface Library extends tilo.Resource {
   clearRecent(): Promise<void>;
 }
 
+/** The actions `Library` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const LIBRARY_ACTIONS = ["createPlaylist", "createPlaylistMany", "deletePlaylist", "deletePlaylistMany", "addToPlaylist", "addToPlaylistMany", "addToWatchLater", "addToWatchLaterMany", "addAnnotation", "addAnnotationMany", "deleteAnnotation", "deleteAnnotationMany", "setTransport", "setTransportMany", "openVideo", "clearRecent"] as const;
+
 /** The `video-player.library` kind at `path`. */
 export function library(ws: tilo.Workspace, path: string): Library {
-  return resourceProxy(ws, path, SURFACE) as unknown as Library;
+  return resourceProxy(ws, path, SURFACE, LIBRARY_ACTIONS) as unknown as Library;
 }
 
 /** Recent videos — `video-player.recent`. */
@@ -171,20 +175,24 @@ export interface Recent extends tilo.Resource {
   keep(args: {
     device: string;
     rows: unknown;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `keep` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   keepMany(items: KeepArgs[]): Promise<tilo.ActionAnswer[]>;
   stood(args: {
     device: string;
     id: string;
     position_ms: number;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `stood` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   stoodMany(items: StoodArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 
+/** The actions `Recent` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const RECENT_ACTIONS = ["keep", "keepMany", "stood", "stoodMany"] as const;
+
 /** The `video-player.recent` kind at `path`. */
 export function recent(ws: tilo.Workspace, path: string): Recent {
-  return resourceProxy(ws, path, SURFACE) as unknown as Recent;
+  return resourceProxy(ws, path, SURFACE, RECENT_ACTIONS) as unknown as Recent;
 }
 

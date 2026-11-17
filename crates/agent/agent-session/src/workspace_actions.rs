@@ -563,6 +563,14 @@ impl WorkspaceActions {
             RemoteActionMessage::Invoke(request) => {
                 self.invoke_request(workspace_id, caller, request)
             }
+            // The workspace's app surfaces are the workspace host's to
+            // answer; this server keeps none.
+            RemoteActionMessage::SurfaceRequest { correlation, .. } => {
+                Pending::ready(RemoteActionMessage::SurfaceResponse {
+                    correlation,
+                    result: Err(unavailable()),
+                })
+            }
             RemoteActionMessage::Observe { invocation, .. } => {
                 let state = self.ledger().owned(caller, &invocation).map(|entry| {
                     InvocationState::new(invocation, entry.update.clone())
@@ -661,6 +669,7 @@ impl WorkspaceActions {
             | RemoteActionMessage::SearchResponse { .. }
             | RemoteActionMessage::ChangesResponse { .. }
             | RemoteActionMessage::ChangedResponse { .. }
+            | RemoteActionMessage::SurfaceResponse { .. }
             | RemoteActionMessage::CatalogueChanged { .. } => return None,
         })
     }

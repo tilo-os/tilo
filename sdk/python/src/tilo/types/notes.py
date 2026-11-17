@@ -17,7 +17,7 @@ all-or-nothing steps, all of them one run.
 from __future__ import annotations
 
 from typing import Any, Literal, NotRequired, TypedDict
-from tilo import Resource, Run
+from tilo import Entry, Resource, Run
 
 __all__ = [
     "MarkdownFile",
@@ -166,9 +166,9 @@ WriteNoteArgs = TypedDict("WriteNoteArgs", {
 
 class Notebook(Resource):
     """Notebook — `notes.notebook`."""
-    __surface__ = "so.tilo.notes@d00ab9647430874b"
-    pages: list[Page]
-    tags: list[Tag]
+    __surface__ = "so.tilo.notes@4f4053f8b0fc02d4"
+    pages: list[Entry[Page]]
+    tags: list[Entry[Tag]]
     @property
     def images(self) -> dict[str, Any]:
         """Read only."""
@@ -178,7 +178,7 @@ class Notebook(Resource):
         *,
         title: str,
         parent: str | None = None,
-    ) -> Any | Run:
+    ) -> Any:
         """Runs the app's action."""
         args: dict[str, Any] = {}
         args["title"] = title
@@ -190,7 +190,7 @@ class Notebook(Resource):
         *,
         page: str,
         title: str,
-    ) -> Any | Run:
+    ) -> Any:
         """Runs the app's action."""
         return self.action("new-child", page=page, title=title)
 
@@ -198,7 +198,7 @@ class Notebook(Resource):
         *,
         page: str,
         title: str,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         return self.action("rename", page=page, title=title)
 
@@ -206,7 +206,7 @@ class Notebook(Resource):
         """Runs `rename` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("rename", items)
 
-    def delete(self, *, page: str) -> Run | None:
+    def delete(self, *, page: str) -> None:
         """Runs the app's action."""
         return self.action("delete", page=page)
 
@@ -219,7 +219,7 @@ class Notebook(Resource):
         page: str,
         parent: str | None = None,
         before: str | None = None,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         args: dict[str, Any] = {}
         args["page"] = page
@@ -233,7 +233,7 @@ class Notebook(Resource):
         """Runs `move-note` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("move-note", items)
 
-    def move_up(self, *, page: str) -> Run | None:
+    def move_up(self, *, page: str) -> None:
         """Runs the app's action."""
         return self.action("move-up", page=page)
 
@@ -241,7 +241,7 @@ class Notebook(Resource):
         """Runs `move-up` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("move-up", items)
 
-    def move_down(self, *, page: str) -> Run | None:
+    def move_down(self, *, page: str) -> None:
         """Runs the app's action."""
         return self.action("move-down", page=page)
 
@@ -249,7 +249,7 @@ class Notebook(Resource):
         """Runs `move-down` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("move-down", items)
 
-    def indent(self, *, page: str) -> Run | None:
+    def indent(self, *, page: str) -> None:
         """Runs the app's action."""
         return self.action("indent", page=page)
 
@@ -257,7 +257,7 @@ class Notebook(Resource):
         """Runs `indent` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("indent", items)
 
-    def outdent(self, *, page: str) -> Run | None:
+    def outdent(self, *, page: str) -> None:
         """Runs the app's action."""
         return self.action("outdent", page=page)
 
@@ -265,7 +265,7 @@ class Notebook(Resource):
         """Runs `outdent` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("outdent", items)
 
-    def duplicate(self, *, page: str) -> Run | None:
+    def duplicate(self, *, page: str) -> None:
         """Runs the app's action."""
         return self.action("duplicate", page=page)
 
@@ -273,7 +273,7 @@ class Notebook(Resource):
         """Runs `duplicate` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("duplicate", items)
 
-    def new_tag(self, *, name: str) -> Run | None:
+    def new_tag(self, *, name: str) -> None:
         """Runs the app's action."""
         return self.action("new-tag", name=name)
 
@@ -285,7 +285,7 @@ class Notebook(Resource):
         *,
         page: str,
         name: str,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         return self.action("tag", page=page, name=name)
 
@@ -293,7 +293,7 @@ class Notebook(Resource):
         """Runs `tag` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("tag", items)
 
-    def delete_tag(self, *, tag: str) -> Run | None:
+    def delete_tag(self, *, tag: str) -> None:
         """Runs the app's action."""
         return self.action("delete-tag", tag=tag)
 
@@ -301,7 +301,7 @@ class Notebook(Resource):
         """Runs `delete-tag` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("delete-tag", items)
 
-    def keep_image(self, *, bytes: Any) -> Run | None:
+    def keep_image(self, *, bytes: Any) -> None:
         """Runs the app's action."""
         return self.action("keep-image", bytes=bytes)
 
@@ -314,7 +314,7 @@ class Notebook(Resource):
         page: str,
         bytes: Any,
         alt: str | None = None,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         args: dict[str, Any] = {}
         args["page"] = page
@@ -332,7 +332,7 @@ class Notebook(Resource):
         title: str,
         markdown: str | None = None,
         origin: Origin | None = None,
-    ) -> Any | Run:
+    ) -> Any:
         """Runs the app's action."""
         args: dict[str, Any] = {}
         args["title"] = title
@@ -350,7 +350,7 @@ class Notebook(Resource):
         note: str | None = None,
         path: str | None = None,
         origin: Origin | None = None,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         args: dict[str, Any] = {}
         args["title"] = title
@@ -368,7 +368,7 @@ class Notebook(Resource):
         """Runs `import-markdown` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("import-markdown", items)
 
-    def import_markdown_files(self, *, files: list[MarkdownFile]) -> Run | None:
+    def import_markdown_files(self, *, files: list[MarkdownFile]) -> None:
         """Runs the app's action."""
         return self.action("import-markdown-files", files=files)
 
@@ -380,7 +380,7 @@ class Notebook(Resource):
         *,
         markdown: str,
         title: str | None = None,
-    ) -> Any | Run:
+    ) -> Any:
         """Runs the app's action."""
         args: dict[str, Any] = {}
         if title is not None:
@@ -392,7 +392,7 @@ class Notebook(Resource):
         *,
         page: str,
         markdown: str,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         return self.action("write-note", page=page, markdown=markdown)
 
@@ -412,5 +412,9 @@ class Notebook(Resource):
         if title is not None:
             args["title"] = title
         return self.action("export-markdown-content", **args)
+
+    # The actions a call reaches before the resource is read: `await tracker.create(...)`
+    # needs no `load()` first.
+    __actions__ = frozenset({"new_note", "new_child", "rename", "rename_many", "delete", "delete_many", "move_note", "move_note_many", "move_up", "move_up_many", "move_down", "move_down_many", "indent", "indent_many", "outdent", "outdent_many", "duplicate", "duplicate_many", "new_tag", "new_tag_many", "tag", "tag_many", "delete_tag", "delete_tag_many", "keep_image", "keep_image_many", "place_image", "place_image_many", "create_page", "import_markdown", "import_markdown_many", "import_markdown_files", "import_markdown_files_many", "append_to_note", "write_note", "write_note_many", "export_markdown_content"})
 
 

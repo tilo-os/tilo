@@ -144,8 +144,8 @@ fields = [
 [[resources.types]]
 name = "SourceKind"
 cases = [
-  { name = "iso_file" },
-  { name = "tilo_image" },
+  { name = "IsoFile" },
+  { name = "TiloImage" },
 ]
 
 [[resources.types]]

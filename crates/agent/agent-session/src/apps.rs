@@ -1351,6 +1351,7 @@ fn containers_into(
             action: None,
             has_children: true,
             visibility: None,
+            surface: None,
         });
     }
     own || below

@@ -61,6 +61,16 @@ async def test_a_generated_method_is_the_apps_action(workspace, api):
     assert api.asked("POST", "/actions/read-form-fields")
 
 
+async def test_an_action_reaches_its_app_before_any_read(workspace, api):
+    # A typed action needs no `load()`: the types are the surface it acts on.
+    form = Document(workspace, PDF)
+
+    answer: FormFields = await form.read_form_fields()
+
+    assert answer == {"fields": ["surname", "given_name"]}
+    assert api.asked("POST", "/actions/read-form-fields")
+
+
 async def test_a_generated_class_names_the_surface_its_types_are_for(workspace, api):
     form = await Document(workspace, PDF).load()
 

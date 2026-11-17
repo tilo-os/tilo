@@ -489,6 +489,12 @@ export interface Event {
   sentence: string | null;
   /** Who made the change. */
   by: string | null;
+  /** The records a change wrote: each with its `path`, and its `app`,
+   * `record` and `item` where the change names them. */
+  resources: Record<string, unknown>[];
+  /** Who made the change, structured: `kind` (`person` or `agent`) and
+   * `name`, and the actor's own fields besides. */
+  actor: Record<string, unknown> | null;
   /** The run (an invocation id) the event is of. */
   run: string | null;
   /** The run's title, as its first call named it. */
@@ -518,6 +524,16 @@ export function eventOf(kind: string | null, data: unknown, cursor: string | nul
     change: textOf(raw.change),
     sentence: textOf(raw.sentence),
     by: textOf(raw.by),
+    resources: Array.isArray(raw.resources)
+      ? raw.resources.filter(
+          (resource): resource is Record<string, unknown> =>
+            resource !== null && typeof resource === "object",
+        )
+      : [],
+    actor:
+      raw.actor !== null && typeof raw.actor === "object" && !Array.isArray(raw.actor)
+        ? (raw.actor as Record<string, unknown>)
+        : null,
     run: textOf(raw.run),
     title: textOf(raw.title),
     group: textOf(raw.group),

@@ -94,7 +94,7 @@ export interface Session extends tilo.Resource {
     left: string;
     right_label: string;
     right: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `open-comparison` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   openComparisonMany(items: OpenComparisonArgs[]): Promise<tilo.ActionAnswer[]>;
   openMerge(args: {
@@ -104,34 +104,38 @@ export interface Session extends tilo.Resource {
     ours: string;
     theirs_label: string;
     theirs: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `open-merge` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   openMergeMany(items: OpenMergeArgs[]): Promise<tilo.ActionAnswer[]>;
   takeOurs(args: {
     hunk: number;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `take-ours` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   takeOursMany(items: TakeOursArgs[]): Promise<tilo.ActionAnswer[]>;
   takeTheirs(args: {
     hunk: number;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `take-theirs` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   takeTheirsMany(items: TakeTheirsArgs[]): Promise<tilo.ActionAnswer[]>;
   takeBoth(args: {
     hunk: number;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `take-both` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   takeBothMany(items: TakeBothArgs[]): Promise<tilo.ActionAnswer[]>;
   resolve(args: {
     hunk: number;
     text: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `resolve` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   resolveMany(items: ResolveArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 
+/** The actions `Session` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const SESSION_ACTIONS = ["openComparison", "openComparisonMany", "openMerge", "openMergeMany", "takeOurs", "takeOursMany", "takeTheirs", "takeTheirsMany", "takeBoth", "takeBothMany", "resolve", "resolveMany"] as const;
+
 /** The `diffmerge.session` kind at `path`. */
 export function session(ws: tilo.Workspace, path: string): Session {
-  return resourceProxy(ws, path, SURFACE) as unknown as Session;
+  return resourceProxy(ws, path, SURFACE, SESSION_ACTIONS) as unknown as Session;
 }
 

@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.poker@ea2ab76e43cec872";
+export const SURFACE = "so.tilo.poker@967369c20d6a9c6f";
 
 export interface Award {
   player: string;
@@ -57,8 +57,8 @@ export interface InHand {
   last: Move;
 }
 
-/** One of "none", "small_blind", "big_blind", "check", "call", "bet", "raise", "all_in", "fold". */
-export type Move = "none" | "small_blind" | "big_blind" | "check" | "call" | "bet" | "raise" | "all_in" | "fold";
+/** One of "None", "SmallBlind", "BigBlind", "Check", "Call", "Bet", "Raise", "AllIn", "Fold". */
+export type Move = "None" | "SmallBlind" | "BigBlind" | "Check" | "Call" | "Bet" | "Raise" | "AllIn" | "Fold";
 
 export interface Player {
   seat: number;
@@ -66,8 +66,8 @@ export interface Player {
   joined_ms: number;
 }
 
-/** One of "idle", "preflop", "flop", "turn", "river", "done". */
-export type Street = "idle" | "preflop" | "flop" | "turn" | "river" | "done";
+/** One of "Idle", "Preflop", "Flop", "Turn", "River", "Done". */
+export type Street = "Idle" | "Preflop" | "Flop" | "Turn" | "River" | "Done";
 
 /** The arguments of `sit`. */
 export interface SitArgs {
@@ -118,42 +118,46 @@ export interface Table extends tilo.Resource {
   button_seat: number;
   sit(args: {
     seat: number;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `sit` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   sitMany(items: SitArgs[]): Promise<tilo.ActionAnswer[]>;
-  leave(): Promise<tilo.Run | void>;
+  leave(): Promise<void>;
   /** Runs `leave` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   leaveMany(items: LeaveArgs[]): Promise<tilo.ActionAnswer[]>;
-  deal(): Promise<tilo.Run | void>;
+  deal(): Promise<void>;
   /** Runs `deal` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   dealMany(items: DealArgs[]): Promise<tilo.ActionAnswer[]>;
-  fold(): Promise<tilo.Run | void>;
+  fold(): Promise<void>;
   /** Runs `fold` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   foldMany(items: FoldArgs[]): Promise<tilo.ActionAnswer[]>;
-  call(): Promise<tilo.Run | void>;
+  call(): Promise<void>;
   /** Runs `call` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   callMany(items: CallArgs[]): Promise<tilo.ActionAnswer[]>;
   raise(args: {
     to: number;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `raise` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   raiseMany(items: RaiseArgs[]): Promise<tilo.ActionAnswer[]>;
-  allIn(): Promise<tilo.Run | void>;
+  allIn(): Promise<void>;
   /** Runs `all-in` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   allInMany(items: AllInArgs[]): Promise<tilo.ActionAnswer[]>;
-  show(): Promise<tilo.Run | void>;
+  show(): Promise<void>;
   /** Runs `show` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   showMany(items: ShowArgs[]): Promise<tilo.ActionAnswer[]>;
-  skip(): Promise<tilo.Run | void>;
+  skip(): Promise<void>;
   /** Runs `skip` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   skipMany(items: SkipArgs[]): Promise<tilo.ActionAnswer[]>;
-  rebuy(): Promise<tilo.Run | void>;
+  rebuy(): Promise<void>;
   /** Runs `rebuy` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   rebuyMany(items: RebuyArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 
+/** The actions `Table` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const TABLE_ACTIONS = ["sit", "sitMany", "leave", "leaveMany", "deal", "dealMany", "fold", "foldMany", "call", "callMany", "raise", "raiseMany", "allIn", "allInMany", "show", "showMany", "skip", "skipMany", "rebuy", "rebuyMany"] as const;
+
 /** The `so.tilo.poker.table` kind at `path`. */
 export function table(ws: tilo.Workspace, path: string): Table {
-  return resourceProxy(ws, path, SURFACE) as unknown as Table;
+  return resourceProxy(ws, path, SURFACE, TABLE_ACTIONS) as unknown as Table;
 }
 

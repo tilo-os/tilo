@@ -17,18 +17,18 @@ all-or-nothing steps, all of them one run.
 from __future__ import annotations
 
 from typing import Any, Literal, NotRequired, TypedDict
-from tilo import Resource, Run
+from tilo import Entry, Resource, Run
 
 __all__ = [
     "Route",
     "Manager",
 ]
 
-Route = Literal["wine", "proton", "vm"]
+Route = Literal["Wine", "Proton", "Vm"]
 
 class Manager(Resource):
     """Windows manager — `windows.manager`."""
-    __surface__ = "so.tilo.windows@59fa16efb06a9562"
+    __surface__ = "so.tilo.windows@1dab16d6b391eaf2"
     routes: dict[str, Route]
 
     def open_file(self,
@@ -42,5 +42,9 @@ class Manager(Resource):
         if path is not None:
             args["path"] = path
         return self.action("open-file", **args)
+
+    # The actions a call reaches before the resource is read: `await tracker.create(...)`
+    # needs no `load()` first.
+    __actions__ = frozenset({"open_file"})
 
 

@@ -546,14 +546,26 @@ fields = [
 ]
 
 [[resources.types]]
+name = "ClipPlacement"
+fields = [
+  { name = "media", type = "text" },
+  { name = "track", type = { option = "text" } },
+  { name = "at", type = { option = "float" } },
+  { name = "in", type = { option = "float" } },
+  { name = "out", type = { option = "float" } },
+  { name = "fade_in", type = { option = "float" } },
+  { name = "fade_out", type = { option = "float" } },
+]
+
+[[resources.types]]
 name = "EffectKind"
 cases = [
-  { name = "grayscale" },
-  { name = "sepia" },
-  { name = "invert" },
-  { name = "warm" },
-  { name = "cool" },
-  { name = "vignette" },
+  { name = "Grayscale" },
+  { name = "Sepia" },
+  { name = "Invert" },
+  { name = "Warm" },
+  { name = "Cool" },
+  { name = "Vignette" },
 ]
 
 [[resources.types]]
@@ -590,9 +602,9 @@ fields = [
 [[resources.types]]
 name = "MaskShape"
 cases = [
-  { name = "none" },
-  { name = "rect" },
-  { name = "ellipse" },
+  { name = "None" },
+  { name = "Rect" },
+  { name = "Ellipse" },
 ]
 
 [[resources.types]]
@@ -614,10 +626,10 @@ fields = [
 [[resources.types]]
 name = "MediaKind"
 cases = [
-  { name = "video" },
-  { name = "audio" },
-  { name = "image" },
-  { name = "text" },
+  { name = "Video" },
+  { name = "Audio" },
+  { name = "Image" },
+  { name = "Text" },
 ]
 
 [[resources.types]]
@@ -630,9 +642,9 @@ fields = [
 [[resources.types]]
 name = "TextAlign"
 cases = [
-  { name = "left" },
-  { name = "center" },
-  { name = "right" },
+  { name = "Left" },
+  { name = "Center" },
+  { name = "Right" },
 ]
 
 [[resources.types]]
@@ -665,8 +677,8 @@ fields = [
 [[resources.types]]
 name = "TrackKind"
 cases = [
-  { name = "video" },
-  { name = "audio" },
+  { name = "Video" },
+  { name = "Audio" },
 ]
 
 [[resources.types]]
@@ -688,10 +700,10 @@ fields = [
 [[resources.types]]
 name = "Transition"
 cases = [
-  { name = "none" },
-  { name = "cross_dissolve" },
-  { name = "fade_in" },
-  { name = "dip_to_black" },
-  { name = "wipe" },
+  { name = "None" },
+  { name = "CrossDissolve" },
+  { name = "FadeIn" },
+  { name = "DipToBlack" },
+  { name = "Wipe" },
 ]
 

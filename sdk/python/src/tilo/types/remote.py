@@ -17,7 +17,7 @@ all-or-nothing steps, all of them one run.
 from __future__ import annotations
 
 from typing import Any, Literal, NotRequired, TypedDict
-from tilo import Resource, Run
+from tilo import Entry, Resource, Run
 
 __all__ = [
     "AuthMethod",
@@ -67,7 +67,7 @@ MarkUsedArgs = TypedDict("MarkUsedArgs", {
 class ConnectionList(Resource):
     """Remote connections — `remote.connection-list`."""
     __surface__ = "so.tilo.remote@2d98f6509ef35270"
-    connections: list[Connection]
+    connections: list[Entry[Connection]]
 
     def add_connection(self,
         *,
@@ -76,7 +76,7 @@ class ConnectionList(Resource):
         kind: ConnectionKind,
         port: int | None = None,
         user: str | None = None,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         args: dict[str, Any] = {}
         args["name"] = name
@@ -92,7 +92,7 @@ class ConnectionList(Resource):
         """Runs `add-connection` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("add-connection", items)
 
-    def delete_connection(self, *, connection: str) -> Run | None:
+    def delete_connection(self, *, connection: str) -> None:
         """Runs the app's action."""
         return self.action("delete-connection", connection=connection)
 
@@ -104,12 +104,16 @@ class ConnectionList(Resource):
         *,
         connection: str,
         at_ms: int,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         return self.action("mark-used", connection=connection, at_ms=at_ms)
 
     def mark_used_many(self, items: list[MarkUsedArgs]) -> list[dict[str, Any]]:
         """Runs `mark-used` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("mark-used", items)
+
+    # The actions a call reaches before the resource is read: `await tracker.create(...)`
+    # needs no `load()` first.
+    __actions__ = frozenset({"add_connection", "add_connection_many", "delete_connection", "delete_connection_many", "mark_used", "mark_used_many"})
 
 

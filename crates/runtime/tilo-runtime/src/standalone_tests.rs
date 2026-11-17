@@ -108,6 +108,7 @@ async fn runtime_invocation_ownership_survives_device_normalization() {
         broker,
         workspace: workspace_id.clone(),
         joined,
+        apps: None,
         session: Some(Arc::new(AdmittedRuntimeSession {
             policy_time: time,
             host: qualified,

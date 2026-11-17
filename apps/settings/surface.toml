@@ -173,8 +173,8 @@ cases = [
 [[resources.types]]
 name = "MagnifierView"
 cases = [
-  { name = "lens" },
-  { name = "full_screen" },
+  { name = "Lens" },
+  { name = "FullScreen" },
 ]
 
 [[resources.types]]
@@ -800,23 +800,23 @@ cases = [
 [[resources.types]]
 name = "FirstDayOfWeek"
 cases = [
-  { name = "monday" },
-  { name = "sunday" },
-  { name = "saturday" },
+  { name = "Monday" },
+  { name = "Sunday" },
+  { name = "Saturday" },
 ]
 
 [[resources.types]]
 name = "Measurement"
 cases = [
-  { name = "metric" },
-  { name = "imperial" },
+  { name = "Metric" },
+  { name = "Imperial" },
 ]
 
 [[resources.types]]
 name = "NumberStyle"
 cases = [
-  { name = "decimal_point" },
-  { name = "decimal_comma" },
+  { name = "DecimalPoint" },
+  { name = "DecimalComma" },
 ]
 
 [[resources.types]]

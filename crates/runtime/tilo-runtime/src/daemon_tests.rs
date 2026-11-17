@@ -941,6 +941,7 @@ impl tilo_actions::remote::ActionHost for PageHost {
                 }),
                 has_children: false,
                 visibility: None,
+                surface: None,
             }]
         } else {
             Vec::new()

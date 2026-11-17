@@ -17,7 +17,7 @@ all-or-nothing steps, all of them one run.
 from __future__ import annotations
 
 from typing import Any, Literal, NotRequired, TypedDict
-from tilo import Resource, Run
+from tilo import Entry, Resource, Run
 
 __all__ = [
     "AnswerInteractionOp",
@@ -452,13 +452,13 @@ class Guild(Resource):
     ownership: Ownership
     token_item: str | None
     bot_user: str
-    channels: list[DChannel]
-    roles: list[DRole]
+    channels: list[Entry[DChannel]]
+    roles: list[Entry[DRole]]
     emojis: dict[str, str]
-    map: list[Mapping]
-    links: list[Link]
-    link_offers: list[LinkOffer]
-    connects: list[Connect]
+    map: list[Entry[Mapping]]
+    links: list[Entry[Link]]
+    link_offers: list[Entry[LinkOffer]]
+    connects: list[Entry[Connect]]
     sign_in_page: str | None
     avatars: dict[str, str]
     blocked_personas: list[str]
@@ -475,7 +475,7 @@ class Guild(Resource):
         only_channel: str | None = None,
         mirror_channels: bool | None = None,
         map_roles: bool | None = None,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         args: dict[str, Any] = {}
         args["guild_id"] = guild_id
@@ -498,7 +498,7 @@ class Guild(Resource):
         channels: list[ChannelInfo],
         roles: list[RoleInfo],
         emojis: list[EmojiInfo],
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         return self.action("observe-layout", bot_user=bot_user, channels=channels, roles=roles, emojis=emojis)
 
@@ -513,7 +513,7 @@ class Guild(Resource):
         kind: MappedKind,
         tilo: str,
         keep_apart: bool | None = None,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         args: dict[str, Any] = {}
         args["kind"] = kind
@@ -526,76 +526,76 @@ class Guild(Resource):
         """Runs `unmap` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("unmap", items)
 
-    def send(self, *, op: SendOp) -> Any | Run:
+    def send(self, *, op: SendOp) -> Any:
         """Runs the app's action."""
         return self.action("send", op=op)
 
     # the app's `edit` action is the SDK's own: run it with `action("edit")`.
-    def delete(self, *, op: DeleteOp) -> Any | Run:
+    def delete(self, *, op: DeleteOp) -> Any:
         """Runs the app's action."""
         return self.action("delete", op=op)
 
-    def react(self, *, op: ReactOp) -> Any | Run:
+    def react(self, *, op: ReactOp) -> Any:
         """Runs the app's action."""
         return self.action("react", op=op)
 
-    def unreact(self, *, op: ReactOp) -> Any | Run:
+    def unreact(self, *, op: ReactOp) -> Any:
         """Runs the app's action."""
         return self.action("unreact", op=op)
 
-    def start_thread(self, *, op: StartThreadOp) -> Any | Run:
+    def start_thread(self, *, op: StartThreadOp) -> Any:
         """Runs the app's action."""
         return self.action("start-thread", op=op)
 
-    def create_webhook(self, *, op: CreateWebhookOp) -> Any | Run:
+    def create_webhook(self, *, op: CreateWebhookOp) -> Any:
         """Runs the app's action."""
         return self.action("create-webhook", op=op)
 
-    def apply_channel(self, *, op: ChannelSpec) -> Any | Run:
+    def apply_channel(self, *, op: ChannelSpec) -> Any:
         """Runs the app's action."""
         return self.action("apply-channel", op=op)
 
-    def delete_channel(self, *, op: DeleteChannelOp) -> Any | Run:
+    def delete_channel(self, *, op: DeleteChannelOp) -> Any:
         """Runs the app's action."""
         return self.action("delete-channel", op=op)
 
-    def arrange_channels(self, *, op: ArrangeOp) -> Any | Run:
+    def arrange_channels(self, *, op: ArrangeOp) -> Any:
         """Runs the app's action."""
         return self.action("arrange-channels", op=op)
 
-    def apply_role(self, *, op: RoleSpec) -> Any | Run:
+    def apply_role(self, *, op: RoleSpec) -> Any:
         """Runs the app's action."""
         return self.action("apply-role", op=op)
 
-    def delete_role(self, *, op: DeleteRoleOp) -> Any | Run:
+    def delete_role(self, *, op: DeleteRoleOp) -> Any:
         """Runs the app's action."""
         return self.action("delete-role", op=op)
 
-    def set_member_roles(self, *, op: MemberRolesOp) -> Any | Run:
+    def set_member_roles(self, *, op: MemberRolesOp) -> Any:
         """Runs the app's action."""
         return self.action("set-member-roles", op=op)
 
-    def kick(self, *, op: MemberOp) -> Any | Run:
+    def kick(self, *, op: MemberOp) -> Any:
         """Runs the app's action."""
         return self.action("kick", op=op)
 
-    def ban(self, *, op: MemberOp) -> Any | Run:
+    def ban(self, *, op: MemberOp) -> Any:
         """Runs the app's action."""
         return self.action("ban", op=op)
 
-    def unban(self, *, op: MemberOp) -> Any | Run:
+    def unban(self, *, op: MemberOp) -> Any:
         """Runs the app's action."""
         return self.action("unban", op=op)
 
-    def set_overwrite(self, *, op: OverwriteOp) -> Any | Run:
+    def set_overwrite(self, *, op: OverwriteOp) -> Any:
         """Runs the app's action."""
         return self.action("set-overwrite", op=op)
 
-    def fetch_asset(self, *, op: FetchAssetOp) -> Any | Run:
+    def fetch_asset(self, *, op: FetchAssetOp) -> Any:
         """Runs the app's action."""
         return self.action("fetch-asset", op=op)
 
-    def begin_connect(self, *, state_sha256: str) -> Run | None:
+    def begin_connect(self, *, state_sha256: str) -> None:
         """Runs the app's action."""
         return self.action("begin-connect", state_sha256=state_sha256)
 
@@ -611,7 +611,7 @@ class Guild(Resource):
         display_name: str | None = None,
         avatar: str | None = None,
         interaction: str | None = None,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         args: dict[str, Any] = {}
         args["check"] = check
@@ -637,7 +637,7 @@ class Guild(Resource):
         state_sha256: str,
         display_name: str | None = None,
         avatar: str | None = None,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         args: dict[str, Any] = {}
         args["check"] = check
@@ -654,7 +654,7 @@ class Guild(Resource):
         """Runs `offer-sign-in` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("offer-sign-in", items)
 
-    def complete_link(self, *, proof: str) -> Run | None:
+    def complete_link(self, *, proof: str) -> None:
         """Runs the app's action."""
         return self.action("complete-link", proof=proof)
 
@@ -662,7 +662,7 @@ class Guild(Resource):
         """Runs `complete-link` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("complete-link", items)
 
-    def set_sign_in(self, *, page: str) -> Run | None:
+    def set_sign_in(self, *, page: str) -> None:
         """Runs the app's action."""
         return self.action("set-sign-in", page=page)
 
@@ -670,7 +670,7 @@ class Guild(Resource):
         """Runs `set-sign-in` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("set-sign-in", items)
 
-    def answer_interaction(self, *, op: AnswerInteractionOp) -> Any | Run:
+    def answer_interaction(self, *, op: AnswerInteractionOp) -> Any:
         """Runs the app's action."""
         return self.action("answer-interaction", op=op)
 
@@ -680,7 +680,7 @@ class Guild(Resource):
         user_name: str,
         display_name: str | None = None,
         avatar: str | None = None,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         args: dict[str, Any] = {}
         args["discord_user"] = discord_user
@@ -700,7 +700,7 @@ class Guild(Resource):
         discord_user: str,
         avatar: str,
         photo: str,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         return self.action("set-link-photo", discord_user=discord_user, avatar=avatar, photo=photo)
 
@@ -708,7 +708,7 @@ class Guild(Resource):
         """Runs `set-link-photo` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("set-link-photo", items)
 
-    def unlink(self, *, discord_user: str) -> Run | None:
+    def unlink(self, *, discord_user: str) -> None:
         """Runs the app's action."""
         return self.action("unlink", discord_user=discord_user)
 
@@ -716,7 +716,7 @@ class Guild(Resource):
         """Runs `unlink` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("unlink", items)
 
-    def block_persona(self, *, discord_user: str) -> Run | None:
+    def block_persona(self, *, discord_user: str) -> None:
         """Runs the app's action."""
         return self.action("block-persona", discord_user=discord_user)
 
@@ -724,7 +724,7 @@ class Guild(Resource):
         """Runs `block-persona` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("block-persona", items)
 
-    def unblock_persona(self, *, discord_user: str) -> Run | None:
+    def unblock_persona(self, *, discord_user: str) -> None:
         """Runs the app's action."""
         return self.action("unblock-persona", discord_user=discord_user)
 
@@ -736,7 +736,7 @@ class Guild(Resource):
         *,
         hash: str,
         blob: str,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         return self.action("remember-avatar", hash=hash, blob=blob)
 
@@ -744,7 +744,7 @@ class Guild(Resource):
         """Runs `remember-avatar` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("remember-avatar", items)
 
-    def finish_import(self, *, tilo_only: list[str]) -> Run | None:
+    def finish_import(self, *, tilo_only: list[str]) -> None:
         """Runs the app's action."""
         return self.action("finish-import", tilo_only=tilo_only)
 
@@ -752,11 +752,11 @@ class Guild(Resource):
         """Runs `finish-import` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("finish-import", items)
 
-    def apply_emoji(self, *, op: EmojiSpec) -> Any | Run:
+    def apply_emoji(self, *, op: EmojiSpec) -> Any:
         """Runs the app's action."""
         return self.action("apply-emoji", op=op)
 
-    def delete_emoji(self, *, op: DeleteEmojiOp) -> Any | Run:
+    def delete_emoji(self, *, op: DeleteEmojiOp) -> Any:
         """Runs the app's action."""
         return self.action("delete-emoji", op=op)
 
@@ -767,7 +767,7 @@ class Guild(Resource):
         picture: str | None = None,
         was: str | None = None,
         deleted: bool | None = None,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         args: dict[str, Any] = {}
         args["tilo"] = tilo
@@ -787,7 +787,7 @@ class Guild(Resource):
     def report_voice(self,
         *,
         problem: str | None = None,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         args: dict[str, Any] = {}
         if problem is not None:
@@ -825,5 +825,9 @@ class Guild(Resource):
         if emoji is not None:
             args["emoji"] = emoji
         return self.action("plan-event", **args)
+
+    # The actions a call reaches before the resource is read: `await tracker.create(...)`
+    # needs no `load()` first.
+    __actions__ = frozenset({"connect", "connect_many", "observe_layout", "observe_layout_many", "unmap", "unmap_many", "send", "delete", "react", "unreact", "start_thread", "create_webhook", "apply_channel", "delete_channel", "arrange_channels", "apply_role", "delete_role", "set_member_roles", "kick", "ban", "unban", "set_overwrite", "fetch_asset", "begin_connect", "begin_connect_many", "offer_link", "offer_link_many", "offer_sign_in", "offer_sign_in_many", "complete_link", "complete_link_many", "set_sign_in", "set_sign_in_many", "answer_interaction", "rename_link", "rename_link_many", "set_link_photo", "set_link_photo_many", "unlink", "unlink_many", "block_persona", "block_persona_many", "unblock_persona", "unblock_persona_many", "remember_avatar", "remember_avatar_many", "finish_import", "finish_import_many", "apply_emoji", "delete_emoji", "settle_emoji", "settle_emoji_many", "report_voice", "report_voice_many", "my_link", "link_offer", "plan_event"})
 
 

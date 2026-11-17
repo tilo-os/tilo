@@ -40,14 +40,18 @@ export interface ClearCreateArgs {
 /** Containers — `containers.engine`. */
 export interface Engine extends tilo.Resource {
   draft: CreateDraft;
-  clearCreate(): Promise<tilo.Run | void>;
+  clearCreate(): Promise<void>;
   /** Runs `clear-create` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   clearCreateMany(items: ClearCreateArgs[]): Promise<tilo.ActionAnswer[]>;
   create(): Promise<void>;
 }
 
+/** The actions `Engine` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const ENGINE_ACTIONS = ["clearCreate", "clearCreateMany", "create"] as const;
+
 /** The `containers.engine` kind at `path`. */
 export function engine(ws: tilo.Workspace, path: string): Engine {
-  return resourceProxy(ws, path, SURFACE) as unknown as Engine;
+  return resourceProxy(ws, path, SURFACE, ENGINE_ACTIONS) as unknown as Engine;
 }
 

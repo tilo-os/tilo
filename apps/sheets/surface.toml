@@ -56,7 +56,7 @@ params = [
   { name = "rows", type = { option = { list = { list = "any" } } }, required = false, schema = { type = ["array", "null"], items = { type = "array", items = {} } } },
   { name = "columns", type = { option = { list = "text" } }, required = false, schema = { type = ["array", "null"], items = { type = "string" } } },
   { name = "records", type = { option = { list = "any" } }, required = false, schema = { type = ["array", "null"], items = {} } },
-  { name = "formats", required = false, schema = { type = ["object", "null"] } },
+  { name = "formats", type = { option = { map = "text" } }, required = false, schema = { type = ["object", "null"] } },
   { name = "workbook", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
 ]
 
@@ -328,16 +328,16 @@ fields = [
 [[resources.types]]
 name = "ChartKind"
 cases = [
-  { name = "column" },
-  { name = "line" },
+  { name = "Column" },
+  { name = "Line" },
 ]
 
 [[resources.types]]
 name = "ClipAttr"
 cases = [
-  { name = "bool", fields = [{ name = "0", type = "bool" }] },
-  { name = "int", fields = [{ name = "0", type = "int" }] },
-  { name = "str", fields = [{ name = "0", type = "text" }] },
+  { name = "Bool", fields = [{ name = "0", type = "bool" }] },
+  { name = "Int", fields = [{ name = "0", type = "int" }] },
+  { name = "Str", fields = [{ name = "0", type = "text" }] },
 ]
 
 [[resources.types]]
@@ -423,9 +423,9 @@ fields = [
 [[resources.types]]
 name = "MarkValue"
 cases = [
-  { name = "bool", fields = [{ name = "0", type = "bool" }] },
-  { name = "int", fields = [{ name = "0", type = "int" }] },
-  { name = "str", fields = [{ name = "0", type = "text" }] },
+  { name = "Bool", fields = [{ name = "0", type = "bool" }] },
+  { name = "Int", fields = [{ name = "0", type = "int" }] },
+  { name = "Str", fields = [{ name = "0", type = "text" }] },
 ]
 
 [[resources.types]]
@@ -446,6 +446,18 @@ fields = [
   { name = "cells", type = "any" },
   { name = "charts", type = { collection = { named = "Chart" } } },
   { name = "hidden", type = "bool" },
+]
+
+[[resources.types]]
+name = "SheetSpec"
+fields = [
+  { name = "name", type = { option = "text" } },
+  { name = "after", type = { option = "text" } },
+  { name = "rows", type = { option = { list = { list = "any" } } } },
+  { name = "columns", type = { option = { list = "text" } } },
+  { name = "records", type = { option = { list = "any" } } },
+  { name = "formats", type = { option = { map = "text" } } },
+  { name = "workbook", type = { option = "text" } },
 ]
 
 [[resources.types]]

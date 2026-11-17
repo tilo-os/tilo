@@ -17,7 +17,7 @@ all-or-nothing steps, all of them one run.
 from __future__ import annotations
 
 from typing import Any, Literal, NotRequired, TypedDict
-from tilo import Resource, Run
+from tilo import Entry, Resource, Run
 
 __all__ = [
     "Reply",
@@ -81,13 +81,13 @@ class Library(Resource):
     queue: list[str]
     subscriptions: list[str]
     comment_likes: list[str]
-    replies: list[Reply]
+    replies: list[Entry[Reply]]
 
     def reply_to_comment(self,
         *,
         comment: str,
         text: str,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         return self.action("reply-to-comment", comment=comment, text=text)
 
@@ -95,7 +95,7 @@ class Library(Resource):
         """Runs `reply-to-comment` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("reply-to-comment", items)
 
-    def retract(self, *, reply: str) -> Run | None:
+    def retract(self, *, reply: str) -> None:
         """Runs the app's action."""
         return self.action("retract", reply=reply)
 
@@ -167,6 +167,10 @@ class Library(Resource):
         """Runs the app's action."""
         return self.action("set-segment-handling", category=category, mode=mode)
 
+    # The actions a call reaches before the resource is read: `await tracker.create(...)`
+    # needs no `load()` first.
+    __actions__ = frozenset({"reply_to_comment", "reply_to_comment_many", "retract", "retract_many", "open_video", "open_creator", "open_playlist", "search", "toggle_playback", "seek", "skip_segment", "share", "mark_watched", "forget_watched", "clear_history", "set_preference", "set_preferred_quality", "set_segment_handling"})
+
 
 class WatchHistory(Resource):
     """Watch history — `tube.watch-history`."""
@@ -178,7 +182,7 @@ class WatchHistory(Resource):
         *,
         video: str,
         at_ms: int,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         return self.action("record", video=video, at_ms=at_ms)
 
@@ -191,7 +195,7 @@ class WatchHistory(Resource):
         video: str,
         position_ms: int,
         duration_ms: int,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         return self.action("progress", video=video, position_ms=position_ms, duration_ms=duration_ms)
 
@@ -199,7 +203,7 @@ class WatchHistory(Resource):
         """Runs `progress` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("progress", items)
 
-    def import_(self, *, watched: list[Any]) -> Run | None:
+    def import_(self, *, watched: list[Any]) -> None:
         """Runs the app's action."""
         return self.action("import", watched=watched)
 
@@ -207,7 +211,7 @@ class WatchHistory(Resource):
         """Runs `import` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("import", items)
 
-    def forget(self, *, video: str) -> Run | None:
+    def forget(self, *, video: str) -> None:
         """Runs the app's action."""
         return self.action("forget", video=video)
 
@@ -215,12 +219,16 @@ class WatchHistory(Resource):
         """Runs `forget` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("forget", items)
 
-    def clear(self) -> Run | None:
+    def clear(self) -> None:
         """Runs the app's action."""
         return self.action("clear")
 
     def clear_many(self, items: list[ClearArgs]) -> list[dict[str, Any]]:
         """Runs `clear` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("clear", items)
+
+    # The actions a call reaches before the resource is read: `await tracker.create(...)`
+    # needs no `load()` first.
+    __actions__ = frozenset({"record", "record_many", "progress", "progress_many", "import_", "import_many", "forget", "forget_many", "clear", "clear_many"})
 
 

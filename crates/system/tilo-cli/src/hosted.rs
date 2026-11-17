@@ -601,44 +601,65 @@ pub fn surfaces(reach: Reach<'_>, workspace: &str) -> Result<Vec<crate::sdk::App
 
 async fn read_surfaces(client: &Client, workspace: &str) -> Result<Vec<crate::sdk::App>> {
     let workspace = workspace_id(client, workspace).await?;
-    let listing = client
-        .get(&format!("/v1/workspaces/{workspace}/resources"))
-        .await?;
     let mut apps = Vec::new();
-    for row in listing
-        .get("rows")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-    {
-        if text(row, "kind") != "app" {
-            continue;
+    let mut cursor: Option<String> = None;
+    loop {
+        let path = match &cursor {
+            Some(cursor) => format!(
+                "/v1/workspaces/{workspace}/resources?cursor={}",
+                percent_encoding::utf8_percent_encode(cursor, percent_encoding::NON_ALPHANUMERIC)
+            ),
+            None => format!("/v1/workspaces/{workspace}/resources"),
+        };
+        let listing = client.get(&path).await?;
+        for row in listing
+            .get("rows")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            if text(row, "kind") != "app" {
+                continue;
+            }
+            let Some(path) = row.get("path").and_then(Value::as_str) else {
+                continue;
+            };
+            let read = match client
+                .get(&format!(
+                    "/v1/workspaces/{workspace}/resources/{}",
+                    api::encode_path(path)
+                ))
+                .await
+            {
+                Ok(read) => read,
+                Err(error) => {
+                    // One app the workspace could not answer for is named, and
+                    // the others' types are still written.
+                    eprintln!("tilo: {path}: {error:#}");
+                    continue;
+                }
+            };
+            let Some(surface) = read.get("surface").and_then(Value::as_str) else {
+                eprintln!(
+                    "tilo: {path} publishes no surface in that workspace: it is not installed there"
+                );
+                continue;
+            };
+            apps.push(crate::sdk::App {
+                id: read
+                    .get("app")
+                    .and_then(Value::as_str)
+                    .filter(|app| !app.is_empty())
+                    .unwrap_or(path)
+                    .to_owned(),
+                title: text(row, "label").to_owned(),
+                surface: surface.to_owned(),
+            });
         }
-        let Some(path) = row.get("path").and_then(Value::as_str) else {
-            continue;
-        };
-        let read = client
-            .get(&format!(
-                "/v1/workspaces/{workspace}/resources/{}",
-                api::encode_path(path)
-            ))
-            .await?;
-        let Some(surface) = read.get("surface").and_then(Value::as_str) else {
-            eprintln!(
-                "tilo: {path} publishes no surface in that workspace: no app of it has run there"
-            );
-            continue;
-        };
-        apps.push(crate::sdk::App {
-            id: read
-                .get("app")
-                .and_then(Value::as_str)
-                .filter(|app| !app.is_empty())
-                .unwrap_or(path)
-                .to_owned(),
-            title: text(row, "label").to_owned(),
-            surface: surface.to_owned(),
-        });
+        match listing.get("next_cursor").and_then(Value::as_str) {
+            Some(next) if !next.is_empty() => cursor = Some(next.to_owned()),
+            _ => break,
+        }
     }
     Ok(apps)
 }

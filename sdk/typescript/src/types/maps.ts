@@ -161,7 +161,7 @@ export interface ClearArgs {
 
 /** Maps — `maps.workspace`. */
 export interface Workspace extends tilo.Resource {
-  places: Place[];
+  places: Array<tilo.Entry<Place>>;
   readonly recents: unknown;
   mode: TravelMode;
   transit_time: unknown;
@@ -169,15 +169,15 @@ export interface Workspace extends tilo.Resource {
   readonly transit_plan: unknown;
   acceptPlaces(args: {
     places: Place[];
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `accept-places` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   acceptPlacesMany(items: AcceptPlacesArgs[]): Promise<tilo.ActionAnswer[]>;
   commitSearch(args: {
     query: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `commit-search` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   commitSearchMany(items: CommitSearchArgs[]): Promise<tilo.ActionAnswer[]>;
-  clearRecents(): Promise<tilo.Run | void>;
+  clearRecents(): Promise<void>;
   /** Runs `clear-recents` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   clearRecentsMany(items: ClearRecentsArgs[]): Promise<tilo.ActionAnswer[]>;
   acceptRoute(args: {
@@ -187,10 +187,10 @@ export interface Workspace extends tilo.Resource {
     mode: TravelMode;
     origin?: LatLon;
     dest?: LatLon;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `accept-route` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   acceptRouteMany(items: AcceptRouteArgs[]): Promise<tilo.ActionAnswer[]>;
-  clearRoute(): Promise<tilo.Run | void>;
+  clearRoute(): Promise<void>;
   /** Runs `clear-route` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   clearRouteMany(items: ClearRouteArgs[]): Promise<tilo.ActionAnswer[]>;
   acceptTransit(args: {
@@ -199,10 +199,10 @@ export interface Workspace extends tilo.Resource {
     dest_name: string;
     origin?: LatLon;
     dest?: LatLon;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `accept-transit` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   acceptTransitMany(items: AcceptTransitArgs[]): Promise<tilo.ActionAnswer[]>;
-  clearTransit(): Promise<tilo.Run | void>;
+  clearTransit(): Promise<void>;
   /** Runs `clear-transit` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   clearTransitMany(items: ClearTransitArgs[]): Promise<tilo.ActionAnswer[]>;
   search(args: {
@@ -232,9 +232,13 @@ export interface Workspace extends tilo.Resource {
   clearOfflineAreas(): Promise<void>;
 }
 
+/** The actions `Workspace` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const WORKSPACE_ACTIONS = ["acceptPlaces", "acceptPlacesMany", "commitSearch", "commitSearchMany", "clearRecents", "clearRecentsMany", "acceptRoute", "acceptRouteMany", "clearRoute", "clearRouteMany", "acceptTransit", "acceptTransitMany", "clearTransit", "clearTransitMany", "search", "locate", "toggleTraffic", "openPlace", "directions", "openPoi", "poiDirections", "showPoint", "deleteOfflineArea", "clearOfflineAreas"] as const;
+
 /** The `maps.workspace` kind at `path`. */
 export function workspace(ws: tilo.Workspace, path: string): Workspace {
-  return resourceProxy(ws, path, SURFACE) as unknown as Workspace;
+  return resourceProxy(ws, path, SURFACE, WORKSPACE_ACTIONS) as unknown as Workspace;
 }
 
 /** Offline areas — `maps.offline-areas`. */
@@ -243,24 +247,28 @@ export interface OfflineAreas extends tilo.Resource {
   record(args: {
     device: string;
     region: DownloadedRegion;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `record` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   recordMany(items: RecordArgs[]): Promise<tilo.ActionAnswer[]>;
   forget(args: {
     device: string;
     area: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `forget` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   forgetMany(items: ForgetArgs[]): Promise<tilo.ActionAnswer[]>;
   clear(args: {
     device: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `clear` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   clearMany(items: ClearArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 
+/** The actions `OfflineAreas` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const OFFLINEAREAS_ACTIONS = ["record", "recordMany", "forget", "forgetMany", "clear", "clearMany"] as const;
+
 /** The `maps.offline-areas` kind at `path`. */
 export function offlineAreas(ws: tilo.Workspace, path: string): OfflineAreas {
-  return resourceProxy(ws, path, SURFACE) as unknown as OfflineAreas;
+  return resourceProxy(ws, path, SURFACE, OFFLINEAREAS_ACTIONS) as unknown as OfflineAreas;
 }
 

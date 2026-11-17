@@ -17,7 +17,7 @@ all-or-nothing steps, all of them one run.
 from __future__ import annotations
 
 from typing import Any, Literal, NotRequired, TypedDict
-from tilo import Resource, Run
+from tilo import Entry, Resource, Run
 
 __all__ = [
     "Place",
@@ -65,14 +65,14 @@ MoveToTopArgs = TypedDict("MoveToTopArgs", {
 class Locations(Resource):
     """Weather — `weather.locations`."""
     __surface__ = "so.tilo.weather@3150b872b91bc7e1"
-    places: list[Place]
+    places: list[Entry[Place]]
     default_place: str
 
     def save_location(self,
         *,
         place: PlaceDetails,
         make_default: bool | None = None,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         args: dict[str, Any] = {}
         args["place"] = place
@@ -84,7 +84,7 @@ class Locations(Resource):
         """Runs `save-location` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("save-location", items)
 
-    def use_as_default(self, *, place: str) -> Run | None:
+    def use_as_default(self, *, place: str) -> None:
         """Runs the app's action."""
         return self.action("use-as-default", place=place)
 
@@ -92,7 +92,7 @@ class Locations(Resource):
         """Runs `use-as-default` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("use-as-default", items)
 
-    def move_to_top(self, *, place: str) -> Run | None:
+    def move_to_top(self, *, place: str) -> None:
         """Runs the app's action."""
         return self.action("move-to-top", place=place)
 
@@ -109,5 +109,9 @@ class Locations(Resource):
     def open_location(self, *, location: str) -> None:
         """Runs the app's action."""
         return self.action("open-location", location=location)
+
+    # The actions a call reaches before the resource is read: `await tracker.create(...)`
+    # needs no `load()` first.
+    __actions__ = frozenset({"save_location", "save_location_many", "use_as_default", "use_as_default_many", "move_to_top", "move_to_top_many", "refresh_location", "open_location"})
 
 

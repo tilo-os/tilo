@@ -17,7 +17,7 @@ all-or-nothing steps, all of them one run.
 from __future__ import annotations
 
 from typing import Any, Literal, NotRequired, TypedDict
-from tilo import Resource, Run
+from tilo import Entry, Resource, Run
 
 __all__ = [
     "Measurement",
@@ -53,7 +53,7 @@ class Results(Resource):
     """Internet speed test — `speed-test.results`."""
     __surface__ = "so.tilo.speed-test@303db65a9e1defad"
     @property
-    def results(self) -> list[Measurement]:
+    def results(self) -> list[Entry[Measurement]]:
         """Read only."""
         return self.fields["results"]
 
@@ -65,7 +65,7 @@ class Results(Resource):
         upload: float,
         server: str,
         device: str,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         return self.action("record", ping=ping, jitter=jitter, download=download, upload=upload, server=server, device=device)
 
@@ -73,12 +73,16 @@ class Results(Resource):
         """Runs `record` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("record", items)
 
-    def clear(self) -> Run | None:
+    def clear(self) -> None:
         """Runs the app's action."""
         return self.action("clear")
 
     def clear_many(self, items: list[ClearArgs]) -> list[dict[str, Any]]:
         """Runs `clear` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("clear", items)
+
+    # The actions a call reaches before the resource is read: `await tracker.create(...)`
+    # needs no `load()` first.
+    __actions__ = frozenset({"record", "record_many", "clear", "clear_many"})
 
 

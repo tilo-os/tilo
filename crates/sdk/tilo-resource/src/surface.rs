@@ -19,8 +19,13 @@ use crate::vocabulary::{Declaration, vocabulary};
 fn params_of(
     params: &[tilo_actions::ActionParam],
     param_types: &[(&'static str, FieldTypeOf)],
+    flat_types: Option<fn(&mut TypeSet) -> Vec<(String, FieldType)>>,
     types: &mut TypeSet,
 ) -> Vec<ParamSurface> {
+    // A flattened parameter is published as its record's own fields: their
+    // types are the ones the code declares, so a nested argument that is an
+    // enum names that enum rather than "any".
+    let flat: Vec<(String, FieldType)> = flat_types.map_or_else(Vec::new, |flat| flat(types));
     params
         .iter()
         .map(|param| {
@@ -34,7 +39,10 @@ fn params_of(
                 .find(|(name, _)| *name == param.name.as_ref());
             let ty = match declared {
                 Some((_, ty)) => ty(types),
-                None => FieldType::from_schema(&schema),
+                None => flat
+                    .iter()
+                    .find(|(name, _)| name == param.name.as_ref())
+                    .map_or_else(|| FieldType::from_schema(&schema), |(_, ty)| ty.clone()),
             };
             ParamSurface {
                 name: param.name.to_string(),
@@ -74,7 +82,7 @@ fn verb_of(decl: &Declaration, types: &mut TypeSet) -> VerbSurface {
             .tags
             .iter()
             .any(|tag| tag == tilo_actions::INCOMING_MESSAGE_TAG),
-        params: params_of(&decl.params, &decl.param_types, types),
+        params: params_of(&decl.params, &decl.param_types, decl.flat_types, types),
         returns: returns_of(decl.result.as_ref(), decl.result_type, types),
         writes: decl.writes.clone(),
         field: decl.field.map(str::to_owned),
@@ -217,7 +225,7 @@ pub fn effect_verb(decl: &crate::EffectDecl, types: &mut TypeSet) -> VerbSurface
         kind: decl.action_kind,
         destructive: decl.risk == tilo_actions::RiskLevel::Destructive,
         incoming_message: false,
-        params: params_of(&decl.params, &decl.param_types, types),
+        params: params_of(&decl.params, &decl.param_types, None, types),
         returns: decl.result.map(|result| ReturnsSurface {
             schema: (result.schema)(),
             ty: result.ty.map_or_else(|| FieldType::Any, |ty| ty(types)),

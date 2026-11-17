@@ -22,9 +22,12 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.word-processor@d6a33f5b43133b78";
+export const SURFACE = "so.tilo.word-processor@44442b4a9bdfb6f5";
 
-/** One of bool, int, str: an object whose case the app tags it with. */
+/** One of member, named: an object whose case the app tags it with. */
+export type Author = Record<string, unknown>;
+
+/** One of Bool, Int, Str: an object whose case the app tags it with. */
 export type ClipAttr = Record<string, unknown>;
 
 export interface ClipBlock {
@@ -39,12 +42,12 @@ export interface ClipBlock {
 
 export interface Comment {
   anchor: unknown;
-  author: string;
+  author: Author;
   date: string;
   text: string;
   body: ClipBlock[];
   resolved: boolean;
-  replies: Reply[];
+  replies: Array<tilo.Entry<Reply>>;
 }
 
 export interface MarkSpan {
@@ -54,11 +57,11 @@ export interface MarkSpan {
   value: MarkValue;
 }
 
-/** One of bool, int, str: an object whose case the app tags it with. */
+/** One of Bool, Int, Str: an object whose case the app tags it with. */
 export type MarkValue = Record<string, unknown>;
 
 export interface Reply {
-  author: string;
+  author: Author;
   date: string;
   text: string;
   body: ClipBlock[];
@@ -162,65 +165,65 @@ export interface NoteFileWrittenArgs {
 /** Document — `word-processor.document`. */
 export interface Document extends tilo.Resource {
   body: string;
-  comments: Comment[];
+  comments: Array<tilo.Entry<Comment>>;
   appendParagraph(args: {
     text: string;
-  }): Promise<unknown | tilo.Run>;
+  }): Promise<unknown>;
   replaceBody(args: {
     markdown: string;
-  }): Promise<unknown | tilo.Run>;
+  }): Promise<unknown>;
   replaceText(args: {
     find: string;
     replace: string;
     all?: boolean;
-  }): Promise<unknown | tilo.Run>;
+  }): Promise<unknown>;
   insertTable(args: {
     after: string;
     rows: number;
     columns: number;
-  }): Promise<unknown | tilo.Run>;
+  }): Promise<unknown>;
   addRow(args: {
     table: string;
-  }): Promise<unknown | tilo.Run>;
+  }): Promise<unknown>;
   addColumn(args: {
     table: string;
-  }): Promise<unknown | tilo.Run>;
+  }): Promise<unknown>;
   deleteRow(args: {
     table: string;
     row: number;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `delete-row` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   deleteRowMany(items: DeleteRowArgs[]): Promise<tilo.ActionAnswer[]>;
   deleteColumn(args: {
     table: string;
     column: number;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `delete-column` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   deleteColumnMany(items: DeleteColumnArgs[]): Promise<tilo.ActionAnswer[]>;
   deleteTable(args: {
     table: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `delete-table` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   deleteTableMany(items: DeleteTableArgs[]): Promise<tilo.ActionAnswer[]>;
   deleteImage(args: {
     image: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `delete-image` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   deleteImageMany(items: DeleteImageArgs[]): Promise<tilo.ActionAnswer[]>;
   acceptChange(args: {
     change: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `accept-change` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   acceptChangeMany(items: AcceptChangeArgs[]): Promise<tilo.ActionAnswer[]>;
   rejectChange(args: {
     change: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `reject-change` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   rejectChangeMany(items: RejectChangeArgs[]): Promise<tilo.ActionAnswer[]>;
-  acceptAllChanges(): Promise<tilo.Run | void>;
+  acceptAllChanges(): Promise<void>;
   /** Runs `accept-all-changes` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   acceptAllChangesMany(items: AcceptAllChangesArgs[]): Promise<tilo.ActionAnswer[]>;
-  rejectAllChanges(): Promise<tilo.Run | void>;
+  rejectAllChanges(): Promise<void>;
   /** Runs `reject-all-changes` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   rejectAllChangesMany(items: RejectAllChangesArgs[]): Promise<tilo.ActionAnswer[]>;
   addComment(args: {
@@ -228,22 +231,22 @@ export interface Document extends tilo.Resource {
     start: number;
     end: number;
     text: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `add-comment` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   addCommentMany(items: AddCommentArgs[]): Promise<tilo.ActionAnswer[]>;
   replyToComment(args: {
     comment: string;
     text: string;
     body?: ClipBlock[];
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `reply-to-comment` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   replyToCommentMany(items: ReplyToCommentArgs[]): Promise<tilo.ActionAnswer[]>;
   resolveComment(args: {
     comment: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `resolve-comment` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   resolveCommentMany(items: ResolveCommentArgs[]): Promise<tilo.ActionAnswer[]>;
-  adoptComments(): Promise<tilo.Run | void>;
+  adoptComments(): Promise<void>;
   /** Runs `adopt-comments` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   adoptCommentsMany(items: AdoptCommentsArgs[]): Promise<tilo.ActionAnswer[]>;
   setPageMargins(args: {
@@ -251,15 +254,15 @@ export interface Document extends tilo.Resource {
     right: number;
     bottom: number;
     left: number;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `set-page-margins` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   setPageMarginsMany(items: SetPageMarginsArgs[]): Promise<tilo.ActionAnswer[]>;
-  generateToc(): Promise<tilo.Run | void>;
+  generateToc(): Promise<void>;
   /** Runs `generate-toc` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   generateTocMany(items: GenerateTocArgs[]): Promise<tilo.ActionAnswer[]>;
   noteFileWritten(args: {
     digest: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `note-file-written` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   noteFileWrittenMany(items: NoteFileWrittenArgs[]): Promise<tilo.ActionAnswer[]>;
   shareImage(): Promise<void>;
@@ -277,8 +280,12 @@ export interface Document extends tilo.Resource {
   }): Promise<void>;
 }
 
+/** The actions `Document` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const DOCUMENT_ACTIONS = ["appendParagraph", "replaceBody", "replaceText", "insertTable", "addRow", "addColumn", "deleteRow", "deleteRowMany", "deleteColumn", "deleteColumnMany", "deleteTable", "deleteTableMany", "deleteImage", "deleteImageMany", "acceptChange", "acceptChangeMany", "rejectChange", "rejectChangeMany", "acceptAllChanges", "acceptAllChangesMany", "rejectAllChanges", "rejectAllChangesMany", "addComment", "addCommentMany", "replyToComment", "replyToCommentMany", "resolveComment", "resolveCommentMany", "adoptComments", "adoptCommentsMany", "setPageMargins", "setPageMarginsMany", "generateToc", "generateTocMany", "noteFileWritten", "noteFileWrittenMany", "shareImage", "readFile", "readContent", "exportContent"] as const;
+
 /** The `word-processor.document` kind at `path`. */
 export function wordProcessorDocument(ws: tilo.Workspace, path: string): Document {
-  return resourceProxy(ws, path, SURFACE) as unknown as Document;
+  return resourceProxy(ws, path, SURFACE, DOCUMENT_ACTIONS) as unknown as Document;
 }
 

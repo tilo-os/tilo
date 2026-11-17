@@ -17,7 +17,7 @@ all-or-nothing steps, all of them one run.
 from __future__ import annotations
 
 from typing import Any, Literal, NotRequired, TypedDict
-from tilo import Resource, Run
+from tilo import Entry, Resource, Run
 
 __all__ = [
     "Branch",
@@ -109,14 +109,14 @@ RecordRepositoryArgs = TypedDict("RecordRepositoryArgs", {
 
 class Repo(Resource):
     """Repository — `git_client.repo`."""
-    __surface__ = "so.tilo.git-client@34cdca9d43811cee"
+    __surface__ = "so.tilo.git-client@a8b4e212b7ce16dc"
     repository: str
     @property
     def shared(self) -> Any:
         """Read only."""
         return self.fields["shared"]
 
-    def record_repository(self, *, shared: SharedRepo) -> Run | None:
+    def record_repository(self, *, shared: SharedRepo) -> None:
         """Runs the app's action."""
         return self.action("record-repository", shared=shared)
 
@@ -139,5 +139,9 @@ class Repo(Resource):
     def wrap_lines(self) -> None:
         """Runs the app's action."""
         return self.action("wrap-lines")
+
+    # The actions a call reaches before the resource is read: `await tracker.create(...)`
+    # needs no `load()` first.
+    __actions__ = frozenset({"record_repository", "record_repository_many", "diff_layout", "syntax_highlight", "show_whitespace", "wrap_lines"})
 
 

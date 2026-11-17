@@ -17,7 +17,7 @@ all-or-nothing steps, all of them one run.
 from __future__ import annotations
 
 from typing import Any, Literal, NotRequired, TypedDict
-from tilo import Resource, Run
+from tilo import Entry, Resource, Run
 
 __all__ = [
     "AdoptedAnnotation",
@@ -127,7 +127,7 @@ Author = dict[str, Any]
 """One of member, named: an object whose case the app tags it with."""
 
 ClipAttr = dict[str, Any]
-"""One of bool, int, str: an object whose case the app tags it with."""
+"""One of Bool, Int, Str: an object whose case the app tags it with."""
 
 class ClipBlock(TypedDict):
     kind: str
@@ -145,7 +145,7 @@ class Comment(TypedDict):
     text: str
     body: list[ClipBlock]
     resolved: bool
-    replies: list[Reply]
+    replies: list[Entry[Reply]]
 
 class ExistingMarkup(TypedDict):
     annotations: list[AdoptedAnnotation]
@@ -172,7 +172,7 @@ class MarkSpan(TypedDict):
     value: MarkValue
 
 MarkValue = dict[str, Any]
-"""One of bool, int, str: an object whose case the app tags it with."""
+"""One of Bool, Int, Str: an object whose case the app tags it with."""
 
 MarkupStyle = Literal["highlight", "underline", "strikeout", "squiggly"]
 
@@ -399,7 +399,7 @@ SetStrokesArgs = TypedDict("SetStrokesArgs", {
 
 class Document(Resource):
     """PDF — `pdf.document`."""
-    __surface__ = "so.tilo.pdf-viewer@07f8831c6e812fb6"
+    __surface__ = "so.tilo.pdf-viewer@b8426dff6d7c0444"
     @property
     def source(self) -> Any:
         """Read only."""
@@ -416,10 +416,10 @@ class Document(Resource):
     def imported_source(self) -> str:
         """Read only."""
         return self.fields["imported_source"]
-    pages: list[PageOccurrence]
-    annotations: list[Annotation]
-    comments: list[Comment]
-    signatures: list[StoredSignature]
+    pages: list[Entry[PageOccurrence]]
+    annotations: list[Entry[Annotation]]
+    comments: list[Entry[Comment]]
+    signatures: list[Entry[StoredSignature]]
     form_values: dict[str, Any]
     @property
     def adopted(self) -> dict[str, Any]:
@@ -434,7 +434,7 @@ class Document(Resource):
         page: str,
         fraction: float,
         zoom: float,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         return self.action("record-reading-position", page=page, fraction=fraction, zoom=zoom)
 
@@ -442,7 +442,7 @@ class Document(Resource):
         """Runs `record-reading-position` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("record-reading-position", items)
 
-    def start_page_plan(self, *, pages: int) -> Run | None:
+    def start_page_plan(self, *, pages: int) -> None:
         """Runs the app's action."""
         return self.action("start-page-plan", pages=pages)
 
@@ -454,7 +454,7 @@ class Document(Resource):
         *,
         source: Any,
         name: str,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         return self.action("pin-source", source=source, name=name)
 
@@ -466,7 +466,7 @@ class Document(Resource):
         *,
         source: str,
         markup: ExistingMarkup,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         return self.action("adopt-existing", source=source, markup=markup)
 
@@ -478,7 +478,7 @@ class Document(Resource):
         *,
         pages: list[PagePlanEntry],
         after: str | None = None,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         args: dict[str, Any] = {}
         if after is not None:
@@ -494,7 +494,7 @@ class Document(Resource):
         *,
         page: str,
         copy: str | None = None,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         args: dict[str, Any] = {}
         args["page"] = page
@@ -506,7 +506,7 @@ class Document(Resource):
         """Runs `duplicate-page` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("duplicate-page", items)
 
-    def delete_page(self, *, page: str) -> Run | None:
+    def delete_page(self, *, page: str) -> None:
         """Runs the app's action."""
         return self.action("delete-page", page=page)
 
@@ -518,7 +518,7 @@ class Document(Resource):
         *,
         page: str,
         after: str | None = None,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         args: dict[str, Any] = {}
         args["page"] = page
@@ -530,7 +530,7 @@ class Document(Resource):
         """Runs `move-page` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("move-page", items)
 
-    def rotate_page(self, *, page: str) -> Run | None:
+    def rotate_page(self, *, page: str) -> None:
         """Runs the app's action."""
         return self.action("rotate-page", page=page)
 
@@ -538,7 +538,7 @@ class Document(Resource):
         """Runs `rotate-page` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("rotate-page", items)
 
-    def add_annotation(self, *, annotation: NewAnnotation) -> Run | None:
+    def add_annotation(self, *, annotation: NewAnnotation) -> None:
         """Runs the app's action."""
         return self.action("add-annotation", annotation=annotation)
 
@@ -546,7 +546,7 @@ class Document(Resource):
         """Runs `add-annotation` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("add-annotation", items)
 
-    def delete_annotation(self, *, annotation: str) -> Run | None:
+    def delete_annotation(self, *, annotation: str) -> None:
         """Runs the app's action."""
         return self.action("delete-annotation", annotation=annotation)
 
@@ -554,7 +554,7 @@ class Document(Resource):
         """Runs `delete-annotation` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("delete-annotation", items)
 
-    def create_note(self, *, note: NewNote) -> Run | None:
+    def create_note(self, *, note: NewNote) -> None:
         """Runs the app's action."""
         return self.action("create-note", note=note)
 
@@ -566,7 +566,7 @@ class Document(Resource):
         *,
         text: str,
         page: int | None = None,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         args: dict[str, Any] = {}
         args["text"] = text
@@ -578,7 +578,7 @@ class Document(Resource):
         """Runs `add-note` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("add-note", items)
 
-    def add_comment(self, *, comment: NewComment) -> Run | None:
+    def add_comment(self, *, comment: NewComment) -> None:
         """Runs the app's action."""
         return self.action("add-comment", comment=comment)
 
@@ -592,7 +592,7 @@ class Document(Resource):
         text: str,
         id: str | None = None,
         rich: list[ClipBlock] | None = None,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         args: dict[str, Any] = {}
         args["comment"] = comment
@@ -607,7 +607,7 @@ class Document(Resource):
         """Runs `reply` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("reply", items)
 
-    def delete_comment(self, *, comment: str) -> Run | None:
+    def delete_comment(self, *, comment: str) -> None:
         """Runs the app's action."""
         return self.action("delete-comment", comment=comment)
 
@@ -615,7 +615,7 @@ class Document(Resource):
         """Runs `delete-comment` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("delete-comment", items)
 
-    def add_signature(self, *, signature: NewSignature) -> Run | None:
+    def add_signature(self, *, signature: NewSignature) -> None:
         """Runs the app's action."""
         return self.action("add-signature", signature=signature)
 
@@ -627,7 +627,7 @@ class Document(Resource):
         *,
         signer: str,
         page: int | None = None,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         args: dict[str, Any] = {}
         args["signer"] = signer
@@ -639,7 +639,7 @@ class Document(Resource):
         """Runs `add-typed-signature` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("add-typed-signature", items)
 
-    def delete_signature(self, *, signature: str) -> Run | None:
+    def delete_signature(self, *, signature: str) -> None:
         """Runs the app's action."""
         return self.action("delete-signature", signature=signature)
 
@@ -676,14 +676,18 @@ class Document(Resource):
             args["size"] = size
         return self.action("look-page", **args)
 
+    # The actions a call reaches before the resource is read: `await tracker.create(...)`
+    # needs no `load()` first.
+    __actions__ = frozenset({"record_reading_position", "record_reading_position_many", "start_page_plan", "start_page_plan_many", "pin_source", "pin_source_many", "adopt_existing", "adopt_existing_many", "import_pages", "import_pages_many", "duplicate_page", "duplicate_page_many", "delete_page", "delete_page_many", "move_page", "move_page_many", "rotate_page", "rotate_page_many", "add_annotation", "add_annotation_many", "delete_annotation", "delete_annotation_many", "create_note", "create_note_many", "add_note", "add_note_many", "add_comment", "add_comment_many", "reply", "reply_many", "delete_comment", "delete_comment_many", "add_signature", "add_signature_many", "add_typed_signature", "add_typed_signature_many", "delete_signature", "delete_signature_many", "read_text", "read_form_fields", "look_page"})
+
 
 class SignatureProfile(Resource):
     """Signature — `pdf.signature-profile`."""
-    __surface__ = "so.tilo.pdf-viewer@07f8831c6e812fb6"
+    __surface__ = "so.tilo.pdf-viewer@b8426dff6d7c0444"
     signer: str
     strokes: list[Stroke]
 
-    def set_signer(self, *, name: str) -> Run | None:
+    def set_signer(self, *, name: str) -> None:
         """Runs the app's action."""
         return self.action("set-signer", name=name)
 
@@ -691,12 +695,16 @@ class SignatureProfile(Resource):
         """Runs `set-signer` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("set-signer", items)
 
-    def set_strokes(self, *, strokes: list[list[Any]]) -> Run | None:
+    def set_strokes(self, *, strokes: list[list[Any]]) -> None:
         """Runs the app's action."""
         return self.action("set-strokes", strokes=strokes)
 
     def set_strokes_many(self, items: list[SetStrokesArgs]) -> list[dict[str, Any]]:
         """Runs `set-strokes` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("set-strokes", items)
+
+    # The actions a call reaches before the resource is read: `await tracker.create(...)`
+    # needs no `load()` first.
+    __actions__ = frozenset({"set_signer", "set_signer_many", "set_strokes", "set_strokes_many"})
 
 

@@ -34,13 +34,17 @@ export interface Filter extends tilo.Resource {
   author: string;
   lens: string;
   query: string;
-  clearFilters(): Promise<tilo.Run | void>;
+  clearFilters(): Promise<void>;
   /** Runs `clear-filters` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   clearFiltersMany(items: ClearFiltersArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 
+/** The actions `Filter` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const FILTER_ACTIONS = ["clearFilters", "clearFiltersMany"] as const;
+
 /** The `activity.filter` kind at `path`. */
 export function filter(ws: tilo.Workspace, path: string): Filter {
-  return resourceProxy(ws, path, SURFACE) as unknown as Filter;
+  return resourceProxy(ws, path, SURFACE, FILTER_ACTIONS) as unknown as Filter;
 }
 

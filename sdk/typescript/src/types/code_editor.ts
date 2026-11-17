@@ -22,7 +22,40 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.code-editor@a337d60d96a31d9c";
+export const SURFACE = "so.tilo.code-editor@56df09e9edab1ff1";
+
+export interface Command {
+  command: string;
+  cwd: string;
+  environment: string | null;
+  actor: string | null;
+  for_person: string | null;
+  started_ms: number;
+  ended_ms: number;
+  exit: number;
+  output: unknown;
+  truncated: boolean;
+  tool: string;
+  undoable: boolean;
+  items: CommandItem[];
+}
+
+export interface CommandItem {
+  kind: ItemKind;
+  text: string;
+  path: string | null;
+  line: number | null;
+  column: number | null;
+  code: string | null;
+}
+
+export interface CommandRequest {
+  command: string;
+  requested_by: string | null;
+  for_person: string | null;
+  pane: string;
+  agent: boolean;
+}
 
 export interface Entry {
   kind: EntryKind;
@@ -34,41 +67,23 @@ export interface Entry {
 /** One of "file", "folder". */
 export type EntryKind = "file" | "folder";
 
-/** One of "error", "warning", "location", "url", "test-passed", "test-failed", "test-ignored", "change". */
-export type ItemKind = "error" | "warning" | "location" | "url" | "test-passed" | "test-failed" | "test-ignored" | "change";
-
-export interface Run {
+export interface FinishedCommand {
   command: string;
   cwd: string;
-  environment: string | null;
-  actor: string;
-  for_person: string | null;
   started_ms: number;
   ended_ms: number;
   exit: number;
-  output: unknown;
+  output: unknown | null;
   truncated: boolean;
   tool: string;
   undoable: boolean;
-  items: RunItem[];
+  items: CommandItem[];
+  request: string | null;
+  run: string;
 }
 
-export interface RunItem {
-  kind: ItemKind;
-  text: string;
-  path: string | null;
-  line: number | null;
-  column: number | null;
-  code: string | null;
-}
-
-export interface RunRequest {
-  command: string;
-  requested_by: string;
-  for_person: string | null;
-  pane: string;
-  agent: boolean;
-}
+/** One of "error", "warning", "location", "url", "test-passed", "test-failed", "test-ignored", "change". */
+export type ItemKind = "error" | "warning" | "location" | "url" | "test-passed" | "test-failed" | "test-ignored" | "change";
 
 export interface Terminal {
   target: string | null;
@@ -76,7 +91,7 @@ export interface Terminal {
   pane: string | null;
   device: string | null;
   holder: string | null;
-  runs: Run[];
+  commands: Array<tilo.Entry<Command>>;
   requests: unknown;
 }
 
@@ -169,7 +184,7 @@ export interface RecordRunArgs {
   truncated: boolean;
   tool: string;
   undoable: boolean;
-  items: unknown[];
+  items: CommandItem[];
   run: string;
   output?: unknown;
   request?: string;
@@ -177,50 +192,50 @@ export interface RecordRunArgs {
 
 /** Code Editor — `code_editor.project`. */
 export interface Project extends tilo.Resource {
-  files: Entry[];
+  files: Array<tilo.Entry<Entry>>;
   buffers: Record<string, unknown>;
   readonly terminal_panel: Terminal | null;
   newFile(args?: {
     name?: string;
     folder?: string;
     text?: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `new-file` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   newFileMany(items: NewFileArgs[]): Promise<tilo.ActionAnswer[]>;
   newFolder(args?: {
     name?: string;
     folder?: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `new-folder` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   newFolderMany(items: NewFolderArgs[]): Promise<tilo.ActionAnswer[]>;
   rename(args: {
     entry: string;
     name: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `rename` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   renameMany(items: RenameArgs[]): Promise<tilo.ActionAnswer[]>;
   moveEntry(args: {
     entry: string;
     folder?: string;
     before?: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `move-entry` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   moveEntryMany(items: MoveEntryArgs[]): Promise<tilo.ActionAnswer[]>;
   replaceText(args: {
     file: string;
     text: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `replace-text` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   replaceTextMany(items: ReplaceTextArgs[]): Promise<tilo.ActionAnswer[]>;
   replaceRange(args: {
     at: unknown;
     text: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `replace-range` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   replaceRangeMany(items: ReplaceRangeArgs[]): Promise<tilo.ActionAnswer[]>;
   delete(args: {
     entry: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `delete` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   deleteMany(items: DeleteArgs[]): Promise<tilo.ActionAnswer[]>;
   recordEntry(args: {
@@ -229,43 +244,43 @@ export interface Project extends tilo.Resource {
     name: string;
     language: string;
     folder?: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `record-entry` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   recordEntryMany(items: RecordEntryArgs[]): Promise<tilo.ActionAnswer[]>;
   recordText(args: {
     file: string;
     text: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `record-text` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   recordTextMany(items: RecordTextArgs[]): Promise<tilo.ActionAnswer[]>;
   recordTarget(args: {
     target: string;
     device?: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `record-target` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   recordTargetMany(items: RecordTargetArgs[]): Promise<tilo.ActionAnswer[]>;
   recordRelaySession(args?: {
     session?: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `record-relay-session` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   recordRelaySessionMany(items: RecordRelaySessionArgs[]): Promise<tilo.ActionAnswer[]>;
   claimPane(args: {
     pane: string;
     device?: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `claim-pane` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   claimPaneMany(items: ClaimPaneArgs[]): Promise<tilo.ActionAnswer[]>;
   run(args: {
     command: string;
-  }): Promise<unknown | tilo.Run>;
+  }): Promise<unknown>;
   rerun(args: {
     run: string;
-  }): Promise<unknown | tilo.Run>;
+  }): Promise<unknown>;
   rerunTest(args: {
     run: string;
     test: string;
-  }): Promise<unknown | tilo.Run>;
-  stop(): Promise<tilo.Run | void>;
+  }): Promise<unknown>;
+  stop(): Promise<void>;
   /** Runs `stop` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   stopMany(items: StopArgs[]): Promise<tilo.ActionAnswer[]>;
   recordRun(args: {
@@ -277,11 +292,11 @@ export interface Project extends tilo.Resource {
     truncated: boolean;
     tool: string;
     undoable: boolean;
-    items: unknown[];
+    items: CommandItem[];
     run: string;
     output?: unknown;
     request?: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `record-run` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   recordRunMany(items: RecordRunArgs[]): Promise<tilo.ActionAnswer[]>;
   reveal(args: {
@@ -306,8 +321,12 @@ export interface Project extends tilo.Resource {
   toggleFormatOnSave(): Promise<void>;
 }
 
+/** The actions `Project` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const PROJECT_ACTIONS = ["newFile", "newFileMany", "newFolder", "newFolderMany", "rename", "renameMany", "moveEntry", "moveEntryMany", "replaceText", "replaceTextMany", "replaceRange", "replaceRangeMany", "delete", "deleteMany", "recordEntry", "recordEntryMany", "recordText", "recordTextMany", "recordTarget", "recordTargetMany", "recordRelaySession", "recordRelaySessionMany", "claimPane", "claimPaneMany", "run", "rerun", "rerunTest", "stop", "stopMany", "recordRun", "recordRunMany", "reveal", "find", "searchProject", "goToLine", "toggleBottomPanel", "nextTheme", "goToProblems", "goToSearch", "goToTerminal", "toggleSidebar", "toggleLanguageServers", "toggleFormatOnSave"] as const;
+
 /** The `code_editor.project` kind at `path`. */
 export function project(ws: tilo.Workspace, path: string): Project {
-  return resourceProxy(ws, path, SURFACE) as unknown as Project;
+  return resourceProxy(ws, path, SURFACE, PROJECT_ACTIONS) as unknown as Project;
 }
 

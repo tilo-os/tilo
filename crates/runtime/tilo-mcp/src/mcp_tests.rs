@@ -27,6 +27,7 @@ tilo_test_env::scenario! {
                 action: "read".into(),
                 contract: contract.clone(),
             }),
+            surface: None,
         };
         let value = row_json(&row);
         assert_eq!(value["resource"], "aux:document");
@@ -105,6 +106,7 @@ tilo_test_env::scenario! {
             action: Some(descriptor),
             has_children: false,
             visibility: None,
+            surface: None,
         };
         assert_eq!(
             browsed_row_json(&row)["descriptor"]["params"][0]["schema"],
@@ -348,6 +350,7 @@ fn action_row(
         }),
         has_children: false,
         visibility: None,
+        surface: None,
     }
 }
 

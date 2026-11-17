@@ -17,7 +17,7 @@ all-or-nothing steps, all of them one run.
 from __future__ import annotations
 
 from typing import Any, Literal, NotRequired, TypedDict
-from tilo import Resource, Run
+from tilo import Entry, Resource, Run
 
 __all__ = [
     "Kind",
@@ -29,6 +29,7 @@ __all__ = [
     "Link",
     "Message",
     "MessageKind",
+    "NewIssue",
     "Origin",
     "Priority",
     "Status",
@@ -67,7 +68,7 @@ class TrackerArea(TypedDict):
     id: str
     name: str
     kind: Kind
-    people: list[Person]
+    people: list[Entry[Person]]
 
 class Area(TypedDict):
     resource: str
@@ -90,15 +91,17 @@ class Issue(TypedDict):
     body: str
     status: Status
     assignee: str | None
+    assigned_by: str | None
+    assigned_ms: int
     labels: list[str]
     parent: str | None
-    links: list[Link]
+    links: list[Entry[Link]]
     area: Area | None
     due_ms: int | None
     priority: int | None
     estimate: int | None
-    attachments: list[Attachment]
-    comments: list[Message]
+    attachments: list[Entry[Attachment]]
+    comments: list[Entry[Message]]
     author: str | None
     author_name: str
     created_ms: int
@@ -125,7 +128,23 @@ class Message(TypedDict):
     step: str
     incorporated: bool
 
-MessageKind = Literal["comment", "to_run", "from_run", "lookup", "step", "answer"]
+MessageKind = Literal["Comment", "ToRun", "FromRun", "Lookup", "Step", "Answer"]
+
+class NewIssue(TypedDict):
+    title: str
+    parent: str | None
+    body: str | None
+    status: Status | None
+    assignee: str | None
+    url: str | None
+    project: str | None
+    priority: Priority | None
+    estimate: int | None
+    due_ms: int | None
+    labels: list[str] | None
+    origin: Origin | None
+    rank: str | None
+    goal: Area | None
 
 class Origin(TypedDict):
     author: str
@@ -138,7 +157,7 @@ class Origin(TypedDict):
 
 Priority = Literal["none", "urgent", "high", "medium", "low"]
 
-Status = Literal["backlog", "todo", "in_progress", "in_review", "done", "cancelled"]
+Status = Literal["backlog", "todo", "in-progress", "in-review", "done", "cancelled"]
 
 CreateAreaArgs = TypedDict("CreateAreaArgs", {
     "name": "str",
@@ -180,17 +199,17 @@ CreateArgs = TypedDict("CreateArgs", {
     "title": "str",
     "parent": NotRequired["str | None"],
     "body": NotRequired["str | None"],
-    "status": NotRequired["Any | None"],
+    "status": NotRequired["Status | None"],
     "assignee": NotRequired["str | None"],
     "url": NotRequired["str | None"],
     "project": NotRequired["str | None"],
-    "priority": NotRequired["Any | None"],
+    "priority": NotRequired["Priority | None"],
     "estimate": NotRequired["int | None"],
     "due_ms": NotRequired["int | None"],
     "labels": NotRequired["list[str] | None"],
-    "origin": NotRequired["Any | None"],
+    "origin": NotRequired["Origin | None"],
     "rank": NotRequired["str | None"],
-    "goal": NotRequired["Any | None"],
+    "goal": NotRequired["Area | None"],
 })
 """The arguments of `create`."""
 
@@ -291,14 +310,14 @@ PlanArgs = TypedDict("PlanArgs", {
 
 class Tracker(Resource):
     """Tasks — `tasks.tracker`."""
-    __surface__ = "so.tilo.tasks@12705021615f11a5"
-    areas: list[TrackerArea]
+    __surface__ = "so.tilo.tasks@188395cb119c73de"
+    areas: list[Entry[TrackerArea]]
 
     def create_area(self,
         *,
         name: str,
         kind: Kind | None = None,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         args: dict[str, Any] = {}
         args["name"] = name
@@ -314,7 +333,7 @@ class Tracker(Resource):
         *,
         area: str,
         name: str,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         return self.action("rename-area", area=area, name=name)
 
@@ -326,7 +345,7 @@ class Tracker(Resource):
         *,
         area: str,
         kind: Kind,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         return self.action("set-kind", area=area, kind=kind)
 
@@ -339,7 +358,7 @@ class Tracker(Resource):
         area: str,
         name: str,
         role: str | None = None,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         args: dict[str, Any] = {}
         args["area"] = area
@@ -356,7 +375,7 @@ class Tracker(Resource):
         *,
         area: str,
         person: str,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         return self.action("remove-person", area=area, person=person)
 
@@ -364,7 +383,7 @@ class Tracker(Resource):
         """Runs `remove-person` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("remove-person", items)
 
-    def delete_area(self, *, area: str) -> Run | None:
+    def delete_area(self, *, area: str) -> None:
         """Runs the app's action."""
         return self.action("delete-area", area=area)
 
@@ -376,11 +395,15 @@ class Tracker(Resource):
         """Runs the app's action."""
         return self.action("new-project")
 
+    # The actions a call reaches before the resource is read: `await tracker.create(...)`
+    # needs no `load()` first.
+    __actions__ = frozenset({"create_area", "create_area_many", "rename_area", "rename_area_many", "set_kind", "set_kind_many", "involve", "involve_many", "remove_person", "remove_person_many", "delete_area", "delete_area_many", "new_project"})
+
 
 class Issues(Resource):
     """Issues — `tasks.issues`."""
-    __surface__ = "so.tilo.tasks@12705021615f11a5"
-    issues: list[Issue]
+    __surface__ = "so.tilo.tasks@188395cb119c73de"
+    issues: list[Entry[Issue]]
     @property
     def before(self) -> int:
         """Read only."""
@@ -395,18 +418,18 @@ class Issues(Resource):
         title: str,
         parent: str | None = None,
         body: str | None = None,
-        status: Any | None = None,
+        status: Status | None = None,
         assignee: str | None = None,
         url: str | None = None,
         project: str | None = None,
-        priority: Any | None = None,
+        priority: Priority | None = None,
         estimate: int | None = None,
         due_ms: int | None = None,
         labels: list[str] | None = None,
-        origin: Any | None = None,
+        origin: Origin | None = None,
         rank: str | None = None,
-        goal: Any | None = None,
-    ) -> Run | None:
+        goal: Area | None = None,
+    ) -> None:
         """Runs the app's action."""
         args: dict[str, Any] = {}
         args["title"] = title
@@ -442,7 +465,7 @@ class Issues(Resource):
         """Runs `create` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("create", items)
 
-    def start(self, *, before: int) -> Run | None:
+    def start(self, *, before: int) -> None:
         """Runs the app's action."""
         return self.action("start", before=before)
 
@@ -454,7 +477,7 @@ class Issues(Resource):
         *,
         issue: str,
         title: str,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         return self.action("rename", issue=issue, title=title)
 
@@ -466,7 +489,7 @@ class Issues(Resource):
         *,
         issue: str,
         parent: str | None = None,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         args: dict[str, Any] = {}
         args["issue"] = issue
@@ -482,7 +505,7 @@ class Issues(Resource):
         *,
         issue: str,
         assignee: str | None = None,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         args: dict[str, Any] = {}
         args["issue"] = issue
@@ -499,7 +522,7 @@ class Issues(Resource):
         issue: str,
         project: str | None = None,
         goal: Area | None = None,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         args: dict[str, Any] = {}
         args["issue"] = issue
@@ -519,7 +542,7 @@ class Issues(Resource):
         name: str,
         bytes: Any,
         media_type: str | None = None,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         args: dict[str, Any] = {}
         args["issue"] = issue
@@ -537,7 +560,7 @@ class Issues(Resource):
         *,
         issue: str,
         attachment: str,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         return self.action("detach", issue=issue, attachment=attachment)
 
@@ -549,7 +572,7 @@ class Issues(Resource):
         *,
         issue: str,
         label: str,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         return self.action("add-label", issue=issue, label=label)
 
@@ -563,7 +586,7 @@ class Issues(Resource):
         status: Status,
         before: str | None = None,
         rank: str | None = None,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         args: dict[str, Any] = {}
         args["issue"] = issue
@@ -583,7 +606,7 @@ class Issues(Resource):
         issue: str,
         text: str,
         origin: Origin | None = None,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         args: dict[str, Any] = {}
         args["issue"] = issue
@@ -604,7 +627,7 @@ class Issues(Resource):
         resource: str,
         label: str,
         record: str | None = None,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         args: dict[str, Any] = {}
         args["issue"] = issue
@@ -624,7 +647,7 @@ class Issues(Resource):
         *,
         issue: str,
         note: Any,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         return self.action("link-note", issue=issue, note=note)
 
@@ -632,7 +655,7 @@ class Issues(Resource):
         """Runs `link-note` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("link-note", items)
 
-    def delete(self, *, issue: str) -> Run | None:
+    def delete(self, *, issue: str) -> None:
         """Runs the app's action."""
         return self.action("delete", issue=issue)
 
@@ -647,7 +670,7 @@ class Issues(Resource):
         priority: Priority | None = None,
         estimate: int | None = None,
         due_ms: int | None = None,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         args: dict[str, Any] = {}
         args["issue"] = issue
@@ -664,5 +687,9 @@ class Issues(Resource):
     def plan_many(self, items: list[PlanArgs]) -> list[dict[str, Any]]:
         """Runs `plan` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("plan", items)
+
+    # The actions a call reaches before the resource is read: `await tracker.create(...)`
+    # needs no `load()` first.
+    __actions__ = frozenset({"create", "create_many", "start", "start_many", "rename", "rename_many", "move_under", "move_under_many", "assign", "assign_many", "set_project", "set_project_many", "attach", "attach_many", "detach", "detach_many", "add_label", "add_label_many", "place", "place_many", "comment", "comment_many", "link", "link_many", "link_note", "link_note_many", "delete", "delete_many", "plan", "plan_many"})
 
 

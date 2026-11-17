@@ -113,33 +113,33 @@ export interface SwitchPolarityArgs {
 
 /** Themes — `themes.studio`. */
 export interface Studio extends tilo.Resource {
-  themes: Theme[];
+  themes: Array<tilo.Entry<Theme>>;
   newTheme(args: {
     id: string;
     base: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `new-theme` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   newThemeMany(items: NewThemeArgs[]): Promise<tilo.ActionAnswer[]>;
   importTheme(args: {
     id: string;
     document: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `import-theme` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   importThemeMany(items: ImportThemeArgs[]): Promise<tilo.ActionAnswer[]>;
   reset(args: {
     theme: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `reset` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   resetMany(items: ResetArgs[]): Promise<tilo.ActionAnswer[]>;
   delete(args: {
     theme: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `delete` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   deleteMany(items: DeleteArgs[]): Promise<tilo.ActionAnswer[]>;
   switchPolarity(args: {
     theme: string;
     dark: boolean;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `switch-polarity` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   switchPolarityMany(items: SwitchPolarityArgs[]): Promise<tilo.ActionAnswer[]>;
   export(args: {
@@ -147,8 +147,12 @@ export interface Studio extends tilo.Resource {
   }): Promise<void>;
 }
 
+/** The actions `Studio` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const STUDIO_ACTIONS = ["newTheme", "newThemeMany", "importTheme", "importThemeMany", "reset", "resetMany", "delete", "deleteMany", "switchPolarity", "switchPolarityMany", "export"] as const;
+
 /** The `themes.studio` kind at `path`. */
 export function studio(ws: tilo.Workspace, path: string): Studio {
-  return resourceProxy(ws, path, SURFACE) as unknown as Studio;
+  return resourceProxy(ws, path, SURFACE, STUDIO_ACTIONS) as unknown as Studio;
 }
 

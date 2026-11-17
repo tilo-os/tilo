@@ -17,7 +17,7 @@ all-or-nothing steps, all of them one run.
 from __future__ import annotations
 
 from typing import Any, Literal, NotRequired, TypedDict
-from tilo import Resource, Run
+from tilo import Entry, Resource, Run
 
 __all__ = [
     "Background",
@@ -141,7 +141,7 @@ class Slide(TypedDict):
     layout: Layout
     background: Background
     notes: str
-    elements: list[Element]
+    elements: list[Entry[Element]]
 
 class SlideData(TypedDict):
     id: str
@@ -206,7 +206,7 @@ class Deck(Resource):
     title: str
     palette: PaletteKind
     look: DeckLook
-    slides: list[Slide]
+    slides: list[Entry[Slide]]
 
     def add_slide(self,
         *,
@@ -214,7 +214,7 @@ class Deck(Resource):
         body: str | None = None,
         layout: Layout | None = None,
         after: str | None = None,
-    ) -> Any | Run:
+    ) -> Any:
         """Runs the app's action."""
         args: dict[str, Any] = {}
         if title is not None:
@@ -231,7 +231,7 @@ class Deck(Resource):
         *,
         slides: list[OutlinedSlide],
         after: str | None = None,
-    ) -> Any | Run:
+    ) -> Any:
         """Runs the app's action."""
         args: dict[str, Any] = {}
         args["slides"] = slides
@@ -243,7 +243,7 @@ class Deck(Resource):
         *,
         at: int,
         slide: SlideData,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         return self.action("insert-slide", at=at, slide=slide)
 
@@ -251,7 +251,7 @@ class Deck(Resource):
         """Runs `insert-slide` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("insert-slide", items)
 
-    def duplicate_slide(self, *, slide: str) -> Run | None:
+    def duplicate_slide(self, *, slide: str) -> None:
         """Runs the app's action."""
         return self.action("duplicate-slide", slide=slide)
 
@@ -259,7 +259,7 @@ class Deck(Resource):
         """Runs `duplicate-slide` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("duplicate-slide", items)
 
-    def delete_slide(self, *, slide: str) -> Run | None:
+    def delete_slide(self, *, slide: str) -> None:
         """Runs the app's action."""
         return self.action("delete-slide", slide=slide)
 
@@ -271,7 +271,7 @@ class Deck(Resource):
         *,
         slide: str,
         position: int,
-    ) -> Any | Run:
+    ) -> Any:
         """Runs the app's action."""
         return self.action("move-slide", slide=slide, position=position)
 
@@ -280,7 +280,7 @@ class Deck(Resource):
         slide: str,
         title: str | None = None,
         body: str | None = None,
-    ) -> Any | Run:
+    ) -> Any:
         """Runs the app's action."""
         args: dict[str, Any] = {}
         args["slide"] = slide
@@ -294,7 +294,7 @@ class Deck(Resource):
         *,
         slide: str,
         element: NewElement,
-    ) -> Any | Run:
+    ) -> Any:
         """Runs the app's action."""
         return self.action("add-element", slide=slide, element=element)
 
@@ -302,7 +302,7 @@ class Deck(Resource):
         *,
         slide: str,
         element: ElementData,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         return self.action("insert-element", slide=slide, element=element)
 
@@ -314,7 +314,7 @@ class Deck(Resource):
         *,
         slide: str,
         element: str,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         return self.action("delete-element", slide=slide, element=element)
 
@@ -326,7 +326,7 @@ class Deck(Resource):
         *,
         slide: str,
         element: str,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         return self.action("bring-to-front", slide=slide, element=element)
 
@@ -338,7 +338,7 @@ class Deck(Resource):
         *,
         slide: str,
         element: str,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         return self.action("send-to-back", slide=slide, element=element)
 
@@ -352,7 +352,7 @@ class Deck(Resource):
         palette: PaletteKind,
         slides: list[SlideData],
         look: DeckLook | None = None,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         args: dict[str, Any] = {}
         args["title"] = title
@@ -373,5 +373,9 @@ class Deck(Resource):
     def export_pptx_content(self) -> None:
         """Runs the app's action."""
         return self.action("export-pptx-content")
+
+    # The actions a call reaches before the resource is read: `await tracker.create(...)`
+    # needs no `load()` first.
+    __actions__ = frozenset({"add_slide", "add_slides", "insert_slide", "insert_slide_many", "duplicate_slide", "duplicate_slide_many", "delete_slide", "delete_slide_many", "move_slide", "set_text", "add_element", "insert_element", "insert_element_many", "delete_element", "delete_element_many", "bring_to_front", "bring_to_front_many", "send_to_back", "send_to_back_many", "replace_deck", "replace_deck_many", "read_deck", "export_pptx_content"})
 
 

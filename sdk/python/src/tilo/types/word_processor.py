@@ -17,9 +17,10 @@ all-or-nothing steps, all of them one run.
 from __future__ import annotations
 
 from typing import Any, Literal, NotRequired, TypedDict
-from tilo import Resource, Run
+from tilo import Entry, Resource, Run
 
 __all__ = [
+    "Author",
     "ClipAttr",
     "ClipBlock",
     "Comment",
@@ -45,8 +46,11 @@ __all__ = [
     "NoteFileWrittenArgs",
 ]
 
+Author = dict[str, Any]
+"""One of member, named: an object whose case the app tags it with."""
+
 ClipAttr = dict[str, Any]
-"""One of bool, int, str: an object whose case the app tags it with."""
+"""One of Bool, Int, Str: an object whose case the app tags it with."""
 
 class ClipBlock(TypedDict):
     kind: str
@@ -59,12 +63,12 @@ class ClipBlock(TypedDict):
 
 class Comment(TypedDict):
     anchor: Any
-    author: str
+    author: Author
     date: str
     text: str
     body: list[ClipBlock]
     resolved: bool
-    replies: list[Reply]
+    replies: list[Entry[Reply]]
 
 class MarkSpan(TypedDict):
     start: int
@@ -73,10 +77,10 @@ class MarkSpan(TypedDict):
     value: MarkValue
 
 MarkValue = dict[str, Any]
-"""One of bool, int, str: an object whose case the app tags it with."""
+"""One of Bool, Int, Str: an object whose case the app tags it with."""
 
 class Reply(TypedDict):
-    author: str
+    author: Author
     date: str
     text: str
     body: list[ClipBlock]
@@ -178,15 +182,15 @@ NoteFileWrittenArgs = TypedDict("NoteFileWrittenArgs", {
 
 class Document(Resource):
     """Document — `word-processor.document`."""
-    __surface__ = "so.tilo.word-processor@d6a33f5b43133b78"
+    __surface__ = "so.tilo.word-processor@44442b4a9bdfb6f5"
     body: str
-    comments: list[Comment]
+    comments: list[Entry[Comment]]
 
-    def append_paragraph(self, *, text: str) -> Any | Run:
+    def append_paragraph(self, *, text: str) -> Any:
         """Runs the app's action."""
         return self.action("append-paragraph", text=text)
 
-    def replace_body(self, *, markdown: str) -> Any | Run:
+    def replace_body(self, *, markdown: str) -> Any:
         """Runs the app's action."""
         return self.action("replace-body", markdown=markdown)
 
@@ -195,7 +199,7 @@ class Document(Resource):
         find: str,
         replace: str,
         all: bool | None = None,
-    ) -> Any | Run:
+    ) -> Any:
         """Runs the app's action."""
         args: dict[str, Any] = {}
         args["find"] = find
@@ -209,15 +213,15 @@ class Document(Resource):
         after: str,
         rows: int,
         columns: int,
-    ) -> Any | Run:
+    ) -> Any:
         """Runs the app's action."""
         return self.action("insert-table", after=after, rows=rows, columns=columns)
 
-    def add_row(self, *, table: str) -> Any | Run:
+    def add_row(self, *, table: str) -> Any:
         """Runs the app's action."""
         return self.action("add-row", table=table)
 
-    def add_column(self, *, table: str) -> Any | Run:
+    def add_column(self, *, table: str) -> Any:
         """Runs the app's action."""
         return self.action("add-column", table=table)
 
@@ -225,7 +229,7 @@ class Document(Resource):
         *,
         table: str,
         row: int,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         return self.action("delete-row", table=table, row=row)
 
@@ -237,7 +241,7 @@ class Document(Resource):
         *,
         table: str,
         column: int,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         return self.action("delete-column", table=table, column=column)
 
@@ -245,7 +249,7 @@ class Document(Resource):
         """Runs `delete-column` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("delete-column", items)
 
-    def delete_table(self, *, table: str) -> Run | None:
+    def delete_table(self, *, table: str) -> None:
         """Runs the app's action."""
         return self.action("delete-table", table=table)
 
@@ -253,7 +257,7 @@ class Document(Resource):
         """Runs `delete-table` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("delete-table", items)
 
-    def delete_image(self, *, image: str) -> Run | None:
+    def delete_image(self, *, image: str) -> None:
         """Runs the app's action."""
         return self.action("delete-image", image=image)
 
@@ -261,7 +265,7 @@ class Document(Resource):
         """Runs `delete-image` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("delete-image", items)
 
-    def accept_change(self, *, change: str) -> Run | None:
+    def accept_change(self, *, change: str) -> None:
         """Runs the app's action."""
         return self.action("accept-change", change=change)
 
@@ -269,7 +273,7 @@ class Document(Resource):
         """Runs `accept-change` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("accept-change", items)
 
-    def reject_change(self, *, change: str) -> Run | None:
+    def reject_change(self, *, change: str) -> None:
         """Runs the app's action."""
         return self.action("reject-change", change=change)
 
@@ -277,7 +281,7 @@ class Document(Resource):
         """Runs `reject-change` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("reject-change", items)
 
-    def accept_all_changes(self) -> Run | None:
+    def accept_all_changes(self) -> None:
         """Runs the app's action."""
         return self.action("accept-all-changes")
 
@@ -285,7 +289,7 @@ class Document(Resource):
         """Runs `accept-all-changes` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("accept-all-changes", items)
 
-    def reject_all_changes(self) -> Run | None:
+    def reject_all_changes(self) -> None:
         """Runs the app's action."""
         return self.action("reject-all-changes")
 
@@ -299,7 +303,7 @@ class Document(Resource):
         start: int,
         end: int,
         text: str,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         return self.action("add-comment", block=block, start=start, end=end, text=text)
 
@@ -312,7 +316,7 @@ class Document(Resource):
         comment: str,
         text: str,
         body: list[ClipBlock] | None = None,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         args: dict[str, Any] = {}
         args["comment"] = comment
@@ -325,7 +329,7 @@ class Document(Resource):
         """Runs `reply-to-comment` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("reply-to-comment", items)
 
-    def resolve_comment(self, *, comment: str) -> Run | None:
+    def resolve_comment(self, *, comment: str) -> None:
         """Runs the app's action."""
         return self.action("resolve-comment", comment=comment)
 
@@ -333,7 +337,7 @@ class Document(Resource):
         """Runs `resolve-comment` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("resolve-comment", items)
 
-    def adopt_comments(self) -> Run | None:
+    def adopt_comments(self) -> None:
         """Runs the app's action."""
         return self.action("adopt-comments")
 
@@ -347,7 +351,7 @@ class Document(Resource):
         right: float,
         bottom: float,
         left: float,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         return self.action("set-page-margins", top=top, right=right, bottom=bottom, left=left)
 
@@ -355,7 +359,7 @@ class Document(Resource):
         """Runs `set-page-margins` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("set-page-margins", items)
 
-    def generate_toc(self) -> Run | None:
+    def generate_toc(self) -> None:
         """Runs the app's action."""
         return self.action("generate-toc")
 
@@ -363,7 +367,7 @@ class Document(Resource):
         """Runs `generate-toc` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("generate-toc", items)
 
-    def note_file_written(self, *, digest: str) -> Run | None:
+    def note_file_written(self, *, digest: str) -> None:
         """Runs the app's action."""
         return self.action("note-file-written", digest=digest)
 
@@ -410,5 +414,9 @@ class Document(Resource):
         if format is not None:
             args["format"] = format
         return self.action("export-content", **args)
+
+    # The actions a call reaches before the resource is read: `await tracker.create(...)`
+    # needs no `load()` first.
+    __actions__ = frozenset({"append_paragraph", "replace_body", "replace_text", "insert_table", "add_row", "add_column", "delete_row", "delete_row_many", "delete_column", "delete_column_many", "delete_table", "delete_table_many", "delete_image", "delete_image_many", "accept_change", "accept_change_many", "reject_change", "reject_change_many", "accept_all_changes", "accept_all_changes_many", "reject_all_changes", "reject_all_changes_many", "add_comment", "add_comment_many", "reply_to_comment", "reply_to_comment_many", "resolve_comment", "resolve_comment_many", "adopt_comments", "adopt_comments_many", "set_page_margins", "set_page_margins_many", "generate_toc", "generate_toc_many", "note_file_written", "note_file_written_many", "share_image", "read_file", "read_content", "export_content"})
 
 

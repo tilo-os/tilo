@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.video-editor@c1e632de27d6ebcf";
+export const SURFACE = "so.tilo.video-editor@292027a7bde8cd96";
 
 export interface ChromaKey {
   enabled: boolean;
@@ -48,13 +48,13 @@ export interface Clip {
   fade_in: number;
   fade_out: number;
   transition_duration: number;
-  effects: ClipEffect[];
+  effects: Array<tilo.Entry<ClipEffect>>;
   transform: Transform;
   speed: Speed;
   key: ChromaKey;
   mask: Mask;
   anim: unknown;
-  markers: Marker[];
+  markers: Array<tilo.Entry<Marker>>;
   link: string | null;
   sound_split: boolean;
   link_follows: boolean;
@@ -66,8 +66,18 @@ export interface ClipEffect {
   amount: number;
 }
 
-/** One of "grayscale", "sepia", "invert", "warm", "cool", "vignette". */
-export type EffectKind = "grayscale" | "sepia" | "invert" | "warm" | "cool" | "vignette";
+export interface ClipPlacement {
+  media: string;
+  track: string | null;
+  at: number | null;
+  in: number | null;
+  out: number | null;
+  fade_in: number | null;
+  fade_out: number | null;
+}
+
+/** One of "Grayscale", "Sepia", "Invert", "Warm", "Cool", "Vignette". */
+export type EffectKind = "Grayscale" | "Sepia" | "Invert" | "Warm" | "Cool" | "Vignette";
 
 export interface Filters {
   brightness: number;
@@ -94,8 +104,8 @@ export interface Mask {
   invert: boolean;
 }
 
-/** One of "none", "rect", "ellipse". */
-export type MaskShape = "none" | "rect" | "ellipse";
+/** One of "None", "Rect", "Ellipse". */
+export type MaskShape = "None" | "Rect" | "Ellipse";
 
 export interface MediaItem {
   id: string;
@@ -111,16 +121,16 @@ export interface MediaItem {
   has_audio: boolean;
 }
 
-/** One of "video", "audio", "image", "text". */
-export type MediaKind = "video" | "audio" | "image" | "text";
+/** One of "Video", "Audio", "Image", "Text". */
+export type MediaKind = "Video" | "Audio" | "Image" | "Text";
 
 export interface Speed {
   rate: number;
   reverse: boolean;
 }
 
-/** One of "left", "center", "right". */
-export type TextAlign = "left" | "center" | "right";
+/** One of "Left", "Center", "Right". */
+export type TextAlign = "Left" | "Center" | "Right";
 
 export interface TextSource {
   content: string;
@@ -145,8 +155,8 @@ export interface Track {
   pan: number;
 }
 
-/** One of "video", "audio". */
-export type TrackKind = "video" | "audio";
+/** One of "Video", "Audio". */
+export type TrackKind = "Video" | "Audio";
 
 export interface Transform {
   scale_x: number;
@@ -162,8 +172,8 @@ export interface Transform {
   crop_bottom: number;
 }
 
-/** One of "none", "cross_dissolve", "fade_in", "dip_to_black", "wipe". */
-export type Transition = "none" | "cross_dissolve" | "fade_in" | "dip_to_black" | "wipe";
+/** One of "None", "CrossDissolve", "FadeIn", "DipToBlack", "Wipe". */
+export type Transition = "None" | "CrossDissolve" | "FadeIn" | "DipToBlack" | "Wipe";
 
 /** The arguments of `set-frame-size`. */
 export interface SetFrameSizeArgs {
@@ -364,38 +374,38 @@ export interface Project extends tilo.Resource {
   format_explicit: boolean;
   mark_in: number | null;
   mark_out: number | null;
-  media: MediaItem[];
-  tracks: Track[];
-  clips: Clip[];
-  markers: Marker[];
+  media: Array<tilo.Entry<MediaItem>>;
+  tracks: Array<tilo.Entry<Track>>;
+  clips: Array<tilo.Entry<Clip>>;
+  markers: Array<tilo.Entry<Marker>>;
   setFrameSize(args: {
     width: number;
     height: number;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `set-frame-size` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   setFrameSizeMany(items: SetFrameSizeArgs[]): Promise<tilo.ActionAnswer[]>;
   setFrameRate(args: {
     fps: number;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `set-frame-rate` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   setFrameRateMany(items: SetFrameRateArgs[]): Promise<tilo.ActionAnswer[]>;
   setRenderRange(args: {
     start: number;
     end: number;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `set-render-range` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   setRenderRangeMany(items: SetRenderRangeArgs[]): Promise<tilo.ActionAnswer[]>;
   markIn(args: {
     at: number;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `mark-in` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   markInMany(items: MarkInArgs[]): Promise<tilo.ActionAnswer[]>;
   markOut(args: {
     at: number;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `mark-out` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   markOutMany(items: MarkOutArgs[]): Promise<tilo.ActionAnswer[]>;
-  clearMarks(): Promise<tilo.Run | void>;
+  clearMarks(): Promise<void>;
   /** Runs `clear-marks` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   clearMarksMany(items: ClearMarksArgs[]): Promise<tilo.ActionAnswer[]>;
   addTitle(args: {
@@ -403,14 +413,14 @@ export interface Project extends tilo.Resource {
     colour?: string;
     size?: number;
     align?: string;
-  }): Promise<unknown | tilo.Run>;
+  }): Promise<unknown>;
   setTitle(args: {
     media: string;
     text?: string;
     colour?: string;
     size?: number;
     align?: string;
-  }): Promise<unknown | tilo.Run>;
+  }): Promise<unknown>;
   addClip(args: {
     media: string;
     track?: string;
@@ -419,12 +429,12 @@ export interface Project extends tilo.Resource {
     out?: number;
     fade_in?: number;
     fade_out?: number;
-  }): Promise<unknown | tilo.Run>;
+  }): Promise<unknown>;
   moveClip(args: {
     clip: string;
     at: number;
     track?: string;
-  }): Promise<unknown | tilo.Run>;
+  }): Promise<unknown>;
   setClip(args: {
     clip: string;
     fade_in?: number;
@@ -433,113 +443,113 @@ export interface Project extends tilo.Resource {
     volume?: number;
     transition?: string;
     transition_duration?: number;
-  }): Promise<unknown | tilo.Run>;
+  }): Promise<unknown>;
   removeClip(args: {
     clip: string;
     ripple?: boolean;
-  }): Promise<unknown | tilo.Run>;
+  }): Promise<unknown>;
   addMarker(args: {
     at: number;
     name: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `add-marker` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   addMarkerMany(items: AddMarkerArgs[]): Promise<tilo.ActionAnswer[]>;
   placeTwoAngles(args: {
     at: number;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `place-two-angles` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   placeTwoAnglesMany(items: PlaceTwoAnglesArgs[]): Promise<tilo.ActionAnswer[]>;
   unplaceTwoAngles(args: {
     at: number;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `unplace-two-angles` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   unplaceTwoAnglesMany(items: UnplaceTwoAnglesArgs[]): Promise<tilo.ActionAnswer[]>;
   removeMarker(args: {
     marker: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `remove-marker` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   removeMarkerMany(items: RemoveMarkerArgs[]): Promise<tilo.ActionAnswer[]>;
   addTrack(args: {
     kind: TrackKind;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `add-track` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   addTrackMany(items: AddTrackArgs[]): Promise<tilo.ActionAnswer[]>;
   resetMix(args: {
     track: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `reset-mix` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   resetMixMany(items: ResetMixArgs[]): Promise<tilo.ActionAnswer[]>;
   trimLanes(args: {
     tracks: string[];
     db: number;
     headroom: number;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `trim-lanes` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   trimLanesMany(items: TrimLanesArgs[]): Promise<tilo.ActionAnswer[]>;
   deleteTrack(args: {
     track: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `delete-track` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   deleteTrackMany(items: DeleteTrackArgs[]): Promise<tilo.ActionAnswer[]>;
   placeClip(args: {
     media: string;
     track: string;
     start: number;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `place-clip` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   placeClipMany(items: PlaceClipArgs[]): Promise<tilo.ActionAnswer[]>;
   deleteMedia(args: {
     media: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `delete-media` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   deleteMediaMany(items: DeleteMediaArgs[]): Promise<tilo.ActionAnswer[]>;
   useAsProjectFormat(args: {
     media: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `use-as-project-format` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   useAsProjectFormatMany(items: UseAsProjectFormatArgs[]): Promise<tilo.ActionAnswer[]>;
   delete(args: {
     clip: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `delete` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   deleteMany(items: DeleteArgs[]): Promise<tilo.ActionAnswer[]>;
   rippleDelete(args: {
     clip: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `ripple-delete` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   rippleDeleteMany(items: RippleDeleteArgs[]): Promise<tilo.ActionAnswer[]>;
   splitClip(args: {
     clip: string;
     at: number;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `split-clip` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   splitClipMany(items: SplitClipArgs[]): Promise<tilo.ActionAnswer[]>;
   trimInClip(args: {
     clip: string;
     at: number;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `trim-in-clip` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   trimInClipMany(items: TrimInClipArgs[]): Promise<tilo.ActionAnswer[]>;
   trimOutClip(args: {
     clip: string;
     at: number;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `trim-out-clip` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   trimOutClipMany(items: TrimOutClipArgs[]): Promise<tilo.ActionAnswer[]>;
   setSpeed(args: {
     clip: string;
     rate: number;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `set-speed` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   setSpeedMany(items: SetSpeedArgs[]): Promise<tilo.ActionAnswer[]>;
   toggleReverse(args: {
     clip: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `toggle-reverse` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   toggleReverseMany(items: ToggleReverseArgs[]): Promise<tilo.ActionAnswer[]>;
   resetSpeed(args: {
     clip: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `reset-speed` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   resetSpeedMany(items: ResetSpeedArgs[]): Promise<tilo.ActionAnswer[]>;
   setParam(args: {
@@ -547,54 +557,54 @@ export interface Project extends tilo.Resource {
     param: string;
     at: number;
     value: number;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `set-param` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   setParamMany(items: SetParamArgs[]): Promise<tilo.ActionAnswer[]>;
   addEffect(args: {
     clip: string;
     effect: EffectKind;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `add-effect` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   addEffectMany(items: AddEffectArgs[]): Promise<tilo.ActionAnswer[]>;
   removeEffect(args: {
     clip: string;
     effect: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `remove-effect` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   removeEffectMany(items: RemoveEffectArgs[]): Promise<tilo.ActionAnswer[]>;
   moveEffect(args: {
     clip: string;
     effect: string;
     up: boolean;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `move-effect` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   moveEffectMany(items: MoveEffectArgs[]): Promise<tilo.ActionAnswer[]>;
   setEffectAmount(args: {
     clip: string;
     effect: string;
     amount: number;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `set-effect-amount` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   setEffectAmountMany(items: SetEffectAmountArgs[]): Promise<tilo.ActionAnswer[]>;
   clearEffects(args: {
     clip: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `clear-effects` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   clearEffectsMany(items: ClearEffectsArgs[]): Promise<tilo.ActionAnswer[]>;
   unlink(args: {
     clip: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `unlink` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   unlinkMany(items: UnlinkArgs[]): Promise<tilo.ActionAnswer[]>;
   linkAudio(args: {
     clip: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `link-audio` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   linkAudioMany(items: LinkAudioArgs[]): Promise<tilo.ActionAnswer[]>;
   linkWith(args: {
     clip: string;
     other: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `link-with` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   linkWithMany(items: LinkWithArgs[]): Promise<tilo.ActionAnswer[]>;
   exportTimelineContent(): Promise<void>;
@@ -624,8 +634,12 @@ export interface Project extends tilo.Resource {
   }): Promise<void>;
 }
 
+/** The actions `Project` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const PROJECT_ACTIONS = ["setFrameSize", "setFrameSizeMany", "setFrameRate", "setFrameRateMany", "setRenderRange", "setRenderRangeMany", "markIn", "markInMany", "markOut", "markOutMany", "clearMarks", "clearMarksMany", "addTitle", "setTitle", "addClip", "moveClip", "setClip", "removeClip", "addMarker", "addMarkerMany", "placeTwoAngles", "placeTwoAnglesMany", "unplaceTwoAngles", "unplaceTwoAnglesMany", "removeMarker", "removeMarkerMany", "addTrack", "addTrackMany", "resetMix", "resetMixMany", "trimLanes", "trimLanesMany", "deleteTrack", "deleteTrackMany", "placeClip", "placeClipMany", "deleteMedia", "deleteMediaMany", "useAsProjectFormat", "useAsProjectFormatMany", "delete", "deleteMany", "rippleDelete", "rippleDeleteMany", "splitClip", "splitClipMany", "trimInClip", "trimInClipMany", "trimOutClip", "trimOutClipMany", "setSpeed", "setSpeedMany", "toggleReverse", "toggleReverseMany", "resetSpeed", "resetSpeedMany", "setParam", "setParamMany", "addEffect", "addEffectMany", "removeEffect", "removeEffectMany", "moveEffect", "moveEffectMany", "setEffectAmount", "setEffectAmountMany", "clearEffects", "clearEffectsMany", "unlink", "unlinkMany", "linkAudio", "linkAudioMany", "linkWith", "linkWithMany", "exportTimelineContent", "renderTimeline", "exportVideoContent", "exportVideoStatus", "cancelVideoExport", "viewFrameContent"] as const;
+
 /** The `video-editor.project` kind at `path`. */
 export function project(ws: tilo.Workspace, path: string): Project {
-  return resourceProxy(ws, path, SURFACE) as unknown as Project;
+  return resourceProxy(ws, path, SURFACE, PROJECT_ACTIONS) as unknown as Project;
 }
 

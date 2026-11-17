@@ -421,6 +421,7 @@ fn directory_row(
         action,
         has_children: row.has_children,
         visibility: row.visibility.clone(),
+        surface: None,
     })
 }
 

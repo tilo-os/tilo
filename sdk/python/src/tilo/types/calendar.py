@@ -17,7 +17,7 @@ all-or-nothing steps, all of them one run.
 from __future__ import annotations
 
 from typing import Any, Literal, NotRequired, TypedDict
-from tilo import Resource, Run
+from tilo import Entry, Resource, Run
 
 __all__ = [
     "Attendee",
@@ -87,10 +87,10 @@ class Event(TypedDict):
     recurrence_until: str | None
     recurrence_count: int | None
     recurrence_exdates: list[str]
-    occurrence_overrides: list[OccurrenceOverride]
+    occurrence_overrides: list[Entry[OccurrenceOverride]]
     timezone: str
     organizer: str | None
-    attendees: list[Attendee]
+    attendees: list[Entry[Attendee]]
     reminder_min: int | None
     project: str | None
     calendar_id: str | None
@@ -117,7 +117,7 @@ class EventData(TypedDict):
     project: str
     calendar_id: str
 
-InviteStatus = Literal["needs_action", "accepted", "tentative", "declined"]
+InviteStatus = Literal["NeedsAction", "Accepted", "Tentative", "Declined"]
 
 class OccurrenceOverride(TypedDict):
     original_date: str
@@ -141,7 +141,7 @@ class OccurrenceOverrideData(TypedDict):
 
 Palette = Literal["indigo", "emerald", "amber", "red", "blue", "violet", "slate"]
 
-Priority = Literal["none", "low", "medium", "high"]
+Priority = Literal["None", "Low", "Medium", "High"]
 
 class Project(TypedDict):
     id: str
@@ -167,7 +167,7 @@ class Removal(TypedDict):
     href: str
     etag: str | None
 
-Repeat = Literal["none", "daily", "weekdays", "weekly", "monthly", "yearly"]
+Repeat = Literal["None", "Daily", "Weekdays", "Weekly", "Monthly", "Yearly"]
 
 class Task(TypedDict):
     id: str
@@ -211,7 +211,7 @@ class Person(TypedDict):
     phones: list[str]
     emails: list[str]
     photo: str
-    endpoints: list[Endpoint]
+    endpoints: list[Entry[Endpoint]]
 
 class Projected(TypedDict):
     person: str
@@ -327,10 +327,10 @@ ForgetEndpointArgs = TypedDict("ForgetEndpointArgs", {
 
 class Calendar(Resource):
     """Calendar — `calendar.calendar`."""
-    __surface__ = "so.tilo.calendar@0489bf8990ba967c"
-    projects: list[Project]
-    events: list[Event]
-    tasks: list[Task]
+    __surface__ = "so.tilo.calendar@5da3833e465e4850"
+    projects: list[Entry[Project]]
+    events: list[Entry[Event]]
+    tasks: list[Entry[Task]]
     notes: dict[str, str]
     @property
     def remote(self) -> dict[str, RemoteCopy]:
@@ -341,7 +341,7 @@ class Calendar(Resource):
         """Read only."""
         return self.fields["sync_tokens"]
 
-    def new_event(self, *, event: EventData) -> Run | None:
+    def new_event(self, *, event: EventData) -> None:
         """Runs the app's action."""
         return self.action("new-event", event=event)
 
@@ -349,15 +349,15 @@ class Calendar(Resource):
         """Runs `new-event` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("new-event", items)
 
-    def new_task(self, *, task: TaskData) -> Run | None:
+    def new_task(self, *, task: TaskData) -> None:
         """Runs the app's action."""
         return self.action("new-task", task=task)
 
-    def new_project(self, *, name: str) -> Run | None:
+    def new_project(self, *, name: str) -> None:
         """Runs the app's action."""
         return self.action("new-project", name=name)
 
-    def delete_event(self, *, event: str) -> Run | None:
+    def delete_event(self, *, event: str) -> None:
         """Runs the app's action."""
         return self.action("delete-event", event=event)
 
@@ -366,7 +366,7 @@ class Calendar(Resource):
         event: str,
         start: str,
         end: str,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         return self.action("reschedule", event=event, start=start, end=end)
 
@@ -374,7 +374,7 @@ class Calendar(Resource):
         *,
         event: str,
         start: str,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         return self.action("set-start", event=event, start=start)
 
@@ -383,7 +383,7 @@ class Calendar(Resource):
         event: str,
         color: Palette,
         calendar: str | None = None,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         args: dict[str, Any] = {}
         args["event"] = event
@@ -397,15 +397,15 @@ class Calendar(Resource):
         event: str,
         email: str,
         name: str,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         return self.action("invite", event=event, email=email, name=name)
 
-    def delete_task(self, *, task: str) -> Run | None:
+    def delete_task(self, *, task: str) -> None:
         """Runs the app's action."""
         return self.action("delete-task", task=task)
 
-    def delete_project(self, *, project: str) -> Run | None:
+    def delete_project(self, *, project: str) -> None:
         """Runs the app's action."""
         return self.action("delete-project", project=project)
 
@@ -413,7 +413,7 @@ class Calendar(Resource):
         *,
         events: list[EventData],
         tasks: list[TaskData],
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         return self.action("import-items", events=events, tasks=tasks)
 
@@ -421,7 +421,7 @@ class Calendar(Resource):
         *,
         event: EventData,
         at: RemoteAt,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         return self.action("adopt-remote-event", event=event, at=at)
 
@@ -429,11 +429,11 @@ class Calendar(Resource):
         *,
         task: TaskData,
         at: RemoteAt,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         return self.action("adopt-remote-task", task=task, at=at)
 
-    def drop_remote_item(self, *, item: str) -> Run | None:
+    def drop_remote_item(self, *, item: str) -> None:
         """Runs the app's action."""
         return self.action("drop-remote-item", item=item)
 
@@ -442,11 +442,11 @@ class Calendar(Resource):
         event: str,
         at: RemoteAt,
         holds: str,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         return self.action("server-applied", event=event, at=at, holds=holds)
 
-    def server_removed(self, *, item: str) -> Run | None:
+    def server_removed(self, *, item: str) -> None:
         """Runs the app's action."""
         return self.action("server-removed", item=item)
 
@@ -454,7 +454,7 @@ class Calendar(Resource):
         *,
         calendar: str,
         token: str,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         return self.action("pulled", calendar=calendar, token=token)
 
@@ -468,11 +468,15 @@ class Calendar(Resource):
             args["event"] = event
         return self.action("export-ics-content", **args)
 
+    # The actions a call reaches before the resource is read: `await tracker.create(...)`
+    # needs no `load()` first.
+    __actions__ = frozenset({"new_event", "new_event_many", "new_task", "new_project", "delete_event", "reschedule", "set_start", "move_to_calendar", "invite", "delete_task", "delete_project", "import_items", "adopt_remote_event", "adopt_remote_task", "drop_remote_item", "server_applied", "server_removed", "pulled", "export_ics_content"})
+
 
 class Accounts(Resource):
     """Accounts — `tilo.accounts`."""
-    __surface__ = "so.tilo.calendar@0489bf8990ba967c"
-    accounts: list[PersonAccount]
+    __surface__ = "so.tilo.calendar@5da3833e465e4850"
+    accounts: list[Entry[PersonAccount]]
     active: dict[str, str]
 
     def publish_browser_identity(self,
@@ -480,7 +484,7 @@ class Accounts(Resource):
         root: str,
         origin: str,
         display_name: str,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         return self.action("publish-browser-identity", root=root, origin=origin, display_name=display_name)
 
@@ -496,7 +500,7 @@ class Accounts(Resource):
         config: Any,
         enabled: bool,
         tint: int,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         return self.action("save-account", id=id, type_id=type_id, display_name=display_name, config=config, enabled=enabled, tint=tint)
 
@@ -504,7 +508,7 @@ class Accounts(Resource):
         """Runs `save-account` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("save-account", items)
 
-    def remove_account(self, *, account: str) -> Run | None:
+    def remove_account(self, *, account: str) -> None:
         """Runs the app's action."""
         return self.action("remove-account", account=account)
 
@@ -512,7 +516,7 @@ class Accounts(Resource):
         """Runs `remove-account` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("remove-account", items)
 
-    def set_active_account(self, *, account: str) -> Run | None:
+    def set_active_account(self, *, account: str) -> None:
         """Runs the app's action."""
         return self.action("set-active-account", account=account)
 
@@ -520,17 +524,21 @@ class Accounts(Resource):
         """Runs `set-active-account` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("set-active-account", items)
 
+    # The actions a call reaches before the resource is read: `await tracker.create(...)`
+    # needs no `load()` first.
+    __actions__ = frozenset({"publish_browser_identity", "publish_browser_identity_many", "save_account", "save_account_many", "remove_account", "remove_account_many", "set_active_account", "set_active_account_many"})
+
 
 class Identities(Resource):
     """Contact identities — `tilo.contacts.identities`."""
-    __surface__ = "so.tilo.calendar@0489bf8990ba967c"
-    people: list[Person]
+    __surface__ = "so.tilo.calendar@5da3833e465e4850"
+    people: list[Entry[Person]]
 
     def project_contact(self,
         *,
         person: str,
         label: str,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         return self.action("project-contact", person=person, label=label)
 
@@ -538,7 +546,7 @@ class Identities(Resource):
         """Runs `project-contact` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("project-contact", items)
 
-    def remove_contact(self, *, person: str) -> Run | None:
+    def remove_contact(self, *, person: str) -> None:
         """Runs the app's action."""
         return self.action("remove-contact", person=person)
 
@@ -552,7 +560,7 @@ class Identities(Resource):
         endpoint: str,
         service: str,
         recipient: str,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         return self.action("confirm-endpoint", person=person, endpoint=endpoint, service=service, recipient=recipient)
 
@@ -568,7 +576,7 @@ class Identities(Resource):
         scope: str,
         recipient: str,
         revision: str,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         return self.action("confirm-account", person=person, endpoint=endpoint, service=service, scope=scope, recipient=recipient, revision=revision)
 
@@ -583,7 +591,7 @@ class Identities(Resource):
         endpoint: str,
         service: str,
         recipient: str,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         return self.action("replace-endpoint", person=person, previous=previous, endpoint=endpoint, service=service, recipient=recipient)
 
@@ -600,7 +608,7 @@ class Identities(Resource):
         scope: str,
         recipient: str,
         revision: str,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         return self.action("replace-account", person=person, previous=previous, endpoint=endpoint, service=service, scope=scope, recipient=recipient, revision=revision)
 
@@ -612,7 +620,7 @@ class Identities(Resource):
         *,
         person: str,
         phones: list[str],
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         return self.action("project-phones", person=person, phones=phones)
 
@@ -624,7 +632,7 @@ class Identities(Resource):
         *,
         person: str,
         emails: list[str],
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         return self.action("project-emails", person=person, emails=emails)
 
@@ -636,7 +644,7 @@ class Identities(Resource):
         *,
         people: list[Projected],
         removed: list[str],
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         return self.action("project-contacts", people=people, removed=removed)
 
@@ -648,12 +656,16 @@ class Identities(Resource):
         *,
         person: str,
         endpoint: str,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         return self.action("forget-endpoint", person=person, endpoint=endpoint)
 
     def forget_endpoint_many(self, items: list[ForgetEndpointArgs]) -> list[dict[str, Any]]:
         """Runs `forget-endpoint` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("forget-endpoint", items)
+
+    # The actions a call reaches before the resource is read: `await tracker.create(...)`
+    # needs no `load()` first.
+    __actions__ = frozenset({"project_contact", "project_contact_many", "remove_contact", "remove_contact_many", "confirm_endpoint", "confirm_endpoint_many", "confirm_account", "confirm_account_many", "replace_endpoint", "replace_endpoint_many", "replace_account", "replace_account_many", "project_phones", "project_phones_many", "project_emails", "project_emails_many", "project_contacts", "project_contacts_many", "forget_endpoint", "forget_endpoint_many"})
 
 

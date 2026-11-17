@@ -14,7 +14,7 @@ launcher-a11y-result-kinds = Result kinds
 
 ## Actions
 
-so-tilo-launcher-search-open = Open search
+so-tilo-launcher-search-open-search = Open search
 so-tilo-launcher-search-search = Search
 so-tilo-launcher-search-filter = Filter results
 so-tilo-launcher-search-widen = Search everywhere

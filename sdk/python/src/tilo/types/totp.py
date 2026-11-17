@@ -17,7 +17,7 @@ all-or-nothing steps, all of them one run.
 from __future__ import annotations
 
 from typing import Any, Literal, NotRequired, TypedDict
-from tilo import Resource, Run
+from tilo import Entry, Resource, Run
 
 __all__ = [
     "Algorithm",
@@ -28,7 +28,7 @@ __all__ = [
     "DeleteArgs",
 ]
 
-Algorithm = Literal["sha1", "sha256", "sha512"]
+Algorithm = Literal["Sha1", "Sha256", "Sha512"]
 
 class StoredAccount(TypedDict):
     issuer: str
@@ -55,10 +55,10 @@ DeleteArgs = TypedDict("DeleteArgs", {
 
 class Vault(Resource):
     """Authenticator — `totp.vault`."""
-    __surface__ = "so.tilo.totp@639c5fe58257d1a4"
-    accounts: list[StoredAccount]
+    __surface__ = "so.tilo.totp@78ecd43e7f72fa75"
+    accounts: list[Entry[StoredAccount]]
 
-    def move_up(self, *, account: str) -> Run | None:
+    def move_up(self, *, account: str) -> None:
         """Runs the app's action."""
         return self.action("move-up", account=account)
 
@@ -66,7 +66,7 @@ class Vault(Resource):
         """Runs `move-up` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("move-up", items)
 
-    def move_down(self, *, account: str) -> Run | None:
+    def move_down(self, *, account: str) -> None:
         """Runs the app's action."""
         return self.action("move-down", account=account)
 
@@ -74,7 +74,7 @@ class Vault(Resource):
         """Runs `move-down` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("move-down", items)
 
-    def delete(self, *, account: str) -> Run | None:
+    def delete(self, *, account: str) -> None:
         """Runs the app's action."""
         return self.action("delete", account=account)
 
@@ -97,5 +97,9 @@ class Vault(Resource):
     def set_up_local(self, *, account: str) -> None:
         """Runs the app's action."""
         return self.action("set-up-local", account=account)
+
+    # The actions a call reaches before the resource is read: `await tracker.create(...)`
+    # needs no `load()` first.
+    __actions__ = frozenset({"move_up", "move_up_many", "move_down", "move_down_many", "delete", "delete_many", "add_account", "open_account", "copy_code", "set_up_local"})
 
 

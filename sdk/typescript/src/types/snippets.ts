@@ -22,10 +22,10 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.snippets@530e3c69f46d7e0c";
+export const SURFACE = "so.tilo.snippets@ab6662b1374b4cde";
 
-/** One of "text", "shell", "rust", "sql", "git", "python", "javascript", "json", "yaml", "markdown", "html", "css", "toml", "dockerfile". */
-export type Language = "text" | "shell" | "rust" | "sql" | "git" | "python" | "javascript" | "json" | "yaml" | "markdown" | "html" | "css" | "toml" | "dockerfile";
+/** One of "PlainText", "Shell", "Rust", "Sql", "Git", "Python", "JavaScript", "Json", "Yaml", "Markdown", "Html", "Css", "Toml", "Dockerfile". */
+export type Language = "PlainText" | "Shell" | "Rust" | "Sql" | "Git" | "Python" | "JavaScript" | "Json" | "Yaml" | "Markdown" | "Html" | "Css" | "Toml" | "Dockerfile";
 
 export interface Snippet {
   title: string;
@@ -79,50 +79,54 @@ export interface RemoveTagArgs {
 
 /** Snippet library — `snippets.library`. */
 export interface Library extends tilo.Resource {
-  snippets: Snippet[];
+  snippets: Array<tilo.Entry<Snippet>>;
   newSnippet(args: {
     title: string;
     folder?: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `new-snippet` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   newSnippetMany(items: NewSnippetArgs[]): Promise<tilo.ActionAnswer[]>;
   duplicate(args: {
     snippet: string;
     title?: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `duplicate` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   duplicateMany(items: DuplicateArgs[]): Promise<tilo.ActionAnswer[]>;
   delete(args: {
     snippet: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `delete` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   deleteMany(items: DeleteArgs[]): Promise<tilo.ActionAnswer[]>;
   recordUse(args: {
     snippet: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `record-use` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   recordUseMany(items: RecordUseArgs[]): Promise<tilo.ActionAnswer[]>;
   renameFolder(args: {
     folder: string;
     to: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `rename-folder` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   renameFolderMany(items: RenameFolderArgs[]): Promise<tilo.ActionAnswer[]>;
   renameTag(args: {
     tag: string;
     to: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `rename-tag` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   renameTagMany(items: RenameTagArgs[]): Promise<tilo.ActionAnswer[]>;
   removeTag(args: {
     tag: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `remove-tag` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   removeTagMany(items: RemoveTagArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 
+/** The actions `Library` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const LIBRARY_ACTIONS = ["newSnippet", "newSnippetMany", "duplicate", "duplicateMany", "delete", "deleteMany", "recordUse", "recordUseMany", "renameFolder", "renameFolderMany", "renameTag", "renameTagMany", "removeTag", "removeTagMany"] as const;
+
 /** The `snippets.library` kind at `path`. */
 export function library(ws: tilo.Workspace, path: string): Library {
-  return resourceProxy(ws, path, SURFACE) as unknown as Library;
+  return resourceProxy(ws, path, SURFACE, LIBRARY_ACTIONS) as unknown as Library;
 }
 

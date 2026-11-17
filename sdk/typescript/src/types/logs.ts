@@ -22,10 +22,10 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.logs@2428af2372c28388";
+export const SURFACE = "so.tilo.logs@4d97454d27277b41";
 
-/** One of "emerg", "alert", "crit", "err", "warning", "notice", "info", "debug". */
-export type Priority = "emerg" | "alert" | "crit" | "err" | "warning" | "notice" | "info" | "debug";
+/** One of "Emerg", "Alert", "Crit", "Err", "Warning", "Notice", "Info", "Debug". */
+export type Priority = "Emerg" | "Alert" | "Crit" | "Err" | "Warning" | "Notice" | "Info" | "Debug";
 
 /** The arguments of `clear-filters`. */
 export interface ClearFiltersArgs {
@@ -37,7 +37,7 @@ export interface Journal extends tilo.Resource {
   unit: string;
   boot: string;
   search: string;
-  clearFilters(): Promise<tilo.Run | void>;
+  clearFilters(): Promise<void>;
   /** Runs `clear-filters` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   clearFiltersMany(items: ClearFiltersArgs[]): Promise<tilo.ActionAnswer[]>;
   // the app's `refresh` action is the SDK's own: run it with `action("refresh")`.
@@ -49,8 +49,12 @@ export interface Journal extends tilo.Resource {
   }): Promise<void>;
 }
 
+/** The actions `Journal` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const JOURNAL_ACTIONS = ["clearFilters", "clearFiltersMany", "setLiveTail", "selectEntry"] as const;
+
 /** The `logs.journal` kind at `path`. */
 export function journal(ws: tilo.Workspace, path: string): Journal {
-  return resourceProxy(ws, path, SURFACE) as unknown as Journal;
+  return resourceProxy(ws, path, SURFACE, JOURNAL_ACTIONS) as unknown as Journal;
 }
 

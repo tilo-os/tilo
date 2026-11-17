@@ -17,7 +17,7 @@ all-or-nothing steps, all of them one run.
 from __future__ import annotations
 
 from typing import Any, Literal, NotRequired, TypedDict
-from tilo import Resource, Run
+from tilo import Entry, Resource, Run
 
 __all__ = [
     "System",
@@ -39,7 +39,7 @@ class System(Resource):
         *,
         serial: str,
         name: str | None = None,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         args: dict[str, Any] = {}
         args["serial"] = serial
@@ -62,5 +62,9 @@ class System(Resource):
     def show_tab(self, *, tab: str) -> None:
         """Runs the app's action."""
         return self.action("show-tab", tab=tab)
+
+    # The actions a call reaches before the resource is read: `await tracker.create(...)`
+    # needs no `load()` first.
+    __actions__ = frozenset({"name_drive", "name_drive_many", "rescan", "select", "show_tab"})
 
 

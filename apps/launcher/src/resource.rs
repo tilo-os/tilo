@@ -33,7 +33,7 @@ impl Launcher {}
 #[effect(operation = "so.tilo.launcher.search")]
 pub enum LauncherEffect {
     #[effect(view, own_device, idempotent, icon = "search")]
-    Open {
+    OpenSearch {
         #[param("Where to search: app (the app in front), workspace or everywhere")]
         scope: Option<String>,
         #[param("What to search for")]
@@ -136,11 +136,11 @@ mod tests {
 
     #[test]
     fn opening_and_typing_change_only_what_the_launcher_shows() {
-        let open = LauncherEffect::Open {
+        let open = LauncherEffect::OpenSearch {
             scope: None,
             query: None,
         };
-        assert_eq!(open.id(), "open");
+        assert_eq!(open.id(), "open-search");
         let choose = LauncherEffect::Choose {
             row: None,
             how: None,

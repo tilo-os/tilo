@@ -17,7 +17,7 @@ all-or-nothing steps, all of them one run.
 from __future__ import annotations
 
 from typing import Any, Literal, NotRequired, TypedDict
-from tilo import Resource, Run
+from tilo import Entry, Resource, Run
 
 __all__ = [
     "Action",
@@ -38,12 +38,12 @@ __all__ = [
     "AppliedArgs",
 ]
 
-Action = Literal["allow", "deny"]
+Action = Literal["Allow", "Deny"]
 
 Matcher = dict[str, Any]
-"""One of service, port: an object whose case the app tags it with."""
+"""One of Service, Port: an object whose case the app tags it with."""
 
-Proto = Literal["tcp", "udp"]
+Proto = Literal["Tcp", "Udp"]
 
 class StoredRule(TypedDict):
     matcher: Matcher
@@ -55,11 +55,11 @@ class StoredZone(TypedDict):
     target: Target
     interfaces: list[str]
     services: list[str]
-    rules: list[StoredRule]
+    rules: list[Entry[StoredRule]]
     masquerade: bool
     deleted_rules: list[str]
 
-Target = Literal["default", "accept", "reject", "drop"]
+Target = Literal["Default", "Accept", "Reject", "Drop"]
 
 ZoneKind = Literal["drop", "block", "public", "external", "dmz", "work", "home", "internal", "trusted"]
 
@@ -98,7 +98,7 @@ AppliedArgs = TypedDict("AppliedArgs", {
 
 class Config(Resource):
     """Firewall — `firewall.config`."""
-    __surface__ = "so.tilo.firewall@8f6272b1c59a5183"
+    __surface__ = "so.tilo.firewall@311c05008d41672c"
     @property
     def enabled(self) -> bool:
         """Read only."""
@@ -110,7 +110,7 @@ class Config(Resource):
     default_zone: ZoneKind
     zones: dict[str, StoredZone]
 
-    def start(self) -> Run | None:
+    def start(self) -> None:
         """Runs the app's action."""
         return self.action("start")
 
@@ -118,7 +118,7 @@ class Config(Resource):
         """Runs `start` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("start", items)
 
-    def stop(self) -> Run | None:
+    def stop(self) -> None:
         """Runs the app's action."""
         return self.action("stop")
 
@@ -126,7 +126,7 @@ class Config(Resource):
         """Runs `stop` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("stop", items)
 
-    def enter_panic_mode(self) -> Run | None:
+    def enter_panic_mode(self) -> None:
         """Runs the app's action."""
         return self.action("enter-panic-mode")
 
@@ -134,7 +134,7 @@ class Config(Resource):
         """Runs `enter-panic-mode` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("enter-panic-mode", items)
 
-    def exit_panic_mode(self) -> Run | None:
+    def exit_panic_mode(self) -> None:
         """Runs the app's action."""
         return self.action("exit-panic-mode")
 
@@ -146,7 +146,7 @@ class Config(Resource):
         *,
         zone: ZoneKind,
         rule: str,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         return self.action("delete-rule", zone=zone, rule=rule)
 
@@ -154,7 +154,7 @@ class Config(Resource):
         """Runs `delete-rule` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("delete-rule", items)
 
-    def import_(self, *, config: Any) -> Run | None:
+    def import_(self, *, config: Any) -> None:
         """Runs the app's action."""
         return self.action("import", config=config)
 
@@ -166,22 +166,30 @@ class Config(Resource):
         """Runs the app's action."""
         return self.action("read-blocked")
 
+    # The actions a call reaches before the resource is read: `await tracker.create(...)`
+    # needs no `load()` first.
+    __actions__ = frozenset({"start", "start_many", "stop", "stop_many", "enter_panic_mode", "enter_panic_mode_many", "exit_panic_mode", "exit_panic_mode_many", "delete_rule", "delete_rule_many", "import_", "import_many", "read_blocked"})
+
 
 class Applied(Resource):
     """Applied configuration — `firewall.applied`."""
-    __surface__ = "so.tilo.firewall@8f6272b1c59a5183"
+    __surface__ = "so.tilo.firewall@311c05008d41672c"
     devices: dict[str, str]
 
     def applied(self,
         *,
         device: str,
         config: str,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         return self.action("applied", device=device, config=config)
 
     def applied_many(self, items: list[AppliedArgs]) -> list[dict[str, Any]]:
         """Runs `applied` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("applied", items)
+
+    # The actions a call reaches before the resource is read: `await tracker.create(...)`
+    # needs no `load()` first.
+    __actions__ = frozenset({"applied", "applied_many"})
 
 

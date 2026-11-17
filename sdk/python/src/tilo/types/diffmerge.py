@@ -17,7 +17,7 @@ all-or-nothing steps, all of them one run.
 from __future__ import annotations
 
 from typing import Any, Literal, NotRequired, TypedDict
-from tilo import Resource, Run
+from tilo import Entry, Resource, Run
 
 __all__ = [
     "Comparison",
@@ -114,7 +114,7 @@ class Session(Resource):
         left: str,
         right_label: str,
         right: str,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         return self.action("open-comparison", left_label=left_label, left=left, right_label=right_label, right=right)
 
@@ -130,7 +130,7 @@ class Session(Resource):
         ours: str,
         theirs_label: str,
         theirs: str,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         return self.action("open-merge", base_label=base_label, base=base, ours_label=ours_label, ours=ours, theirs_label=theirs_label, theirs=theirs)
 
@@ -138,7 +138,7 @@ class Session(Resource):
         """Runs `open-merge` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("open-merge", items)
 
-    def take_ours(self, *, hunk: int) -> Run | None:
+    def take_ours(self, *, hunk: int) -> None:
         """Runs the app's action."""
         return self.action("take-ours", hunk=hunk)
 
@@ -146,7 +146,7 @@ class Session(Resource):
         """Runs `take-ours` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("take-ours", items)
 
-    def take_theirs(self, *, hunk: int) -> Run | None:
+    def take_theirs(self, *, hunk: int) -> None:
         """Runs the app's action."""
         return self.action("take-theirs", hunk=hunk)
 
@@ -154,7 +154,7 @@ class Session(Resource):
         """Runs `take-theirs` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("take-theirs", items)
 
-    def take_both(self, *, hunk: int) -> Run | None:
+    def take_both(self, *, hunk: int) -> None:
         """Runs the app's action."""
         return self.action("take-both", hunk=hunk)
 
@@ -166,12 +166,16 @@ class Session(Resource):
         *,
         hunk: int,
         text: str,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         return self.action("resolve", hunk=hunk, text=text)
 
     def resolve_many(self, items: list[ResolveArgs]) -> list[dict[str, Any]]:
         """Runs `resolve` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("resolve", items)
+
+    # The actions a call reaches before the resource is read: `await tracker.create(...)`
+    # needs no `load()` first.
+    __actions__ = frozenset({"open_comparison", "open_comparison_many", "open_merge", "open_merge_many", "take_ours", "take_ours_many", "take_theirs", "take_theirs_many", "take_both", "take_both_many", "resolve", "resolve_many"})
 
 

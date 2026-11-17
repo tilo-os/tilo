@@ -53,22 +53,22 @@ kind = "read"
 [[resources.types]]
 name = "Action"
 cases = [
-  { name = "allow" },
-  { name = "deny" },
+  { name = "Allow" },
+  { name = "Deny" },
 ]
 
 [[resources.types]]
 name = "Matcher"
 cases = [
-  { name = "service", fields = [{ name = "0", type = "text" }] },
-  { name = "port", fields = [{ name = "port", type = "text" }, { name = "proto", type = { named = "Proto" } }] },
+  { name = "Service", fields = [{ name = "0", type = "text" }] },
+  { name = "Port", fields = [{ name = "port", type = "text" }, { name = "proto", type = { named = "Proto" } }] },
 ]
 
 [[resources.types]]
 name = "Proto"
 cases = [
-  { name = "tcp" },
-  { name = "udp" },
+  { name = "Tcp" },
+  { name = "Udp" },
 ]
 
 [[resources.types]]
@@ -94,10 +94,10 @@ fields = [
 [[resources.types]]
 name = "Target"
 cases = [
-  { name = "default" },
-  { name = "accept" },
-  { name = "reject" },
-  { name = "drop" },
+  { name = "Default" },
+  { name = "Accept" },
+  { name = "Reject" },
+  { name = "Drop" },
 ]
 
 [[resources.types]]

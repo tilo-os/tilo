@@ -209,6 +209,11 @@ pub struct CatalogueRow {
     /// discloses it, when the provider declared one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub visibility: Option<RowVisibility>,
+    /// For an application, the surface (`surface.toml`) its signed package
+    /// publishes: what an agent generates its typed client from, without the
+    /// app having to open.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub surface: Option<String>,
 }
 
 impl CatalogueRow {
@@ -232,6 +237,7 @@ impl CatalogueRow {
             action: Some(action),
             has_children: false,
             visibility: None,
+            surface: None,
         }
     }
 
@@ -500,6 +506,7 @@ mod tests {
             }),
             has_children: action.is_none(),
             visibility: None,
+            surface: None,
         }
     }
 

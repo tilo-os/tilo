@@ -17,7 +17,7 @@ import asyncio
 import functools
 import json
 from collections.abc import AsyncIterator, Iterable, Iterator, Mapping, MutableMapping, Sequence
-from typing import Any
+from typing import Any, Generic, TypeVar, TypedDict
 
 from ._endpoint import SURFACE_HEADER, segments as resource_path
 from ._errors import ProtocolError
@@ -45,6 +45,18 @@ OWN = frozenset(
         "many",
     }
 )
+
+T = TypeVar("T")
+
+
+class Entry(TypedDict, Generic[T]):
+    """One item of a collection field, as its read lists it: the id an action
+    takes it by, and its value. `issues[0]["id"]` names the issue `rename`
+    takes, and `issues[0]["value"]["title"]` is its title."""
+
+    id: str
+    value: T
+
 
 # A bulk call's bounds: at most this many members, and about this much JSON, per call.
 MANY_MEMBERS = 500
@@ -191,6 +203,9 @@ class Resource:
     def __getattr__(self, name: str) -> Any:
         if name.startswith("_"):
             raise AttributeError(name)
+        # An action needs no read: the types that name it are the surface.
+        if name in getattr(type(self), "__actions__", ()):
+            return functools.partial(self.action, name)
         answer = object.__getattribute__(self, "_answer")
         if answer is None:
             raise AttributeError(
@@ -217,12 +232,22 @@ class Resource:
     # -- actions and edits ----------------------------------------------
 
     def action(self, name: str, **args: Any) -> Any:
-        """Run one of the resource's actions by name."""
-        return self._workspace.client.handoff(
-            self._workspace._outcome(
-                f"{self.path}#{kebab(name)}", args, surface=self._surface()
-            )
+        """Run one of the resource's actions by name.
+
+        It answers what the action produced, waiting for a run still under
+        way rather than handing one back to follow.
+        """
+        return self._workspace.client.handoff(self._act(name, args))
+
+    async def _act(self, name: str, args: Mapping[str, Any]) -> Any:
+        from ._run import Run
+
+        answer = await self._workspace._outcome(
+            f"{self.path}#{kebab(name)}", args, surface=self._surface()
         )
+        if isinstance(answer, Run):
+            return await answer._result(None)
+        return answer
 
     def do(self, name: str, **args: Any) -> Any:
         """`action`, by its name in the app's own words."""

@@ -17,7 +17,7 @@ all-or-nothing steps, all of them one run.
 from __future__ import annotations
 
 from typing import Any, Literal, NotRequired, TypedDict
-from tilo import Resource, Run
+from tilo import Entry, Resource, Run
 
 __all__ = [
     "Area",
@@ -37,6 +37,7 @@ __all__ = [
     "MarkValue",
     "Reply",
     "Sheet",
+    "SheetSpec",
     "TimeStyle",
     "Workbook",
     "SetTitleArgs",
@@ -76,10 +77,10 @@ class Chart(TypedDict):
     kind: ChartKind
     area: Area
 
-ChartKind = Literal["column", "line"]
+ChartKind = Literal["Column", "Line"]
 
 ClipAttr = dict[str, Any]
-"""One of bool, int, str: an object whose case the app tags it with."""
+"""One of Bool, Int, Str: an object whose case the app tags it with."""
 
 class ClipBlock(TypedDict):
     kind: str
@@ -97,7 +98,7 @@ class Comment(TypedDict):
     text: str
     body: list[ClipBlock]
     resolved: bool
-    replies: list[Reply]
+    replies: list[Entry[Reply]]
 
 class CommentCells(TypedDict):
     sheet: str
@@ -124,7 +125,7 @@ class MarkSpan(TypedDict):
     value: MarkValue
 
 MarkValue = dict[str, Any]
-"""One of bool, int, str: an object whose case the app tags it with."""
+"""One of Bool, Int, Str: an object whose case the app tags it with."""
 
 class Reply(TypedDict):
     author: Author
@@ -137,8 +138,17 @@ class Sheet(TypedDict):
     source: str | None
     color: int | None
     cells: Any
-    charts: list[Chart]
+    charts: list[Entry[Chart]]
     hidden: bool
+
+class SheetSpec(TypedDict):
+    name: str | None
+    after: str | None
+    rows: list[list[Any]] | None
+    columns: list[str] | None
+    records: list[Any] | None
+    formats: dict[str, str] | None
+    workbook: str | None
 
 TimeStyle = Literal["Language", "H24", "H12"]
 
@@ -239,9 +249,9 @@ DeleteCommentArgs = TypedDict("DeleteCommentArgs", {
 
 class Workbook(Resource):
     """Workbook — `sheets.workbook`."""
-    __surface__ = "so.tilo.sheets@3596a81127fd2836"
-    sheets: list[Sheet]
-    comments: list[Comment]
+    __surface__ = "so.tilo.sheets@fab0785060c7d53d"
+    sheets: list[Entry[Sheet]]
+    comments: list[Entry[Comment]]
     settings: DocSettings
     title: str | None
 
@@ -252,9 +262,9 @@ class Workbook(Resource):
         rows: list[list[Any]] | None = None,
         columns: list[str] | None = None,
         records: list[Any] | None = None,
-        formats: Any | None = None,
+        formats: dict[str, str] | None = None,
         workbook: str | None = None,
-    ) -> Any | Run:
+    ) -> Any:
         """Runs the app's action."""
         args: dict[str, Any] = {}
         if name is not None:
@@ -273,7 +283,7 @@ class Workbook(Resource):
             args["workbook"] = workbook
         return self.action("new-sheet", **args)
 
-    def set_title(self, *, title: str) -> Run | None:
+    def set_title(self, *, title: str) -> None:
         """Runs the app's action."""
         return self.action("set-title", title=title)
 
@@ -288,7 +298,7 @@ class Workbook(Resource):
         row: int | None = None,
         columns: list[str] | None = None,
         key: str | None = None,
-    ) -> Any | Run:
+    ) -> Any:
         """Runs the app's action."""
         args: dict[str, Any] = {}
         args["sheet"] = sheet
@@ -306,11 +316,11 @@ class Workbook(Resource):
         sheet: str,
         match: dict[str, Any],
         value: dict[str, Any],
-    ) -> Any | Run:
+    ) -> Any:
         """Runs the app's action."""
         return self.action("upsert-item", sheet=sheet, match=match, value=value)
 
-    def duplicate_sheet(self, *, sheet: str) -> Run | None:
+    def duplicate_sheet(self, *, sheet: str) -> None:
         """Runs the app's action."""
         return self.action("duplicate-sheet", sheet=sheet)
 
@@ -318,7 +328,7 @@ class Workbook(Resource):
         """Runs `duplicate-sheet` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("duplicate-sheet", items)
 
-    def delete_sheet(self, *, sheet: str) -> Run | None:
+    def delete_sheet(self, *, sheet: str) -> None:
         """Runs the app's action."""
         return self.action("delete-sheet", sheet=sheet)
 
@@ -331,7 +341,7 @@ class Workbook(Resource):
         sheet: str,
         start: str,
         rows: list[list[Any]],
-    ) -> Any | Run:
+    ) -> Any:
         """Runs the app's action."""
         return self.action("set-cells", sheet=sheet, start=start, rows=rows)
 
@@ -339,7 +349,7 @@ class Workbook(Resource):
         *,
         sheet: str,
         cells: list[CellWrite],
-    ) -> Any | Run:
+    ) -> Any:
         """Runs the app's action."""
         return self.action("write-cells", sheet=sheet, cells=cells)
 
@@ -349,7 +359,7 @@ class Workbook(Resource):
         range: str,
         format: Any | None = None,
         bold: bool | None = None,
-    ) -> Any | Run:
+    ) -> Any:
         """Runs the app's action."""
         args: dict[str, Any] = {}
         args["sheet"] = sheet
@@ -366,7 +376,7 @@ class Workbook(Resource):
         range: str,
         by: str,
         descending: bool | None = None,
-    ) -> Any | Run:
+    ) -> Any:
         """Runs the app's action."""
         args: dict[str, Any] = {}
         args["sheet"] = sheet
@@ -381,7 +391,7 @@ class Workbook(Resource):
         sheet: str,
         at: int,
         count: int | None = None,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         args: dict[str, Any] = {}
         args["sheet"] = sheet
@@ -398,7 +408,7 @@ class Workbook(Resource):
         *,
         sheet: str,
         rows: list[int],
-    ) -> Any | Run:
+    ) -> Any:
         """Runs the app's action."""
         return self.action("delete-rows", sheet=sheet, rows=rows)
 
@@ -407,7 +417,7 @@ class Workbook(Resource):
         sheet: str,
         at: str,
         count: int | None = None,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         args: dict[str, Any] = {}
         args["sheet"] = sheet
@@ -424,7 +434,7 @@ class Workbook(Resource):
         *,
         sheet: str,
         columns: list[str],
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         return self.action("delete-columns", sheet=sheet, columns=columns)
 
@@ -437,7 +447,7 @@ class Workbook(Resource):
         sheets: list[ImportedSheet],
         source: str | None = None,
         title: str | None = None,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         args: dict[str, Any] = {}
         args["sheets"] = sheets
@@ -457,7 +467,7 @@ class Workbook(Resource):
         range: str,
         kind: str,
         title: str,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         return self.action("add-chart", sheet=sheet, range=range, kind=kind, title=title)
 
@@ -472,7 +482,7 @@ class Workbook(Resource):
         title: str,
         kind: Any | None = None,
         range: Any | None = None,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         args: dict[str, Any] = {}
         args["sheet"] = sheet
@@ -492,7 +502,7 @@ class Workbook(Resource):
         *,
         sheet: str,
         chart: str,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         return self.action("delete-chart", sheet=sheet, chart=chart)
 
@@ -504,7 +514,7 @@ class Workbook(Resource):
         *,
         sheet: str,
         name: str,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         return self.action("rename-sheet", sheet=sheet, name=name)
 
@@ -517,7 +527,7 @@ class Workbook(Resource):
         sheet: str,
         range: str,
         text: str,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         return self.action("comment", sheet=sheet, range=range, text=text)
 
@@ -529,7 +539,7 @@ class Workbook(Resource):
         *,
         comment: str,
         text: str,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         return self.action("reply", comment=comment, text=text)
 
@@ -541,7 +551,7 @@ class Workbook(Resource):
         *,
         comment: str,
         body: str,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         return self.action("edit-comment", comment=comment, body=body)
 
@@ -549,7 +559,7 @@ class Workbook(Resource):
         """Runs `edit-comment` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("edit-comment", items)
 
-    def delete_comment(self, *, comment: str) -> Run | None:
+    def delete_comment(self, *, comment: str) -> None:
         """Runs the app's action."""
         return self.action("delete-comment", comment=comment)
 
@@ -592,5 +602,9 @@ class Workbook(Resource):
         if from_ is not None:
             args["from"] = from_
         return self.action("read-content", **args)
+
+    # The actions a call reaches before the resource is read: `await tracker.create(...)`
+    # needs no `load()` first.
+    __actions__ = frozenset({"new_sheet", "set_title", "set_title_many", "set_records", "upsert_item", "duplicate_sheet", "duplicate_sheet_many", "delete_sheet", "delete_sheet_many", "set_cells", "write_cells", "format_cells", "sort_rows", "insert_rows", "insert_rows_many", "delete_rows", "insert_columns", "insert_columns_many", "delete_columns", "delete_columns_many", "import_sheets", "import_sheets_many", "add_chart", "add_chart_many", "edit_chart", "edit_chart_many", "delete_chart", "delete_chart_many", "rename_sheet", "rename_sheet_many", "comment", "comment_many", "reply", "reply_many", "edit_comment", "edit_comment_many", "delete_comment", "delete_comment_many", "export_xlsx_content", "read_file", "read_content"})
 
 

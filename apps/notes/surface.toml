@@ -10,7 +10,7 @@ fields = [
   { path = "pages", type = { collection = { named = "Page" } }, stored = "collection" },
   { path = "pages.*.title", type = "text", label = true, readonly = true },
   { path = "pages.*.parent", type = { option = "text" }, readonly = true },
-  { path = "pages.*.body", type = "rich_text", ops = "sha256:fb8a205aa13d03f2" },
+  { path = "pages.*.body", type = "rich_text", ops = "sha256:8bbf96a46d039012" },
   { path = "pages.*.tags", type = { set = "text" } },
   { path = "pages.*.creator", type = { option = "actor" }, readonly = true },
   { path = "pages.*.creator_name", type = "text", readonly = true },
@@ -49,6 +49,7 @@ params = [
 
 [[resources.verbs]]
 id = "rename"
+field = "title"
 kind = "undoable"
 params = [
   { name = "page", type = "text", required = true, schema = { type = "string" } },

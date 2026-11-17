@@ -32,8 +32,12 @@ export interface Profile extends tilo.Resource {
   contact: string;
 }
 
+/** The actions `Profile` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const PROFILE_ACTIONS = [] as const;
+
 /** The `publisher.profile` kind at `path`. */
 export function profile(ws: tilo.Workspace, path: string): Profile {
-  return resourceProxy(ws, path, SURFACE) as unknown as Profile;
+  return resourceProxy(ws, path, SURFACE, PROFILE_ACTIONS) as unknown as Profile;
 }
 

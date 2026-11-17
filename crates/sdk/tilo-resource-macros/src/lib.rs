@@ -734,13 +734,16 @@ fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
         }
         Data::Enum(data) => {
             let mut names = Vec::new();
+            let mut wires = Vec::new();
             let mut idents = Vec::new();
             let mut default = None;
+            let rule = crate::schema::wire_rule(&input.attrs)?;
             for variant in &data.variants {
                 let options = field_options(&variant.attrs)?;
                 let key = options
                     .rename
                     .unwrap_or_else(|| snake_case(&variant.ident.to_string()));
+                let wire = crate::schema::wire_name(&variant.ident, &variant.attrs, rule.as_ref())?;
                 if variant
                     .attrs
                     .iter()
@@ -749,6 +752,7 @@ fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
                     default = Some(variant.ident.clone());
                 }
                 names.push(key);
+                wires.push(wire);
                 idents.push(variant.ident.clone());
             }
             let table = quote!(#krate::table);
@@ -767,10 +771,12 @@ fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
             );
             Ok(quote! {
                 impl #impl_generics #name #type_generics #where_clause {
-                    /// The enum as data: its variants' stored names.
+                    /// The enum as data: its variants' stored names, and the
+                    /// names it has in a value's JSON form.
                     #[doc(hidden)]
                     pub const __UNIT: #table::UnitDesc = #table::UnitDesc {
                         names: &[#(#names),*],
+                        wire: &[#(#wires),*],
                         default: #default_index,
                         index: Self::__index,
                         make: Self::__make,
@@ -817,7 +823,7 @@ fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
                     }
                     #krate::__table_functions!();
                     fn value_schema() -> #krate::__private::serde_json::Value {
-                        #table::unit_schema(Self::__UNIT.names)
+                        #table::unit_schema(&[#(#wires),*])
                     }
                     fn field_type(types: &mut #krate::TypeSet) -> #krate::FieldType {
                         #krate::surface::enum_type(
@@ -825,7 +831,7 @@ fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
                             ::core::any::type_name::<Self>(),
                             #type_name,
                             #type_doc,
-                            &[#((#names, "", &[])),*],
+                            &[#((#wires, "", &[])),*],
                         )
                     }
                     #[inline]

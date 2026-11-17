@@ -17,7 +17,7 @@ all-or-nothing steps, all of them one run.
 from __future__ import annotations
 
 from typing import Any, Literal, NotRequired, TypedDict
-from tilo import Resource, Run
+from tilo import Entry, Resource, Run
 
 __all__ = [
     "Filesystem",
@@ -72,7 +72,7 @@ class SourceIdentity(TypedDict):
     volume: int
     file: int
 
-SourceKind = Literal["iso_file", "tilo_image"]
+SourceKind = Literal["IsoFile", "TiloImage"]
 
 class UserAccount(TypedDict):
     full_name: str
@@ -89,18 +89,18 @@ ClearSourceArgs = TypedDict("ClearSourceArgs", {
 
 class Sources(Resource):
     """Image sources — `imager.sources`."""
-    __surface__ = "so.tilo.imager@9efd41f7d0f7c3f4"
+    __surface__ = "so.tilo.imager@c966cede61f39371"
     @property
     def source(self) -> Source | None:
         """Read only."""
         return self.fields["source"]
     @property
-    def recent(self) -> list[RecentSource]:
+    def recent(self) -> list[Entry[RecentSource]]:
         """Read only."""
         return self.fields["recent"]
     profile: InstallProfile
 
-    def select_source(self, *, source: Source) -> Run | None:
+    def select_source(self, *, source: Source) -> None:
         """Runs the app's action."""
         return self.action("select-source", source=source)
 
@@ -108,7 +108,7 @@ class Sources(Resource):
         """Runs `select-source` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("select-source", items)
 
-    def clear_source(self) -> Run | None:
+    def clear_source(self) -> None:
         """Runs the app's action."""
         return self.action("clear-source")
 
@@ -131,5 +131,9 @@ class Sources(Resource):
     def choose_drive(self, *, drive: str) -> None:
         """Runs the app's action."""
         return self.action("choose-drive", drive=drive)
+
+    # The actions a call reaches before the resource is read: `await tracker.create(...)`
+    # needs no `load()` first.
+    __actions__ = frozenset({"select_source", "select_source_many", "clear_source", "clear_source_many", "status", "export_config", "rescan", "choose_drive"})
 
 

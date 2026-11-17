@@ -32,7 +32,8 @@ impl HostActions {
             | RemoteActionMessage::ContentLinkRequest { .. }
             | RemoteActionMessage::SearchRequest { .. }
             | RemoteActionMessage::ChangesRequest { .. }
-            | RemoteActionMessage::ChangedRequest { .. } => false,
+            | RemoteActionMessage::ChangedRequest { .. }
+            | RemoteActionMessage::SurfaceRequest { .. } => false,
             RemoteActionMessage::CatalogueRequest { query, .. } => {
                 query.provider.as_deref() == Some(AGENTS_PROVIDER)
             }
@@ -60,6 +61,7 @@ impl HostActions {
             | RemoteActionMessage::SearchResponse { .. }
             | RemoteActionMessage::ChangesResponse { .. }
             | RemoteActionMessage::ChangedResponse { .. }
+            | RemoteActionMessage::SurfaceResponse { .. }
             | RemoteActionMessage::CatalogueChanged { .. } => return None,
         };
         if supervisor {

@@ -17,7 +17,7 @@ all-or-nothing steps, all of them one run.
 from __future__ import annotations
 
 from typing import Any, Literal, NotRequired, TypedDict
-from tilo import Resource, Run
+from tilo import Entry, Resource, Run
 
 __all__ = [
     "Filter",
@@ -36,12 +36,16 @@ class Filter(Resource):
     lens: str
     query: str
 
-    def clear_filters(self) -> Run | None:
+    def clear_filters(self) -> None:
         """Runs the app's action."""
         return self.action("clear-filters")
 
     def clear_filters_many(self, items: list[ClearFiltersArgs]) -> list[dict[str, Any]]:
         """Runs `clear-filters` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("clear-filters", items)
+
+    # The actions a call reaches before the resource is read: `await tracker.create(...)`
+    # needs no `load()` first.
+    __actions__ = frozenset({"clear_filters", "clear_filters_many"})
 
 

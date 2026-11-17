@@ -17,7 +17,7 @@ all-or-nothing steps, all of them one run.
 from __future__ import annotations
 
 from typing import Any, Literal, NotRequired, TypedDict
-from tilo import Resource, Run
+from tilo import Entry, Resource, Run
 
 __all__ = [
     "Article",
@@ -51,7 +51,7 @@ class Article(TypedDict):
     starred: bool
     tags: list[str]
 
-BlockKind = Literal["heading1", "heading2", "heading3", "paragraph", "bullet", "quote", "code", "link", "divider"]
+BlockKind = Literal["Heading1", "Heading2", "Heading3", "Paragraph", "Bullet", "Quote", "Code", "Link", "Divider"]
 
 class ContentBlock(TypedDict):
     kind: BlockKind
@@ -131,16 +131,16 @@ RefreshedArgs = TypedDict("RefreshedArgs", {
 
 class Library(Resource):
     """Feeds — `feeds.library`."""
-    __surface__ = "so.tilo.feeds@a405395fdcfa75c6"
-    folders: list[Folder]
-    feeds: list[Feed]
-    articles: list[Article]
+    __surface__ = "so.tilo.feeds@a1b6edd52ecfa51c"
+    folders: list[Entry[Folder]]
+    feeds: list[Entry[Feed]]
+    articles: list[Entry[Article]]
 
     def add_subscription(self,
         *,
         url: str,
         folder: str | None = None,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         args: dict[str, Any] = {}
         args["url"] = url
@@ -152,7 +152,7 @@ class Library(Resource):
         """Runs `add-subscription` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("add-subscription", items)
 
-    def unsubscribe(self, *, feed: str) -> Run | None:
+    def unsubscribe(self, *, feed: str) -> None:
         """Runs the app's action."""
         return self.action("unsubscribe", feed=feed)
 
@@ -160,7 +160,7 @@ class Library(Resource):
         """Runs `unsubscribe` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("unsubscribe", items)
 
-    def mark_feed_read(self, *, feed: str) -> Run | None:
+    def mark_feed_read(self, *, feed: str) -> None:
         """Runs the app's action."""
         return self.action("mark-feed-read", feed=feed)
 
@@ -168,7 +168,7 @@ class Library(Resource):
         """Runs `mark-feed-read` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("mark-feed-read", items)
 
-    def mark_everything_read(self) -> Run | None:
+    def mark_everything_read(self) -> None:
         """Runs the app's action."""
         return self.action("mark-everything-read")
 
@@ -176,7 +176,7 @@ class Library(Resource):
         """Runs `mark-everything-read` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("mark-everything-read", items)
 
-    def new_folder(self, *, name: str) -> Run | None:
+    def new_folder(self, *, name: str) -> None:
         """Runs the app's action."""
         return self.action("new-folder", name=name)
 
@@ -184,7 +184,7 @@ class Library(Resource):
         """Runs `new-folder` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("new-folder", items)
 
-    def delete_folder(self, *, folder: str) -> Run | None:
+    def delete_folder(self, *, folder: str) -> None:
         """Runs the app's action."""
         return self.action("delete-folder", folder=folder)
 
@@ -192,7 +192,7 @@ class Library(Resource):
         """Runs `delete-folder` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("delete-folder", items)
 
-    def import_subscriptions(self, *, outlines: list[Outline]) -> Run | None:
+    def import_subscriptions(self, *, outlines: list[Outline]) -> None:
         """Runs the app's action."""
         return self.action("import-subscriptions", outlines=outlines)
 
@@ -206,7 +206,7 @@ class Library(Resource):
         feed: str,
         title: str | None = None,
         certificate_pin: str | None = None,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         args: dict[str, Any] = {}
         args["articles"] = articles
@@ -240,5 +240,9 @@ class Library(Resource):
     def reader_paper(self, *, paper: str) -> None:
         """Runs the app's action."""
         return self.action("reader-paper", paper=paper)
+
+    # The actions a call reaches before the resource is read: `await tracker.create(...)`
+    # needs no `load()` first.
+    __actions__ = frozenset({"add_subscription", "add_subscription_many", "unsubscribe", "unsubscribe_many", "mark_feed_read", "mark_feed_read_many", "mark_everything_read", "mark_everything_read_many", "new_folder", "new_folder_many", "delete_folder", "delete_folder_many", "import_subscriptions", "import_subscriptions_many", "refreshed", "refreshed_many", "export_opml", "reader_text_larger", "reader_text_smaller", "reader_font", "reader_paper"})
 
 

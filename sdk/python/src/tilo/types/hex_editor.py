@@ -17,7 +17,7 @@ all-or-nothing steps, all of them one run.
 from __future__ import annotations
 
 from typing import Any, Literal, NotRequired, TypedDict
-from tilo import Resource, Run
+from tilo import Entry, Resource, Run
 
 __all__ = [
     "Document",
@@ -46,7 +46,7 @@ DeleteBytesArgs = TypedDict("DeleteBytesArgs", {
 
 class Document(Resource):
     """Hex document — `hex-editor.document`."""
-    __surface__ = "so.tilo.hex-editor@232e3b35ec6f1f92"
+    __surface__ = "so.tilo.hex-editor@5d639d45f7ab2a9b"
     @property
     def name(self) -> str | None:
         """Read only."""
@@ -62,7 +62,7 @@ class Document(Resource):
         *,
         offset: int,
         bytes: str,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         return self.action("insert-bytes", offset=offset, bytes=bytes)
 
@@ -74,7 +74,7 @@ class Document(Resource):
         *,
         offset: int,
         bytes: str,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         return self.action("overwrite-bytes", offset=offset, bytes=bytes)
 
@@ -86,12 +86,16 @@ class Document(Resource):
         *,
         offset: int,
         len: int,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         return self.action("delete-bytes", offset=offset, len=len)
 
     def delete_bytes_many(self, items: list[DeleteBytesArgs]) -> list[dict[str, Any]]:
         """Runs `delete-bytes` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("delete-bytes", items)
+
+    # The actions a call reaches before the resource is read: `await tracker.create(...)`
+    # needs no `load()` first.
+    __actions__ = frozenset({"insert_bytes", "insert_bytes_many", "overwrite_bytes", "overwrite_bytes_many", "delete_bytes", "delete_bytes_many"})
 
 

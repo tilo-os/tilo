@@ -97,14 +97,19 @@ impl Watch {
 }
 
 /// An event's data as the API names it: a run by its invocation (`run`),
-/// with its title (`title`) and the run it is a step of (`group`).
+/// with its title (`title`) and the run it is a step of (`group`). A change
+/// keeps the resource it changed (`resources`), who made it (`actor`, a
+/// person's or an agent's own fields) and the run it is a step of.
 fn data_of(event: &Value) -> Value {
     let mut data = event.as_object().cloned().unwrap_or_default();
     data.remove("kind");
     if let Some(title) = data.remove("run") {
         data.insert("title".into(), title);
     }
-    if let Some(run) = data.remove("invocation_id") {
+    let invocation = data
+        .remove("invocation_id")
+        .or_else(|| data.remove("invocation"));
+    if let Some(run) = invocation {
         data.insert("run".into(), run);
     }
     if let Some(group) = data.remove("run_id") {

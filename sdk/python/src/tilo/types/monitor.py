@@ -17,18 +17,18 @@ all-or-nothing steps, all of them one run.
 from __future__ import annotations
 
 from typing import Any, Literal, NotRequired, TypedDict
-from tilo import Resource, Run
+from tilo import Entry, Resource, Run
 
 __all__ = [
     "SortKey",
     "Processes",
 ]
 
-SortKey = Literal["pid", "name", "user", "cpu", "mem", "threads"]
+SortKey = Literal["Pid", "Name", "User", "Cpu", "Mem", "Threads"]
 
 class Processes(Resource):
     """Processes — `monitor.processes`."""
-    __surface__ = "so.tilo.monitor@ede2747c2e3967d9"
+    __surface__ = "so.tilo.monitor@02b17dcd35328b9c"
     sort: SortKey
     ascending: bool
     flat: bool
@@ -55,5 +55,9 @@ class Processes(Resource):
     def copy_pid(self, *, process: str) -> None:
         """Runs the app's action."""
         return self.action("copy-pid", process=process)
+
+    # The actions a call reaches before the resource is read: `await tracker.create(...)`
+    # needs no `load()` first.
+    __actions__ = frozenset({"show_tab", "filter", "inspect", "copy_pid"})
 
 

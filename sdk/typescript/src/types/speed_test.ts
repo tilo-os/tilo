@@ -50,7 +50,7 @@ export interface ClearArgs {
 
 /** Internet speed test — `speed-test.results`. */
 export interface Results extends tilo.Resource {
-  readonly results: Measurement[];
+  readonly results: Array<tilo.Entry<Measurement>>;
   record(args: {
     ping: number;
     jitter: number;
@@ -58,16 +58,20 @@ export interface Results extends tilo.Resource {
     upload: number;
     server: string;
     device: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `record` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   recordMany(items: RecordArgs[]): Promise<tilo.ActionAnswer[]>;
-  clear(): Promise<tilo.Run | void>;
+  clear(): Promise<void>;
   /** Runs `clear` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   clearMany(items: ClearArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 
+/** The actions `Results` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const RESULTS_ACTIONS = ["record", "recordMany", "clear", "clearMany"] as const;
+
 /** The `speed-test.results` kind at `path`. */
 export function results(ws: tilo.Workspace, path: string): Results {
-  return resourceProxy(ws, path, SURFACE) as unknown as Results;
+  return resourceProxy(ws, path, SURFACE, RESULTS_ACTIONS) as unknown as Results;
 }
 

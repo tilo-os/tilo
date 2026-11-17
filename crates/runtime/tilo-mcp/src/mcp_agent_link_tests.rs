@@ -66,6 +66,7 @@ fn row(resource: &str, parent: &str, action: Option<ActionDescriptor>) -> Catalo
         action,
         has_children: false,
         visibility: None,
+        surface: None,
     }
 }
 

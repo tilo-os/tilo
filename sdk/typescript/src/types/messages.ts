@@ -26,7 +26,7 @@ export const SURFACE = "so.tilo.messages@23bf6eb5fe40bef0";
 
 export interface Conversation {
   with: string;
-  messages: Message[];
+  messages: Array<tilo.Entry<Message>>;
 }
 
 export interface Message {
@@ -61,7 +61,7 @@ export interface Person {
   phones: string[];
   emails: string[];
   photo: string;
-  endpoints: Endpoint[];
+  endpoints: Array<tilo.Entry<Endpoint>>;
 }
 
 export interface Projected {
@@ -185,23 +185,23 @@ export interface DropDraftArgs {
 
 /** Messages — `tilo.messages`. */
 export interface Messages extends tilo.Resource {
-  readonly conversations: Conversation[];
+  readonly conversations: Array<tilo.Entry<Conversation>>;
   deliverMessage(args: {
     from: string;
     body: string;
     to?: string;
     date?: string;
     conversation?: string;
-  }): Promise<unknown | tilo.Run>;
+  }): Promise<unknown>;
   sendMessage(args: {
     to: string;
     body: string;
     conversation?: string;
-  }): Promise<unknown | tilo.Run>;
+  }): Promise<unknown>;
   reply(args: {
     conversation: string;
     body: string;
-  }): Promise<unknown | tilo.Run>;
+  }): Promise<unknown>;
   listGroups(args: {
     service: string;
     account: string;
@@ -231,20 +231,24 @@ export interface Messages extends tilo.Resource {
   }): Promise<void>;
 }
 
+/** The actions `Messages` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const MESSAGES_ACTIONS = ["deliverMessage", "sendMessage", "reply", "listGroups", "readGroupMembership", "readGroupHistory", "readHistory", "readOlderHistory", "searchMessages", "exportContent"] as const;
+
 /** The `tilo.messages` kind at `path`. */
 export function messages(ws: tilo.Workspace, path: string): Messages {
-  return resourceProxy(ws, path, SURFACE) as unknown as Messages;
+  return resourceProxy(ws, path, SURFACE, MESSAGES_ACTIONS) as unknown as Messages;
 }
 
 /** Accounts — `tilo.accounts`. */
 export interface Accounts extends tilo.Resource {
-  accounts: PersonAccount[];
+  accounts: Array<tilo.Entry<PersonAccount>>;
   active: Record<string, string>;
   publishBrowserIdentity(args: {
     root: string;
     origin: string;
     display_name: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `publish-browser-identity` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   publishBrowserIdentityMany(items: PublishBrowserIdentityArgs[]): Promise<tilo.ActionAnswer[]>;
   saveAccount(args: {
@@ -254,38 +258,42 @@ export interface Accounts extends tilo.Resource {
     config: unknown;
     enabled: boolean;
     tint: number;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `save-account` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   saveAccountMany(items: SaveAccountArgs[]): Promise<tilo.ActionAnswer[]>;
   removeAccount(args: {
     account: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `remove-account` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   removeAccountMany(items: RemoveAccountArgs[]): Promise<tilo.ActionAnswer[]>;
   setActiveAccount(args: {
     account: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `set-active-account` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   setActiveAccountMany(items: SetActiveAccountArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 
+/** The actions `Accounts` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const ACCOUNTS_ACTIONS = ["publishBrowserIdentity", "publishBrowserIdentityMany", "saveAccount", "saveAccountMany", "removeAccount", "removeAccountMany", "setActiveAccount", "setActiveAccountMany"] as const;
+
 /** The `tilo.accounts` kind at `path`. */
 export function accounts(ws: tilo.Workspace, path: string): Accounts {
-  return resourceProxy(ws, path, SURFACE) as unknown as Accounts;
+  return resourceProxy(ws, path, SURFACE, ACCOUNTS_ACTIONS) as unknown as Accounts;
 }
 
 /** Contact identities — `tilo.contacts.identities`. */
 export interface Identities extends tilo.Resource {
-  people: Person[];
+  people: Array<tilo.Entry<Person>>;
   projectContact(args: {
     person: string;
     label: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `project-contact` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   projectContactMany(items: ProjectContactArgs[]): Promise<tilo.ActionAnswer[]>;
   removeContact(args: {
     person: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `remove-contact` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   removeContactMany(items: RemoveContactArgs[]): Promise<tilo.ActionAnswer[]>;
   confirmEndpoint(args: {
@@ -293,7 +301,7 @@ export interface Identities extends tilo.Resource {
     endpoint: string;
     service: string;
     recipient: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `confirm-endpoint` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   confirmEndpointMany(items: ConfirmEndpointArgs[]): Promise<tilo.ActionAnswer[]>;
   confirmAccount(args: {
@@ -303,7 +311,7 @@ export interface Identities extends tilo.Resource {
     scope: string;
     recipient: string;
     revision: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `confirm-account` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   confirmAccountMany(items: ConfirmAccountArgs[]): Promise<tilo.ActionAnswer[]>;
   replaceEndpoint(args: {
@@ -312,7 +320,7 @@ export interface Identities extends tilo.Resource {
     endpoint: string;
     service: string;
     recipient: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `replace-endpoint` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   replaceEndpointMany(items: ReplaceEndpointArgs[]): Promise<tilo.ActionAnswer[]>;
   replaceAccount(args: {
@@ -323,38 +331,42 @@ export interface Identities extends tilo.Resource {
     scope: string;
     recipient: string;
     revision: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `replace-account` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   replaceAccountMany(items: ReplaceAccountArgs[]): Promise<tilo.ActionAnswer[]>;
   projectPhones(args: {
     person: string;
     phones: string[];
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `project-phones` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   projectPhonesMany(items: ProjectPhonesArgs[]): Promise<tilo.ActionAnswer[]>;
   projectEmails(args: {
     person: string;
     emails: string[];
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `project-emails` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   projectEmailsMany(items: ProjectEmailsArgs[]): Promise<tilo.ActionAnswer[]>;
   projectContacts(args: {
     people: Projected[];
     removed: string[];
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `project-contacts` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   projectContactsMany(items: ProjectContactsArgs[]): Promise<tilo.ActionAnswer[]>;
   forgetEndpoint(args: {
     person: string;
     endpoint: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `forget-endpoint` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   forgetEndpointMany(items: ForgetEndpointArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 
+/** The actions `Identities` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const IDENTITIES_ACTIONS = ["projectContact", "projectContactMany", "removeContact", "removeContactMany", "confirmEndpoint", "confirmEndpointMany", "confirmAccount", "confirmAccountMany", "replaceEndpoint", "replaceEndpointMany", "replaceAccount", "replaceAccountMany", "projectPhones", "projectPhonesMany", "projectEmails", "projectEmailsMany", "projectContacts", "projectContactsMany", "forgetEndpoint", "forgetEndpointMany"] as const;
+
 /** The `tilo.contacts.identities` kind at `path`. */
 export function identities(ws: tilo.Workspace, path: string): Identities {
-  return resourceProxy(ws, path, SURFACE) as unknown as Identities;
+  return resourceProxy(ws, path, SURFACE, IDENTITIES_ACTIONS) as unknown as Identities;
 }
 
 /** Message drafts — `messages.drafts`. */
@@ -363,18 +375,22 @@ export interface Drafts extends tilo.Resource {
   keepDraft(args: {
     conversation: string;
     body: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `keep-draft` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   keepDraftMany(items: KeepDraftArgs[]): Promise<tilo.ActionAnswer[]>;
   dropDraft(args: {
     conversation: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `drop-draft` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   dropDraftMany(items: DropDraftArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 
+/** The actions `Drafts` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const DRAFTS_ACTIONS = ["keepDraft", "keepDraftMany", "dropDraft", "dropDraftMany"] as const;
+
 /** The `messages.drafts` kind at `path`. */
 export function drafts(ws: tilo.Workspace, path: string): Drafts {
-  return resourceProxy(ws, path, SURFACE) as unknown as Drafts;
+  return resourceProxy(ws, path, SURFACE, DRAFTS_ACTIONS) as unknown as Drafts;
 }
 

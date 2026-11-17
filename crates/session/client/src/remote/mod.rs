@@ -199,6 +199,7 @@ struct Waiting {
     changes: HashMap<u64, Asked<Answered<ChangePage>>>,
     /// The waits for what a watch follows to change, by correlation.
     watched: HashMap<u64, Asked<Answered<()>>>,
+    surfaces: HashMap<u64, Asked<Answered<Option<String>>>>,
 }
 
 /// How many invocations a session's asker keeps following. An agent that invokes all day keeps
@@ -383,6 +384,7 @@ impl Waiting {
         again.extend(self.searches.values().map(|asked| asked.again.clone()));
         again.extend(self.changes.values().map(|asked| asked.again.clone()));
         again.extend(self.watched.values().map(|asked| asked.again.clone()));
+        again.extend(self.surfaces.values().map(|asked| asked.again.clone()));
         again.extend(
             self.receipts
                 .values()
@@ -496,6 +498,14 @@ impl Waiting {
                 result,
             } => {
                 if let Some(asked) = self.watched.remove(&correlation) {
+                    give.push(giving(asked, result));
+                }
+            }
+            RemoteActionMessage::SurfaceResponse {
+                correlation,
+                result,
+            } => {
+                if let Some(asked) = self.surfaces.remove(&correlation) {
                     give.push(giving(asked, result));
                 }
             }
@@ -964,6 +974,18 @@ impl ActionHost for SessionActions {
     /// The device's feed of its workspace's changes, asked over the session.
     fn change_feed(&self) -> Option<Arc<dyn tilo_actions::remote::ChangeFeed>> {
         Some(Arc::new(workspace::SessionChanges(self.clone())))
+    }
+
+    /// The surface the workspace's package `app` publishes, asked of the
+    /// device that holds the workspace: its types are readable without an
+    /// app opening.
+    fn installed_surface(&self, app_id: &str) -> Pending<Option<Vec<u8>>> {
+        let app = app_id.to_owned();
+        self.ask(
+            |waiting| &mut waiting.surfaces,
+            move |correlation| RemoteActionMessage::SurfaceRequest { correlation, app },
+        )
+        .map(|answer| answer.ok().flatten().map(String::into_bytes))
     }
 
     /// Uploads into the content store of the device's workspace, step by step

@@ -584,6 +584,7 @@ fn assert_runtime_admission_revoked(joined: &Arc<Joined>, workspace: WorkspaceId
         broker,
         workspace: "private-profile-workspace".into(),
         joined: Arc::clone(joined),
+        apps: None,
         session: Some(Arc::clone(&session)),
     };
     let request = InvokeRequest {

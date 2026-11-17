@@ -28,8 +28,12 @@ export const SURFACE = "so.tilo.launcher@58fbcb173ebd0808";
 export interface Search extends tilo.Resource {
 }
 
+/** The actions `Search` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const SEARCH_ACTIONS = [] as const;
+
 /** The `launcher.search` kind at `path`. */
 export function search(ws: tilo.Workspace, path: string): Search {
-  return resourceProxy(ws, path, SURFACE) as unknown as Search;
+  return resourceProxy(ws, path, SURFACE, SEARCH_ACTIONS) as unknown as Search;
 }
 

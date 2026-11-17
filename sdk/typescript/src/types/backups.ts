@@ -39,8 +39,12 @@ export interface Workspace extends tilo.Resource {
   }): Promise<void>;
 }
 
+/** The actions `Workspace` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const WORKSPACE_ACTIONS = ["verify"] as const;
+
 /** The `backups.workspace` kind at `path`. */
 export function workspace(ws: tilo.Workspace, path: string): Workspace {
-  return resourceProxy(ws, path, SURFACE) as unknown as Workspace;
+  return resourceProxy(ws, path, SURFACE, WORKSPACE_ACTIONS) as unknown as Workspace;
 }
 

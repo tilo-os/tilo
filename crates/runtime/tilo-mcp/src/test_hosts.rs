@@ -126,6 +126,7 @@ impl StubHost {
             action: Some(descriptor),
             has_children: false,
             visibility: None,
+            surface: None,
         }
     }
 }

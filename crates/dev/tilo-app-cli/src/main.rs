@@ -1,17 +1,19 @@
 use std::ffi::OsString;
-use std::io::{BufRead as _, BufReader};
 use std::num::NonZeroU64;
 use std::path::{Path, PathBuf};
-use std::process::{Command as ProcessCommand, ExitCode, Stdio};
+use std::process::{Command as ProcessCommand, ExitCode};
 use std::time::Duration;
 
 use anyhow::{Context as _, Result};
 use clap::{Parser, Subcommand, ValueEnum};
 use serde_json::{Value, json};
 
+use surfaces::{SurfacesArgs, build_apps, run_surfaces, workspace_apps};
+
 mod guide;
 mod json_stdout;
 mod publishing;
+mod surfaces;
 
 #[derive(Parser)]
 #[command(
@@ -70,6 +72,9 @@ enum Command {
     /// Write the app's public surface (its verbs and stored fields) to
     /// `surface.toml`, which `check` and CI compare with the code.
     Surface(SurfaceArgs),
+    /// Compare every app's committed surface with its code, or write them
+    /// again (`--write`): one Cargo build of the whole application set.
+    Surfaces(SurfacesArgs),
     /// Run an app from any path inside it: natively after a structural
     /// preflight, or with `--target` for Linux, macOS or the web.
     #[command(after_long_help = TARGET_EXAMPLES)]
@@ -1196,6 +1201,7 @@ fn main() -> ExitCode {
         Command::Check(args) => run_check(args),
         Command::Certify(args) => run_certify(args),
         Command::Surface(args) => run_surface(args),
+        Command::Surfaces(args) => run_surfaces(args),
         Command::Run(args) => run_run(args),
         Command::Build(args) => run_build(args),
         Command::BundleMacos(args) => run_bundle_macos(&args),
@@ -1304,6 +1310,7 @@ impl Command {
             Self::Check(_) => "check",
             Self::Certify(_) => "certify",
             Self::Surface(_) => "surface",
+            Self::Surfaces(_) => "surfaces",
             Self::Run(_) => "run",
             Self::Build(_) => "build",
             Self::BundleMacos(_) => "bundle-macos",
@@ -2656,7 +2663,7 @@ fn certify_surface(app: &Path, executable: &Path) -> Result<()> {
 /// `cli` entrypoint publishes `[cli]` commands for a compute worker to run.
 /// A service with no window: its binary is never launched as a GUI, so it
 /// has no `--native-audit` mode and no UI to audit.
-fn is_windowless_service(app_dir: &Path) -> bool {
+pub(crate) fn is_windowless_service(app_dir: &Path) -> bool {
     std::fs::read_to_string(app_dir.join("tilo-app.toml"))
         .ok()
         .and_then(|text| tilo_app_package::view::ManifestView::from_toml_str(&text).ok())
@@ -2688,74 +2695,12 @@ fn run_certify(args: CertifyArgs) -> Result<Value> {
         return Ok(json!({"certified": [path]}));
     }
 
-    let apps = path.join("apps");
-    anyhow::ensure!(
-        apps.is_dir(),
-        "{} is not a Tilo workspace root",
-        path.display()
-    );
-    let mut app_dirs = std::fs::read_dir(&apps)?
-        .filter_map(std::result::Result::ok)
-        .map(|entry| entry.path())
-        .filter(|dir| dir.join("Cargo.toml").is_file())
-        // An application has a manifest; a crate beside the apps without one
-        // (the Browser's parts, Settings' pane libraries) is a library an
-        // application links, certified through that application.
-        .filter(|dir| dir.join("tilo-app.toml").is_file())
-        // The agent is the headless consumer being used to drive apps; its
-        // broker protocol is certified by the structural contract and tests.
-        .filter(|dir| dir.file_name().is_none_or(|name| name != "agent"))
-        // An `apps/<name>-model` crate is an app's shared data library, not
-        // an application.
-        .filter(|dir| {
-            dir.file_name()
-                .is_none_or(|name| !name.to_string_lossy().ends_with("-model"))
-        })
-        // A windowless service has no UI to audit: a compute package's
-        // worker runs its `[cli]` command for another app's action, which
-        // that app certifies, and a service such as web search only
-        // publishes actions, which its own tests cover.
-        .filter(|dir| !is_windowless_service(dir))
-        .collect::<Vec<_>>();
-    app_dirs.sort();
-    let mut packages = Vec::with_capacity(app_dirs.len());
-    for app in &app_dirs {
-        let manifest_path = app.join("Cargo.toml");
-        let manifest = std::fs::read_to_string(&manifest_path)
-            .with_context(|| format!("reading {}", manifest_path.display()))?
-            .parse::<toml::Table>()
-            .with_context(|| format!("parsing {}", manifest_path.display()))?;
-        let package = manifest
-            .get("package")
-            .and_then(toml::Value::as_table)
-            .with_context(|| format!("{} has no [package] table", manifest_path.display()))?;
-        let package_name = package
-            .get("name")
-            .and_then(toml::Value::as_str)
-            .with_context(|| format!("{} has no package name", manifest_path.display()))?;
-        let explicit_bins = manifest
-            .get("bin")
-            .and_then(toml::Value::as_array)
-            .into_iter()
-            .flatten()
-            .filter_map(|binary| binary.get("name").and_then(toml::Value::as_str))
-            .collect::<Vec<_>>();
-        let binary_name = package
-            .get("default-run")
-            .and_then(toml::Value::as_str)
-            .or(match explicit_bins.as_slice() {
-                [binary] => Some(*binary),
-                _ => None,
-            })
-            .unwrap_or(package_name);
-        packages.push((app.clone(), package_name.to_owned(), binary_name.to_owned()));
-    }
+    let mut packages = workspace_apps(&path)?;
     if !args.packages.is_empty() {
         packages.retain(|(_, package, _)| args.packages.contains(package));
-        app_dirs = packages.iter().map(|(app, _, _)| app.clone()).collect();
         if packages.is_empty() {
             println!("Certified 0 graphical Tilo applications");
-            return Ok(json!({"certified": app_dirs}));
+            return Ok(json!({"certified": []}));
         }
     }
 
@@ -2766,54 +2711,7 @@ fn run_certify(args: CertifyArgs) -> Result<Value> {
         "[certify] building {} graphical applications",
         packages.len()
     );
-    let cargo = std::env::var_os("CARGO").unwrap_or_else(|| OsString::from("cargo"));
-    let mut build = ProcessCommand::new(cargo);
-    build
-        .current_dir(&path)
-        .arg("build")
-        .arg("--manifest-path")
-        .arg(path.join("Cargo.toml"))
-        .arg("--message-format=json-render-diagnostics");
-    for (_, package, _) in &packages {
-        build.arg("--package").arg(package);
-    }
-    let mut child = build
-        .stdout(Stdio::piped())
-        .stderr(Stdio::inherit())
-        .spawn()
-        .context("starting the workspace certification build")?;
-    let stdout = child
-        .stdout
-        .take()
-        .context("workspace certification build has no artifact stream")?;
-    let mut executables = std::collections::HashMap::new();
-    for line in BufReader::new(stdout).lines() {
-        let line = line.context("reading the workspace certification build")?;
-        let Ok(message) = serde_json::from_str::<serde_json::Value>(&line) else {
-            continue;
-        };
-        if message.get("reason").and_then(serde_json::Value::as_str) != Some("compiler-artifact") {
-            continue;
-        }
-        let Some(executable) = message
-            .get("executable")
-            .and_then(serde_json::Value::as_str)
-        else {
-            continue;
-        };
-        let Some(name) = message
-            .get("target")
-            .and_then(|target| target.get("name"))
-            .and_then(serde_json::Value::as_str)
-        else {
-            continue;
-        };
-        executables.insert(name.to_owned(), PathBuf::from(executable));
-    }
-    let status = child
-        .wait()
-        .context("waiting for the workspace certification build")?;
-    anyhow::ensure!(status.success(), "workspace certification build failed");
+    let executables = build_apps(&path, &packages)?;
 
     let responsive_root = args.responsive_artifacts.map(|artifacts| {
         if artifacts.is_absolute() {
@@ -2933,8 +2831,9 @@ fn run_certify(args: CertifyArgs) -> Result<Value> {
         surface_failures.len(),
         surface_failures.join("; ")
     );
-    println!("Certified {} graphical Tilo applications", app_dirs.len());
-    Ok(json!({"certified": app_dirs}))
+    let certified: Vec<PathBuf> = packages.iter().map(|(app, _, _)| app.clone()).collect();
+    println!("Certified {} graphical Tilo applications", certified.len());
+    Ok(json!({"certified": certified}))
 }
 
 struct ResponsiveAcceptanceRun {

@@ -17,7 +17,7 @@ all-or-nothing steps, all of them one run.
 from __future__ import annotations
 
 from typing import Any, Literal, NotRequired, TypedDict
-from tilo import Resource, Run
+from tilo import Entry, Resource, Run
 
 __all__ = [
     "HistoryEntry",
@@ -79,17 +79,17 @@ class Document(Resource):
     """Calculator — `calculator.document`."""
     __surface__ = "so.tilo.calculator@272ee377b4cb7c5b"
     @property
-    def history(self) -> list[HistoryEntry]:
+    def history(self) -> list[Entry[HistoryEntry]]:
         """Read only."""
         return self.fields["history"]
-    funcs: list[PlotFn]
-    surfaces: list[PlotFn]
+    funcs: list[Entry[PlotFn]]
+    surfaces: list[Entry[PlotFn]]
 
     def commit_history(self,
         *,
         expr: str,
         result: str,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         return self.action("commit-history", expr=expr, result=result)
 
@@ -97,7 +97,7 @@ class Document(Resource):
         """Runs `commit-history` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("commit-history", items)
 
-    def delete_history_entry(self, *, entry: str) -> Run | None:
+    def delete_history_entry(self, *, entry: str) -> None:
         """Runs the app's action."""
         return self.action("delete-history-entry", entry=entry)
 
@@ -105,7 +105,7 @@ class Document(Resource):
         """Runs `delete-history-entry` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("delete-history-entry", items)
 
-    def clear_history(self) -> Run | None:
+    def clear_history(self) -> None:
         """Runs the app's action."""
         return self.action("clear-history")
 
@@ -113,7 +113,7 @@ class Document(Resource):
         """Runs `clear-history` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("clear-history", items)
 
-    def add_function(self, *, formula: str) -> Run | None:
+    def add_function(self, *, formula: str) -> None:
         """Runs the app's action."""
         return self.action("add-function", formula=formula)
 
@@ -121,7 +121,7 @@ class Document(Resource):
         """Runs `add-function` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("add-function", items)
 
-    def add_surface(self, *, formula: str) -> Run | None:
+    def add_surface(self, *, formula: str) -> None:
         """Runs the app's action."""
         return self.action("add-surface", formula=formula)
 
@@ -129,7 +129,7 @@ class Document(Resource):
         """Runs `add-surface` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("add-surface", items)
 
-    def delete_function(self, *, function: str) -> Run | None:
+    def delete_function(self, *, function: str) -> None:
         """Runs the app's action."""
         return self.action("delete-function", function=function)
 
@@ -137,12 +137,16 @@ class Document(Resource):
         """Runs `delete-function` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("delete-function", items)
 
-    def delete_surface(self, *, surface: str) -> Run | None:
+    def delete_surface(self, *, surface: str) -> None:
         """Runs the app's action."""
         return self.action("delete-surface", surface=surface)
 
     def delete_surface_many(self, items: list[DeleteSurfaceArgs]) -> list[dict[str, Any]]:
         """Runs `delete-surface` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("delete-surface", items)
+
+    # The actions a call reaches before the resource is read: `await tracker.create(...)`
+    # needs no `load()` first.
+    __actions__ = frozenset({"commit_history", "commit_history_many", "delete_history_entry", "delete_history_entry_many", "clear_history", "clear_history_many", "add_function", "add_function_many", "add_surface", "add_surface_many", "delete_function", "delete_function_many", "delete_surface", "delete_surface_many"})
 
 

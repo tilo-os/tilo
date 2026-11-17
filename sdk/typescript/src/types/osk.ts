@@ -71,9 +71,13 @@ export interface Keyboard extends tilo.Resource {
   }): Promise<void>;
 }
 
+/** The actions `Keyboard` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const KEYBOARD_ACTIONS = ["setLayout", "setSize", "setSuggestions", "setAutocorrect", "setTypingLanguage", "setPersonalization", "setEmojiRecents"] as const;
+
 /** The `osk.keyboard` kind at `path`. */
 export function keyboard(ws: tilo.Workspace, path: string): Keyboard {
-  return resourceProxy(ws, path, SURFACE) as unknown as Keyboard;
+  return resourceProxy(ws, path, SURFACE, KEYBOARD_ACTIONS) as unknown as Keyboard;
 }
 
 /** What the keyboard learned — `osk.learned`. */
@@ -83,16 +87,20 @@ export interface Learned extends tilo.Resource {
   readonly touch: Record<string, KeyOffset>;
   learn(args: {
     lesson: Lesson;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `learn` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   learnMany(items: LearnArgs[]): Promise<tilo.ActionAnswer[]>;
-  forget(): Promise<tilo.Run | void>;
+  forget(): Promise<void>;
   /** Runs `forget` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   forgetMany(items: ForgetArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 
+/** The actions `Learned` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const LEARNED_ACTIONS = ["learn", "learnMany", "forget", "forgetMany"] as const;
+
 /** The `osk.learned` kind at `path`. */
 export function learned(ws: tilo.Workspace, path: string): Learned {
-  return resourceProxy(ws, path, SURFACE) as unknown as Learned;
+  return resourceProxy(ws, path, SURFACE, LEARNED_ACTIONS) as unknown as Learned;
 }
 

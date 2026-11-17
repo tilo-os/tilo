@@ -32,6 +32,8 @@ struct Field {
     member: syn::Member,
     /// The local the pattern binds it to.
     binding: Ident,
+    /// The name it has in the value's JSON form, as serde writes it.
+    wire: String,
     key: String,
     /// The document key it is stored under: one of its variant's own.
     storage: String,
@@ -43,6 +45,9 @@ struct Field {
 
 struct Variant {
     ident: Ident,
+    /// The name it has in the value's JSON form, as serde writes it.
+    wire: String,
+    /// The name it is stored under.
     key: String,
     fields: Vec<Field>,
     style: Style,
@@ -56,14 +61,17 @@ enum Style {
     Tuple,
 }
 
-fn variants(data: &DataEnum) -> syn::Result<Vec<Variant>> {
+fn variants(input: &DeriveInput, data: &DataEnum) -> syn::Result<Vec<Variant>> {
     let mut out = Vec::new();
+    let rule = crate::schema::wire_rule(&input.attrs)?;
     for variant in &data.variants {
         let options = field_options(&variant.attrs)?;
         let key = options
             .rename
             .unwrap_or_else(|| snake_case(&variant.ident.to_string()));
         let variant_key = key.clone();
+        let wire = crate::schema::wire_name(&variant.ident, &variant.attrs, rule.as_ref())?;
+        let field_rule = crate::schema::wire_rule(&variant.attrs)?;
         let default = variant
             .attrs
             .iter()
@@ -93,6 +101,10 @@ fn variants(data: &DataEnum) -> syn::Result<Vec<Variant>> {
                 name.strip_prefix("r#")
                     .map_or_else(|| name.clone(), str::to_owned)
             });
+            let wire = match &field.ident {
+                Some(ident) => crate::schema::wire_name(ident, &field.attrs, field_rule.as_ref())?,
+                None => index.to_string(),
+            };
             if key.starts_with('$') {
                 return Err(syn::Error::new(
                     field.span(),
@@ -102,6 +114,7 @@ fn variants(data: &DataEnum) -> syn::Result<Vec<Variant>> {
             fields.push(Field {
                 member,
                 binding: format_ident!("__field{}", index),
+                wire,
                 storage: storage_key(&variant_key, &key),
                 key,
                 ty: field.ty.clone(),
@@ -111,6 +124,7 @@ fn variants(data: &DataEnum) -> syn::Result<Vec<Variant>> {
         }
         out.push(Variant {
             ident: variant.ident.clone(),
+            wire,
             key,
             fields,
             style,
@@ -183,7 +197,7 @@ pub(crate) fn derive(input: &DeriveInput, data: &DataEnum) -> syn::Result<Tokens
     let model = quote!(#krate::model);
     let name = &input.ident;
     let (impl_generics, type_generics, where_clause) = input.generics.split_for_impl();
-    let variants = variants(data)?;
+    let variants = variants(input, data)?;
     if variants.is_empty() {
         return Err(syn::Error::new(
             input.span(),
@@ -198,8 +212,8 @@ pub(crate) fn derive(input: &DeriveInput, data: &DataEnum) -> syn::Result<Tokens
 
     let to_json = variants.iter().map(|variant| {
         let pattern = variant.pattern();
-        let key = &variant.key;
-        let keys = variant.stored().map(|field| &field.key);
+        let key = &variant.wire;
+        let keys = variant.stored().map(|field| &field.wire);
         let bindings = variant.stored().map(|field| &field.binding);
         let unused = variant
             .fields
@@ -218,12 +232,12 @@ pub(crate) fn derive(input: &DeriveInput, data: &DataEnum) -> syn::Result<Tokens
     });
 
     let from_json = variants.iter().map(|variant| {
-        let key = &variant.key;
+        let key = &variant.wire;
         let built = variant.construct(|field| {
             if field.skip {
                 quote!(::core::default::Default::default())
             } else {
-                let field_key = &field.key;
+                let field_key = &field.wire;
                 quote!(#model::json_field(__fields, #field_key)?)
             }
         });
@@ -278,8 +292,8 @@ pub(crate) fn derive(input: &DeriveInput, data: &DataEnum) -> syn::Result<Tokens
     });
 
     let schemas = variants.iter().map(|variant| {
-        let key = &variant.key;
-        let keys = variant.stored().map(|field| &field.key);
+        let key = &variant.wire;
+        let keys = variant.stored().map(|field| &field.wire);
         let types = variant.stored().map(|field| &field.ty);
         quote! {
             #model::variant_schema(
@@ -290,8 +304,8 @@ pub(crate) fn derive(input: &DeriveInput, data: &DataEnum) -> syn::Result<Tokens
     });
 
     let cases = variants.iter().map(|variant| {
-        let key = &variant.key;
-        let keys = variant.stored().map(|field| &field.key);
+        let key = &variant.wire;
+        let keys = variant.stored().map(|field| &field.wire);
         let types = variant.stored().map(|field| &field.ty);
         quote! {
             (#key, "", &[#((

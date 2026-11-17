@@ -34,9 +34,13 @@ export interface RememberArgs {
 export interface DiskUsage extends tilo.Resource {
 }
 
+/** The actions `DiskUsage` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const DISKUSAGE_ACTIONS = [] as const;
+
 /** The `disk-usage` kind at `path`. */
 export function diskUsage(ws: tilo.Workspace, path: string): DiskUsage {
-  return resourceProxy(ws, path, SURFACE) as unknown as DiskUsage;
+  return resourceProxy(ws, path, SURFACE, DISKUSAGE_ACTIONS) as unknown as DiskUsage;
 }
 
 /** Recent folders — `disk-usage.recent-folders`. */
@@ -45,13 +49,17 @@ export interface RecentFolders extends tilo.Resource {
   remember(args: {
     device: string;
     folder: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `remember` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   rememberMany(items: RememberArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 
+/** The actions `RecentFolders` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const RECENTFOLDERS_ACTIONS = ["remember", "rememberMany"] as const;
+
 /** The `disk-usage.recent-folders` kind at `path`. */
 export function recentFolders(ws: tilo.Workspace, path: string): RecentFolders {
-  return resourceProxy(ws, path, SURFACE) as unknown as RecentFolders;
+  return resourceProxy(ws, path, SURFACE, RECENTFOLDERS_ACTIONS) as unknown as RecentFolders;
 }
 

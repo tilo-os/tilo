@@ -17,9 +17,10 @@ all-or-nothing steps, all of them one run.
 from __future__ import annotations
 
 from typing import Any, Literal, NotRequired, TypedDict
-from tilo import Resource, Run
+from tilo import Entry, Resource, Run
 
 __all__ = [
+    "Delivery",
     "DraftAttachment",
     "DraftCopy",
     "DraftData",
@@ -62,6 +63,21 @@ __all__ = [
     "KeepCopiesArgs",
     "ForgetCopiesArgs",
 ]
+
+Delivery = TypedDict("Delivery", {
+    "from": "str",
+    "to": "str | None",
+    "cc": "str | None",
+    "subject": "str",
+    "body": "str",
+    "date": "str | None",
+    "folder": "Folder | None",
+    "read": "bool | None",
+    "reply_to": "str | None",
+    "conversation": "str | None",
+    "message_id": "str | None",
+    "original": "Any | None",
+})
 
 class DraftAttachment(TypedDict):
     content_id: str
@@ -118,6 +134,7 @@ HeldMessage = TypedDict("HeldMessage", {
     "minutes": "int",
     "in_reply_to": "str | None",
     "conversation": "str",
+    "original": "Any | None",
 })
 
 class IngestBaseline(TypedDict):
@@ -172,7 +189,7 @@ class Person(TypedDict):
     phones: list[str]
     emails: list[str]
     photo: str
-    endpoints: list[Endpoint]
+    endpoints: list[Entry[Endpoint]]
 
 class Projected(TypedDict):
     person: str
@@ -320,26 +337,26 @@ ForgetCopiesArgs = TypedDict("ForgetCopiesArgs", {
 
 class Mailbox(Resource):
     """Mail — `mail.mailbox`."""
-    __surface__ = "so.tilo.mail@68b3f4f16cfb7b8b"
-    messages: list[MessageState]
-    folders: list[LocalFolder]
+    __surface__ = "so.tilo.mail@3de88f51444d06e9"
+    messages: list[Entry[MessageState]]
+    folders: list[Entry[LocalFolder]]
     draft: DraftState
-    drafts: list[DraftState]
-    held: list[HeldMessage]
+    drafts: list[Entry[DraftState]]
+    held: list[Entry[HeldMessage]]
 
     def mark_read(self,
         *,
         messages: list[str],
         read: bool,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         return self.action("mark-read", messages=messages, read=read)
 
-    def archive(self, *, messages: list[str]) -> Run | None:
+    def archive(self, *, messages: list[str]) -> None:
         """Runs the app's action."""
         return self.action("archive", messages=messages)
 
-    def trash(self, *, messages: list[str]) -> Run | None:
+    def trash(self, *, messages: list[str]) -> None:
         """Runs the app's action."""
         return self.action("trash", messages=messages)
 
@@ -347,19 +364,19 @@ class Mailbox(Resource):
         *,
         messages: list[str],
         to: Folder,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         return self.action("move-messages", messages=messages, to=to)
 
-    def purge(self, *, messages: list[str]) -> Run | None:
+    def purge(self, *, messages: list[str]) -> None:
         """Runs the app's action."""
         return self.action("purge", messages=messages)
 
-    def ingest(self, *, messages: list[IngestBaseline]) -> Run | None:
+    def ingest(self, *, messages: list[IngestBaseline]) -> None:
         """Runs the app's action."""
         return self.action("ingest", messages=messages)
 
-    def server_applied(self, *, update: ServerUpdate) -> Run | None:
+    def server_applied(self, *, update: ServerUpdate) -> None:
         """Runs the app's action."""
         return self.action("server-applied", update=update)
 
@@ -368,7 +385,7 @@ class Mailbox(Resource):
         text: str,
         html: str | None = None,
         draft: str | None = None,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         args: dict[str, Any] = {}
         args["text"] = text
@@ -382,7 +399,7 @@ class Mailbox(Resource):
         *,
         message: DraftData,
         draft: str | None = None,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         args: dict[str, Any] = {}
         args["message"] = message
@@ -396,7 +413,7 @@ class Mailbox(Resource):
         message: DraftData,
         in_reply_to: str | None = None,
         notes: str | None = None,
-    ) -> Any | Run:
+    ) -> Any:
         """Runs the app's action."""
         args: dict[str, Any] = {}
         args["id"] = id
@@ -411,7 +428,7 @@ class Mailbox(Resource):
         *,
         message: str,
         draft: str | None = None,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         args: dict[str, Any] = {}
         args["message"] = message
@@ -426,7 +443,7 @@ class Mailbox(Resource):
         size: int | None = None,
         mime: str | None = None,
         draft: str | None = None,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         args: dict[str, Any] = {}
         args["content"] = content
@@ -442,7 +459,7 @@ class Mailbox(Resource):
     def discard_draft(self,
         *,
         draft: str | None = None,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         args: dict[str, Any] = {}
         if draft is not None:
@@ -455,7 +472,7 @@ class Mailbox(Resource):
         message: DraftData,
         in_reply_to: str | None = None,
         draft: str | None = None,
-    ) -> Any | Run:
+    ) -> Any:
         """Runs the app's action."""
         args: dict[str, Any] = {}
         args["account"] = account
@@ -470,7 +487,7 @@ class Mailbox(Resource):
         *,
         account: str,
         folder: Folder,
-    ) -> Any | Run:
+    ) -> Any:
         """Runs the app's action."""
         return self.action("check-mail", account=account, folder=folder)
 
@@ -482,11 +499,13 @@ class Mailbox(Resource):
         to: str | None = None,
         cc: str | None = None,
         date: str | None = None,
-        folder: str | None = None,
+        folder: Folder | None = None,
         read: bool | None = None,
         reply_to: str | None = None,
         conversation: str | None = None,
-    ) -> Any | Run:
+        message_id: str | None = None,
+        original: Any | None = None,
+    ) -> Any:
         """Runs the app's action."""
         args: dict[str, Any] = {}
         args["from"] = from_
@@ -506,6 +525,10 @@ class Mailbox(Resource):
             args["reply_to"] = reply_to
         if conversation is not None:
             args["conversation"] = conversation
+        if message_id is not None:
+            args["message_id"] = message_id
+        if original is not None:
+            args["original"] = original
         return self.action("deliver-message", **args)
 
     def draft_message(self,
@@ -515,7 +538,7 @@ class Mailbox(Resource):
         body: str,
         cc: str | None = None,
         notes: str | None = None,
-    ) -> Any | Run:
+    ) -> Any:
         """Runs the app's action."""
         args: dict[str, Any] = {}
         args["to"] = to
@@ -527,7 +550,7 @@ class Mailbox(Resource):
             args["notes"] = notes
         return self.action("draft-message", **args)
 
-    def cancel_send(self, *, id: str) -> Any | Run:
+    def cancel_send(self, *, id: str) -> Any:
         """Runs the app's action."""
         return self.action("cancel-send", id=id)
 
@@ -575,11 +598,15 @@ class Mailbox(Resource):
             args["folder"] = folder
         return self.action("export-content", **args)
 
+    # The actions a call reaches before the resource is read: `await tracker.create(...)`
+    # needs no `load()` first.
+    __actions__ = frozenset({"mark_read", "archive", "trash", "move_messages", "purge", "ingest", "server_applied", "start_draft_body", "save_draft", "create_draft", "show_draft", "attach", "discard_draft", "send_message", "check_mail", "deliver_message", "draft_message", "cancel_send", "search_messages", "export_content"})
+
 
 class Accounts(Resource):
     """Accounts — `tilo.accounts`."""
-    __surface__ = "so.tilo.mail@68b3f4f16cfb7b8b"
-    accounts: list[PersonAccount]
+    __surface__ = "so.tilo.mail@3de88f51444d06e9"
+    accounts: list[Entry[PersonAccount]]
     active: dict[str, str]
 
     def publish_browser_identity(self,
@@ -587,7 +614,7 @@ class Accounts(Resource):
         root: str,
         origin: str,
         display_name: str,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         return self.action("publish-browser-identity", root=root, origin=origin, display_name=display_name)
 
@@ -603,7 +630,7 @@ class Accounts(Resource):
         config: Any,
         enabled: bool,
         tint: int,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         return self.action("save-account", id=id, type_id=type_id, display_name=display_name, config=config, enabled=enabled, tint=tint)
 
@@ -611,7 +638,7 @@ class Accounts(Resource):
         """Runs `save-account` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("save-account", items)
 
-    def remove_account(self, *, account: str) -> Run | None:
+    def remove_account(self, *, account: str) -> None:
         """Runs the app's action."""
         return self.action("remove-account", account=account)
 
@@ -619,7 +646,7 @@ class Accounts(Resource):
         """Runs `remove-account` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("remove-account", items)
 
-    def set_active_account(self, *, account: str) -> Run | None:
+    def set_active_account(self, *, account: str) -> None:
         """Runs the app's action."""
         return self.action("set-active-account", account=account)
 
@@ -627,17 +654,21 @@ class Accounts(Resource):
         """Runs `set-active-account` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("set-active-account", items)
 
+    # The actions a call reaches before the resource is read: `await tracker.create(...)`
+    # needs no `load()` first.
+    __actions__ = frozenset({"publish_browser_identity", "publish_browser_identity_many", "save_account", "save_account_many", "remove_account", "remove_account_many", "set_active_account", "set_active_account_many"})
+
 
 class Identities(Resource):
     """Contact identities — `tilo.contacts.identities`."""
-    __surface__ = "so.tilo.mail@68b3f4f16cfb7b8b"
-    people: list[Person]
+    __surface__ = "so.tilo.mail@3de88f51444d06e9"
+    people: list[Entry[Person]]
 
     def project_contact(self,
         *,
         person: str,
         label: str,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         return self.action("project-contact", person=person, label=label)
 
@@ -645,7 +676,7 @@ class Identities(Resource):
         """Runs `project-contact` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("project-contact", items)
 
-    def remove_contact(self, *, person: str) -> Run | None:
+    def remove_contact(self, *, person: str) -> None:
         """Runs the app's action."""
         return self.action("remove-contact", person=person)
 
@@ -659,7 +690,7 @@ class Identities(Resource):
         endpoint: str,
         service: str,
         recipient: str,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         return self.action("confirm-endpoint", person=person, endpoint=endpoint, service=service, recipient=recipient)
 
@@ -675,7 +706,7 @@ class Identities(Resource):
         scope: str,
         recipient: str,
         revision: str,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         return self.action("confirm-account", person=person, endpoint=endpoint, service=service, scope=scope, recipient=recipient, revision=revision)
 
@@ -690,7 +721,7 @@ class Identities(Resource):
         endpoint: str,
         service: str,
         recipient: str,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         return self.action("replace-endpoint", person=person, previous=previous, endpoint=endpoint, service=service, recipient=recipient)
 
@@ -707,7 +738,7 @@ class Identities(Resource):
         scope: str,
         recipient: str,
         revision: str,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         return self.action("replace-account", person=person, previous=previous, endpoint=endpoint, service=service, scope=scope, recipient=recipient, revision=revision)
 
@@ -719,7 +750,7 @@ class Identities(Resource):
         *,
         person: str,
         phones: list[str],
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         return self.action("project-phones", person=person, phones=phones)
 
@@ -731,7 +762,7 @@ class Identities(Resource):
         *,
         person: str,
         emails: list[str],
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         return self.action("project-emails", person=person, emails=emails)
 
@@ -743,7 +774,7 @@ class Identities(Resource):
         *,
         people: list[Projected],
         removed: list[str],
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         return self.action("project-contacts", people=people, removed=removed)
 
@@ -755,7 +786,7 @@ class Identities(Resource):
         *,
         person: str,
         endpoint: str,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         return self.action("forget-endpoint", person=person, endpoint=endpoint)
 
@@ -763,13 +794,17 @@ class Identities(Resource):
         """Runs `forget-endpoint` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("forget-endpoint", items)
 
+    # The actions a call reaches before the resource is read: `await tracker.create(...)`
+    # needs no `load()` first.
+    __actions__ = frozenset({"project_contact", "project_contact_many", "remove_contact", "remove_contact_many", "confirm_endpoint", "confirm_endpoint_many", "confirm_account", "confirm_account_many", "replace_endpoint", "replace_endpoint_many", "replace_account", "replace_account_many", "project_phones", "project_phones_many", "project_emails", "project_emails_many", "project_contacts", "project_contacts_many", "forget_endpoint", "forget_endpoint_many"})
+
 
 class TrustedSenders(Resource):
     """Trusted senders — `mail.trusted-senders`."""
-    __surface__ = "so.tilo.mail@68b3f4f16cfb7b8b"
+    __surface__ = "so.tilo.mail@3de88f51444d06e9"
     senders: list[str]
 
-    def trust(self, *, sender: str) -> Run | None:
+    def trust(self, *, sender: str) -> None:
         """Runs the app's action."""
         return self.action("trust", sender=sender)
 
@@ -777,7 +812,7 @@ class TrustedSenders(Resource):
         """Runs `trust` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("trust", items)
 
-    def distrust(self, *, sender: str) -> Run | None:
+    def distrust(self, *, sender: str) -> None:
         """Runs the app's action."""
         return self.action("distrust", sender=sender)
 
@@ -785,16 +820,20 @@ class TrustedSenders(Resource):
         """Runs `distrust` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("distrust", items)
 
+    # The actions a call reaches before the resource is read: `await tracker.create(...)`
+    # needs no `load()` first.
+    __actions__ = frozenset({"trust", "trust_many", "distrust", "distrust_many"})
+
 
 class Copies(Resource):
     """Mail on your devices — `mail.copies`."""
-    __surface__ = "so.tilo.mail@68b3f4f16cfb7b8b"
+    __surface__ = "so.tilo.mail@3de88f51444d06e9"
     @property
-    def copies(self) -> list[KeptCopy]:
+    def copies(self) -> list[Entry[KeptCopy]]:
         """Read only."""
         return self.fields["copies"]
 
-    def keep_copies(self, *, copies: list[NewCopy]) -> Run | None:
+    def keep_copies(self, *, copies: list[NewCopy]) -> None:
         """Runs the app's action."""
         return self.action("keep-copies", copies=copies)
 
@@ -802,12 +841,16 @@ class Copies(Resource):
         """Runs `keep-copies` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("keep-copies", items)
 
-    def forget_copies(self, *, messages: list[str]) -> Run | None:
+    def forget_copies(self, *, messages: list[str]) -> None:
         """Runs the app's action."""
         return self.action("forget-copies", messages=messages)
 
     def forget_copies_many(self, items: list[ForgetCopiesArgs]) -> list[dict[str, Any]]:
         """Runs `forget-copies` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("forget-copies", items)
+
+    # The actions a call reaches before the resource is read: `await tracker.create(...)`
+    # needs no `load()` first.
+    __actions__ = frozenset({"keep_copies", "keep_copies_many", "forget_copies", "forget_copies_many"})
 
 

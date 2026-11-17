@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.sheets@3596a81127fd2836";
+export const SURFACE = "so.tilo.sheets@fab0785060c7d53d";
 
 export interface Area {
   top: string;
@@ -47,10 +47,10 @@ export interface Chart {
   area: Area;
 }
 
-/** One of "column", "line". */
-export type ChartKind = "column" | "line";
+/** One of "Column", "Line". */
+export type ChartKind = "Column" | "Line";
 
-/** One of bool, int, str: an object whose case the app tags it with. */
+/** One of Bool, Int, Str: an object whose case the app tags it with. */
 export type ClipAttr = Record<string, unknown>;
 
 export interface ClipBlock {
@@ -70,7 +70,7 @@ export interface Comment {
   text: string;
   body: ClipBlock[];
   resolved: boolean;
-  replies: Reply[];
+  replies: Array<tilo.Entry<Reply>>;
 }
 
 export interface CommentCells {
@@ -103,7 +103,7 @@ export interface MarkSpan {
   value: MarkValue;
 }
 
-/** One of bool, int, str: an object whose case the app tags it with. */
+/** One of Bool, Int, Str: an object whose case the app tags it with. */
 export type MarkValue = Record<string, unknown>;
 
 export interface Reply {
@@ -118,8 +118,18 @@ export interface Sheet {
   source: string | null;
   color: number | null;
   cells: unknown;
-  charts: Chart[];
+  charts: Array<tilo.Entry<Chart>>;
   hidden: boolean;
+}
+
+export interface SheetSpec {
+  name: string | null;
+  after: string | null;
+  rows: unknown[][] | null;
+  columns: string[] | null;
+  records: unknown[] | null;
+  formats: Record<string, string> | null;
+  workbook: string | null;
 }
 
 /** One of "Language", "H24", "H12". */
@@ -222,8 +232,8 @@ export interface DeleteCommentArgs {
 
 /** Workbook — `sheets.workbook`. */
 export interface Workbook extends tilo.Resource {
-  sheets: Sheet[];
-  comments: Comment[];
+  sheets: Array<tilo.Entry<Sheet>>;
+  comments: Array<tilo.Entry<Comment>>;
   settings: DocSettings;
   title: string | null;
   newSheet(args?: {
@@ -232,12 +242,12 @@ export interface Workbook extends tilo.Resource {
     rows?: unknown[][];
     columns?: string[];
     records?: unknown[];
-    formats?: unknown;
+    formats?: Record<string, string>;
     workbook?: string;
-  }): Promise<unknown | tilo.Run>;
+  }): Promise<unknown>;
   setTitle(args: {
     title: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `set-title` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   setTitleMany(items: SetTitleArgs[]): Promise<tilo.ActionAnswer[]>;
   setRecords(args: {
@@ -246,72 +256,72 @@ export interface Workbook extends tilo.Resource {
     row?: number;
     columns?: string[];
     key?: string;
-  }): Promise<unknown | tilo.Run>;
+  }): Promise<unknown>;
   upsertItem(args: {
     sheet: string;
     match: Record<string, unknown>;
     value: Record<string, unknown>;
-  }): Promise<unknown | tilo.Run>;
+  }): Promise<unknown>;
   duplicateSheet(args: {
     sheet: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `duplicate-sheet` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   duplicateSheetMany(items: DuplicateSheetArgs[]): Promise<tilo.ActionAnswer[]>;
   deleteSheet(args: {
     sheet: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `delete-sheet` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   deleteSheetMany(items: DeleteSheetArgs[]): Promise<tilo.ActionAnswer[]>;
   setCells(args: {
     sheet: string;
     start: string;
     rows: unknown[][];
-  }): Promise<unknown | tilo.Run>;
+  }): Promise<unknown>;
   writeCells(args: {
     sheet: string;
     cells: CellWrite[];
-  }): Promise<unknown | tilo.Run>;
+  }): Promise<unknown>;
   formatCells(args: {
     sheet: string;
     range: string;
     format?: unknown;
     bold?: boolean;
-  }): Promise<unknown | tilo.Run>;
+  }): Promise<unknown>;
   sortRows(args: {
     sheet: string;
     range: string;
     by: string;
     descending?: boolean;
-  }): Promise<unknown | tilo.Run>;
+  }): Promise<unknown>;
   insertRows(args: {
     sheet: string;
     at: number;
     count?: number;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `insert-rows` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   insertRowsMany(items: InsertRowsArgs[]): Promise<tilo.ActionAnswer[]>;
   deleteRows(args: {
     sheet: string;
     rows: number[];
-  }): Promise<unknown | tilo.Run>;
+  }): Promise<unknown>;
   insertColumns(args: {
     sheet: string;
     at: string;
     count?: number;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `insert-columns` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   insertColumnsMany(items: InsertColumnsArgs[]): Promise<tilo.ActionAnswer[]>;
   deleteColumns(args: {
     sheet: string;
     columns: string[];
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `delete-columns` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   deleteColumnsMany(items: DeleteColumnsArgs[]): Promise<tilo.ActionAnswer[]>;
   importSheets(args: {
     sheets: ImportedSheet[];
     source?: string;
     title?: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `import-sheets` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   importSheetsMany(items: ImportSheetsArgs[]): Promise<tilo.ActionAnswer[]>;
   addChart(args: {
@@ -319,7 +329,7 @@ export interface Workbook extends tilo.Resource {
     range: string;
     kind: string;
     title: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `add-chart` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   addChartMany(items: AddChartArgs[]): Promise<tilo.ActionAnswer[]>;
   editChart(args: {
@@ -328,43 +338,43 @@ export interface Workbook extends tilo.Resource {
     title: string;
     kind?: unknown;
     range?: unknown;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `edit-chart` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   editChartMany(items: EditChartArgs[]): Promise<tilo.ActionAnswer[]>;
   deleteChart(args: {
     sheet: string;
     chart: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `delete-chart` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   deleteChartMany(items: DeleteChartArgs[]): Promise<tilo.ActionAnswer[]>;
   renameSheet(args: {
     sheet: string;
     name: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `rename-sheet` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   renameSheetMany(items: RenameSheetArgs[]): Promise<tilo.ActionAnswer[]>;
   comment(args: {
     sheet: string;
     range: string;
     text: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `comment` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   commentMany(items: CommentArgs[]): Promise<tilo.ActionAnswer[]>;
   reply(args: {
     comment: string;
     text: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `reply` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   replyMany(items: ReplyArgs[]): Promise<tilo.ActionAnswer[]>;
   editComment(args: {
     comment: string;
     body: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `edit-comment` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   editCommentMany(items: EditCommentArgs[]): Promise<tilo.ActionAnswer[]>;
   deleteComment(args: {
     comment: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `delete-comment` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   deleteCommentMany(items: DeleteCommentArgs[]): Promise<tilo.ActionAnswer[]>;
   exportXlsxContent(): Promise<void>;
@@ -381,8 +391,12 @@ export interface Workbook extends tilo.Resource {
   }): Promise<void>;
 }
 
+/** The actions `Workbook` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const WORKBOOK_ACTIONS = ["newSheet", "setTitle", "setTitleMany", "setRecords", "upsertItem", "duplicateSheet", "duplicateSheetMany", "deleteSheet", "deleteSheetMany", "setCells", "writeCells", "formatCells", "sortRows", "insertRows", "insertRowsMany", "deleteRows", "insertColumns", "insertColumnsMany", "deleteColumns", "deleteColumnsMany", "importSheets", "importSheetsMany", "addChart", "addChartMany", "editChart", "editChartMany", "deleteChart", "deleteChartMany", "renameSheet", "renameSheetMany", "comment", "commentMany", "reply", "replyMany", "editComment", "editCommentMany", "deleteComment", "deleteCommentMany", "exportXlsxContent", "readFile", "readContent"] as const;
+
 /** The `sheets.workbook` kind at `path`. */
 export function workbook(ws: tilo.Workspace, path: string): Workbook {
-  return resourceProxy(ws, path, SURFACE) as unknown as Workbook;
+  return resourceProxy(ws, path, SURFACE, WORKBOOK_ACTIONS) as unknown as Workbook;
 }
 

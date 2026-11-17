@@ -585,6 +585,22 @@ class Event:
         return _text(self.raw.get("by"))
 
     @property
+    def resources(self) -> list[Mapping[str, Any]]:
+        """The records a change wrote, each with the `path` it is read at and,
+        where the change names them, its `app`, `record` and `item`."""
+        found = self.raw.get("resources")
+        if not isinstance(found, list):
+            return []
+        return [dict(resource) for resource in found if isinstance(resource, Mapping)]
+
+    @property
+    def actor(self) -> Mapping[str, Any] | None:
+        """Who made a change, structured: its `kind` (`person` or `agent`) and
+        `name`, and the actor's own fields besides."""
+        actor = self.raw.get("actor")
+        return dict(actor) if isinstance(actor, Mapping) else None
+
+    @property
     def title(self) -> str | None:
         """The run's title: the words the client that made it opened it with."""
         return _text(self.raw.get("title"))

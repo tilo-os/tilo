@@ -17,19 +17,21 @@ all-or-nothing steps, all of them one run.
 from __future__ import annotations
 
 from typing import Any, Literal, NotRequired, TypedDict
-from tilo import Resource, Run
+from tilo import Entry, Resource, Run
 
 __all__ = [
+    "Command",
+    "CommandItem",
+    "CommandRequest",
+    "FinishedCommand",
     "ItemKind",
-    "Run",
-    "RunItem",
-    "RunRequest",
+    "Ran",
     "Remembered",
     "Session",
     "History",
     "RecentEnvironments",
     "StopArgs",
-    "RecordRunArgs",
+    "RecordCommandArgs",
     "RecordTargetArgs",
     "RecordRelaySessionArgs",
     "ClaimPaneArgs",
@@ -37,13 +39,11 @@ __all__ = [
     "UsedArgs",
 ]
 
-ItemKind = Literal["error", "warning", "location", "url", "test-passed", "test-failed", "test-ignored", "change"]
-
-class Run(TypedDict):
+class Command(TypedDict):
     command: str
     cwd: str
     environment: str | None
-    actor: str
+    actor: str | None
     for_person: str | None
     started_ms: int
     ended_ms: int
@@ -52,9 +52,9 @@ class Run(TypedDict):
     truncated: bool
     tool: str
     undoable: bool
-    items: list[RunItem]
+    items: list[CommandItem]
 
-class RunItem(TypedDict):
+class CommandItem(TypedDict):
     kind: ItemKind
     text: str
     path: str | None
@@ -62,12 +62,38 @@ class RunItem(TypedDict):
     column: int | None
     code: str | None
 
-class RunRequest(TypedDict):
+class CommandRequest(TypedDict):
     command: str
-    requested_by: str
+    requested_by: str | None
     for_person: str | None
     pane: str
     agent: bool
+
+class FinishedCommand(TypedDict):
+    command: str
+    cwd: str
+    started_ms: int
+    ended_ms: int
+    exit: int
+    output: Any | None
+    truncated: bool
+    tool: str
+    undoable: bool
+    items: list[CommandItem]
+    request: str | None
+    run: str
+
+ItemKind = Literal["error", "warning", "location", "url", "test-passed", "test-failed", "test-ignored", "change"]
+
+class Ran(TypedDict):
+    command: str
+    cwd: str
+    environment: str | None
+    exit: int
+    ended_ms: int
+    actor: Any | None
+    session: str
+    run: str
 
 class Remembered(TypedDict):
     command: str
@@ -75,7 +101,7 @@ class Remembered(TypedDict):
     environment: str | None
     exit: int
     ended_ms: int
-    actor: str
+    actor: str | None
     session: str
     run: str
 
@@ -83,7 +109,7 @@ StopArgs = TypedDict("StopArgs", {
 })
 """The arguments of `stop`."""
 
-RecordRunArgs = TypedDict("RecordRunArgs", {
+RecordCommandArgs = TypedDict("RecordCommandArgs", {
     "command": "str",
     "cwd": "str",
     "started_ms": "int",
@@ -93,11 +119,11 @@ RecordRunArgs = TypedDict("RecordRunArgs", {
     "truncated": "bool",
     "tool": "str",
     "undoable": "bool",
-    "items": "list[Any]",
+    "items": "list[CommandItem]",
     "request": NotRequired["str | None"],
     "run": "str",
 })
-"""The arguments of `record-run`."""
+"""The arguments of `record-command`."""
 
 RecordTargetArgs = TypedDict("RecordTargetArgs", {
     "target": "str",
@@ -122,7 +148,7 @@ RememberArgs = TypedDict("RememberArgs", {
     "environment": NotRequired["str | None"],
     "exit": "int",
     "ended_ms": "int",
-    "actor": "str",
+    "actor": NotRequired["Any | None"],
     "session": "str",
     "run": "str",
 })
@@ -136,7 +162,7 @@ UsedArgs = TypedDict("UsedArgs", {
 
 class Session(Resource):
     """Terminal — `terminal.session`."""
-    __surface__ = "so.tilo.terminal@54ffe4e754ac58fe"
+    __surface__ = "so.tilo.terminal@8f161992a310d594"
     @property
     def target(self) -> str | None:
         """Read only."""
@@ -158,27 +184,27 @@ class Session(Resource):
         """Read only."""
         return self.fields["holder"]
     @property
-    def runs(self) -> list[Run]:
+    def commands(self) -> list[Entry[Command]]:
         """Read only."""
-        return self.fields["runs"]
+        return self.fields["commands"]
 
-    def run(self, *, command: str) -> Any | Run:
+    def run(self, *, command: str) -> Any:
         """Runs the app's action."""
         return self.action("run", command=command)
 
-    def rerun(self, *, runs: str) -> Any | Run:
+    def rerun(self, *, command: str) -> Any:
         """Runs the app's action."""
-        return self.action("rerun", runs=runs)
+        return self.action("rerun", command=command)
 
     def rerun_test(self,
         *,
-        runs: str,
+        command: str,
         test: str,
-    ) -> Any | Run:
+    ) -> Any:
         """Runs the app's action."""
-        return self.action("rerun-test", runs=runs, test=test)
+        return self.action("rerun-test", command=command, test=test)
 
-    def stop(self) -> Run | None:
+    def stop(self) -> None:
         """Runs the app's action."""
         return self.action("stop")
 
@@ -186,7 +212,7 @@ class Session(Resource):
         """Runs `stop` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("stop", items)
 
-    def record_run(self,
+    def record_command(self,
         *,
         command: str,
         cwd: str,
@@ -196,11 +222,11 @@ class Session(Resource):
         truncated: bool,
         tool: str,
         undoable: bool,
-        items: list[Any],
+        items: list[CommandItem],
         run: str,
         output: Any | None = None,
         request: str | None = None,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         args: dict[str, Any] = {}
         args["command"] = command
@@ -217,17 +243,17 @@ class Session(Resource):
         if request is not None:
             args["request"] = request
         args["run"] = run
-        return self.action("record-run", **args)
+        return self.action("record-command", **args)
 
-    def record_run_many(self, items: list[RecordRunArgs]) -> list[dict[str, Any]]:
-        """Runs `record-run` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
-        return self.many("record-run", items)
+    def record_command_many(self, items: list[RecordCommandArgs]) -> list[dict[str, Any]]:
+        """Runs `record-command` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
+        return self.many("record-command", items)
 
     def record_target(self,
         *,
         target: str,
         device: str | None = None,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         args: dict[str, Any] = {}
         args["target"] = target
@@ -242,7 +268,7 @@ class Session(Resource):
     def record_relay_session(self,
         *,
         session: str | None = None,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         args: dict[str, Any] = {}
         if session is not None:
@@ -257,7 +283,7 @@ class Session(Resource):
         *,
         pane: str,
         device: str | None = None,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         args: dict[str, Any] = {}
         args["pane"] = pane
@@ -305,14 +331,18 @@ class Session(Resource):
         """Runs the app's action."""
         return self.action("open-link", url=url)
 
+    # The actions a call reaches before the resource is read: `await tracker.create(...)`
+    # needs no `load()` first.
+    __actions__ = frozenset({"run", "rerun", "rerun_test", "stop", "stop_many", "record_command", "record_command_many", "record_target", "record_target_many", "record_relay_session", "record_relay_session_many", "claim_pane", "claim_pane_many", "inspect_session", "read_screen", "inspect_editor", "copy_visible", "copy_selection", "select_all", "history_top", "history_live", "open_link"})
+
 
 class History(Resource):
     """Command history — `terminal.history`."""
-    __surface__ = "so.tilo.terminal@54ffe4e754ac58fe"
+    __surface__ = "so.tilo.terminal@8f161992a310d594"
     @property
-    def runs(self) -> list[Remembered]:
+    def remembered(self) -> list[Entry[Remembered]]:
         """Read only."""
-        return self.fields["runs"]
+        return self.fields["remembered"]
 
     def remember(self,
         *,
@@ -320,11 +350,11 @@ class History(Resource):
         cwd: str,
         exit: int,
         ended_ms: int,
-        actor: str,
         session: str,
         run: str,
         environment: str | None = None,
-    ) -> Run | None:
+        actor: Any | None = None,
+    ) -> None:
         """Runs the app's action."""
         args: dict[str, Any] = {}
         args["command"] = command
@@ -333,7 +363,8 @@ class History(Resource):
             args["environment"] = environment
         args["exit"] = exit
         args["ended_ms"] = ended_ms
-        args["actor"] = actor
+        if actor is not None:
+            args["actor"] = actor
         args["session"] = session
         args["run"] = run
         return self.action("remember", **args)
@@ -342,22 +373,30 @@ class History(Resource):
         """Runs `remember` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("remember", items)
 
+    # The actions a call reaches before the resource is read: `await tracker.create(...)`
+    # needs no `load()` first.
+    __actions__ = frozenset({"remember", "remember_many"})
+
 
 class RecentEnvironments(Resource):
     """Recent environments — `terminal.recent-environments`."""
-    __surface__ = "so.tilo.terminal@54ffe4e754ac58fe"
+    __surface__ = "so.tilo.terminal@8f161992a310d594"
     devices: dict[str, str]
 
     def used(self,
         *,
         device: str,
         target: str,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         return self.action("used", device=device, target=target)
 
     def used_many(self, items: list[UsedArgs]) -> list[dict[str, Any]]:
         """Runs `used` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("used", items)
+
+    # The actions a call reaches before the resource is read: `await tracker.create(...)`
+    # needs no `load()` first.
+    __actions__ = frozenset({"used", "used_many"})
 
 

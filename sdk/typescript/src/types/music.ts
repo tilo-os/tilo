@@ -48,7 +48,7 @@ export interface Playlist {
   id: string;
   name: string;
   description: string;
-  tracks: string[];
+  tracks: Array<tilo.Entry<string>>;
   cover: string;
 }
 
@@ -93,24 +93,24 @@ export interface Library extends tilo.Resource {
   readonly artists: Record<string, Artist>;
   readonly albums: Record<string, Album>;
   readonly tracks: Record<string, Track>;
-  playlists: Playlist[];
+  playlists: Array<tilo.Entry<Playlist>>;
   liked: string[];
   saved_albums: string[];
   followed_artists: string[];
   createPlaylist(args: {
     name: string;
     track?: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `create-playlist` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   createPlaylistMany(items: CreatePlaylistArgs[]): Promise<tilo.ActionAnswer[]>;
   deletePlaylist(args: {
     playlist: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `delete-playlist` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   deletePlaylistMany(items: DeletePlaylistArgs[]): Promise<tilo.ActionAnswer[]>;
   importTrack(args: {
     song: CatalogueTrack;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `import-track` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   importTrackMany(items: ImportTrackArgs[]): Promise<tilo.ActionAnswer[]>;
   spotifyAccountStatus(): Promise<void>;
@@ -119,8 +119,12 @@ export interface Library extends tilo.Resource {
   }): Promise<void>;
 }
 
+/** The actions `Library` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const LIBRARY_ACTIONS = ["createPlaylist", "createPlaylistMany", "deletePlaylist", "deletePlaylistMany", "importTrack", "importTrackMany", "spotifyAccountStatus", "search"] as const;
+
 /** The `music.library` kind at `path`. */
 export function library(ws: tilo.Workspace, path: string): Library {
-  return resourceProxy(ws, path, SURFACE) as unknown as Library;
+  return resourceProxy(ws, path, SURFACE, LIBRARY_ACTIONS) as unknown as Library;
 }
 

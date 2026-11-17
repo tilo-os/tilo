@@ -24,6 +24,7 @@ fn row(id: &str) -> CatalogueRow {
         action: None,
         has_children: false,
         visibility: None,
+        surface: None,
     }
 }
 

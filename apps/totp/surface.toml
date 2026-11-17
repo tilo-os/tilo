@@ -66,9 +66,9 @@ params = [
 [[resources.types]]
 name = "Algorithm"
 cases = [
-  { name = "sha1" },
-  { name = "sha256" },
-  { name = "sha512" },
+  { name = "Sha1" },
+  { name = "Sha256" },
+  { name = "Sha512" },
 ]
 
 [[resources.types]]

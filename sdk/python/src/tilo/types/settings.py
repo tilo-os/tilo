@@ -17,7 +17,7 @@ all-or-nothing steps, all of them one run.
 from __future__ import annotations
 
 from typing import Any, Literal, NotRequired, TypedDict
-from tilo import Resource, Run
+from tilo import Entry, Resource, Run
 
 __all__ = [
     "ColorFilter",
@@ -156,7 +156,7 @@ __all__ = [
 
 ColorFilter = Literal["none", "grayscale", "inverted", "grayscale_inverted"]
 
-MagnifierView = Literal["lens", "full_screen"]
+MagnifierView = Literal["Lens", "FullScreen"]
 
 OnScreenKeyboard = Literal["auto", "always", "never"]
 
@@ -233,11 +233,11 @@ Currency = Literal["USD", "EUR", "GBP", "JPY", "CHF", "CAD", "AUD", "CNY", "INR"
 
 DateStyle = Literal["Language", "ISO", "US", "EU", "Long"]
 
-FirstDayOfWeek = Literal["monday", "sunday", "saturday"]
+FirstDayOfWeek = Literal["Monday", "Sunday", "Saturday"]
 
-Measurement = Literal["metric", "imperial"]
+Measurement = Literal["Metric", "Imperial"]
 
-NumberStyle = Literal["decimal_point", "decimal_comma"]
+NumberStyle = Literal["DecimalPoint", "DecimalComma"]
 
 TimeStyle = Literal["Language", "H24", "H12"]
 
@@ -643,7 +643,7 @@ SetActiveAccountArgs = TypedDict("SetActiveAccountArgs", {
 
 class Root(Resource):
     """Settings — `settings.root`."""
-    __surface__ = "so.tilo.settings@9d365e8843d611be"
+    __surface__ = "so.tilo.settings@27961302d579fd33"
     def inspect_input_sources(self,
         *,
         query: str | None = None,
@@ -701,10 +701,14 @@ class Root(Resource):
         """Runs the app's action."""
         return self.action("inspect-calendar-choices")
 
+    # The actions a call reaches before the resource is read: `await tracker.create(...)`
+    # needs no `load()` first.
+    __actions__ = frozenset({"inspect_input_sources", "inspect_keyboard_map", "inspect_keyboard_sources", "storage_summary", "search_hub_models", "show_hub_model", "discover_thunderbird_accounts", "choose_thunderbird_metadata", "inspect_thunderbird_import", "inspect_calendar_choices"})
+
 
 class Appearance(Resource):
     """Appearance — `settings.appearance`."""
-    __surface__ = "so.tilo.settings@9d365e8843d611be"
+    __surface__ = "so.tilo.settings@27961302d579fd33"
     mode: str
     dark_theme: str
     light_theme: str
@@ -731,7 +735,7 @@ class Appearance(Resource):
     accent: str | None
     translucency: float | None
 
-    def choose_theme(self, *, theme: str) -> Run | None:
+    def choose_theme(self, *, theme: str) -> None:
         """Runs the app's action."""
         return self.action("choose-theme", theme=theme)
 
@@ -739,7 +743,7 @@ class Appearance(Resource):
         """Runs `choose-theme` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("choose-theme", items)
 
-    def set_dark_mode(self, *, on: bool) -> Run | None:
+    def set_dark_mode(self, *, on: bool) -> None:
         """Runs the app's action."""
         return self.action("set-dark-mode", on=on)
 
@@ -747,10 +751,14 @@ class Appearance(Resource):
         """Runs `set-dark-mode` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("set-dark-mode", items)
 
+    # The actions a call reaches before the resource is read: `await tracker.create(...)`
+    # needs no `load()` first.
+    __actions__ = frozenset({"choose_theme", "choose_theme_many", "set_dark_mode", "set_dark_mode_many"})
+
 
 class AppearanceDevice(Resource):
     """Appearance on this device — `settings.appearance-device`."""
-    __surface__ = "so.tilo.settings@9d365e8843d611be"
+    __surface__ = "so.tilo.settings@27961302d579fd33"
     @property
     def distribution_defaults(self) -> Any | None:
         """Read only."""
@@ -759,7 +767,7 @@ class AppearanceDevice(Resource):
 
 class Accessibility(Resource):
     """Accessibility — `settings.accessibility`."""
-    __surface__ = "so.tilo.settings@9d365e8843d611be"
+    __surface__ = "so.tilo.settings@27961302d579fd33"
     large_cursor: bool
     cursor_size: int
     cursor_theme: str
@@ -792,7 +800,7 @@ class Accessibility(Resource):
     dictation_language: Any
     dictation_literal: bool
 
-    def step_magnifier(self, *, step: str) -> Run | None:
+    def step_magnifier(self, *, step: str) -> None:
         """Runs the app's action."""
         return self.action("step-magnifier", step=step)
 
@@ -800,7 +808,7 @@ class Accessibility(Resource):
         """Runs `step-magnifier` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("step-magnifier", items)
 
-    def set_screen_reader(self, *, on: bool) -> Run | None:
+    def set_screen_reader(self, *, on: bool) -> None:
         """Runs the app's action."""
         return self.action("set-screen-reader", on=on)
 
@@ -808,16 +816,20 @@ class Accessibility(Resource):
         """Runs `set-screen-reader` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("set-screen-reader", items)
 
+    # The actions a call reaches before the resource is read: `await tracker.create(...)`
+    # needs no `load()` first.
+    __actions__ = frozenset({"step_magnifier", "step_magnifier_many", "set_screen_reader", "set_screen_reader_many"})
+
 
 class AccessibilityDevice(Resource):
     """Accessibility on this device — `settings.accessibility-device`."""
-    __surface__ = "so.tilo.settings@9d365e8843d611be"
+    __surface__ = "so.tilo.settings@27961302d579fd33"
     apply_to_sign_in: bool
 
 
 class Input(Resource):
     """Input — `settings.input`."""
-    __surface__ = "so.tilo.settings@9d365e8843d611be"
+    __surface__ = "so.tilo.settings@27961302d579fd33"
     touchpad_natural_scroll: bool
     mouse_natural_scroll: bool
     tap_to_click: bool
@@ -864,7 +876,7 @@ class Input(Resource):
         """Read only."""
         return self.fields["paste_shortcuts"]
 
-    def set_key_repeat(self, *, rate: float) -> Run | None:
+    def set_key_repeat(self, *, rate: float) -> None:
         """Runs the app's action."""
         return self.action("set-key-repeat", rate=rate)
 
@@ -872,7 +884,7 @@ class Input(Resource):
         """Runs `set-key-repeat` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("set-key-repeat", items)
 
-    def choose_layout(self, *, layout: str) -> Run | None:
+    def choose_layout(self, *, layout: str) -> None:
         """Runs the app's action."""
         return self.action("choose-layout", layout=layout)
 
@@ -884,7 +896,7 @@ class Input(Resource):
         *,
         layouts: list[str],
         active: str,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         return self.action("set-layouts", layouts=layouts, active=active)
 
@@ -896,7 +908,7 @@ class Input(Resource):
         *,
         app: str,
         shortcut: str,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         return self.action("set-paste-shortcut", app=app, shortcut=shortcut)
 
@@ -904,10 +916,14 @@ class Input(Resource):
         """Runs `set-paste-shortcut` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("set-paste-shortcut", items)
 
+    # The actions a call reaches before the resource is read: `await tracker.create(...)`
+    # needs no `load()` first.
+    __actions__ = frozenset({"set_key_repeat", "set_key_repeat_many", "choose_layout", "choose_layout_many", "set_layouts", "set_layouts_many", "set_paste_shortcut", "set_paste_shortcut_many"})
+
 
 class InputDevice(Resource):
     """Input on this device — `settings.input-device`."""
-    __surface__ = "so.tilo.settings@9d365e8843d611be"
+    __surface__ = "so.tilo.settings@27961302d579fd33"
     touchpad_enabled: bool
     touchpad_disabled_on_external_mouse: bool
     @property
@@ -943,7 +959,7 @@ class InputDevice(Resource):
         *,
         keyboard: str,
         profile: KeyboardProfile,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         return self.action("set-keyboard-layouts", keyboard=keyboard, profile=profile)
 
@@ -951,7 +967,7 @@ class InputDevice(Resource):
         """Runs `set-keyboard-layouts` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("set-keyboard-layouts", items)
 
-    def use_shared_layouts(self, *, keyboard: str) -> Run | None:
+    def use_shared_layouts(self, *, keyboard: str) -> None:
         """Runs the app's action."""
         return self.action("use-shared-layouts", keyboard=keyboard)
 
@@ -959,7 +975,7 @@ class InputDevice(Resource):
         """Runs `use-shared-layouts` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("use-shared-layouts", items)
 
-    def set_keyboard_model(self, *, model: str) -> Run | None:
+    def set_keyboard_model(self, *, model: str) -> None:
         """Runs the app's action."""
         return self.action("set-keyboard-model", model=model)
 
@@ -970,7 +986,7 @@ class InputDevice(Resource):
     def show_keyboard_layout(self,
         *,
         layout: str | None = None,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         args: dict[str, Any] = {}
         if layout is not None:
@@ -986,7 +1002,7 @@ class InputDevice(Resource):
         level: int,
         extra_levels: bool,
         key: str,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         return self.action("inspect-keyboard", level=level, extra_levels=extra_levels, key=key)
 
@@ -998,7 +1014,7 @@ class InputDevice(Resource):
         *,
         device: str,
         output: str,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         return self.action("set-tablet-output", device=device, output=output)
 
@@ -1010,7 +1026,7 @@ class InputDevice(Resource):
         *,
         device: str,
         on: bool,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         return self.action("set-tablet-keep-aspect", device=device, on=on)
 
@@ -1022,7 +1038,7 @@ class InputDevice(Resource):
         *,
         device: str,
         on: bool,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         return self.action("set-tablet-left-handed", device=device, on=on)
 
@@ -1034,7 +1050,7 @@ class InputDevice(Resource):
         *,
         device: str,
         feel: float,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         return self.action("set-tablet-tip-feel", device=device, feel=feel)
 
@@ -1047,7 +1063,7 @@ class InputDevice(Resource):
         device: str,
         button: str,
         action: str,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         return self.action("set-tablet-button", device=device, button=button, action=action)
 
@@ -1059,7 +1075,7 @@ class InputDevice(Resource):
         *,
         device: str,
         action: str,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         return self.action("set-tablet-eraser", device=device, action=action)
 
@@ -1072,7 +1088,7 @@ class InputDevice(Resource):
         device: str,
         button: int,
         action: str,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         return self.action("set-pad-button", device=device, button=button, action=action)
 
@@ -1087,7 +1103,7 @@ class InputDevice(Resource):
         index: int,
         mode: int,
         action: str,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         return self.action("set-pad-dial", device=device, dial=dial, index=index, mode=mode, action=action)
 
@@ -1095,10 +1111,14 @@ class InputDevice(Resource):
         """Runs `set-pad-dial` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("set-pad-dial", items)
 
+    # The actions a call reaches before the resource is read: `await tracker.create(...)`
+    # needs no `load()` first.
+    __actions__ = frozenset({"set_keyboard_layouts", "set_keyboard_layouts_many", "use_shared_layouts", "use_shared_layouts_many", "set_keyboard_model", "set_keyboard_model_many", "show_keyboard_layout", "show_keyboard_layout_many", "inspect_keyboard", "inspect_keyboard_many", "set_tablet_output", "set_tablet_output_many", "set_tablet_keep_aspect", "set_tablet_keep_aspect_many", "set_tablet_left_handed", "set_tablet_left_handed_many", "set_tablet_tip_feel", "set_tablet_tip_feel_many", "set_tablet_button", "set_tablet_button_many", "set_tablet_eraser", "set_tablet_eraser_many", "set_pad_button", "set_pad_button_many", "set_pad_dial", "set_pad_dial_many"})
+
 
 class TextAssistance(Resource):
     """Spelling and text — `settings.text-assistance`."""
-    __surface__ = "so.tilo.settings@9d365e8843d611be"
+    __surface__ = "so.tilo.settings@27961302d579fd33"
     check_spelling: bool
     auto_correct: bool
     spelling_language: str
@@ -1106,7 +1126,7 @@ class TextAssistance(Resource):
 
 class Power(Resource):
     """Power — `settings.power`."""
-    __surface__ = "so.tilo.settings@9d365e8843d611be"
+    __surface__ = "so.tilo.settings@27961302d579fd33"
     auto_suspend: bool
     suspend_minutes: int
     battery_suspend_minutes: int | None
@@ -1122,7 +1142,7 @@ class Power(Resource):
     critical_battery_percent: int
     critical_action: PowerActionPref
 
-    def set_suspend_plugged_in(self, *, minutes: int) -> Run | None:
+    def set_suspend_plugged_in(self, *, minutes: int) -> None:
         """Runs the app's action."""
         return self.action("set-suspend-plugged-in", minutes=minutes)
 
@@ -1130,7 +1150,7 @@ class Power(Resource):
         """Runs `set-suspend-plugged-in` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("set-suspend-plugged-in", items)
 
-    def set_suspend_on_battery(self, *, minutes: int) -> Run | None:
+    def set_suspend_on_battery(self, *, minutes: int) -> None:
         """Runs the app's action."""
         return self.action("set-suspend-on-battery", minutes=minutes)
 
@@ -1138,10 +1158,14 @@ class Power(Resource):
         """Runs `set-suspend-on-battery` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("set-suspend-on-battery", items)
 
+    # The actions a call reaches before the resource is read: `await tracker.create(...)`
+    # needs no `load()` first.
+    __actions__ = frozenset({"set_suspend_plugged_in", "set_suspend_plugged_in_many", "set_suspend_on_battery", "set_suspend_on_battery_many"})
+
 
 class Widgets(Resource):
     """Widgets — `settings.widgets`."""
-    __surface__ = "so.tilo.settings@9d365e8843d611be"
+    __surface__ = "so.tilo.settings@27961302d579fd33"
     music: WidgetPrefs
     team: WidgetPrefs
     calendar: WidgetPrefs
@@ -1150,7 +1174,7 @@ class Widgets(Resource):
 
 class SearchHistory(Resource):
     """Search history — `settings.search_history`."""
-    __surface__ = "so.tilo.settings@9d365e8843d611be"
+    __surface__ = "so.tilo.settings@27961302d579fd33"
     chosen: str
     chosen_for_text: str
     places: Any
@@ -1158,7 +1182,7 @@ class SearchHistory(Resource):
 
 class Updates(Resource):
     """Updates — `settings.updates`."""
-    __surface__ = "so.tilo.settings@9d365e8843d611be"
+    __surface__ = "so.tilo.settings@27961302d579fd33"
     @property
     def auto(self) -> bool:
         """Read only."""
@@ -1168,7 +1192,7 @@ class Updates(Resource):
         """Read only."""
         return self.fields["last_checked"]
 
-    def record_automatic_updates(self, *, on: bool) -> Run | None:
+    def record_automatic_updates(self, *, on: bool) -> None:
         """Runs the app's action."""
         return self.action("record-automatic-updates", on=on)
 
@@ -1176,7 +1200,7 @@ class Updates(Resource):
         """Runs `record-automatic-updates` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("record-automatic-updates", items)
 
-    def record_update_check(self, *, at: str) -> Run | None:
+    def record_update_check(self, *, at: str) -> None:
         """Runs the app's action."""
         return self.action("record-update-check", at=at)
 
@@ -1184,10 +1208,14 @@ class Updates(Resource):
         """Runs `record-update-check` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("record-update-check", items)
 
+    # The actions a call reaches before the resource is read: `await tracker.create(...)`
+    # needs no `load()` first.
+    __actions__ = frozenset({"record_automatic_updates", "record_automatic_updates_many", "record_update_check", "record_update_check_many"})
+
 
 class Notifications(Resource):
     """Notifications — `settings.notifications`."""
-    __surface__ = "so.tilo.settings@9d365e8843d611be"
+    __surface__ = "so.tilo.settings@27961302d579fd33"
     do_not_disturb: bool
     show_banners: bool
     show_previews: bool
@@ -1197,7 +1225,7 @@ class Notifications(Resource):
     focus: FocusSchedule
     per_app: dict[str, AppNotificationRule]
 
-    def set_do_not_disturb(self, *, on: bool) -> Run | None:
+    def set_do_not_disturb(self, *, on: bool) -> None:
         """Runs the app's action."""
         return self.action("set-do-not-disturb", on=on)
 
@@ -1209,7 +1237,7 @@ class Notifications(Resource):
         *,
         app: str,
         duration: str,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         return self.action("mute-app", app=app, duration=duration)
 
@@ -1217,10 +1245,14 @@ class Notifications(Resource):
         """Runs `mute-app` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("mute-app", items)
 
+    # The actions a call reaches before the resource is read: `await tracker.create(...)`
+    # needs no `load()` first.
+    __actions__ = frozenset({"set_do_not_disturb", "set_do_not_disturb_many", "mute_app", "mute_app_many"})
+
 
 class Audio(Resource):
     """Sound — `settings.audio`."""
-    __surface__ = "so.tilo.settings@9d365e8843d611be"
+    __surface__ = "so.tilo.settings@27961302d579fd33"
     system_sounds: SystemSoundPrefs
     balance: float
     @property
@@ -1232,7 +1264,7 @@ class Audio(Resource):
         """Read only."""
         return self.fields["echo_cancellation"]
 
-    def set_mono_output(self, *, on: bool) -> Run | None:
+    def set_mono_output(self, *, on: bool) -> None:
         """Runs the app's action."""
         return self.action("set-mono-output", on=on)
 
@@ -1240,7 +1272,7 @@ class Audio(Resource):
         """Runs `set-mono-output` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("set-mono-output", items)
 
-    def set_echo_cancellation(self, *, on: bool) -> Run | None:
+    def set_echo_cancellation(self, *, on: bool) -> None:
         """Runs the app's action."""
         return self.action("set-echo-cancellation", on=on)
 
@@ -1248,10 +1280,14 @@ class Audio(Resource):
         """Runs `set-echo-cancellation` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("set-echo-cancellation", items)
 
+    # The actions a call reaches before the resource is read: `await tracker.create(...)`
+    # needs no `load()` first.
+    __actions__ = frozenset({"set_mono_output", "set_mono_output_many", "set_echo_cancellation", "set_echo_cancellation_many"})
+
 
 class AudioDevice(Resource):
     """Sound on this device — `settings.audio-device`."""
-    __surface__ = "so.tilo.settings@9d365e8843d611be"
+    __surface__ = "so.tilo.settings@27961302d579fd33"
     @property
     def output_device(self) -> str | None:
         """Read only."""
@@ -1261,7 +1297,7 @@ class AudioDevice(Resource):
         """Read only."""
         return self.fields["input_device"]
 
-    def remember_output_device(self, *, device: str) -> Run | None:
+    def remember_output_device(self, *, device: str) -> None:
         """Runs the app's action."""
         return self.action("remember-output-device", device=device)
 
@@ -1269,7 +1305,7 @@ class AudioDevice(Resource):
         """Runs `remember-output-device` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("remember-output-device", items)
 
-    def remember_input_device(self, *, device: str) -> Run | None:
+    def remember_input_device(self, *, device: str) -> None:
         """Runs the app's action."""
         return self.action("remember-input-device", device=device)
 
@@ -1277,10 +1313,14 @@ class AudioDevice(Resource):
         """Runs `remember-input-device` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("remember-input-device", items)
 
+    # The actions a call reaches before the resource is read: `await tracker.create(...)`
+    # needs no `load()` first.
+    __actions__ = frozenset({"remember_output_device", "remember_output_device_many", "remember_input_device", "remember_input_device_many"})
+
 
 class Display(Resource):
     """Displays — `settings.display`."""
-    __surface__ = "so.tilo.settings@9d365e8843d611be"
+    __surface__ = "so.tilo.settings@27961302d579fd33"
     @property
     def auto_brightness(self) -> bool:
         """Read only."""
@@ -1291,7 +1331,7 @@ class Display(Resource):
         return self.fields["rotation_lock"]
     scale: float
 
-    def set_automatic_brightness(self, *, on: bool) -> Run | None:
+    def set_automatic_brightness(self, *, on: bool) -> None:
         """Runs the app's action."""
         return self.action("set-automatic-brightness", on=on)
 
@@ -1299,7 +1339,7 @@ class Display(Resource):
         """Runs `set-automatic-brightness` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("set-automatic-brightness", items)
 
-    def set_rotation_lock(self, *, locked: bool) -> Run | None:
+    def set_rotation_lock(self, *, locked: bool) -> None:
         """Runs the app's action."""
         return self.action("set-rotation-lock", locked=locked)
 
@@ -1307,10 +1347,14 @@ class Display(Resource):
         """Runs `set-rotation-lock` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("set-rotation-lock", items)
 
+    # The actions a call reaches before the resource is read: `await tracker.create(...)`
+    # needs no `load()` first.
+    __actions__ = frozenset({"set_automatic_brightness", "set_automatic_brightness_many", "set_rotation_lock", "set_rotation_lock_many"})
+
 
 class NightLight(Resource):
     """Night light — `settings.night-light`."""
-    __surface__ = "so.tilo.settings@9d365e8843d611be"
+    __surface__ = "so.tilo.settings@27961302d579fd33"
     night_light: bool
     night_light_temperature: int
     night_light_schedule: bool
@@ -1318,7 +1362,7 @@ class NightLight(Resource):
 
 class Locale(Resource):
     """Region and language — `settings.locale`."""
-    __surface__ = "so.tilo.settings@9d365e8843d611be"
+    __surface__ = "so.tilo.settings@27961302d579fd33"
     currency: Currency
     date_format: DateStyle
     time_format: TimeStyle
@@ -1329,7 +1373,7 @@ class Locale(Resource):
 
 class Continuity(Resource):
     """Continuity — `settings.continuity`."""
-    __surface__ = "so.tilo.settings@9d365e8843d611be"
+    __surface__ = "so.tilo.settings@27961302d579fd33"
     @property
     def enabled(self) -> bool:
         """Read only."""
@@ -1375,7 +1419,7 @@ class Continuity(Resource):
         """Read only."""
         return self.fields["audit"]
 
-    def allow_continuity(self, *, on: bool) -> Run | None:
+    def allow_continuity(self, *, on: bool) -> None:
         """Runs the app's action."""
         return self.action("allow-continuity", on=on)
 
@@ -1387,7 +1431,7 @@ class Continuity(Resource):
         *,
         capability: str,
         on: bool,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         return self.action("allow-capability", capability=capability, on=on)
 
@@ -1395,10 +1439,14 @@ class Continuity(Resource):
         """Runs `allow-capability` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("allow-capability", items)
 
+    # The actions a call reaches before the resource is read: `await tracker.create(...)`
+    # needs no `load()` first.
+    __actions__ = frozenset({"allow_continuity", "allow_continuity_many", "allow_capability", "allow_capability_many"})
+
 
 class Shortcuts(Resource):
     """Keyboard shortcuts — `settings.shortcuts`."""
-    __surface__ = "so.tilo.settings@9d365e8843d611be"
+    __surface__ = "so.tilo.settings@27961302d579fd33"
     @property
     def bindings(self) -> Any:
         """Read only."""
@@ -1412,7 +1460,7 @@ class Shortcuts(Resource):
         *,
         shortcut: str,
         chord: str,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         return self.action("rebind", shortcut=shortcut, chord=chord)
 
@@ -1420,7 +1468,7 @@ class Shortcuts(Resource):
         """Runs `rebind` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("rebind", items)
 
-    def reset(self, *, shortcuts: list[str]) -> Run | None:
+    def reset(self, *, shortcuts: list[str]) -> None:
         """Runs the app's action."""
         return self.action("reset", shortcuts=shortcuts)
 
@@ -1428,7 +1476,7 @@ class Shortcuts(Resource):
         """Runs `reset` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("reset", items)
 
-    def reset_all(self) -> Run | None:
+    def reset_all(self) -> None:
         """Runs the app's action."""
         return self.action("reset-all")
 
@@ -1436,7 +1484,7 @@ class Shortcuts(Resource):
         """Runs `reset-all` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("reset-all", items)
 
-    def set_action_chords(self, *, chords: Any) -> Run | None:
+    def set_action_chords(self, *, chords: Any) -> None:
         """Runs the app's action."""
         return self.action("set-action-chords", chords=chords)
 
@@ -1444,10 +1492,14 @@ class Shortcuts(Resource):
         """Runs `set-action-chords` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("set-action-chords", items)
 
+    # The actions a call reaches before the resource is read: `await tracker.create(...)`
+    # needs no `load()` first.
+    __actions__ = frozenset({"rebind", "rebind_many", "reset", "reset_many", "reset_all", "reset_all_many", "set_action_chords", "set_action_chords_many"})
+
 
 class ShellViews(Resource):
     """Shell views — `shell-views`."""
-    __surface__ = "so.tilo.settings@9d365e8843d611be"
+    __surface__ = "so.tilo.settings@27961302d579fd33"
     @property
     def bindings(self) -> dict[str, Binding]:
         """Read only."""
@@ -1463,7 +1515,7 @@ class ShellViews(Resource):
         app: str,
         view: str,
         on: str | None = None,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         args: dict[str, Any] = {}
         args["part"] = part
@@ -1481,7 +1533,7 @@ class ShellViews(Resource):
         *,
         part: str,
         on: str | None = None,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         args: dict[str, Any] = {}
         args["part"] = part
@@ -1493,28 +1545,32 @@ class ShellViews(Resource):
         """Runs `reset` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("reset", items)
 
+    # The actions a call reaches before the resource is read: `await tracker.create(...)`
+    # needs no `load()` first.
+    __actions__ = frozenset({"bind", "bind_many", "reset", "reset_many"})
+
 
 class DesktopControls(Resource):
     """Desktop controls — `settings.desktop-controls`."""
-    __surface__ = "so.tilo.settings@9d365e8843d611be"
+    __surface__ = "so.tilo.settings@27961302d579fd33"
     vim_mode: bool
 
 
 class DesktopControlsDevice(Resource):
     """Desktop controls on this device — `settings.desktop-controls-device`."""
-    __surface__ = "so.tilo.settings@9d365e8843d611be"
+    __surface__ = "so.tilo.settings@27961302d579fd33"
     hide_top_bar: bool
 
 
 class AgentProviders(Resource):
     """Agent model providers — `settings.agent-providers`."""
-    __surface__ = "so.tilo.settings@9d365e8843d611be"
+    __surface__ = "so.tilo.settings@27961302d579fd33"
     @property
     def config(self) -> ProviderConfig:
         """Read only."""
         return self.fields["config"]
 
-    def set_providers(self, *, config: Any) -> Run | None:
+    def set_providers(self, *, config: Any) -> None:
         """Runs the app's action."""
         return self.action("set-providers", config=config)
 
@@ -1522,7 +1578,7 @@ class AgentProviders(Resource):
         """Runs `set-providers` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("set-providers", items)
 
-    def follow_local_models(self, *, profile: Any) -> Run | None:
+    def follow_local_models(self, *, profile: Any) -> None:
         """Runs the app's action."""
         return self.action("follow-local-models", profile=profile)
 
@@ -1530,16 +1586,20 @@ class AgentProviders(Resource):
         """Runs `follow-local-models` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("follow-local-models", items)
 
+    # The actions a call reaches before the resource is read: `await tracker.create(...)`
+    # needs no `load()` first.
+    __actions__ = frozenset({"set_providers", "set_providers_many", "follow_local_models", "follow_local_models_many"})
+
 
 class HostedAgentProviders(Resource):
     """Hosted agent model providers — `settings.hosted-agent-providers`."""
-    __surface__ = "so.tilo.settings@9d365e8843d611be"
+    __surface__ = "so.tilo.settings@27961302d579fd33"
     @property
     def hosted(self) -> HostedProfiles:
         """Read only."""
         return self.fields["hosted"]
 
-    def set_providers(self, *, hosted: Any) -> Run | None:
+    def set_providers(self, *, hosted: Any) -> None:
         """Runs the app's action."""
         return self.action("set-providers", hosted=hosted)
 
@@ -1547,10 +1607,14 @@ class HostedAgentProviders(Resource):
         """Runs `set-providers` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("set-providers", items)
 
+    # The actions a call reaches before the resource is read: `await tracker.create(...)`
+    # needs no `load()` first.
+    __actions__ = frozenset({"set_providers", "set_providers_many"})
+
 
 class DefaultApps(Resource):
     """Default apps — `settings.default-apps`."""
-    __surface__ = "so.tilo.settings@9d365e8843d611be"
+    __surface__ = "so.tilo.settings@27961302d579fd33"
     @property
     def handlers(self) -> dict[str, str]:
         """Read only."""
@@ -1560,7 +1624,7 @@ class DefaultApps(Resource):
         *,
         kind: str,
         app: str,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         return self.action("set-default-app-handler", kind=kind, app=app)
 
@@ -1568,22 +1632,26 @@ class DefaultApps(Resource):
         """Runs `set-default-app-handler` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("set-default-app-handler", items)
 
+    # The actions a call reaches before the resource is read: `await tracker.create(...)`
+    # needs no `load()` first.
+    __actions__ = frozenset({"set_default_app_handler", "set_default_app_handler_many"})
+
 
 class Clock(Resource):
     """Clock — `settings.clock`."""
-    __surface__ = "so.tilo.settings@9d365e8843d611be"
+    __surface__ = "so.tilo.settings@27961302d579fd33"
     automatic_zone: bool
 
 
 class DisplayPlacement(Resource):
     """Display layout — `settings.display-placement`."""
-    __surface__ = "so.tilo.settings@9d365e8843d611be"
+    __surface__ = "so.tilo.settings@27961302d579fd33"
     @property
     def placement(self) -> Any:
         """Read only."""
         return self.fields["placement"]
 
-    def arrange_displays(self, *, placement: Any) -> Run | None:
+    def arrange_displays(self, *, placement: Any) -> None:
         """Runs the app's action."""
         return self.action("arrange-displays", placement=placement)
 
@@ -1591,16 +1659,20 @@ class DisplayPlacement(Resource):
         """Runs `arrange-displays` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("arrange-displays", items)
 
+    # The actions a call reaches before the resource is read: `await tracker.create(...)`
+    # needs no `load()` first.
+    __actions__ = frozenset({"arrange_displays", "arrange_displays_many"})
+
 
 class AutomaticDisplay(Resource):
     """Automatic display input — `settings.automatic-display`."""
-    __surface__ = "so.tilo.settings@9d365e8843d611be"
+    __surface__ = "so.tilo.settings@27961302d579fd33"
     @property
     def automatic_display_input(self) -> bool:
         """Read only."""
         return self.fields["automatic_display_input"]
 
-    def set_automatic_display_input(self, *, on: bool) -> Run | None:
+    def set_automatic_display_input(self, *, on: bool) -> None:
         """Runs the app's action."""
         return self.action("set-automatic-display-input", on=on)
 
@@ -1608,10 +1680,14 @@ class AutomaticDisplay(Resource):
         """Runs `set-automatic-display-input` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("set-automatic-display-input", items)
 
+    # The actions a call reaches before the resource is read: `await tracker.create(...)`
+    # needs no `load()` first.
+    __actions__ = frozenset({"set_automatic_display_input", "set_automatic_display_input_many"})
+
 
 class DisplayChange(Resource):
     """Display change — `settings.display-change`."""
-    __surface__ = "so.tilo.settings@9d365e8843d611be"
+    __surface__ = "so.tilo.settings@27961302d579fd33"
     @property
     def id(self) -> int:
         """Read only."""
@@ -1644,7 +1720,7 @@ class DisplayChange(Resource):
 
 class OskSources(Resource):
     """On-screen keyboard layouts — `settings.osk-sources`."""
-    __surface__ = "so.tilo.settings@9d365e8843d611be"
+    __surface__ = "so.tilo.settings@27961302d579fd33"
     @property
     def layout(self) -> str:
         """Read only."""
@@ -1658,7 +1734,7 @@ class OskSources(Resource):
         *,
         layouts: list[str],
         active: str,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         return self.action("set-layouts", layouts=layouts, active=active)
 
@@ -1666,10 +1742,14 @@ class OskSources(Resource):
         """Runs `set-layouts` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("set-layouts", items)
 
+    # The actions a call reaches before the resource is read: `await tracker.create(...)`
+    # needs no `load()` first.
+    __actions__ = frozenset({"set_layouts", "set_layouts_many"})
+
 
 class DeviceVpn(Resource):
     """Your devices as a VPN — `settings.device-vpn`."""
-    __surface__ = "so.tilo.settings@9d365e8843d611be"
+    __surface__ = "so.tilo.settings@27961302d579fd33"
     exit: bool
     @property
     def through(self) -> Any | None:
@@ -1692,7 +1772,7 @@ class DeviceVpn(Resource):
         *,
         device: str,
         on: bool,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         return self.action("route-through", device=device, on=on)
 
@@ -1700,7 +1780,7 @@ class DeviceVpn(Resource):
         """Runs `route-through` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("route-through", items)
 
-    def set_kill_switch(self, *, on: bool) -> Run | None:
+    def set_kill_switch(self, *, on: bool) -> None:
         """Runs the app's action."""
         return self.action("set-kill-switch", on=on)
 
@@ -1715,7 +1795,7 @@ class DeviceVpn(Resource):
         profile: str,
         on: bool,
         allow_local: bool | None = None,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         args: dict[str, Any] = {}
         args["profile"] = profile
@@ -1728,7 +1808,7 @@ class DeviceVpn(Resource):
         """Runs `set-profile-kill-switch` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("set-profile-kill-switch", items)
 
-    def release_profile(self, *, profile: str) -> Run | None:
+    def release_profile(self, *, profile: str) -> None:
         """Runs the app's action."""
         return self.action("release-profile", profile=profile)
 
@@ -1736,16 +1816,20 @@ class DeviceVpn(Resource):
         """Runs `release-profile` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("release-profile", items)
 
+    # The actions a call reaches before the resource is read: `await tracker.create(...)`
+    # needs no `load()` first.
+    __actions__ = frozenset({"route_through", "route_through_many", "set_kill_switch", "set_kill_switch_many", "set_profile_kill_switch", "set_profile_kill_switch_many", "release_profile", "release_profile_many"})
+
 
 class Identity(Resource):
     """Your colour — `settings.identity`."""
-    __surface__ = "so.tilo.settings@9d365e8843d611be"
+    __surface__ = "so.tilo.settings@27961302d579fd33"
     colour: str | None
 
 
 class NetworkUsage(Resource):
     """Data usage — `settings.network-usage`."""
-    __surface__ = "so.tilo.settings@9d365e8843d611be"
+    __surface__ = "so.tilo.settings@27961302d579fd33"
     reset_day: Any
     limit_gb: int
     @property
@@ -1767,7 +1851,7 @@ class NetworkUsage(Resource):
         at: int,
         offset: int,
         boot: str | None = None,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         args: dict[str, Any] = {}
         args["readings"] = readings
@@ -1784,7 +1868,7 @@ class NetworkUsage(Resource):
     def reset_data_used(self,
         *,
         connection: str | None = None,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         args: dict[str, Any] = {}
         if connection is not None:
@@ -1798,7 +1882,7 @@ class NetworkUsage(Resource):
     def forget_data_used(self,
         *,
         connection: str | None = None,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         args: dict[str, Any] = {}
         if connection is not None:
@@ -1809,10 +1893,14 @@ class NetworkUsage(Resource):
         """Runs `forget-data-used` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("forget-data-used", items)
 
+    # The actions a call reaches before the resource is read: `await tracker.create(...)`
+    # needs no `load()` first.
+    __actions__ = frozenset({"count_data_used", "count_data_used_many", "reset_data_used", "reset_data_used_many", "forget_data_used", "forget_data_used_many"})
+
 
 class McpServer(Resource):
     """Agents from your other devices — `settings.mcp-server`."""
-    __surface__ = "so.tilo.settings@9d365e8843d611be"
+    __surface__ = "so.tilo.settings@27961302d579fd33"
     @property
     def accept_own_devices(self) -> bool:
         """Read only."""
@@ -1822,7 +1910,7 @@ class McpServer(Resource):
         """Read only."""
         return self.fields["act_without_asking"]
 
-    def set_accept_own_devices(self, *, on: bool) -> Run | None:
+    def set_accept_own_devices(self, *, on: bool) -> None:
         """Runs the app's action."""
         return self.action("set-accept-own-devices", on=on)
 
@@ -1830,7 +1918,7 @@ class McpServer(Resource):
         """Runs `set-accept-own-devices` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("set-accept-own-devices", items)
 
-    def set_act_without_asking(self, *, on: bool) -> Run | None:
+    def set_act_without_asking(self, *, on: bool) -> None:
         """Runs the app's action."""
         return self.action("set-act-without-asking", on=on)
 
@@ -1838,11 +1926,15 @@ class McpServer(Resource):
         """Runs `set-act-without-asking` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("set-act-without-asking", items)
 
+    # The actions a call reaches before the resource is read: `await tracker.create(...)`
+    # needs no `load()` first.
+    __actions__ = frozenset({"set_accept_own_devices", "set_accept_own_devices_many", "set_act_without_asking", "set_act_without_asking_many"})
+
 
 class Accounts(Resource):
     """Accounts — `tilo.accounts`."""
-    __surface__ = "so.tilo.settings@9d365e8843d611be"
-    accounts: list[PersonAccount]
+    __surface__ = "so.tilo.settings@27961302d579fd33"
+    accounts: list[Entry[PersonAccount]]
     active: dict[str, str]
 
     def publish_browser_identity(self,
@@ -1850,7 +1942,7 @@ class Accounts(Resource):
         root: str,
         origin: str,
         display_name: str,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         return self.action("publish-browser-identity", root=root, origin=origin, display_name=display_name)
 
@@ -1866,7 +1958,7 @@ class Accounts(Resource):
         config: Any,
         enabled: bool,
         tint: int,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         return self.action("save-account", id=id, type_id=type_id, display_name=display_name, config=config, enabled=enabled, tint=tint)
 
@@ -1874,7 +1966,7 @@ class Accounts(Resource):
         """Runs `save-account` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("save-account", items)
 
-    def remove_account(self, *, account: str) -> Run | None:
+    def remove_account(self, *, account: str) -> None:
         """Runs the app's action."""
         return self.action("remove-account", account=account)
 
@@ -1882,12 +1974,16 @@ class Accounts(Resource):
         """Runs `remove-account` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("remove-account", items)
 
-    def set_active_account(self, *, account: str) -> Run | None:
+    def set_active_account(self, *, account: str) -> None:
         """Runs the app's action."""
         return self.action("set-active-account", account=account)
 
     def set_active_account_many(self, items: list[SetActiveAccountArgs]) -> list[dict[str, Any]]:
         """Runs `set-active-account` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("set-active-account", items)
+
+    # The actions a call reaches before the resource is read: `await tracker.create(...)`
+    # needs no `load()` first.
+    __actions__ = frozenset({"publish_browser_identity", "publish_browser_identity_many", "save_account", "save_account_many", "remove_account", "remove_account_many", "set_active_account", "set_active_account_many"})
 
 

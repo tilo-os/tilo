@@ -935,6 +935,9 @@ struct InstalledApp {
     /// Whether this caller may open it: the workspace names an app it may
     /// not open without the action.
     opens: bool,
+    /// What its signed package publishes (`surface.toml`), as the workspace's
+    /// listing carries it: the types an agent reads before the app opens.
+    surface: Option<String>,
 }
 
 impl InstalledApp {
@@ -1223,11 +1226,17 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
                 // close, and is still this caller's to open.
                 let opens = row.action.is_some();
                 match apps.iter_mut().find(|app| app.app_id == app_id) {
-                    Some(app) => app.opens |= opens,
+                    Some(app) => {
+                        app.opens |= opens;
+                        if row.surface.is_some() {
+                            app.surface.clone_from(&row.surface);
+                        }
+                    }
                     None => apps.push(InstalledApp {
                         app_id: app_id.to_owned(),
                         label: row.resource.label.clone(),
                         opens,
+                        surface: row.surface.clone(),
                     }),
                 }
             }
@@ -2196,6 +2205,23 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         Ok(reply)
     }
 
+    /// The surface `app_id` publishes: the one this process runs it with, or
+    /// the signed package the workspace has installed.
+    async fn surface_bytes(&self, app_id: &str) -> Option<Vec<u8>> {
+        if let Some(bytes) = collab_types::app_surface::bytes_of(app_id) {
+            return Some(bytes.to_vec());
+        }
+        if let Ok(installed) = self.installed().await
+            && let Some(surface) = installed
+                .iter()
+                .find(|app| app.app_id == app_id)
+                .and_then(|app| app.surface.clone())
+        {
+            return Some(surface.into_bytes());
+        }
+        self.host.installed_surface(app_id).await.flatten()
+    }
+
     async fn agent_read(&self, args: ReadArgs, structured: bool) -> Result<Reply, Failure> {
         if let Some((app, record)) = tilo_actions::remote::resource_parts(&args.path) {
             // Boxed: the wait it holds is no part of every agent call's future.
@@ -2204,6 +2230,24 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         let parsed = parse_path(&args.path)?;
         if parsed.action.is_some() {
             return Err("tilo_read reads a resource; run an action with tilo_do".into());
+        }
+        // A bare app answers what it publishes whether or not it runs: the
+        // signed package's surface is what its types are read from, and what
+        // its records are decided against, before its first window.
+        if structured
+            && parsed.segments.is_empty()
+            && let Ok(AppRef::Installed { app_id, .. } | AppRef::Running { app_id, .. }) =
+                self.app_ref(&parsed.app).await
+            && let Some(surface) = self.surface_bytes(&app_id).await
+        {
+            let mut reply = Reply::ok(String::new());
+            reply.structured = Some(json!({
+                "path": parsed.app,
+                "kind": "app",
+                "app": app_id,
+                "surface": String::from_utf8_lossy(&surface),
+            }));
+            return Ok(reply);
         }
         let (mut resolved, forms) = match self.resolve(&parsed).await? {
             (Ok(resolved), forms) => (resolved, forms),
@@ -2215,14 +2259,14 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         // read from (`tilo sdk gen -w`).
         if structured
             && resolved.node.is_none()
-            && let Some(surface) = collab_types::app_surface::bytes_of(&resolved.app_id)
+            && let Some(surface) = self.surface_bytes(&resolved.app_id).await
         {
             let mut reply = Reply::ok(String::new());
             reply.structured = Some(json!({
                 "path": resolved.path,
                 "kind": "app",
                 "app": resolved.app_id,
-                "surface": String::from_utf8_lossy(surface),
+                "surface": String::from_utf8_lossy(&surface),
             }));
             return Ok(reply);
         }

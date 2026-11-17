@@ -64,31 +64,35 @@ export interface MarkUsedArgs {
 
 /** Remote connections — `remote.connection-list`. */
 export interface ConnectionList extends tilo.Resource {
-  connections: Connection[];
+  connections: Array<tilo.Entry<Connection>>;
   addConnection(args: {
     name: string;
     host: string;
     kind: ConnectionKind;
     port?: number;
     user?: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `add-connection` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   addConnectionMany(items: AddConnectionArgs[]): Promise<tilo.ActionAnswer[]>;
   deleteConnection(args: {
     connection: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `delete-connection` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   deleteConnectionMany(items: DeleteConnectionArgs[]): Promise<tilo.ActionAnswer[]>;
   markUsed(args: {
     connection: string;
     at_ms: number;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `mark-used` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   markUsedMany(items: MarkUsedArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 
+/** The actions `ConnectionList` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const CONNECTIONLIST_ACTIONS = ["addConnection", "addConnectionMany", "deleteConnection", "deleteConnectionMany", "markUsed", "markUsedMany"] as const;
+
 /** The `remote.connection-list` kind at `path`. */
 export function connectionList(ws: tilo.Workspace, path: string): ConnectionList {
-  return resourceProxy(ws, path, SURFACE) as unknown as ConnectionList;
+  return resourceProxy(ws, path, SURFACE, CONNECTIONLIST_ACTIONS) as unknown as ConnectionList;
 }
 

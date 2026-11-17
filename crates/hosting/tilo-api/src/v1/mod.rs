@@ -553,6 +553,7 @@ impl<'a> Caller<'a> {
                 shaped::<answers::Listing>(with(listed, "text", said)).map(Answer::ok)
             }
             "readResource" => {
+                self.check_surface(&self.workspace()).await?;
                 let args = with(
                     json!({"path": self.params.get("path")}),
                     "cursor",
@@ -938,7 +939,18 @@ impl<'a> Caller<'a> {
             read.get("app").and_then(Value::as_str),
             read.get("surface").and_then(Value::as_str),
         ) else {
-            return Ok(());
+            // The types name a surface, and the workspace publishes none for
+            // the app they act on: what they were written for is nowhere to
+            // check this call against, so it is refused rather than run.
+            return Err(ApiError::new(
+                "surface_changed",
+                format!(
+                    "these types were made for {sent}, and the workspace's {app} publishes no surface: it is not installed there, or has not published yet"
+                ),
+            )
+            .next(format!(
+                "install and start {app} there, or write the types for this workspace: tilo sdk gen -w {workspace}"
+            )));
         };
         let published = surface_version(id_of_app, surface);
         crate::lock(&self.server.v1.surfaces).insert(id, published.clone());

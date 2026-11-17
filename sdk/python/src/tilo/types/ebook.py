@@ -17,7 +17,7 @@ all-or-nothing steps, all of them one run.
 from __future__ import annotations
 
 from typing import Any, Literal, NotRequired, TypedDict
-from tilo import Resource, Run
+from tilo import Entry, Resource, Run
 
 __all__ = [
     "AnnoKind",
@@ -240,15 +240,15 @@ KeepArgs = TypedDict("KeepArgs", {
 
 class Library(Resource):
     """Books — `ebook.library`."""
-    __surface__ = "so.tilo.ebook@f7c27282fa766530"
-    entries: list[LibraryEntry]
+    __surface__ = "so.tilo.ebook@ae688919837912da"
+    entries: list[Entry[LibraryEntry]]
     progress: dict[str, Progress]
     settings: Settings
     default_font: str
     prefs: LibraryPrefs
-    fonts: list[FontEntry]
-    schemes: list[ColorScheme]
-    annotations: list[Mark]
+    fonts: list[Entry[FontEntry]]
+    schemes: list[Entry[ColorScheme]]
+    annotations: list[Entry[Mark]]
 
     def shelve(self,
         *,
@@ -258,7 +258,7 @@ class Library(Resource):
         subject: str,
         shared: bool,
         content: Any | None = None,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         args: dict[str, Any] = {}
         args["book"] = book
@@ -280,7 +280,7 @@ class Library(Resource):
         title: str,
         author: str,
         subject: str,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         return self.action("shelve-found", book=book, title=title, author=author, subject=subject)
 
@@ -288,7 +288,7 @@ class Library(Resource):
         """Runs `shelve-found` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("shelve-found", items)
 
-    def remove_from_library(self, *, book: str) -> Run | None:
+    def remove_from_library(self, *, book: str) -> None:
         """Runs the app's action."""
         return self.action("remove-from-library", book=book)
 
@@ -300,7 +300,7 @@ class Library(Resource):
         *,
         book: str,
         index: Any,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         return self.action("index-book", book=book, index=index)
 
@@ -315,7 +315,7 @@ class Library(Resource):
         block: int,
         fraction: float,
         opened: bool,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         return self.action("record-progress", book=book, chapter=chapter, block=block, fraction=fraction, opened=opened)
 
@@ -328,7 +328,7 @@ class Library(Resource):
         passage: Passage,
         color: str,
         text: str,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         return self.action("add-note", passage=passage, color=color, text=text)
 
@@ -340,7 +340,7 @@ class Library(Resource):
         *,
         highlight: str,
         text: str,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         return self.action("add-comment", highlight=highlight, text=text)
 
@@ -354,7 +354,7 @@ class Library(Resource):
         chapter: int,
         block: int,
         excerpt: str,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         return self.action("toggle-bookmark", book=book, chapter=chapter, block=block, excerpt=excerpt)
 
@@ -369,7 +369,7 @@ class Library(Resource):
         color: str,
         replacing: list[str],
         pieces: list[HiPiece],
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         return self.action("highlight", book=book, chapter=chapter, color=color, replacing=replacing, pieces=pieces)
 
@@ -381,7 +381,7 @@ class Library(Resource):
         *,
         highlight: str,
         color: str,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         return self.action("change-color", highlight=highlight, color=color)
 
@@ -389,7 +389,7 @@ class Library(Resource):
         """Runs `change-color` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("change-color", items)
 
-    def delete_highlight(self, *, highlight: str) -> Run | None:
+    def delete_highlight(self, *, highlight: str) -> None:
         """Runs the app's action."""
         return self.action("delete-highlight", highlight=highlight)
 
@@ -397,7 +397,7 @@ class Library(Resource):
         """Runs `delete-highlight` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("delete-highlight", items)
 
-    def delete_annotation(self, *, annotation: str) -> Run | None:
+    def delete_annotation(self, *, annotation: str) -> None:
         """Runs the app's action."""
         return self.action("delete-annotation", annotation=annotation)
 
@@ -405,7 +405,7 @@ class Library(Resource):
         """Runs `delete-annotation` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("delete-annotation", items)
 
-    def remove_font(self, *, font: str) -> Run | None:
+    def remove_font(self, *, font: str) -> None:
         """Runs the app's action."""
         return self.action("remove-font", font=font)
 
@@ -413,7 +413,7 @@ class Library(Resource):
         """Runs `remove-font` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("remove-font", items)
 
-    def delete_scheme(self, *, scheme: str) -> Run | None:
+    def delete_scheme(self, *, scheme: str) -> None:
         """Runs the app's action."""
         return self.action("delete-scheme", scheme=scheme)
 
@@ -433,28 +433,36 @@ class Library(Resource):
             args["chapter"] = chapter
         return self.action("read-chapter", **args)
 
+    # The actions a call reaches before the resource is read: `await tracker.create(...)`
+    # needs no `load()` first.
+    __actions__ = frozenset({"shelve", "shelve_many", "shelve_found", "shelve_found_many", "remove_from_library", "remove_from_library_many", "index_book", "index_book_many", "record_progress", "record_progress_many", "add_note", "add_note_many", "add_comment", "add_comment_many", "toggle_bookmark", "toggle_bookmark_many", "highlight", "highlight_many", "change_color", "change_color_many", "delete_highlight", "delete_highlight_many", "delete_annotation", "delete_annotation_many", "remove_font", "remove_font_many", "delete_scheme", "delete_scheme_many", "read_chapter"})
+
 
 class BooksCatalogues(Resource):
     """Book catalogues — `settings.books-catalogues`."""
-    __surface__ = "so.tilo.ebook@f7c27282fa766530"
+    __surface__ = "so.tilo.ebook@ae688919837912da"
     keep_catalogues: bool
 
 
 class Files(Resource):
     """Book files — `ebook.files`."""
-    __surface__ = "so.tilo.ebook@f7c27282fa766530"
+    __surface__ = "so.tilo.ebook@ae688919837912da"
     devices: dict[str, Any]
 
     def keep(self,
         *,
         device: str,
         kept: Any,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         return self.action("keep", device=device, kept=kept)
 
     def keep_many(self, items: list[KeepArgs]) -> list[dict[str, Any]]:
         """Runs `keep` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("keep", items)
+
+    # The actions a call reaches before the resource is read: `await tracker.create(...)`
+    # needs no `load()` first.
+    __actions__ = frozenset({"keep", "keep_many"})
 
 

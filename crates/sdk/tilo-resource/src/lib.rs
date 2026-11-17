@@ -167,6 +167,7 @@ mod value;
 pub mod vocabulary;
 pub mod words;
 
+pub use __private::FlatFields;
 pub use absolute_path::{AbsolutePath, RelativePath};
 pub use action::{
     ActionCx, ActionKey, ActionKind, ActionRef, Binds, Invoke, Mapped, NoParams, Operation,
@@ -411,6 +412,9 @@ pub mod __private {
         pub example: Option<fn() -> serde_json::Value>,
         /// Its type's fields are the verb's parameters, each its own.
         pub flat: bool,
+        /// For a flattened parameter, its type's fields and their published
+        /// types, by name: what names an enum or record a nested argument is.
+        pub flat_types: Option<fn(&mut crate::TypeSet) -> Vec<(String, crate::FieldType)>>,
         /// It takes content another action produced, by its hash, beside
         /// the verb's other parameters.
         pub content: bool,
@@ -425,6 +429,33 @@ pub mod __private {
         Known(ParamType),
         /// Read off the schema of the (present) value's type.
         Schema(fn() -> serde_json::Value),
+    }
+
+    /// A record's fields as an action's own parameters, typed as the record
+    /// declares them: what `#[param(flatten)]` publishes, so an argument that
+    /// is an enum names that enum rather than "any".
+    pub trait FlatFields {
+        /// The record's fields, in declaration order, with the types the
+        /// record declares them; the types it names are declared in `types`.
+        fn flat_fields(types: &mut crate::TypeSet) -> Vec<(String, crate::FieldType)>;
+    }
+
+    impl<T: crate::JsonSchema> FlatFields for T {
+        fn flat_fields(types: &mut crate::TypeSet) -> Vec<(String, crate::FieldType)> {
+            let crate::FieldType::Named(name) = <T as crate::JsonSchema>::field_type(types) else {
+                return Vec::new();
+            };
+            types
+                .get(&name)
+                .map(|record| {
+                    record
+                        .fields
+                        .iter()
+                        .map(|field| (field.name.clone(), field.ty.clone()))
+                        .collect()
+                })
+                .unwrap_or_default()
+        }
     }
 
     /// The published parameters of `params`.
@@ -527,6 +558,11 @@ pub mod __private {
             .filter(|param| !param.flat)
             .map(|param| (param.name, param.field_type))
             .collect();
+        decl.flat_types = verb
+            .params
+            .iter()
+            .find(|param| param.flat)
+            .and_then(|param| param.flat_types);
         decl.kind = verb.kind;
         decl.keywords = verb
             .keywords

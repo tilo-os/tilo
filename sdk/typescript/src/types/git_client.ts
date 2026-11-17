@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.git-client@34cdca9d43811cee";
+export const SURFACE = "so.tilo.git-client@a8b4e212b7ce16dc";
 
 export interface Branch {
   name: string;
@@ -113,7 +113,7 @@ export interface Repo extends tilo.Resource {
   readonly shared: unknown;
   recordRepository(args: {
     shared: SharedRepo;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `record-repository` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   recordRepositoryMany(items: RecordRepositoryArgs[]): Promise<tilo.ActionAnswer[]>;
   diffLayout(): Promise<void>;
@@ -122,8 +122,12 @@ export interface Repo extends tilo.Resource {
   wrapLines(): Promise<void>;
 }
 
+/** The actions `Repo` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const REPO_ACTIONS = ["recordRepository", "recordRepositoryMany", "diffLayout", "syntaxHighlight", "showWhitespace", "wrapLines"] as const;
+
 /** The `git_client.repo` kind at `path`. */
 export function repo(ws: tilo.Workspace, path: string): Repo {
-  return resourceProxy(ws, path, SURFACE) as unknown as Repo;
+  return resourceProxy(ws, path, SURFACE, REPO_ACTIONS) as unknown as Repo;
 }
 

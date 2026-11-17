@@ -17,7 +17,7 @@ all-or-nothing steps, all of them one run.
 from __future__ import annotations
 
 from typing import Any, Literal, NotRequired, TypedDict
-from tilo import Resource, Run
+from tilo import Entry, Resource, Run
 
 __all__ = [
     "Priority",
@@ -25,7 +25,7 @@ __all__ = [
     "ClearFiltersArgs",
 ]
 
-Priority = Literal["emerg", "alert", "crit", "err", "warning", "notice", "info", "debug"]
+Priority = Literal["Emerg", "Alert", "Crit", "Err", "Warning", "Notice", "Info", "Debug"]
 
 ClearFiltersArgs = TypedDict("ClearFiltersArgs", {
 })
@@ -33,13 +33,13 @@ ClearFiltersArgs = TypedDict("ClearFiltersArgs", {
 
 class Journal(Resource):
     """System journal — `logs.journal`."""
-    __surface__ = "so.tilo.logs@2428af2372c28388"
+    __surface__ = "so.tilo.logs@4d97454d27277b41"
     severity: Priority
     unit: str
     boot: str
     search: str
 
-    def clear_filters(self) -> Run | None:
+    def clear_filters(self) -> None:
         """Runs the app's action."""
         return self.action("clear-filters")
 
@@ -61,5 +61,9 @@ class Journal(Resource):
     def select_entry(self, *, entry_id: str) -> None:
         """Runs the app's action."""
         return self.action("select-entry", entry_id=entry_id)
+
+    # The actions a call reaches before the resource is read: `await tracker.create(...)`
+    # needs no `load()` first.
+    __actions__ = frozenset({"clear_filters", "clear_filters_many", "set_live_tail", "select_entry"})
 
 

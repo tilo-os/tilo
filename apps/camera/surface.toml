@@ -37,16 +37,16 @@ params = [
 [[resources.types]]
 name = "CaptureKind"
 cases = [
-  { name = "photo" },
-  { name = "video" },
+  { name = "Photo" },
+  { name = "Video" },
 ]
 
 [[resources.types]]
 name = "Facing"
 cases = [
-  { name = "back" },
-  { name = "front" },
-  { name = "wide" },
+  { name = "Back" },
+  { name = "Front" },
+  { name = "Wide" },
 ]
 
 [[resources.types]]

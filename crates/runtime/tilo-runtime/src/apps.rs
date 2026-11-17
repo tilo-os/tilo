@@ -72,13 +72,15 @@ impl Apps {
     #[must_use]
     pub fn from_env(profile: &Path, workspace: &str) -> Self {
         let home = tilo_paths::home();
-        Self::new(
+        let apps = Self::new(
             package_store::Catalog::from_env().ok(),
             profile,
             workspace,
             home.as_deref().map_or_else(PathBuf::new, data_home),
             launcher_candidates(),
-        )
+        );
+        apps.register_installed_surfaces();
+        apps
     }
 
     /// Explicit stores and places, for tests.
@@ -213,11 +215,9 @@ impl Apps {
             )
     }
 
-    /// Run the package `app` with the surface its signed package ships, so
-    /// the records of the person's it declares there are kept in their workspace
-    /// as a built-in app's are. A package whose surface no longer matches its
-    /// signature declares none.
-    fn run_with_signed_surface(&self, app: &InstalledApp) {
+    /// The surface the signed package `app` ships, when its signature still
+    /// matches the bytes.
+    fn signed_surface_of(&self, app: &InstalledApp) -> Option<Vec<u8>> {
         let package = self
             .catalog
             .as_ref()
@@ -226,11 +226,44 @@ impl Apps {
                 packages
                     .into_iter()
                     .find(|package| package.manifest_path == app.manifest_path)
-            });
-        if let Some(surface) = package
-            .as_ref()
-            .and_then(package_store::integrity::signed_surface)
-        {
+            })?;
+        package_store::integrity::signed_surface(&package)
+    }
+
+    /// The surface (`surface.toml`) the installed package `app_id`
+    /// publishes, whether or not it runs here: what an agent reads its
+    /// types from, and what an app's records are decided against, before
+    /// the app first opens. The one it was launched with wins, since an
+    /// update the package store has not finished installing is not one.
+    #[must_use]
+    pub fn installed_surface(&self, app_id: &str) -> Option<Vec<u8>> {
+        if let Some(bytes) = ui::app_surface::bytes_of(app_id) {
+            return Some(bytes.to_vec());
+        }
+        let app = self
+            .installed()
+            .into_iter()
+            .find(|app| app.app_id == app_id)?;
+        let bytes = self.signed_surface_of(&app)?;
+        tilo_action_broker::register_package_surface(app_id, &bytes);
+        Some(bytes)
+    }
+
+    /// Name every installed package's signed surface now, so the app surfaces
+    /// a workspace's agents read and its changes are decided against are there
+    /// from the start rather than from an app's first window.
+    pub fn register_installed_surfaces(&self) {
+        for app in self.installed() {
+            self.run_with_signed_surface(&app);
+        }
+    }
+
+    /// Run the package `app` with the surface its signed package ships, so
+    /// the records of the person's it declares there are kept in their workspace
+    /// as a built-in app's are. A package whose surface no longer matches its
+    /// signature declares none.
+    fn run_with_signed_surface(&self, app: &InstalledApp) {
+        if let Some(surface) = self.signed_surface_of(app) {
             tilo_action_broker::register_package_surface(&app.app_id, &surface);
         }
     }

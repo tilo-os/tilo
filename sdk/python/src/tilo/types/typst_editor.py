@@ -17,7 +17,7 @@ all-or-nothing steps, all of them one run.
 from __future__ import annotations
 
 from typing import Any, Literal, NotRequired, TypedDict
-from tilo import Resource, Run
+from tilo import Entry, Resource, Run
 
 __all__ = [
     "TypstFile",
@@ -53,14 +53,14 @@ CloseFileArgs = TypedDict("CloseFileArgs", {
 class Workspace(Resource):
     """Typst workspace — `typst-editor.workspace`."""
     __surface__ = "so.tilo.typst-editor@f31407ab794a3630"
-    files: list[TypstFile]
+    files: list[Entry[TypstFile]]
 
     def new_file(self,
         *,
         name: str,
         path: str | None = None,
         source: str | None = None,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         args: dict[str, Any] = {}
         args["name"] = name
@@ -78,7 +78,7 @@ class Workspace(Resource):
         *,
         file: str,
         path: str,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         return self.action("saved-at", file=file, path=path)
 
@@ -87,12 +87,16 @@ class Workspace(Resource):
         return self.many("saved-at", items)
 
     # the app's `load` action is the SDK's own: run it with `action("load")`.
-    def close_file(self, *, file: str) -> Run | None:
+    def close_file(self, *, file: str) -> None:
         """Runs the app's action."""
         return self.action("close-file", file=file)
 
     def close_file_many(self, items: list[CloseFileArgs]) -> list[dict[str, Any]]:
         """Runs `close-file` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("close-file", items)
+
+    # The actions a call reaches before the resource is read: `await tracker.create(...)`
+    # needs no `load()` first.
+    __actions__ = frozenset({"new_file", "new_file_many", "saved_at", "saved_at_many", "close_file", "close_file_many"})
 
 

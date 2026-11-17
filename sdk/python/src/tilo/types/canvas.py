@@ -17,15 +17,43 @@ all-or-nothing steps, all of them one run.
 from __future__ import annotations
 
 from typing import Any, Literal, NotRequired, TypedDict
-from tilo import Resource, Run
+from tilo import Entry, Resource, Run
 
 __all__ = [
+    "AddLayer",
     "Adjust",
+    "Align",
+    "Arrange",
+    "Chart",
+    "Combine",
+    "Draw",
+    "EditLayer",
+    "EditMarks",
+    "Gradient",
     "Ground",
+    "ImportSvg",
     "Layer",
     "Mark",
+    "Matte",
+    "MediumSpec",
+    "NewArtwork",
+    "NewMark",
+    "NewStroke",
+    "Open",
+    "OpenArtwork",
+    "Paint",
+    "PigmentSpec",
+    "RemoveLayer",
+    "RemoveMarks",
+    "RemoveMedium",
+    "SaveMedium",
+    "Select",
+    "SetArtwork",
+    "SetReference",
+    "Shadow",
     "Shape",
     "Style",
+    "UseSelection",
     "Recent",
     "Artwork",
     "RecentArtworks",
@@ -48,6 +76,14 @@ __all__ = [
     "ForgetArgs",
 ]
 
+class AddLayer(TypedDict):
+    id: str | None
+    name: str
+    medium: str | None
+    opacity: float | None
+    above: str | None
+    texture: float | None
+
 class Adjust(TypedDict):
     exposure: float | None
     contrast: float | None
@@ -65,9 +101,112 @@ class Adjust(TypedDict):
     sharpen: float | None
     vignette: float | None
 
+class Align(TypedDict):
+    ids: list[str]
+    edge: str | None
+    distribute: str | None
+    to: str | None
+
+class Arrange(TypedDict):
+    ids: list[str]
+    to: str
+    of: str | None
+
+class Chart(TypedDict):
+    labels: list[str]
+    values: list[float]
+    kind: str | None
+    box: list[float] | None
+    max: float | None
+    bar_width: float | None
+    colour: str | None
+    label_size: float | None
+    values_shown: bool | None
+    title: str | None
+    id: str | None
+    layer: str | None
+
+class Combine(TypedDict):
+    ids: list[str]
+    op: str
+
+class Draw(TypedDict):
+    layer: str | None
+    marks: list[NewMark]
+
+class EditLayer(TypedDict):
+    id: str
+    name: str | None
+    group: str | None
+    medium: str | None
+    opacity: float | None
+    visible: bool | None
+    locked: bool | None
+    to: str | None
+    texture: float | None
+    adjust: Any | None
+    mask: str | None
+    invert: bool | None
+    clip: bool | None
+
+class EditMarks(TypedDict):
+    pixelated: bool | None
+    ids: list[str]
+    name: str | None
+    shape: Any | None
+    dash: list[float] | None
+    cap: str | None
+    join: str | None
+    blend: str | None
+    shadow: Any | None
+    inner_shadow: Any | None
+    grain: float | None
+    feather: float | None
+    group: str | None
+    clip: str | None
+    fill: str | None
+    gradient: Any | None
+    stroke: str | None
+    stroke_width: float | None
+    opacity: float | None
+    brush: str | None
+    size: float | None
+    brush_size: float | None
+    angle: float | None
+    wet: bool | None
+    params: dict[str, float] | None
+    move_by: list[float] | None
+    scale: float | None
+    rotate: float | None
+    layer: str | None
+    transform: list[float] | None
+    flip: str | None
+    crop: list[float] | None
+    straighten: float | None
+    adjust: Adjust | None
+    smooth: float | None
+    simplify: float | None
+    extend: list[list[float]] | None
+    split: list[float] | None
+    merge: bool | None
+
+Gradient = TypedDict("Gradient", {
+    "kind": "str",
+    "from": "list[float]",
+    "to": "list[float]",
+    "stops": "list[Any]",
+    "focal": "list[float] | None",
+})
+
 class Ground(TypedDict):
     texture: str
     colour: str
+
+class ImportSvg(TypedDict):
+    svg: str
+    layer: str | None
+    group: str | None
+    fit: list[float] | None
 
 class Layer(TypedDict):
     id: str
@@ -98,6 +237,141 @@ class Mark(TypedDict):
     clip: str
     area: str
 
+class Matte(TypedDict):
+    src: str
+    rect: list[float]
+
+class MediumSpec(TypedDict):
+    id: str
+    label: str
+    engine: str
+    description: str
+    params: dict[str, float]
+    ground: str | None
+    palette: list[PigmentSpec]
+
+class NewArtwork(TypedDict):
+    title: str | None
+    size: str | None
+    landscape: bool | None
+    width: float | None
+    height: float | None
+    start: str | None
+    texture: str | None
+    ground_colour: str | None
+    medium: str | None
+
+class NewMark(TypedDict):
+    pixelated: bool | None
+    id: str | None
+    name: str | None
+    shape: Shape
+    fill: str | None
+    gradient: Gradient | None
+    stroke: str | None
+    stroke_width: float | None
+    opacity: float | None
+    brush_size: float | None
+    brush: str | None
+    angle: float | None
+    wet: bool | None
+    params: dict[str, float] | None
+    dash: list[float] | None
+    cap: str | None
+    join: str | None
+    blend: str | None
+    shadow: Shadow | None
+    inner_shadow: Any | None
+    grain: float | None
+    feather: float | None
+    group: str | None
+    clip: str | None
+    transform: list[float] | None
+
+class NewStroke(TypedDict):
+    id: str | None
+    name: str | None
+    points: list[list[float]]
+    size: float
+    colour: str
+    brush: str | None
+    opacity: float | None
+    wet: bool | None
+    params: dict[str, float] | None
+    forks: int | None
+    spread: float | None
+    dabs: int | None
+    scatter: float | None
+    dab_length: float | None
+    hatch: float | None
+    angle: float | None
+    clip: str | None
+
+class Open(TypedDict):
+    path: str
+    title: str | None
+
+class OpenArtwork(TypedDict):
+    file: str
+
+class Paint(TypedDict):
+    layer: str | None
+    strokes: list[NewStroke]
+    group: str | None
+
+class PigmentSpec(TypedDict):
+    name: str
+    colour: str
+    granulation: float
+    strength: float
+
+class RemoveLayer(TypedDict):
+    id: str
+
+class RemoveMarks(TypedDict):
+    ids: list[str]
+    layer: str | None
+    along: list[list[float]] | None
+
+class RemoveMedium(TypedDict):
+    id: str
+
+class SaveMedium(TypedDict):
+    medium: MediumSpec
+
+class Select(TypedDict):
+    rect: list[float] | None
+    ellipse: list[float] | None
+    points: list[list[float]] | None
+    d: str | None
+    marks: list[str] | None
+    matte: Matte | None
+    mode: str | None
+    feather: float | None
+    grow: float | None
+    invert: bool | None
+
+class SetArtwork(TypedDict):
+    title: str | None
+    width: float | None
+    height: float | None
+    texture: str | None
+    ground_colour: str | None
+    crop: list[float] | None
+    fit: str | None
+
+class SetReference(TypedDict):
+    image: str | None
+    frame: list[float] | None
+    opacity: float | None
+    visible: bool | None
+    remove: bool | None
+
+class Shadow(TypedDict):
+    offset: list[float]
+    blur: float
+    colour: str | None
+
 Shape = dict[str, Any]
 """One of rect, ellipse, polygon, line, path, text, stroke, image: an object whose case the app tags it with."""
 
@@ -122,6 +396,15 @@ class Style(TypedDict):
     grain: float | None
     feather: float | None
     adjust: Adjust | None
+
+class UseSelection(TypedDict):
+    do: str
+    layer: str | None
+    colour: str | None
+    width: float | None
+    id: str | None
+    defringe: bool | None
+    cleaned: list[list[str]] | None
 
 class Recent(TypedDict):
     path: str
@@ -156,7 +439,7 @@ EditMarksArgs = TypedDict("EditMarksArgs", {
     "brush_size": NotRequired["float | None"],
     "angle": NotRequired["float | None"],
     "wet": NotRequired["bool | None"],
-    "params": NotRequired["Any | None"],
+    "params": NotRequired["dict[str, float] | None"],
     "move_by": NotRequired["list[float] | None"],
     "scale": NotRequired["float | None"],
     "rotate": NotRequired["float | None"],
@@ -165,7 +448,7 @@ EditMarksArgs = TypedDict("EditMarksArgs", {
     "flip": NotRequired["str | None"],
     "crop": NotRequired["list[float] | None"],
     "straighten": NotRequired["float | None"],
-    "adjust": NotRequired["Any | None"],
+    "adjust": NotRequired["Adjust | None"],
     "smooth": NotRequired["float | None"],
     "simplify": NotRequired["float | None"],
     "extend": NotRequired["list[list[float]] | None"],
@@ -232,7 +515,7 @@ SetArtworkArgs = TypedDict("SetArtworkArgs", {
 """The arguments of `set-artwork`."""
 
 SaveMediumArgs = TypedDict("SaveMediumArgs", {
-    "medium": "Any",
+    "medium": "MediumSpec",
 })
 """The arguments of `save-medium`."""
 
@@ -302,23 +585,23 @@ ForgetArgs = TypedDict("ForgetArgs", {
 
 class Artwork(Resource):
     """Artwork — `canvas.artwork`."""
-    __surface__ = "so.tilo.canvas@3af12d4a81695ba4"
+    __surface__ = "so.tilo.canvas@c1cf5232af16e7da"
     title: str
     width: float
     height: float
     ground: Ground
-    layers: list[Layer]
-    marks: list[Mark]
+    layers: list[Entry[Layer]]
+    marks: list[Entry[Mark]]
     media: dict[str, Any]
     reference: Any | None
     selection: Any | None
 
     def paint(self,
         *,
-        strokes: list[Any],
+        strokes: list[NewStroke],
         layer: str | None = None,
         group: str | None = None,
-    ) -> Any | Run:
+    ) -> Any:
         """Runs the app's action."""
         args: dict[str, Any] = {}
         if layer is not None:
@@ -330,9 +613,9 @@ class Artwork(Resource):
 
     def draw(self,
         *,
-        marks: list[Any],
+        marks: list[NewMark],
         layer: str | None = None,
-    ) -> Any | Run:
+    ) -> Any:
         """Runs the app's action."""
         args: dict[str, Any] = {}
         if layer is not None:
@@ -354,7 +637,7 @@ class Artwork(Resource):
         title: str | None = None,
         id: str | None = None,
         layer: str | None = None,
-    ) -> Any | Run:
+    ) -> Any:
         """Runs the app's action."""
         args: dict[str, Any] = {}
         args["labels"] = labels
@@ -407,7 +690,7 @@ class Artwork(Resource):
         brush_size: float | None = None,
         angle: float | None = None,
         wet: bool | None = None,
-        params: Any | None = None,
+        params: dict[str, float] | None = None,
         move_by: list[float] | None = None,
         scale: float | None = None,
         rotate: float | None = None,
@@ -416,13 +699,13 @@ class Artwork(Resource):
         flip: str | None = None,
         crop: list[float] | None = None,
         straighten: float | None = None,
-        adjust: Any | None = None,
+        adjust: Adjust | None = None,
         smooth: float | None = None,
         simplify: float | None = None,
         extend: list[list[float]] | None = None,
         split: list[float] | None = None,
         merge: bool | None = None,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         args: dict[str, Any] = {}
         if pixelated is not None:
@@ -513,7 +796,7 @@ class Artwork(Resource):
         ids: list[str] | None = None,
         layer: str | None = None,
         along: list[list[float]] | None = None,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         args: dict[str, Any] = {}
         if ids is not None:
@@ -533,7 +816,7 @@ class Artwork(Resource):
         ids: list[str],
         to: str,
         of: str | None = None,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         args: dict[str, Any] = {}
         args["ids"] = ids
@@ -554,7 +837,7 @@ class Artwork(Resource):
         opacity: float | None = None,
         above: str | None = None,
         texture: float | None = None,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         args: dict[str, Any] = {}
         if id is not None:
@@ -589,7 +872,7 @@ class Artwork(Resource):
         mask: str | None = None,
         invert: bool | None = None,
         clip: bool | None = None,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         args: dict[str, Any] = {}
         args["id"] = id
@@ -623,7 +906,7 @@ class Artwork(Resource):
         """Runs `edit-layer` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("edit-layer", items)
 
-    def remove_layer(self, *, id: str) -> Run | None:
+    def remove_layer(self, *, id: str) -> None:
         """Runs the app's action."""
         return self.action("remove-layer", id=id)
 
@@ -640,7 +923,7 @@ class Artwork(Resource):
         ground_colour: str | None = None,
         crop: list[float] | None = None,
         fit: str | None = None,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         args: dict[str, Any] = {}
         if title is not None:
@@ -663,7 +946,7 @@ class Artwork(Resource):
         """Runs `set-artwork` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("set-artwork", items)
 
-    def save_medium(self, *, medium: Any) -> Run | None:
+    def save_medium(self, *, medium: MediumSpec) -> None:
         """Runs the app's action."""
         return self.action("save-medium", medium=medium)
 
@@ -671,7 +954,7 @@ class Artwork(Resource):
         """Runs `save-medium` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("save-medium", items)
 
-    def remove_medium(self, *, id: str) -> Run | None:
+    def remove_medium(self, *, id: str) -> None:
         """Runs the app's action."""
         return self.action("remove-medium", id=id)
 
@@ -685,7 +968,7 @@ class Artwork(Resource):
         edge: str | None = None,
         distribute: str | None = None,
         to: str | None = None,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         args: dict[str, Any] = {}
         args["ids"] = ids
@@ -708,7 +991,7 @@ class Artwork(Resource):
         opacity: float | None = None,
         visible: bool | None = None,
         remove: bool | None = None,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         args: dict[str, Any] = {}
         if image is not None:
@@ -733,7 +1016,7 @@ class Artwork(Resource):
         layer: str | None = None,
         group: str | None = None,
         fit: list[float] | None = None,
-    ) -> Any | Run:
+    ) -> Any:
         """Runs the app's action."""
         args: dict[str, Any] = {}
         args["svg"] = svg
@@ -749,7 +1032,7 @@ class Artwork(Resource):
         *,
         path: str,
         title: str | None = None,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         args: dict[str, Any] = {}
         args["path"] = path
@@ -772,7 +1055,7 @@ class Artwork(Resource):
         texture: str | None = None,
         ground_colour: str | None = None,
         medium: str | None = None,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         args: dict[str, Any] = {}
         if title is not None:
@@ -799,7 +1082,7 @@ class Artwork(Resource):
         """Runs `new-artwork` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("new-artwork", items)
 
-    def open_artwork(self, *, file: str) -> Run | None:
+    def open_artwork(self, *, file: str) -> None:
         """Runs the app's action."""
         return self.action("open-artwork", file=file)
 
@@ -814,12 +1097,12 @@ class Artwork(Resource):
         points: list[list[float]] | None = None,
         d: str | None = None,
         marks: list[str] | None = None,
-        matte: Any | None = None,
+        matte: Matte | None = None,
         mode: str | None = None,
         feather: float | None = None,
         grow: float | None = None,
         invert: bool | None = None,
-    ) -> Any | Run:
+    ) -> Any:
         """Runs the app's action."""
         args: dict[str, Any] = {}
         if rect is not None:
@@ -853,7 +1136,7 @@ class Artwork(Resource):
         id: str | None = None,
         defringe: bool | None = None,
         cleaned: list[list[str]] | None = None,
-    ) -> Any | Run:
+    ) -> Any:
         """Runs the app's action."""
         args: dict[str, Any] = {}
         args["do"] = do
@@ -875,7 +1158,7 @@ class Artwork(Resource):
         *,
         ids: list[str],
         op: str,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         return self.action("combine", ids=ids, op=op)
 
@@ -1002,17 +1285,21 @@ class Artwork(Resource):
             args["path"] = path
         return self.action("save-artwork", **args)
 
+    # The actions a call reaches before the resource is read: `await tracker.create(...)`
+    # needs no `load()` first.
+    __actions__ = frozenset({"paint", "draw", "chart", "edit_marks", "edit_marks_many", "remove_marks", "remove_marks_many", "arrange", "arrange_many", "add_layer", "add_layer_many", "edit_layer", "edit_layer_many", "remove_layer", "remove_layer_many", "set_artwork", "set_artwork_many", "save_medium", "save_medium_many", "remove_medium", "remove_medium_many", "align", "align_many", "set_reference", "set_reference_many", "import_svg", "open_picture", "open_picture_many", "new_artwork", "new_artwork_many", "open_artwork", "open_artwork_many", "select", "use_selection", "combine", "combine_many", "look", "measure", "export", "compare_versions", "export_svg", "compare", "save_artwork"})
+
 
 class RecentArtworks(Resource):
     """Recent artworks — `canvas.recent-artworks`."""
-    __surface__ = "so.tilo.canvas@3af12d4a81695ba4"
+    __surface__ = "so.tilo.canvas@c1cf5232af16e7da"
     devices: dict[str, Any]
 
     def remember(self,
         *,
         device: str,
         recent: Recent,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         return self.action("remember", device=device, recent=recent)
 
@@ -1024,12 +1311,16 @@ class RecentArtworks(Resource):
         *,
         device: str,
         path: str,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         return self.action("forget", device=device, path=path)
 
     def forget_many(self, items: list[ForgetArgs]) -> list[dict[str, Any]]:
         """Runs `forget` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("forget", items)
+
+    # The actions a call reaches before the resource is read: `await tracker.create(...)`
+    # needs no `load()` first.
+    __actions__ = frozenset({"remember", "remember_many", "forget", "forget_many"})
 
 

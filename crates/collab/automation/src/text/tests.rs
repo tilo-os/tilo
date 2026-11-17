@@ -55,6 +55,7 @@ fn row(
         }),
         has_children: false,
         visibility: None,
+        surface: None,
     }
 }
 

@@ -293,6 +293,15 @@ impl TypeSet {
         FieldType::Named(unique)
     }
 
+    /// The type declared as `name`, when one is.
+    #[must_use]
+    pub fn get(&self, name: &str) -> Option<&NamedType> {
+        self.declared
+            .iter()
+            .map(|(_, ty)| ty)
+            .find(|ty| ty.name == name)
+    }
+
     /// The declared types, by name.
     #[must_use]
     pub fn into_types(self) -> Vec<NamedType> {

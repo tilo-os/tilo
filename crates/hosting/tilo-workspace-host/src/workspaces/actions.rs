@@ -594,6 +594,7 @@ impl Verb {
             }),
             has_children: false,
             visibility: None,
+            surface: None,
         }
     }
 }
@@ -1880,6 +1881,44 @@ struct InWorkspace {
 }
 
 impl ActionHost for InWorkspace {
+    /// The surface the workspace's package `app` publishes, from the
+    /// workspace's own content: the version its governance keeps names the
+    /// hash, and a member that has the bytes answers for them. No app has to
+    /// run for its types to be readable.
+    fn installed_surface(&self, app: &str) -> tilo_actions::remote::Pending<Option<Vec<u8>>> {
+        let (Some(workspaces), Some(workspace_id)) = (
+            self.host.shared.workspaces.get().cloned(),
+            self.workspace_id,
+        ) else {
+            return Pending::ready(None);
+        };
+        let app = app.to_owned();
+        self.host.spawn(async move {
+            let workspace = workspace_id.as_uuid().to_string();
+            let installed = workspaces
+                .app_versions(&workspace)
+                .await
+                .ok()?
+                .into_iter()
+                .find(|installed| installed.release.app == app)?;
+            let hash = installed.release.surface;
+            if let Some(bytes) = crate::surfaces::read(&hash) {
+                return Some(bytes);
+            }
+            // A member that has the package answers with its surface; the
+            // wait is bounded, and a surface that does not come leaves the
+            // app one whose types are not readable here yet.
+            let _ = workspaces.ask_surface(&workspace, &app, &hash).await;
+            for _ in 0..40 {
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                if let Some(bytes) = crate::surfaces::read(&hash) {
+                    return Some(bytes);
+                }
+            }
+            None
+        })
+    }
+
     fn query(
         &self,
         caller: &Caller,

@@ -17,7 +17,7 @@ all-or-nothing steps, all of them one run.
 from __future__ import annotations
 
 from typing import Any, Literal, NotRequired, TypedDict
-from tilo import Resource, Run
+from tilo import Entry, Resource, Run
 
 __all__ = [
     "Award",
@@ -69,14 +69,14 @@ class InHand(TypedDict):
     shown: bool
     last: Move
 
-Move = Literal["none", "small_blind", "big_blind", "check", "call", "bet", "raise", "all_in", "fold"]
+Move = Literal["None", "SmallBlind", "BigBlind", "Check", "Call", "Bet", "Raise", "AllIn", "Fold"]
 
 class Player(TypedDict):
     seat: int
     chips: int
     joined_ms: int
 
-Street = Literal["idle", "preflop", "flop", "turn", "river", "done"]
+Street = Literal["Idle", "Preflop", "Flop", "Turn", "River", "Done"]
 
 SitArgs = TypedDict("SitArgs", {
     "seat": "int",
@@ -122,12 +122,12 @@ RebuyArgs = TypedDict("RebuyArgs", {
 
 class Table(Resource):
     """Poker table — `so.tilo.poker.table`."""
-    __surface__ = "so.tilo.poker@ea2ab76e43cec872"
+    __surface__ = "so.tilo.poker@967369c20d6a9c6f"
     players: dict[str, Player]
     hand: Hand
     button_seat: int
 
-    def sit(self, *, seat: int) -> Run | None:
+    def sit(self, *, seat: int) -> None:
         """Runs the app's action."""
         return self.action("sit", seat=seat)
 
@@ -135,7 +135,7 @@ class Table(Resource):
         """Runs `sit` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("sit", items)
 
-    def leave(self) -> Run | None:
+    def leave(self) -> None:
         """Runs the app's action."""
         return self.action("leave")
 
@@ -143,7 +143,7 @@ class Table(Resource):
         """Runs `leave` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("leave", items)
 
-    def deal(self) -> Run | None:
+    def deal(self) -> None:
         """Runs the app's action."""
         return self.action("deal")
 
@@ -151,7 +151,7 @@ class Table(Resource):
         """Runs `deal` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("deal", items)
 
-    def fold(self) -> Run | None:
+    def fold(self) -> None:
         """Runs the app's action."""
         return self.action("fold")
 
@@ -159,7 +159,7 @@ class Table(Resource):
         """Runs `fold` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("fold", items)
 
-    def call(self) -> Run | None:
+    def call(self) -> None:
         """Runs the app's action."""
         return self.action("call")
 
@@ -167,7 +167,7 @@ class Table(Resource):
         """Runs `call` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("call", items)
 
-    def raise_(self, *, to: float) -> Run | None:
+    def raise_(self, *, to: float) -> None:
         """Runs the app's action."""
         return self.action("raise", to=to)
 
@@ -175,7 +175,7 @@ class Table(Resource):
         """Runs `raise` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("raise", items)
 
-    def all_in(self) -> Run | None:
+    def all_in(self) -> None:
         """Runs the app's action."""
         return self.action("all-in")
 
@@ -183,7 +183,7 @@ class Table(Resource):
         """Runs `all-in` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("all-in", items)
 
-    def show(self) -> Run | None:
+    def show(self) -> None:
         """Runs the app's action."""
         return self.action("show")
 
@@ -191,7 +191,7 @@ class Table(Resource):
         """Runs `show` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("show", items)
 
-    def skip(self) -> Run | None:
+    def skip(self) -> None:
         """Runs the app's action."""
         return self.action("skip")
 
@@ -199,12 +199,16 @@ class Table(Resource):
         """Runs `skip` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("skip", items)
 
-    def rebuy(self) -> Run | None:
+    def rebuy(self) -> None:
         """Runs the app's action."""
         return self.action("rebuy")
 
     def rebuy_many(self, items: list[RebuyArgs]) -> list[dict[str, Any]]:
         """Runs `rebuy` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("rebuy", items)
+
+    # The actions a call reaches before the resource is read: `await tracker.create(...)`
+    # needs no `load()` first.
+    __actions__ = frozenset({"sit", "sit_many", "leave", "leave_many", "deal", "deal_many", "fold", "fold_many", "call", "call_many", "raise_", "raise_many", "all_in", "all_in_many", "show", "show_many", "skip", "skip_many", "rebuy", "rebuy_many"})
 
 

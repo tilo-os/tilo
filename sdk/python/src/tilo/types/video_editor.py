@@ -17,12 +17,13 @@ all-or-nothing steps, all of them one run.
 from __future__ import annotations
 
 from typing import Any, Literal, NotRequired, TypedDict
-from tilo import Resource, Run
+from tilo import Entry, Resource, Run
 
 __all__ = [
     "ChromaKey",
     "Clip",
     "ClipEffect",
+    "ClipPlacement",
     "EffectKind",
     "Filters",
     "Marker",
@@ -97,13 +98,13 @@ class Clip(TypedDict):
     fade_in: float
     fade_out: float
     transition_duration: float
-    effects: list[ClipEffect]
+    effects: list[Entry[ClipEffect]]
     transform: Transform
     speed: Speed
     key: ChromaKey
     mask: Mask
     anim: Any
-    markers: list[Marker]
+    markers: list[Entry[Marker]]
     link: str | None
     sound_split: bool
     link_follows: bool
@@ -113,7 +114,17 @@ class ClipEffect(TypedDict):
     kind: EffectKind
     amount: float
 
-EffectKind = Literal["grayscale", "sepia", "invert", "warm", "cool", "vignette"]
+ClipPlacement = TypedDict("ClipPlacement", {
+    "media": "str",
+    "track": "str | None",
+    "at": "float | None",
+    "in": "float | None",
+    "out": "float | None",
+    "fade_in": "float | None",
+    "fade_out": "float | None",
+})
+
+EffectKind = Literal["Grayscale", "Sepia", "Invert", "Warm", "Cool", "Vignette"]
 
 class Filters(TypedDict):
     brightness: float
@@ -137,7 +148,7 @@ class Mask(TypedDict):
     feather: float
     invert: bool
 
-MaskShape = Literal["none", "rect", "ellipse"]
+MaskShape = Literal["None", "Rect", "Ellipse"]
 
 class MediaItem(TypedDict):
     id: str
@@ -152,13 +163,13 @@ class MediaItem(TypedDict):
     text: TextSource | None
     has_audio: bool
 
-MediaKind = Literal["video", "audio", "image", "text"]
+MediaKind = Literal["Video", "Audio", "Image", "Text"]
 
 class Speed(TypedDict):
     rate: float
     reverse: bool
 
-TextAlign = Literal["left", "center", "right"]
+TextAlign = Literal["Left", "Center", "Right"]
 
 class TextSource(TypedDict):
     content: str
@@ -181,7 +192,7 @@ class Track(TypedDict):
     gain_db: float
     pan: float
 
-TrackKind = Literal["video", "audio"]
+TrackKind = Literal["Video", "Audio"]
 
 class Transform(TypedDict):
     scale_x: float
@@ -196,7 +207,7 @@ class Transform(TypedDict):
     crop_top: float
     crop_bottom: float
 
-Transition = Literal["none", "cross_dissolve", "fade_in", "dip_to_black", "wipe"]
+Transition = Literal["None", "CrossDissolve", "FadeIn", "DipToBlack", "Wipe"]
 
 SetFrameSizeArgs = TypedDict("SetFrameSizeArgs", {
     "width": "int",
@@ -390,7 +401,7 @@ LinkWithArgs = TypedDict("LinkWithArgs", {
 
 class Project(Resource):
     """Project — `video-editor.project`."""
-    __surface__ = "so.tilo.video-editor@c1e632de27d6ebcf"
+    __surface__ = "so.tilo.video-editor@292027a7bde8cd96"
     name: str
     fps: float
     width: int
@@ -398,16 +409,16 @@ class Project(Resource):
     format_explicit: bool
     mark_in: float | None
     mark_out: float | None
-    media: list[MediaItem]
-    tracks: list[Track]
-    clips: list[Clip]
-    markers: list[Marker]
+    media: list[Entry[MediaItem]]
+    tracks: list[Entry[Track]]
+    clips: list[Entry[Clip]]
+    markers: list[Entry[Marker]]
 
     def set_frame_size(self,
         *,
         width: int,
         height: int,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         return self.action("set-frame-size", width=width, height=height)
 
@@ -415,7 +426,7 @@ class Project(Resource):
         """Runs `set-frame-size` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("set-frame-size", items)
 
-    def set_frame_rate(self, *, fps: float) -> Run | None:
+    def set_frame_rate(self, *, fps: float) -> None:
         """Runs the app's action."""
         return self.action("set-frame-rate", fps=fps)
 
@@ -427,7 +438,7 @@ class Project(Resource):
         *,
         start: float,
         end: float,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         return self.action("set-render-range", start=start, end=end)
 
@@ -439,7 +450,7 @@ class Project(Resource):
     # `action("mark-in")`.
     # the app's `mark-out` action is named as a field of this kind: run it with
     # `action("mark-out")`.
-    def clear_marks(self) -> Run | None:
+    def clear_marks(self) -> None:
         """Runs the app's action."""
         return self.action("clear-marks")
 
@@ -453,7 +464,7 @@ class Project(Resource):
         colour: str | None = None,
         size: float | None = None,
         align: str | None = None,
-    ) -> Any | Run:
+    ) -> Any:
         """Runs the app's action."""
         args: dict[str, Any] = {}
         args["text"] = text
@@ -472,7 +483,7 @@ class Project(Resource):
         colour: str | None = None,
         size: float | None = None,
         align: str | None = None,
-    ) -> Any | Run:
+    ) -> Any:
         """Runs the app's action."""
         args: dict[str, Any] = {}
         args["media"] = media
@@ -495,7 +506,7 @@ class Project(Resource):
         out: float | None = None,
         fade_in: float | None = None,
         fade_out: float | None = None,
-    ) -> Any | Run:
+    ) -> Any:
         """Runs the app's action."""
         args: dict[str, Any] = {}
         args["media"] = media
@@ -518,7 +529,7 @@ class Project(Resource):
         clip: str,
         at: float,
         track: str | None = None,
-    ) -> Any | Run:
+    ) -> Any:
         """Runs the app's action."""
         args: dict[str, Any] = {}
         args["clip"] = clip
@@ -536,7 +547,7 @@ class Project(Resource):
         volume: float | None = None,
         transition: str | None = None,
         transition_duration: float | None = None,
-    ) -> Any | Run:
+    ) -> Any:
         """Runs the app's action."""
         args: dict[str, Any] = {}
         args["clip"] = clip
@@ -558,7 +569,7 @@ class Project(Resource):
         *,
         clip: str,
         ripple: bool | None = None,
-    ) -> Any | Run:
+    ) -> Any:
         """Runs the app's action."""
         args: dict[str, Any] = {}
         args["clip"] = clip
@@ -570,7 +581,7 @@ class Project(Resource):
         *,
         at: float,
         name: str,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         return self.action("add-marker", at=at, name=name)
 
@@ -578,7 +589,7 @@ class Project(Resource):
         """Runs `add-marker` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("add-marker", items)
 
-    def place_two_angles(self, *, at: float) -> Run | None:
+    def place_two_angles(self, *, at: float) -> None:
         """Runs the app's action."""
         return self.action("place-two-angles", at=at)
 
@@ -586,7 +597,7 @@ class Project(Resource):
         """Runs `place-two-angles` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("place-two-angles", items)
 
-    def unplace_two_angles(self, *, at: float) -> Run | None:
+    def unplace_two_angles(self, *, at: float) -> None:
         """Runs the app's action."""
         return self.action("unplace-two-angles", at=at)
 
@@ -594,7 +605,7 @@ class Project(Resource):
         """Runs `unplace-two-angles` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("unplace-two-angles", items)
 
-    def remove_marker(self, *, marker: str) -> Run | None:
+    def remove_marker(self, *, marker: str) -> None:
         """Runs the app's action."""
         return self.action("remove-marker", marker=marker)
 
@@ -602,7 +613,7 @@ class Project(Resource):
         """Runs `remove-marker` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("remove-marker", items)
 
-    def add_track(self, *, kind: TrackKind) -> Run | None:
+    def add_track(self, *, kind: TrackKind) -> None:
         """Runs the app's action."""
         return self.action("add-track", kind=kind)
 
@@ -610,7 +621,7 @@ class Project(Resource):
         """Runs `add-track` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("add-track", items)
 
-    def reset_mix(self, *, track: str) -> Run | None:
+    def reset_mix(self, *, track: str) -> None:
         """Runs the app's action."""
         return self.action("reset-mix", track=track)
 
@@ -623,7 +634,7 @@ class Project(Resource):
         tracks: list[str],
         db: float,
         headroom: float,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         return self.action("trim-lanes", tracks=tracks, db=db, headroom=headroom)
 
@@ -631,7 +642,7 @@ class Project(Resource):
         """Runs `trim-lanes` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("trim-lanes", items)
 
-    def delete_track(self, *, track: str) -> Run | None:
+    def delete_track(self, *, track: str) -> None:
         """Runs the app's action."""
         return self.action("delete-track", track=track)
 
@@ -644,7 +655,7 @@ class Project(Resource):
         media: str,
         track: str,
         start: float,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         return self.action("place-clip", media=media, track=track, start=start)
 
@@ -652,7 +663,7 @@ class Project(Resource):
         """Runs `place-clip` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("place-clip", items)
 
-    def delete_media(self, *, media: str) -> Run | None:
+    def delete_media(self, *, media: str) -> None:
         """Runs the app's action."""
         return self.action("delete-media", media=media)
 
@@ -660,7 +671,7 @@ class Project(Resource):
         """Runs `delete-media` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("delete-media", items)
 
-    def use_as_project_format(self, *, media: str) -> Run | None:
+    def use_as_project_format(self, *, media: str) -> None:
         """Runs the app's action."""
         return self.action("use-as-project-format", media=media)
 
@@ -668,7 +679,7 @@ class Project(Resource):
         """Runs `use-as-project-format` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("use-as-project-format", items)
 
-    def delete(self, *, clip: str) -> Run | None:
+    def delete(self, *, clip: str) -> None:
         """Runs the app's action."""
         return self.action("delete", clip=clip)
 
@@ -676,7 +687,7 @@ class Project(Resource):
         """Runs `delete` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("delete", items)
 
-    def ripple_delete(self, *, clip: str) -> Run | None:
+    def ripple_delete(self, *, clip: str) -> None:
         """Runs the app's action."""
         return self.action("ripple-delete", clip=clip)
 
@@ -688,7 +699,7 @@ class Project(Resource):
         *,
         clip: str,
         at: float,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         return self.action("split-clip", clip=clip, at=at)
 
@@ -700,7 +711,7 @@ class Project(Resource):
         *,
         clip: str,
         at: float,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         return self.action("trim-in-clip", clip=clip, at=at)
 
@@ -712,7 +723,7 @@ class Project(Resource):
         *,
         clip: str,
         at: float,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         return self.action("trim-out-clip", clip=clip, at=at)
 
@@ -724,7 +735,7 @@ class Project(Resource):
         *,
         clip: str,
         rate: float,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         return self.action("set-speed", clip=clip, rate=rate)
 
@@ -732,7 +743,7 @@ class Project(Resource):
         """Runs `set-speed` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("set-speed", items)
 
-    def toggle_reverse(self, *, clip: str) -> Run | None:
+    def toggle_reverse(self, *, clip: str) -> None:
         """Runs the app's action."""
         return self.action("toggle-reverse", clip=clip)
 
@@ -740,7 +751,7 @@ class Project(Resource):
         """Runs `toggle-reverse` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("toggle-reverse", items)
 
-    def reset_speed(self, *, clip: str) -> Run | None:
+    def reset_speed(self, *, clip: str) -> None:
         """Runs the app's action."""
         return self.action("reset-speed", clip=clip)
 
@@ -754,7 +765,7 @@ class Project(Resource):
         param: str,
         at: float,
         value: float,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         return self.action("set-param", clip=clip, param=param, at=at, value=value)
 
@@ -766,7 +777,7 @@ class Project(Resource):
         *,
         clip: str,
         effect: EffectKind,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         return self.action("add-effect", clip=clip, effect=effect)
 
@@ -778,7 +789,7 @@ class Project(Resource):
         *,
         clip: str,
         effect: str,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         return self.action("remove-effect", clip=clip, effect=effect)
 
@@ -791,7 +802,7 @@ class Project(Resource):
         clip: str,
         effect: str,
         up: bool,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         return self.action("move-effect", clip=clip, effect=effect, up=up)
 
@@ -804,7 +815,7 @@ class Project(Resource):
         clip: str,
         effect: str,
         amount: float,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         return self.action("set-effect-amount", clip=clip, effect=effect, amount=amount)
 
@@ -812,7 +823,7 @@ class Project(Resource):
         """Runs `set-effect-amount` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("set-effect-amount", items)
 
-    def clear_effects(self, *, clip: str) -> Run | None:
+    def clear_effects(self, *, clip: str) -> None:
         """Runs the app's action."""
         return self.action("clear-effects", clip=clip)
 
@@ -820,7 +831,7 @@ class Project(Resource):
         """Runs `clear-effects` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("clear-effects", items)
 
-    def unlink(self, *, clip: str) -> Run | None:
+    def unlink(self, *, clip: str) -> None:
         """Runs the app's action."""
         return self.action("unlink", clip=clip)
 
@@ -828,7 +839,7 @@ class Project(Resource):
         """Runs `unlink` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("unlink", items)
 
-    def link_audio(self, *, clip: str) -> Run | None:
+    def link_audio(self, *, clip: str) -> None:
         """Runs the app's action."""
         return self.action("link-audio", clip=clip)
 
@@ -840,7 +851,7 @@ class Project(Resource):
         *,
         clip: str,
         other: str,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         return self.action("link-with", clip=clip, other=other)
 
@@ -920,5 +931,9 @@ class Project(Resource):
         if width is not None:
             args["width"] = width
         return self.action("view-frame-content", **args)
+
+    # The actions a call reaches before the resource is read: `await tracker.create(...)`
+    # needs no `load()` first.
+    __actions__ = frozenset({"set_frame_size", "set_frame_size_many", "set_frame_rate", "set_frame_rate_many", "set_render_range", "set_render_range_many", "clear_marks", "clear_marks_many", "add_title", "set_title", "add_clip", "move_clip", "set_clip", "remove_clip", "add_marker", "add_marker_many", "place_two_angles", "place_two_angles_many", "unplace_two_angles", "unplace_two_angles_many", "remove_marker", "remove_marker_many", "add_track", "add_track_many", "reset_mix", "reset_mix_many", "trim_lanes", "trim_lanes_many", "delete_track", "delete_track_many", "place_clip", "place_clip_many", "delete_media", "delete_media_many", "use_as_project_format", "use_as_project_format_many", "delete", "delete_many", "ripple_delete", "ripple_delete_many", "split_clip", "split_clip_many", "trim_in_clip", "trim_in_clip_many", "trim_out_clip", "trim_out_clip_many", "set_speed", "set_speed_many", "toggle_reverse", "toggle_reverse_many", "reset_speed", "reset_speed_many", "set_param", "set_param_many", "add_effect", "add_effect_many", "remove_effect", "remove_effect_many", "move_effect", "move_effect_many", "set_effect_amount", "set_effect_amount_many", "clear_effects", "clear_effects_many", "unlink", "unlink_many", "link_audio", "link_audio_many", "link_with", "link_with_many", "export_timeline_content", "render_timeline", "export_video_content", "export_video_status", "cancel_video_export", "view_frame_content"})
 
 

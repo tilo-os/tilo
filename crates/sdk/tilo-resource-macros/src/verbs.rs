@@ -742,6 +742,13 @@ fn param_decl(param: &Param, krate: &Tokens) -> Tokens {
     let ty = &param.ty;
     let description = &param.description;
     let flat = param.role == Role::Flatten;
+    let flat_types = if flat {
+        quote!(::core::option::Option::Some(
+            <#ty as #krate::FlatFields>::flat_fields,
+        ))
+    } else {
+        quote!(::core::option::Option::None)
+    };
     let (known, optional) = crate::known_param_type(ty);
     let param_ty = if param.secret {
         quote!(#krate::__private::ParamTypeOf::Known(#krate::__private::ParamType::Secret))
@@ -795,6 +802,7 @@ fn param_decl(param: &Param, krate: &Tokens) -> Tokens {
             place: #place,
             example: #example,
             flat: #flat,
+            flat_types: #flat_types,
             content: #content,
             field_type: #field_type,
         }

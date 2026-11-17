@@ -133,15 +133,15 @@ fields = [
 [[resources.types]]
 name = "BlockKind"
 cases = [
-  { name = "heading1" },
-  { name = "heading2" },
-  { name = "heading3" },
-  { name = "paragraph" },
-  { name = "bullet" },
-  { name = "quote" },
-  { name = "code" },
-  { name = "link" },
-  { name = "divider" },
+  { name = "Heading1" },
+  { name = "Heading2" },
+  { name = "Heading3" },
+  { name = "Paragraph" },
+  { name = "Bullet" },
+  { name = "Quote" },
+  { name = "Code" },
+  { name = "Link" },
+  { name = "Divider" },
 ]
 
 [[resources.types]]

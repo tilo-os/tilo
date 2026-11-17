@@ -71,47 +71,51 @@ export interface DeleteSurfaceArgs {
 
 /** Calculator — `calculator.document`. */
 export interface Document extends tilo.Resource {
-  readonly history: HistoryEntry[];
-  funcs: PlotFn[];
-  surfaces: PlotFn[];
+  readonly history: Array<tilo.Entry<HistoryEntry>>;
+  funcs: Array<tilo.Entry<PlotFn>>;
+  surfaces: Array<tilo.Entry<PlotFn>>;
   commitHistory(args: {
     expr: string;
     result: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `commit-history` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   commitHistoryMany(items: CommitHistoryArgs[]): Promise<tilo.ActionAnswer[]>;
   deleteHistoryEntry(args: {
     entry: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `delete-history-entry` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   deleteHistoryEntryMany(items: DeleteHistoryEntryArgs[]): Promise<tilo.ActionAnswer[]>;
-  clearHistory(): Promise<tilo.Run | void>;
+  clearHistory(): Promise<void>;
   /** Runs `clear-history` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   clearHistoryMany(items: ClearHistoryArgs[]): Promise<tilo.ActionAnswer[]>;
   addFunction(args: {
     formula: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `add-function` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   addFunctionMany(items: AddFunctionArgs[]): Promise<tilo.ActionAnswer[]>;
   addSurface(args: {
     formula: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `add-surface` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   addSurfaceMany(items: AddSurfaceArgs[]): Promise<tilo.ActionAnswer[]>;
   deleteFunction(args: {
     function: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `delete-function` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   deleteFunctionMany(items: DeleteFunctionArgs[]): Promise<tilo.ActionAnswer[]>;
   deleteSurface(args: {
     surface: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `delete-surface` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   deleteSurfaceMany(items: DeleteSurfaceArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 
+/** The actions `Document` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const DOCUMENT_ACTIONS = ["commitHistory", "commitHistoryMany", "deleteHistoryEntry", "deleteHistoryEntryMany", "clearHistory", "clearHistoryMany", "addFunction", "addFunctionMany", "addSurface", "addSurfaceMany", "deleteFunction", "deleteFunctionMany", "deleteSurface", "deleteSurfaceMany"] as const;
+
 /** The `calculator.document` kind at `path`. */
 export function calculatorDocument(ws: tilo.Workspace, path: string): Document {
-  return resourceProxy(ws, path, SURFACE) as unknown as Document;
+  return resourceProxy(ws, path, SURFACE, DOCUMENT_ACTIONS) as unknown as Document;
 }
 

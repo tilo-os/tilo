@@ -129,7 +129,7 @@ export interface Slide {
   layout: Layout;
   background: Background;
   notes: string;
-  elements: Element[];
+  elements: Array<tilo.Entry<Element>>;
 }
 
 export interface SlideData {
@@ -196,68 +196,68 @@ export interface Deck extends tilo.Resource {
   title: string;
   palette: PaletteKind;
   look: DeckLook;
-  slides: Slide[];
+  slides: Array<tilo.Entry<Slide>>;
   addSlide(args?: {
     title?: string;
     body?: string;
     layout?: Layout;
     after?: string;
-  }): Promise<unknown | tilo.Run>;
+  }): Promise<unknown>;
   addSlides(args: {
     slides: OutlinedSlide[];
     after?: string;
-  }): Promise<unknown | tilo.Run>;
+  }): Promise<unknown>;
   insertSlide(args: {
     at: number;
     slide: SlideData;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `insert-slide` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   insertSlideMany(items: InsertSlideArgs[]): Promise<tilo.ActionAnswer[]>;
   duplicateSlide(args: {
     slide: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `duplicate-slide` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   duplicateSlideMany(items: DuplicateSlideArgs[]): Promise<tilo.ActionAnswer[]>;
   deleteSlide(args: {
     slide: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `delete-slide` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   deleteSlideMany(items: DeleteSlideArgs[]): Promise<tilo.ActionAnswer[]>;
   moveSlide(args: {
     slide: string;
     position: number;
-  }): Promise<unknown | tilo.Run>;
+  }): Promise<unknown>;
   setText(args: {
     slide: string;
     title?: string;
     body?: string;
-  }): Promise<unknown | tilo.Run>;
+  }): Promise<unknown>;
   addElement(args: {
     slide: string;
     element: NewElement;
-  }): Promise<unknown | tilo.Run>;
+  }): Promise<unknown>;
   insertElement(args: {
     slide: string;
     element: ElementData;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `insert-element` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   insertElementMany(items: InsertElementArgs[]): Promise<tilo.ActionAnswer[]>;
   deleteElement(args: {
     slide: string;
     element: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `delete-element` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   deleteElementMany(items: DeleteElementArgs[]): Promise<tilo.ActionAnswer[]>;
   bringToFront(args: {
     slide: string;
     element: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `bring-to-front` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   bringToFrontMany(items: BringToFrontArgs[]): Promise<tilo.ActionAnswer[]>;
   sendToBack(args: {
     slide: string;
     element: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `send-to-back` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   sendToBackMany(items: SendToBackArgs[]): Promise<tilo.ActionAnswer[]>;
   replaceDeck(args: {
@@ -265,15 +265,19 @@ export interface Deck extends tilo.Resource {
     palette: PaletteKind;
     slides: SlideData[];
     look?: DeckLook;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `replace-deck` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   replaceDeckMany(items: ReplaceDeckArgs[]): Promise<tilo.ActionAnswer[]>;
   readDeck(): Promise<void>;
   exportPptxContent(): Promise<void>;
 }
 
+/** The actions `Deck` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const DECK_ACTIONS = ["addSlide", "addSlides", "insertSlide", "insertSlideMany", "duplicateSlide", "duplicateSlideMany", "deleteSlide", "deleteSlideMany", "moveSlide", "setText", "addElement", "insertElement", "insertElementMany", "deleteElement", "deleteElementMany", "bringToFront", "bringToFrontMany", "sendToBack", "sendToBackMany", "replaceDeck", "replaceDeckMany", "readDeck", "exportPptxContent"] as const;
+
 /** The `slides.deck` kind at `path`. */
 export function deck(ws: tilo.Workspace, path: string): Deck {
-  return resourceProxy(ws, path, SURFACE) as unknown as Deck;
+  return resourceProxy(ws, path, SURFACE, DECK_ACTIONS) as unknown as Deck;
 }
 

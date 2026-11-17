@@ -49,8 +49,12 @@ export interface Vault extends tilo.Resource {
   }): Promise<void>;
 }
 
+/** The actions `Vault` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const VAULT_ACTIONS = ["denyAccess", "add", "listLogins", "cancel", "copy", "copyIdentity", "copyOrigins", "reveal", "filter"] as const;
+
 /** The `passwords.vault` kind at `path`. */
 export function vault(ws: tilo.Workspace, path: string): Vault {
-  return resourceProxy(ws, path, SURFACE) as unknown as Vault;
+  return resourceProxy(ws, path, SURFACE, VAULT_ACTIONS) as unknown as Vault;
 }
 

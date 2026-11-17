@@ -17,7 +17,7 @@ all-or-nothing steps, all of them one run.
 from __future__ import annotations
 
 from typing import Any, Literal, NotRequired, TypedDict
-from tilo import Resource, Run
+from tilo import Entry, Resource, Run
 
 __all__ = [
     "DiskUsage",
@@ -44,12 +44,16 @@ class RecentFolders(Resource):
         *,
         device: str,
         folder: str,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         return self.action("remember", device=device, folder=folder)
 
     def remember_many(self, items: list[RememberArgs]) -> list[dict[str, Any]]:
         """Runs `remember` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("remember", items)
+
+    # The actions a call reaches before the resource is read: `await tracker.create(...)`
+    # needs no `load()` first.
+    __actions__ = frozenset({"remember", "remember_many"})
 
 

@@ -53,7 +53,7 @@ fields = [
   { path = "annotations.*.start", type = "int" },
   { path = "annotations.*.end", type = "int" },
   { path = "annotations.*.excerpt", type = "text", label = true },
-  { path = "annotations.*.text", type = "rich_text", ops = "sha256:aceedec5a9b08d74" },
+  { path = "annotations.*.text", type = "rich_text", ops = "sha256:8bbf96a46d039012" },
   { path = "annotations.*.color", type = "any" },
   { path = "annotations.*.created", type = "int" },
   { path = "annotations.*.group", type = "text", readonly = true },

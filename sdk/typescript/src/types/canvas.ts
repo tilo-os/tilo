@@ -22,7 +22,16 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.canvas@3af12d4a81695ba4";
+export const SURFACE = "so.tilo.canvas@c1cf5232af16e7da";
+
+export interface AddLayer {
+  id: string | null;
+  name: string;
+  medium: string | null;
+  opacity: number | null;
+  above: string | null;
+  texture: number | null;
+}
 
 export interface Adjust {
   exposure: number | null;
@@ -42,9 +51,120 @@ export interface Adjust {
   vignette: number | null;
 }
 
+export interface Align {
+  ids: string[];
+  edge: string | null;
+  distribute: string | null;
+  to: string | null;
+}
+
+export interface Arrange {
+  ids: string[];
+  to: string;
+  of: string | null;
+}
+
+export interface Chart {
+  labels: string[];
+  values: number[];
+  kind: string | null;
+  box: number[] | null;
+  max: number | null;
+  bar_width: number | null;
+  colour: string | null;
+  label_size: number | null;
+  values_shown: boolean | null;
+  title: string | null;
+  id: string | null;
+  layer: string | null;
+}
+
+export interface Combine {
+  ids: string[];
+  op: string;
+}
+
+export interface Draw {
+  layer: string | null;
+  marks: NewMark[];
+}
+
+export interface EditLayer {
+  id: string;
+  name: string | null;
+  group: string | null;
+  medium: string | null;
+  opacity: number | null;
+  visible: boolean | null;
+  locked: boolean | null;
+  to: string | null;
+  texture: number | null;
+  adjust: unknown | null;
+  mask: string | null;
+  invert: boolean | null;
+  clip: boolean | null;
+}
+
+export interface EditMarks {
+  pixelated: boolean | null;
+  ids: string[];
+  name: string | null;
+  shape: unknown | null;
+  dash: number[] | null;
+  cap: string | null;
+  join: string | null;
+  blend: string | null;
+  shadow: unknown | null;
+  inner_shadow: unknown | null;
+  grain: number | null;
+  feather: number | null;
+  group: string | null;
+  clip: string | null;
+  fill: string | null;
+  gradient: unknown | null;
+  stroke: string | null;
+  stroke_width: number | null;
+  opacity: number | null;
+  brush: string | null;
+  size: number | null;
+  brush_size: number | null;
+  angle: number | null;
+  wet: boolean | null;
+  params: Record<string, number> | null;
+  move_by: number[] | null;
+  scale: number | null;
+  rotate: number | null;
+  layer: string | null;
+  transform: number[] | null;
+  flip: string | null;
+  crop: number[] | null;
+  straighten: number | null;
+  adjust: Adjust | null;
+  smooth: number | null;
+  simplify: number | null;
+  extend: number[][] | null;
+  split: number[] | null;
+  merge: boolean | null;
+}
+
+export interface Gradient {
+  kind: string;
+  from: number[];
+  to: number[];
+  stops: unknown[];
+  focal: number[] | null;
+}
+
 export interface Ground {
   texture: string;
   colour: string;
+}
+
+export interface ImportSvg {
+  svg: string;
+  layer: string | null;
+  group: string | null;
+  fit: number[] | null;
 }
 
 export interface Layer {
@@ -78,6 +198,158 @@ export interface Mark {
   area: string;
 }
 
+export interface Matte {
+  src: string;
+  rect: number[];
+}
+
+export interface MediumSpec {
+  id: string;
+  label: string;
+  engine: string;
+  description: string;
+  params: Record<string, number>;
+  ground: string | null;
+  palette: PigmentSpec[];
+}
+
+export interface NewArtwork {
+  title: string | null;
+  size: string | null;
+  landscape: boolean | null;
+  width: number | null;
+  height: number | null;
+  start: string | null;
+  texture: string | null;
+  ground_colour: string | null;
+  medium: string | null;
+}
+
+export interface NewMark {
+  pixelated: boolean | null;
+  id: string | null;
+  name: string | null;
+  shape: Shape;
+  fill: string | null;
+  gradient: Gradient | null;
+  stroke: string | null;
+  stroke_width: number | null;
+  opacity: number | null;
+  brush_size: number | null;
+  brush: string | null;
+  angle: number | null;
+  wet: boolean | null;
+  params: Record<string, number> | null;
+  dash: number[] | null;
+  cap: string | null;
+  join: string | null;
+  blend: string | null;
+  shadow: Shadow | null;
+  inner_shadow: unknown | null;
+  grain: number | null;
+  feather: number | null;
+  group: string | null;
+  clip: string | null;
+  transform: number[] | null;
+}
+
+export interface NewStroke {
+  id: string | null;
+  name: string | null;
+  points: number[][];
+  size: number;
+  colour: string;
+  brush: string | null;
+  opacity: number | null;
+  wet: boolean | null;
+  params: Record<string, number> | null;
+  forks: number | null;
+  spread: number | null;
+  dabs: number | null;
+  scatter: number | null;
+  dab_length: number | null;
+  hatch: number | null;
+  angle: number | null;
+  clip: string | null;
+}
+
+export interface Open {
+  path: string;
+  title: string | null;
+}
+
+export interface OpenArtwork {
+  file: string;
+}
+
+export interface Paint {
+  layer: string | null;
+  strokes: NewStroke[];
+  group: string | null;
+}
+
+export interface PigmentSpec {
+  name: string;
+  colour: string;
+  granulation: number;
+  strength: number;
+}
+
+export interface RemoveLayer {
+  id: string;
+}
+
+export interface RemoveMarks {
+  ids: string[];
+  layer: string | null;
+  along: number[][] | null;
+}
+
+export interface RemoveMedium {
+  id: string;
+}
+
+export interface SaveMedium {
+  medium: MediumSpec;
+}
+
+export interface Select {
+  rect: number[] | null;
+  ellipse: number[] | null;
+  points: number[][] | null;
+  d: string | null;
+  marks: string[] | null;
+  matte: Matte | null;
+  mode: string | null;
+  feather: number | null;
+  grow: number | null;
+  invert: boolean | null;
+}
+
+export interface SetArtwork {
+  title: string | null;
+  width: number | null;
+  height: number | null;
+  texture: string | null;
+  ground_colour: string | null;
+  crop: number[] | null;
+  fit: string | null;
+}
+
+export interface SetReference {
+  image: string | null;
+  frame: number[] | null;
+  opacity: number | null;
+  visible: boolean | null;
+  remove: boolean | null;
+}
+
+export interface Shadow {
+  offset: number[];
+  blur: number;
+  colour: string | null;
+}
+
 /** One of rect, ellipse, polygon, line, path, text, stroke, image: an object whose case the app tags it with. */
 export type Shape = Record<string, unknown>;
 
@@ -102,6 +374,16 @@ export interface Style {
   grain: number | null;
   feather: number | null;
   adjust: Adjust | null;
+}
+
+export interface UseSelection {
+  do: string;
+  layer: string | null;
+  colour: string | null;
+  width: number | null;
+  id: string | null;
+  defringe: boolean | null;
+  cleaned: string[][] | null;
 }
 
 export interface Recent {
@@ -139,7 +421,7 @@ export interface EditMarksArgs {
   brush_size?: number;
   angle?: number;
   wet?: boolean;
-  params?: unknown;
+  params?: Record<string, number>;
   move_by?: number[];
   scale?: number;
   rotate?: number;
@@ -148,7 +430,7 @@ export interface EditMarksArgs {
   flip?: string;
   crop?: number[];
   straighten?: number;
-  adjust?: unknown;
+  adjust?: Adjust;
   smooth?: number;
   simplify?: number;
   extend?: number[][];
@@ -215,7 +497,7 @@ export interface SetArtworkArgs {
 
 /** The arguments of `save-medium`. */
 export interface SaveMediumArgs {
-  medium: unknown;
+  medium: MediumSpec;
 }
 
 /** The arguments of `remove-medium`. */
@@ -288,20 +570,20 @@ export interface Artwork extends tilo.Resource {
   width: number;
   height: number;
   ground: Ground;
-  layers: Layer[];
-  marks: Mark[];
+  layers: Array<tilo.Entry<Layer>>;
+  marks: Array<tilo.Entry<Mark>>;
   media: Record<string, unknown>;
   reference: unknown | null;
   selection: unknown | null;
   paint(args: {
-    strokes: unknown[];
+    strokes: NewStroke[];
     layer?: string;
     group?: string;
-  }): Promise<unknown | tilo.Run>;
+  }): Promise<unknown>;
   draw(args: {
-    marks: unknown[];
+    marks: NewMark[];
     layer?: string;
-  }): Promise<unknown | tilo.Run>;
+  }): Promise<unknown>;
   chart(args: {
     labels: string[];
     values: number[];
@@ -315,7 +597,7 @@ export interface Artwork extends tilo.Resource {
     title?: string;
     id?: string;
     layer?: string;
-  }): Promise<unknown | tilo.Run>;
+  }): Promise<unknown>;
   editMarks(args: {
     ids: string[];
     pixelated?: boolean;
@@ -341,7 +623,7 @@ export interface Artwork extends tilo.Resource {
     brush_size?: number;
     angle?: number;
     wet?: boolean;
-    params?: unknown;
+    params?: Record<string, number>;
     move_by?: number[];
     scale?: number;
     rotate?: number;
@@ -350,27 +632,27 @@ export interface Artwork extends tilo.Resource {
     flip?: string;
     crop?: number[];
     straighten?: number;
-    adjust?: unknown;
+    adjust?: Adjust;
     smooth?: number;
     simplify?: number;
     extend?: number[][];
     split?: number[];
     merge?: boolean;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `edit-marks` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   editMarksMany(items: EditMarksArgs[]): Promise<tilo.ActionAnswer[]>;
   removeMarks(args?: {
     ids?: string[];
     layer?: string;
     along?: number[][];
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `remove-marks` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   removeMarksMany(items: RemoveMarksArgs[]): Promise<tilo.ActionAnswer[]>;
   arrange(args: {
     ids: string[];
     to: string;
     of?: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `arrange` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   arrangeMany(items: ArrangeArgs[]): Promise<tilo.ActionAnswer[]>;
   addLayer(args: {
@@ -380,7 +662,7 @@ export interface Artwork extends tilo.Resource {
     opacity?: number;
     above?: string;
     texture?: number;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `add-layer` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   addLayerMany(items: AddLayerArgs[]): Promise<tilo.ActionAnswer[]>;
   editLayer(args: {
@@ -397,12 +679,12 @@ export interface Artwork extends tilo.Resource {
     mask?: string;
     invert?: boolean;
     clip?: boolean;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `edit-layer` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   editLayerMany(items: EditLayerArgs[]): Promise<tilo.ActionAnswer[]>;
   removeLayer(args: {
     id: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `remove-layer` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   removeLayerMany(items: RemoveLayerArgs[]): Promise<tilo.ActionAnswer[]>;
   setArtwork(args?: {
@@ -413,17 +695,17 @@ export interface Artwork extends tilo.Resource {
     ground_colour?: string;
     crop?: number[];
     fit?: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `set-artwork` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   setArtworkMany(items: SetArtworkArgs[]): Promise<tilo.ActionAnswer[]>;
   saveMedium(args: {
-    medium: unknown;
-  }): Promise<tilo.Run | void>;
+    medium: MediumSpec;
+  }): Promise<void>;
   /** Runs `save-medium` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   saveMediumMany(items: SaveMediumArgs[]): Promise<tilo.ActionAnswer[]>;
   removeMedium(args: {
     id: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `remove-medium` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   removeMediumMany(items: RemoveMediumArgs[]): Promise<tilo.ActionAnswer[]>;
   align(args: {
@@ -431,7 +713,7 @@ export interface Artwork extends tilo.Resource {
     edge?: string;
     distribute?: string;
     to?: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `align` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   alignMany(items: AlignArgs[]): Promise<tilo.ActionAnswer[]>;
   setReference(args?: {
@@ -440,7 +722,7 @@ export interface Artwork extends tilo.Resource {
     opacity?: number;
     visible?: boolean;
     remove?: boolean;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `set-reference` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   setReferenceMany(items: SetReferenceArgs[]): Promise<tilo.ActionAnswer[]>;
   importSvg(args: {
@@ -448,11 +730,11 @@ export interface Artwork extends tilo.Resource {
     layer?: string;
     group?: string;
     fit?: number[];
-  }): Promise<unknown | tilo.Run>;
+  }): Promise<unknown>;
   openPicture(args: {
     path: string;
     title?: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `open-picture` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   openPictureMany(items: OpenPictureArgs[]): Promise<tilo.ActionAnswer[]>;
   newArtwork(args?: {
@@ -465,12 +747,12 @@ export interface Artwork extends tilo.Resource {
     texture?: string;
     ground_colour?: string;
     medium?: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `new-artwork` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   newArtworkMany(items: NewArtworkArgs[]): Promise<tilo.ActionAnswer[]>;
   openArtwork(args: {
     file: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `open-artwork` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   openArtworkMany(items: OpenArtworkArgs[]): Promise<tilo.ActionAnswer[]>;
   select(args?: {
@@ -479,12 +761,12 @@ export interface Artwork extends tilo.Resource {
     points?: number[][];
     d?: string;
     marks?: string[];
-    matte?: unknown;
+    matte?: Matte;
     mode?: string;
     feather?: number;
     grow?: number;
     invert?: boolean;
-  }): Promise<unknown | tilo.Run>;
+  }): Promise<unknown>;
   useSelection(args: {
     do: string;
     layer?: string;
@@ -493,11 +775,11 @@ export interface Artwork extends tilo.Resource {
     id?: string;
     defringe?: boolean;
     cleaned?: string[][];
-  }): Promise<unknown | tilo.Run>;
+  }): Promise<unknown>;
   combine(args: {
     ids: string[];
     op: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `combine` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   combineMany(items: CombineArgs[]): Promise<tilo.ActionAnswer[]>;
   look(args?: {
@@ -540,9 +822,13 @@ export interface Artwork extends tilo.Resource {
   }): Promise<void>;
 }
 
+/** The actions `Artwork` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const ARTWORK_ACTIONS = ["paint", "draw", "chart", "editMarks", "editMarksMany", "removeMarks", "removeMarksMany", "arrange", "arrangeMany", "addLayer", "addLayerMany", "editLayer", "editLayerMany", "removeLayer", "removeLayerMany", "setArtwork", "setArtworkMany", "saveMedium", "saveMediumMany", "removeMedium", "removeMediumMany", "align", "alignMany", "setReference", "setReferenceMany", "importSvg", "openPicture", "openPictureMany", "newArtwork", "newArtworkMany", "openArtwork", "openArtworkMany", "select", "useSelection", "combine", "combineMany", "look", "measure", "export", "compareVersions", "exportSvg", "compare", "saveArtwork"] as const;
+
 /** The `canvas.artwork` kind at `path`. */
 export function artwork(ws: tilo.Workspace, path: string): Artwork {
-  return resourceProxy(ws, path, SURFACE) as unknown as Artwork;
+  return resourceProxy(ws, path, SURFACE, ARTWORK_ACTIONS) as unknown as Artwork;
 }
 
 /** Recent artworks — `canvas.recent-artworks`. */
@@ -551,19 +837,23 @@ export interface RecentArtworks extends tilo.Resource {
   remember(args: {
     device: string;
     recent: Recent;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `remember` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   rememberMany(items: RememberArgs[]): Promise<tilo.ActionAnswer[]>;
   forget(args: {
     device: string;
     path: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `forget` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   forgetMany(items: ForgetArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 
+/** The actions `RecentArtworks` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const RECENTARTWORKS_ACTIONS = ["remember", "rememberMany", "forget", "forgetMany"] as const;
+
 /** The `canvas.recent-artworks` kind at `path`. */
 export function recentArtworks(ws: tilo.Workspace, path: string): RecentArtworks {
-  return resourceProxy(ws, path, SURFACE) as unknown as RecentArtworks;
+  return resourceProxy(ws, path, SURFACE, RECENTARTWORKS_ACTIONS) as unknown as RecentArtworks;
 }
 

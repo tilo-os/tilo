@@ -17,7 +17,7 @@ all-or-nothing steps, all of them one run.
 from __future__ import annotations
 
 from typing import Any, Literal, NotRequired, TypedDict
-from tilo import Resource, Run
+from tilo import Entry, Resource, Run
 
 __all__ = [
     "Category",
@@ -173,7 +173,7 @@ ClearArgs = TypedDict("ClearArgs", {
 class Workspace(Resource):
     """Maps — `maps.workspace`."""
     __surface__ = "so.tilo.maps@bff2580c0be19545"
-    places: list[Place]
+    places: list[Entry[Place]]
     @property
     def recents(self) -> Any:
         """Read only."""
@@ -189,7 +189,7 @@ class Workspace(Resource):
         """Read only."""
         return self.fields["transit_plan"]
 
-    def accept_places(self, *, places: list[Place]) -> Run | None:
+    def accept_places(self, *, places: list[Place]) -> None:
         """Runs the app's action."""
         return self.action("accept-places", places=places)
 
@@ -197,7 +197,7 @@ class Workspace(Resource):
         """Runs `accept-places` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("accept-places", items)
 
-    def commit_search(self, *, query: str) -> Run | None:
+    def commit_search(self, *, query: str) -> None:
         """Runs the app's action."""
         return self.action("commit-search", query=query)
 
@@ -205,7 +205,7 @@ class Workspace(Resource):
         """Runs `commit-search` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("commit-search", items)
 
-    def clear_recents(self) -> Run | None:
+    def clear_recents(self) -> None:
         """Runs the app's action."""
         return self.action("clear-recents")
 
@@ -221,7 +221,7 @@ class Workspace(Resource):
         mode: TravelMode,
         origin: LatLon | None = None,
         dest: LatLon | None = None,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         args: dict[str, Any] = {}
         args["route"] = route
@@ -238,7 +238,7 @@ class Workspace(Resource):
         """Runs `accept-route` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("accept-route", items)
 
-    def clear_route(self) -> Run | None:
+    def clear_route(self) -> None:
         """Runs the app's action."""
         return self.action("clear-route")
 
@@ -253,7 +253,7 @@ class Workspace(Resource):
         dest_name: str,
         origin: LatLon | None = None,
         dest: LatLon | None = None,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         args: dict[str, Any] = {}
         args["transit"] = transit
@@ -269,7 +269,7 @@ class Workspace(Resource):
         """Runs `accept-transit` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("accept-transit", items)
 
-    def clear_transit(self) -> Run | None:
+    def clear_transit(self) -> None:
         """Runs the app's action."""
         return self.action("clear-transit")
 
@@ -321,6 +321,10 @@ class Workspace(Resource):
         """Runs the app's action."""
         return self.action("clear-offline-areas")
 
+    # The actions a call reaches before the resource is read: `await tracker.create(...)`
+    # needs no `load()` first.
+    __actions__ = frozenset({"accept_places", "accept_places_many", "commit_search", "commit_search_many", "clear_recents", "clear_recents_many", "accept_route", "accept_route_many", "clear_route", "clear_route_many", "accept_transit", "accept_transit_many", "clear_transit", "clear_transit_many", "search", "locate", "toggle_traffic", "open_place", "directions", "open_poi", "poi_directions", "show_point", "delete_offline_area", "clear_offline_areas"})
+
 
 class OfflineAreas(Resource):
     """Offline areas — `maps.offline-areas`."""
@@ -331,7 +335,7 @@ class OfflineAreas(Resource):
         *,
         device: str,
         region: DownloadedRegion,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         return self.action("record", device=device, region=region)
 
@@ -343,7 +347,7 @@ class OfflineAreas(Resource):
         *,
         device: str,
         area: str,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         return self.action("forget", device=device, area=area)
 
@@ -351,12 +355,16 @@ class OfflineAreas(Resource):
         """Runs `forget` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("forget", items)
 
-    def clear(self, *, device: str) -> Run | None:
+    def clear(self, *, device: str) -> None:
         """Runs the app's action."""
         return self.action("clear", device=device)
 
     def clear_many(self, items: list[ClearArgs]) -> list[dict[str, Any]]:
         """Runs `clear` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("clear", items)
+
+    # The actions a call reaches before the resource is read: `await tracker.create(...)`
+    # needs no `load()` first.
+    __actions__ = frozenset({"record", "record_many", "forget", "forget_many", "clear", "clear_many"})
 
 

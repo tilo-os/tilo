@@ -22,23 +22,27 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.console@c7c6f7a7da957f0d";
+export const SURFACE = "so.tilo.console@f68df16f5e71128e";
 
 /** The arguments of `show-everything`. */
 export interface ShowEverythingArgs {
 }
 
-/** Agent runs shown — `console.view`. */
+/** Agent sessions shown — `console.view`. */
 export interface View extends tilo.Resource {
   agent: string;
   // the app's `workspace` field is the SDK's own `workspace`.
-  showEverything(): Promise<tilo.Run | void>;
+  showEverything(): Promise<void>;
   /** Runs `show-everything` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   showEverythingMany(items: ShowEverythingArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 
+/** The actions `View` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const VIEW_ACTIONS = ["showEverything", "showEverythingMany"] as const;
+
 /** The `console.view` kind at `path`. */
 export function view(ws: tilo.Workspace, path: string): View {
-  return resourceProxy(ws, path, SURFACE) as unknown as View;
+  return resourceProxy(ws, path, SURFACE, VIEW_ACTIONS) as unknown as View;
 }
 

@@ -45,6 +45,16 @@ pub enum Escaped {
     },
 }
 
+/// A unit enum whose JSON form serde spells in kebab case: what a value reads
+/// and what a caller writes are that spelling, not the document's key.
+#[derive(Model, Default, Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum State {
+    #[default]
+    NotStarted,
+    InProgress,
+}
+
 #[derive(Model, Default, Clone, Debug, PartialEq)]
 pub struct Rules {
     pub matcher: Option<Matcher>,
@@ -171,8 +181,22 @@ tilo_test_env::scenario! {
         }
         assert_eq!(
             Matcher::Path("/a".into()).to_json(),
-            serde_json::json!({ VARIANT_KEY: "path", "0": "/a" })
+            serde_json::json!({ VARIANT_KEY: "Path", "0": "/a" })
         );
+    }
+
+    phase a_unit_enums_json_form_is_what_serde_spells;
+    {
+        let entry = State::InProgress.to_json();
+        assert_eq!(entry, serde_json::json!("in-progress"));
+        assert_eq!(State::from_json(&entry).unwrap(), State::InProgress);
+        assert_eq!(
+            State::value_schema(),
+            serde_json::json!({"type": "string", "enum": ["not-started", "in-progress"]})
+        );
+        let mut types = tilo_resource::surface::TypeSet::default();
+        let field = <State as Model>::field_type(&mut types);
+        assert_eq!(field, tilo_resource::FieldType::Named("State".into()));
     }
 
     phase concurrent_edits_of_one_variant_merge_field_by_field;

@@ -240,6 +240,7 @@ mod tests {
             }),
             has_children: false,
             visibility: None,
+            surface: None,
         }
     }
 

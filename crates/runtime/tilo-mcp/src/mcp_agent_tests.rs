@@ -458,6 +458,7 @@ impl Notes {
             ),
             has_children,
             visibility: None,
+            surface: None,
         }
     }
 
@@ -506,6 +507,7 @@ impl Notes {
                 }),
                 has_children: false,
                 visibility: None,
+                surface: None,
             };
             let installed = *self.workspace.lock().unwrap();
             return match installed {
@@ -1519,7 +1521,6 @@ tilo_test_env::scenario! {
             assert_eq!(apps["rows"][0]["kind"], "app");
             assert_eq!(apps["rows"][0]["state"], "running");
             assert_eq!(apps["rows"][0]["has_children"], true);
-
             let (listing, failed) = answer(&agent(&host), "tilo_ls", json!({"path":"notes"})).await;
             assert!(!failed, "{listing}");
             assert_eq!(listing["path"], "notes");

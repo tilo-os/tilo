@@ -44,6 +44,7 @@ fn content_parameter_is_marked_in_generated_declaration() {
             place: tilo_resource::__private::PlaceIn::Nowhere,
             example: ::core::option::Option::None,
             flat: false,
+            flat_types: ::core::option::Option::None,
             content: true,
             field_type: <String as tilo_resource::JsonSchema>::field_type,
         }
@@ -99,6 +100,7 @@ fn read_verb_preserves_parameter_metadata_and_secret_validation() {
             place: tilo_resource::__private::PlaceIn::Nowhere,
             example: ::core::option::Option::None,
             flat: false,
+            flat_types: ::core::option::Option::None,
             content: false,
             field_type: <String as tilo_resource::JsonSchema>::field_type,
         }

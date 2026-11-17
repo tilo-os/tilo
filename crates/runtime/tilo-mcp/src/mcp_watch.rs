@@ -294,7 +294,12 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         Ok(Cursor {
             run,
             here: self.here_now().map(|(fingerprint, _)| fingerprint),
-            change: last_change(self.history_page(path).await?.as_deref()),
+            change: last_change(
+                self.history_page(path)
+                    .await?
+                    .as_ref()
+                    .map(|(_, entries)| entries.as_slice()),
+            ),
             feed,
             state: self.host.session_state(&self.caller()),
         })
@@ -377,7 +382,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             return self.watch_feed(cursor, events).await;
         }
         let page = self.history_page(path).await?;
-        let Some(page) = page else {
+        let Some((app, page)) = page else {
             return Ok(());
         };
         let seen = cursor.change.take();
@@ -398,20 +403,8 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
                 after = known.is_some_and(|seen| seen == change);
                 continue;
             }
-            let mut event = json!({
-                "kind": "change",
-                "path": path.unwrap_or_default(),
-                "change": change,
-                "sentence": entry.get("sentence").cloned().unwrap_or_default(),
-                "time_ms": entry.get("time_ms").cloned().unwrap_or_default(),
-            });
-            if let (Some(fields), Some(entry)) = (event.as_object_mut(), entry.as_object()) {
-                for key in ["by", "run", "run_id", "invocation", "undone"] {
-                    if let Some(value) = entry.get(key) {
-                        fields.insert(key.to_owned(), value.clone());
-                    }
-                }
-            }
+            let mut event = change_event(path.unwrap_or_default(), Some(&app), None, entry);
+            event["change"] = json!(change);
             events.push(event);
         }
         cursor.change = last_change(Some(&page)).or(seen);
@@ -425,29 +418,13 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             return Ok(());
         };
         for change in page.changes {
-            let mut event = json!({
-                "kind": "change",
-                "path": app_names(std::slice::from_ref(&change.app)).join(""),
-                "app": change.app,
-                "record": change.record,
-            });
-            if let (Some(fields), Some(entry)) = (event.as_object_mut(), change.entry.as_object()) {
-                for key in [
-                    "change",
-                    "sentence",
-                    "time_ms",
-                    "by",
-                    "actor",
-                    "run",
-                    "run_id",
-                    "invocation",
-                    "undone",
-                ] {
-                    if let Some(value) = entry.get(key) {
-                        fields.insert(key.to_owned(), value.clone());
-                    }
-                }
-            }
+            let name = app_names(std::slice::from_ref(&change.app)).join("");
+            let event = change_event(
+                &name,
+                Some(&change.app),
+                (!change.record.is_empty()).then_some(change.record.as_str()),
+                &change.entry,
+            );
             events.push(event);
         }
         cursor.feed = Some(page.cursor);
@@ -481,7 +458,10 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
     /// The watched path's history, oldest first, as its own `history` verb
     /// answers it: `None` for a watch of no path, or of a resource with no
     /// history to read.
-    async fn history_page(&self, path: Option<&str>) -> Result<Option<Vec<Value>>, String> {
+    async fn history_page(
+        &self,
+        path: Option<&str>,
+    ) -> Result<Option<(String, Vec<Value>)>, String> {
         let Some(path) = path_named(path) else {
             return Ok(None);
         };
@@ -511,7 +491,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             &mut None,
         ))
         .await?;
-        Ok(history_entries(&value))
+        Ok(history_entries(&value).map(|entries| (resolved.app_id, entries)))
     }
 
     /// Who is in the workspace now, and a fingerprint of it: `None` for a
@@ -560,6 +540,60 @@ fn first_wake(
         });
     }
     Some(wake)
+}
+
+/// One change, as an agent or an API caller reads it: the resource it
+/// changed (the record, the item in it when the change names one), who made
+/// it, and the run it is a step of. The run's name is under `run` and the
+/// invocation under `invocation`, as the record's own history names them.
+fn change_event(path: &str, app: Option<&str>, record: Option<&str>, entry: &Value) -> Value {
+    let mut resource = serde_json::Map::new();
+    resource.insert("path".into(), json!(path));
+    for (key, value) in [("app", app), ("record", record)] {
+        if let Some(value) = value.filter(|value| !value.is_empty()) {
+            resource.insert(key.into(), json!(value));
+        }
+    }
+    if let Some(item) = entry.get("item").and_then(Value::as_str) {
+        resource.insert("item".into(), json!(item));
+    }
+    let mut event = json!({
+        "kind": "change",
+        "path": path,
+        "resources": [Value::Object(resource)],
+        "change": entry.get("change").cloned().unwrap_or_default(),
+        "sentence": entry.get("sentence").cloned().unwrap_or_default(),
+        "time_ms": entry.get("time_ms").cloned().unwrap_or_default(),
+    });
+    if let (Some(fields), Some(entry)) = (event.as_object_mut(), entry.as_object()) {
+        for key in ["by", "run", "run_id", "invocation", "undone"] {
+            if let Some(value) = entry.get(key) {
+                fields.insert(key.to_owned(), value.clone());
+            }
+        }
+        if let Some(actor) = actor_of(entry) {
+            fields.insert("actor".into(), actor);
+        }
+    }
+    event
+}
+
+/// Who made one change, structured: the record's own record of its actor
+/// (a person or an agent, with the name it was shown by), or, for a change
+/// recorded by a person, the name the record keeps of them.
+fn actor_of(entry: &serde_json::Map<String, Value>) -> Option<Value> {
+    if let Some(actor) = entry.get("actor").filter(|actor| actor.is_object()) {
+        return Some(actor.clone());
+    }
+    let name = entry.get("by").and_then(Value::as_str)?.trim();
+    if name.is_empty() {
+        return None;
+    }
+    let run = entry
+        .get("run")
+        .and_then(Value::as_str)
+        .is_some_and(|run| !run.is_empty());
+    Some(json!({"kind": if run { "agent" } else { "person" }, "name": name}))
 }
 
 /// The entries of a `history` verb's answer `value`, oldest first: its

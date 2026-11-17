@@ -17,7 +17,7 @@ all-or-nothing steps, all of them one run.
 from __future__ import annotations
 
 from typing import Any, Literal, NotRequired, TypedDict
-from tilo import Resource, Run
+from tilo import Entry, Resource, Run
 
 __all__ = [
     "Album",
@@ -53,7 +53,7 @@ class Playlist(TypedDict):
     id: str
     name: str
     description: str
-    tracks: list[str]
+    tracks: list[Entry[str]]
     cover: str
 
 class Preferences(TypedDict):
@@ -105,7 +105,7 @@ class Library(Resource):
     def tracks(self) -> dict[str, Track]:
         """Read only."""
         return self.fields["tracks"]
-    playlists: list[Playlist]
+    playlists: list[Entry[Playlist]]
     liked: list[str]
     saved_albums: list[str]
     followed_artists: list[str]
@@ -114,7 +114,7 @@ class Library(Resource):
         *,
         name: str,
         track: str | None = None,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         args: dict[str, Any] = {}
         args["name"] = name
@@ -126,7 +126,7 @@ class Library(Resource):
         """Runs `create-playlist` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("create-playlist", items)
 
-    def delete_playlist(self, *, playlist: str) -> Run | None:
+    def delete_playlist(self, *, playlist: str) -> None:
         """Runs the app's action."""
         return self.action("delete-playlist", playlist=playlist)
 
@@ -134,7 +134,7 @@ class Library(Resource):
         """Runs `delete-playlist` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("delete-playlist", items)
 
-    def import_track(self, *, song: CatalogueTrack) -> Run | None:
+    def import_track(self, *, song: CatalogueTrack) -> None:
         """Runs the app's action."""
         return self.action("import-track", song=song)
 
@@ -149,5 +149,9 @@ class Library(Resource):
     def search(self, *, query: str) -> None:
         """Runs the app's action."""
         return self.action("search", query=query)
+
+    # The actions a call reaches before the resource is read: `await tracker.create(...)`
+    # needs no `load()` first.
+    __actions__ = frozenset({"create_playlist", "create_playlist_many", "delete_playlist", "delete_playlist_many", "import_track", "import_track_many", "spotify_account_status", "search"})
 
 

@@ -17,7 +17,7 @@ all-or-nothing steps, all of them one run.
 from __future__ import annotations
 
 from typing import Any, Literal, NotRequired, TypedDict
-from tilo import Resource, Run
+from tilo import Entry, Resource, Run
 
 __all__ = [
     "View",
@@ -29,18 +29,22 @@ ShowEverythingArgs = TypedDict("ShowEverythingArgs", {
 """The arguments of `show-everything`."""
 
 class View(Resource):
-    """Agent runs shown — `console.view`."""
-    __surface__ = "so.tilo.console@c7c6f7a7da957f0d"
+    """Agent sessions shown — `console.view`."""
+    __surface__ = "so.tilo.console@f68df16f5e71128e"
     agent: str
     # the app's `workspace` field is the SDK's own `workspace`: read it with
     # `fields["workspace"]`.
 
-    def show_everything(self) -> Run | None:
+    def show_everything(self) -> None:
         """Runs the app's action."""
         return self.action("show-everything")
 
     def show_everything_many(self, items: list[ShowEverythingArgs]) -> list[dict[str, Any]]:
         """Runs `show-everything` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("show-everything", items)
+
+    # The actions a call reaches before the resource is read: `await tracker.create(...)`
+    # needs no `load()` first.
+    __actions__ = frozenset({"show_everything", "show_everything_many"})
 
 

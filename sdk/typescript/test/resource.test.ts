@@ -84,6 +84,19 @@ describe("a generated type", () => {
     expect(form.form_values).toEqual({ surname: "Doe", given_name: "Jane" });
   });
 
+  it("reaches an action before any read, and answers its result", async () => {
+    // A generated type's method is the action: no `load()` first, and the
+    // answer is what the action produced, not a run to follow.
+    const api = new FakeApi();
+    api.surface = pdfViewer.SURFACE;
+    const form: pdfViewer.Document = pdfViewer.pdfDocument(open(api).workspace("jane-doe"), PDF);
+
+    const answer = await form.readFormFields();
+
+    expect(answer).toEqual({ fields: ["surname", "given_name"] });
+    expect(api.last()?.path).toContain("/actions/read-form-fields");
+  });
+
   it("sends its surface with every call it makes", async () => {
     const api = new FakeApi();
     const form = open(api).workspace("jane-doe").resource(PDF, { surface: api.surface });

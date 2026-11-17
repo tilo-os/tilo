@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.ebook@f7c27282fa766530";
+export const SURFACE = "so.tilo.ebook@ae688919837912da";
 
 /** One of "bookmark", "highlight", "note". */
 export type AnnoKind = "bookmark" | "highlight" | "note";
@@ -224,14 +224,14 @@ export interface KeepArgs {
 
 /** Books — `ebook.library`. */
 export interface Library extends tilo.Resource {
-  entries: LibraryEntry[];
+  entries: Array<tilo.Entry<LibraryEntry>>;
   progress: Record<string, Progress>;
   settings: Settings;
   default_font: string;
   prefs: LibraryPrefs;
-  fonts: FontEntry[];
-  schemes: ColorScheme[];
-  annotations: Mark[];
+  fonts: Array<tilo.Entry<FontEntry>>;
+  schemes: Array<tilo.Entry<ColorScheme>>;
+  annotations: Array<tilo.Entry<Mark>>;
   shelve(args: {
     book: string;
     title: string;
@@ -239,7 +239,7 @@ export interface Library extends tilo.Resource {
     subject: string;
     shared: boolean;
     content?: unknown;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `shelve` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   shelveMany(items: ShelveArgs[]): Promise<tilo.ActionAnswer[]>;
   shelveFound(args: {
@@ -247,18 +247,18 @@ export interface Library extends tilo.Resource {
     title: string;
     author: string;
     subject: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `shelve-found` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   shelveFoundMany(items: ShelveFoundArgs[]): Promise<tilo.ActionAnswer[]>;
   removeFromLibrary(args: {
     book: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `remove-from-library` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   removeFromLibraryMany(items: RemoveFromLibraryArgs[]): Promise<tilo.ActionAnswer[]>;
   indexBook(args: {
     book: string;
     index: unknown;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `index-book` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   indexBookMany(items: IndexBookArgs[]): Promise<tilo.ActionAnswer[]>;
   recordProgress(args: {
@@ -267,20 +267,20 @@ export interface Library extends tilo.Resource {
     block: number;
     fraction: number;
     opened: boolean;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `record-progress` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   recordProgressMany(items: RecordProgressArgs[]): Promise<tilo.ActionAnswer[]>;
   addNote(args: {
     passage: Passage;
     color: string;
     text: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `add-note` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   addNoteMany(items: AddNoteArgs[]): Promise<tilo.ActionAnswer[]>;
   addComment(args: {
     highlight: string;
     text: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `add-comment` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   addCommentMany(items: AddCommentArgs[]): Promise<tilo.ActionAnswer[]>;
   toggleBookmark(args: {
@@ -288,7 +288,7 @@ export interface Library extends tilo.Resource {
     chapter: number;
     block: number;
     excerpt: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `toggle-bookmark` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   toggleBookmarkMany(items: ToggleBookmarkArgs[]): Promise<tilo.ActionAnswer[]>;
   highlight(args: {
@@ -297,33 +297,33 @@ export interface Library extends tilo.Resource {
     color: string;
     replacing: string[];
     pieces: HiPiece[];
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `highlight` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   highlightMany(items: HighlightArgs[]): Promise<tilo.ActionAnswer[]>;
   changeColor(args: {
     highlight: string;
     color: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `change-color` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   changeColorMany(items: ChangeColorArgs[]): Promise<tilo.ActionAnswer[]>;
   deleteHighlight(args: {
     highlight: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `delete-highlight` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   deleteHighlightMany(items: DeleteHighlightArgs[]): Promise<tilo.ActionAnswer[]>;
   deleteAnnotation(args: {
     annotation: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `delete-annotation` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   deleteAnnotationMany(items: DeleteAnnotationArgs[]): Promise<tilo.ActionAnswer[]>;
   removeFont(args: {
     font: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `remove-font` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   removeFontMany(items: RemoveFontArgs[]): Promise<tilo.ActionAnswer[]>;
   deleteScheme(args: {
     scheme: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `delete-scheme` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   deleteSchemeMany(items: DeleteSchemeArgs[]): Promise<tilo.ActionAnswer[]>;
   readChapter(args: {
@@ -332,9 +332,13 @@ export interface Library extends tilo.Resource {
   }): Promise<void>;
 }
 
+/** The actions `Library` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const LIBRARY_ACTIONS = ["shelve", "shelveMany", "shelveFound", "shelveFoundMany", "removeFromLibrary", "removeFromLibraryMany", "indexBook", "indexBookMany", "recordProgress", "recordProgressMany", "addNote", "addNoteMany", "addComment", "addCommentMany", "toggleBookmark", "toggleBookmarkMany", "highlight", "highlightMany", "changeColor", "changeColorMany", "deleteHighlight", "deleteHighlightMany", "deleteAnnotation", "deleteAnnotationMany", "removeFont", "removeFontMany", "deleteScheme", "deleteSchemeMany", "readChapter"] as const;
+
 /** The `ebook.library` kind at `path`. */
 export function library(ws: tilo.Workspace, path: string): Library {
-  return resourceProxy(ws, path, SURFACE) as unknown as Library;
+  return resourceProxy(ws, path, SURFACE, LIBRARY_ACTIONS) as unknown as Library;
 }
 
 /** Book catalogues — `settings.books-catalogues`. */
@@ -342,9 +346,13 @@ export interface BooksCatalogues extends tilo.Resource {
   keep_catalogues: boolean;
 }
 
+/** The actions `BooksCatalogues` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const BOOKSCATALOGUES_ACTIONS = [] as const;
+
 /** The `settings.books-catalogues` kind at `path`. */
 export function booksCatalogues(ws: tilo.Workspace, path: string): BooksCatalogues {
-  return resourceProxy(ws, path, SURFACE) as unknown as BooksCatalogues;
+  return resourceProxy(ws, path, SURFACE, BOOKSCATALOGUES_ACTIONS) as unknown as BooksCatalogues;
 }
 
 /** Book files — `ebook.files`. */
@@ -353,13 +361,17 @@ export interface Files extends tilo.Resource {
   keep(args: {
     device: string;
     kept: unknown;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `keep` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   keepMany(items: KeepArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 
+/** The actions `Files` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const FILES_ACTIONS = ["keep", "keepMany"] as const;
+
 /** The `ebook.files` kind at `path`. */
 export function files(ws: tilo.Workspace, path: string): Files {
-  return resourceProxy(ws, path, SURFACE) as unknown as Files;
+  return resourceProxy(ws, path, SURFACE, FILES_ACTIONS) as unknown as Files;
 }
 

@@ -17,15 +17,16 @@ all-or-nothing steps, all of them one run.
 from __future__ import annotations
 
 from typing import Any, Literal, NotRequired, TypedDict
-from tilo import Resource, Run
+from tilo import Entry, Resource, Run
 
 __all__ = [
+    "Command",
+    "CommandItem",
+    "CommandRequest",
     "Entry",
     "EntryKind",
+    "FinishedCommand",
     "ItemKind",
-    "Run",
-    "RunItem",
-    "RunRequest",
     "Terminal",
     "Project",
     "NewFileArgs",
@@ -44,21 +45,11 @@ __all__ = [
     "RecordRunArgs",
 ]
 
-class Entry(TypedDict):
-    kind: EntryKind
-    name: str
-    parent: str | None
-    language: str
-
-EntryKind = Literal["file", "folder"]
-
-ItemKind = Literal["error", "warning", "location", "url", "test-passed", "test-failed", "test-ignored", "change"]
-
-class Run(TypedDict):
+class Command(TypedDict):
     command: str
     cwd: str
     environment: str | None
-    actor: str
+    actor: str | None
     for_person: str | None
     started_ms: int
     ended_ms: int
@@ -67,9 +58,9 @@ class Run(TypedDict):
     truncated: bool
     tool: str
     undoable: bool
-    items: list[RunItem]
+    items: list[CommandItem]
 
-class RunItem(TypedDict):
+class CommandItem(TypedDict):
     kind: ItemKind
     text: str
     path: str | None
@@ -77,12 +68,36 @@ class RunItem(TypedDict):
     column: int | None
     code: str | None
 
-class RunRequest(TypedDict):
+class CommandRequest(TypedDict):
     command: str
-    requested_by: str
+    requested_by: str | None
     for_person: str | None
     pane: str
     agent: bool
+
+class Entry(TypedDict):
+    kind: EntryKind
+    name: str
+    parent: str | None
+    language: str
+
+EntryKind = Literal["file", "folder"]
+
+class FinishedCommand(TypedDict):
+    command: str
+    cwd: str
+    started_ms: int
+    ended_ms: int
+    exit: int
+    output: Any | None
+    truncated: bool
+    tool: str
+    undoable: bool
+    items: list[CommandItem]
+    request: str | None
+    run: str
+
+ItemKind = Literal["error", "warning", "location", "url", "test-passed", "test-failed", "test-ignored", "change"]
 
 class Terminal(TypedDict):
     target: str | None
@@ -90,7 +105,7 @@ class Terminal(TypedDict):
     pane: str | None
     device: str | None
     holder: str | None
-    runs: list[Run]
+    commands: list[Entry[Command]]
     requests: Any
 
 NewFileArgs = TypedDict("NewFileArgs", {
@@ -182,7 +197,7 @@ RecordRunArgs = TypedDict("RecordRunArgs", {
     "truncated": "bool",
     "tool": "str",
     "undoable": "bool",
-    "items": "list[Any]",
+    "items": "list[CommandItem]",
     "request": NotRequired["str | None"],
     "run": "str",
 })
@@ -190,8 +205,8 @@ RecordRunArgs = TypedDict("RecordRunArgs", {
 
 class Project(Resource):
     """Code Editor — `code_editor.project`."""
-    __surface__ = "so.tilo.code-editor@a337d60d96a31d9c"
-    files: list[Entry]
+    __surface__ = "so.tilo.code-editor@56df09e9edab1ff1"
+    files: list[Entry[Entry]]
     buffers: dict[str, Any]
     @property
     def terminal_panel(self) -> Terminal | None:
@@ -203,7 +218,7 @@ class Project(Resource):
         name: str | None = None,
         folder: str | None = None,
         text: str | None = None,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         args: dict[str, Any] = {}
         if name is not None:
@@ -222,7 +237,7 @@ class Project(Resource):
         *,
         name: str | None = None,
         folder: str | None = None,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         args: dict[str, Any] = {}
         if name is not None:
@@ -239,7 +254,7 @@ class Project(Resource):
         *,
         entry: str,
         name: str,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         return self.action("rename", entry=entry, name=name)
 
@@ -252,7 +267,7 @@ class Project(Resource):
         entry: str,
         folder: str | None = None,
         before: str | None = None,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         args: dict[str, Any] = {}
         args["entry"] = entry
@@ -270,7 +285,7 @@ class Project(Resource):
         *,
         file: str,
         text: str,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         return self.action("replace-text", file=file, text=text)
 
@@ -282,7 +297,7 @@ class Project(Resource):
         *,
         at: Any,
         text: str,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         return self.action("replace-range", at=at, text=text)
 
@@ -290,7 +305,7 @@ class Project(Resource):
         """Runs `replace-range` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("replace-range", items)
 
-    def delete(self, *, entry: str) -> Run | None:
+    def delete(self, *, entry: str) -> None:
         """Runs the app's action."""
         return self.action("delete", entry=entry)
 
@@ -305,7 +320,7 @@ class Project(Resource):
         name: str,
         language: str,
         folder: str | None = None,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         args: dict[str, Any] = {}
         args["id"] = id
@@ -324,7 +339,7 @@ class Project(Resource):
         *,
         file: str,
         text: str,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         return self.action("record-text", file=file, text=text)
 
@@ -336,7 +351,7 @@ class Project(Resource):
         *,
         target: str,
         device: str | None = None,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         args: dict[str, Any] = {}
         args["target"] = target
@@ -351,7 +366,7 @@ class Project(Resource):
     def record_relay_session(self,
         *,
         session: str | None = None,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         args: dict[str, Any] = {}
         if session is not None:
@@ -366,7 +381,7 @@ class Project(Resource):
         *,
         pane: str,
         device: str | None = None,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         args: dict[str, Any] = {}
         args["pane"] = pane
@@ -378,11 +393,11 @@ class Project(Resource):
         """Runs `claim-pane` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("claim-pane", items)
 
-    def run(self, *, command: str) -> Any | Run:
+    def run(self, *, command: str) -> Any:
         """Runs the app's action."""
         return self.action("run", command=command)
 
-    def rerun(self, *, run: str) -> Any | Run:
+    def rerun(self, *, run: str) -> Any:
         """Runs the app's action."""
         return self.action("rerun", run=run)
 
@@ -390,11 +405,11 @@ class Project(Resource):
         *,
         run: str,
         test: str,
-    ) -> Any | Run:
+    ) -> Any:
         """Runs the app's action."""
         return self.action("rerun-test", run=run, test=test)
 
-    def stop(self) -> Run | None:
+    def stop(self) -> None:
         """Runs the app's action."""
         return self.action("stop")
 
@@ -412,11 +427,11 @@ class Project(Resource):
         truncated: bool,
         tool: str,
         undoable: bool,
-        items: list[Any],
+        items: list[CommandItem],
         run: str,
         output: Any | None = None,
         request: str | None = None,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         args: dict[str, Any] = {}
         args["command"] = command
@@ -507,5 +522,9 @@ class Project(Resource):
     def toggle_format_on_save(self) -> None:
         """Runs the app's action."""
         return self.action("toggle-format-on-save")
+
+    # The actions a call reaches before the resource is read: `await tracker.create(...)`
+    # needs no `load()` first.
+    __actions__ = frozenset({"new_file", "new_file_many", "new_folder", "new_folder_many", "rename", "rename_many", "move_entry", "move_entry_many", "replace_text", "replace_text_many", "replace_range", "replace_range_many", "delete", "delete_many", "record_entry", "record_entry_many", "record_text", "record_text_many", "record_target", "record_target_many", "record_relay_session", "record_relay_session_many", "claim_pane", "claim_pane_many", "run", "rerun", "rerun_test", "stop", "stop_many", "record_run", "record_run_many", "reveal", "find", "search_project", "go_to_line", "toggle_bottom_panel", "next_theme", "go_to_problems", "go_to_search", "go_to_terminal", "toggle_sidebar", "toggle_language_servers", "toggle_format_on_save"})
 
 

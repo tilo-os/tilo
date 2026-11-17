@@ -106,6 +106,7 @@ impl AgentHost {
                 action: Some(descriptor),
                 has_children: false,
                 visibility: None,
+                surface: None,
             })
             .collect();
         Self {

@@ -143,19 +143,19 @@ export interface KeepArgs {
 
 /** Clocks — `clocks.collection`. */
 export interface Collection extends tilo.Resource {
-  world_clocks: WorldClock[];
-  alarms: Alarm[];
-  timers: Timer[];
+  world_clocks: Array<tilo.Entry<WorldClock>>;
+  alarms: Array<tilo.Entry<Alarm>>;
+  timers: Array<tilo.Entry<Timer>>;
   readonly stopwatch: Stopwatch;
   addWorldClock(args: {
     city: string;
     timezone: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `add-world-clock` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   addWorldClockMany(items: AddWorldClockArgs[]): Promise<tilo.ActionAnswer[]>;
   removeWorldClock(args: {
     world_clock: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `remove-world-clock` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   removeWorldClockMany(items: RemoveWorldClockArgs[]): Promise<tilo.ActionAnswer[]>;
   addAlarm(args: {
@@ -163,13 +163,13 @@ export interface Collection extends tilo.Resource {
     hour: number;
     minute: number;
     weekdays: WeekdayKey[];
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `add-alarm` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   addAlarmMany(items: AddAlarmArgs[]): Promise<tilo.ActionAnswer[]>;
   setAlarmEnabled(args: {
     alarm: string;
     enabled: boolean;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `set-alarm-enabled` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   setAlarmEnabledMany(items: SetAlarmEnabledArgs[]): Promise<tilo.ActionAnswer[]>;
   editAlarm(args: {
@@ -178,57 +178,61 @@ export interface Collection extends tilo.Resource {
     hour: number;
     minute: number;
     weekdays: WeekdayKey[];
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `edit-alarm` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   editAlarmMany(items: EditAlarmArgs[]): Promise<tilo.ActionAnswer[]>;
   removeAlarm(args: {
     alarm: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `remove-alarm` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   removeAlarmMany(items: RemoveAlarmArgs[]): Promise<tilo.ActionAnswer[]>;
   addTimer(args: {
     label: string;
     seconds: number;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `add-timer` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   addTimerMany(items: AddTimerArgs[]): Promise<tilo.ActionAnswer[]>;
   pauseTimer(args: {
     timer: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `pause-timer` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   pauseTimerMany(items: PauseTimerArgs[]): Promise<tilo.ActionAnswer[]>;
   resumeTimer(args: {
     timer: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `resume-timer` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   resumeTimerMany(items: ResumeTimerArgs[]): Promise<tilo.ActionAnswer[]>;
   addMinute(args: {
     timer: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `add-minute` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   addMinuteMany(items: AddMinuteArgs[]): Promise<tilo.ActionAnswer[]>;
   removeTimer(args: {
     timer: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `remove-timer` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   removeTimerMany(items: RemoveTimerArgs[]): Promise<tilo.ActionAnswer[]>;
-  startStopwatch(): Promise<tilo.Run | void>;
+  startStopwatch(): Promise<void>;
   /** Runs `start-stopwatch` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   startStopwatchMany(items: StartStopwatchArgs[]): Promise<tilo.ActionAnswer[]>;
-  pauseStopwatch(): Promise<tilo.Run | void>;
+  pauseStopwatch(): Promise<void>;
   /** Runs `pause-stopwatch` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   pauseStopwatchMany(items: PauseStopwatchArgs[]): Promise<tilo.ActionAnswer[]>;
-  lap(): Promise<tilo.Run | void>;
+  lap(): Promise<void>;
   /** Runs `lap` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   lapMany(items: LapArgs[]): Promise<tilo.ActionAnswer[]>;
-  resetStopwatch(): Promise<tilo.Run | void>;
+  resetStopwatch(): Promise<void>;
   /** Runs `reset-stopwatch` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   resetStopwatchMany(items: ResetStopwatchArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 
+/** The actions `Collection` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const COLLECTION_ACTIONS = ["addWorldClock", "addWorldClockMany", "removeWorldClock", "removeWorldClockMany", "addAlarm", "addAlarmMany", "setAlarmEnabled", "setAlarmEnabledMany", "editAlarm", "editAlarmMany", "removeAlarm", "removeAlarmMany", "addTimer", "addTimerMany", "pauseTimer", "pauseTimerMany", "resumeTimer", "resumeTimerMany", "addMinute", "addMinuteMany", "removeTimer", "removeTimerMany", "startStopwatch", "startStopwatchMany", "pauseStopwatch", "pauseStopwatchMany", "lap", "lapMany", "resetStopwatch", "resetStopwatchMany"] as const;
+
 /** The `clocks.collection` kind at `path`. */
 export function collection(ws: tilo.Workspace, path: string): Collection {
-  return resourceProxy(ws, path, SURFACE) as unknown as Collection;
+  return resourceProxy(ws, path, SURFACE, COLLECTION_ACTIONS) as unknown as Collection;
 }
 
 /** Clocks on each device — `clocks.on-devices`. */
@@ -237,13 +241,17 @@ export interface OnDevices extends tilo.Resource {
   keep(args: {
     device: string;
     kept: unknown;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `keep` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   keepMany(items: KeepArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 
+/** The actions `OnDevices` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const ONDEVICES_ACTIONS = ["keep", "keepMany"] as const;
+
 /** The `clocks.on-devices` kind at `path`. */
 export function onDevices(ws: tilo.Workspace, path: string): OnDevices {
-  return resourceProxy(ws, path, SURFACE) as unknown as OnDevices;
+  return resourceProxy(ws, path, SURFACE, ONDEVICES_ACTIONS) as unknown as OnDevices;
 }
 

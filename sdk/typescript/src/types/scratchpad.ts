@@ -29,8 +29,12 @@ export interface Note extends tilo.Resource {
   body: string;
 }
 
+/** The actions `Note` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const NOTE_ACTIONS = [] as const;
+
 /** The `scratchpad.note` kind at `path`. */
 export function note(ws: tilo.Workspace, path: string): Note {
-  return resourceProxy(ws, path, SURFACE) as unknown as Note;
+  return resourceProxy(ws, path, SURFACE, NOTE_ACTIONS) as unknown as Note;
 }
 

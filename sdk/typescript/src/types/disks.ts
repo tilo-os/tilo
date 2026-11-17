@@ -36,7 +36,7 @@ export interface System extends tilo.Resource {
   nameDrive(args: {
     serial: string;
     name?: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `name-drive` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   nameDriveMany(items: NameDriveArgs[]): Promise<tilo.ActionAnswer[]>;
   rescan(): Promise<void>;
@@ -48,8 +48,12 @@ export interface System extends tilo.Resource {
   }): Promise<void>;
 }
 
+/** The actions `System` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const SYSTEM_ACTIONS = ["nameDrive", "nameDriveMany", "rescan", "select", "showTab"] as const;
+
 /** The `disks.system` kind at `path`. */
 export function system(ws: tilo.Workspace, path: string): System {
-  return resourceProxy(ws, path, SURFACE) as unknown as System;
+  return resourceProxy(ws, path, SURFACE, SYSTEM_ACTIONS) as unknown as System;
 }
 

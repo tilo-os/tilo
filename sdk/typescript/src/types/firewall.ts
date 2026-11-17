@@ -22,16 +22,16 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.firewall@8f6272b1c59a5183";
+export const SURFACE = "so.tilo.firewall@311c05008d41672c";
 
-/** One of "allow", "deny". */
-export type Action = "allow" | "deny";
+/** One of "Allow", "Deny". */
+export type Action = "Allow" | "Deny";
 
-/** One of service, port: an object whose case the app tags it with. */
+/** One of Service, Port: an object whose case the app tags it with. */
 export type Matcher = Record<string, unknown>;
 
-/** One of "tcp", "udp". */
-export type Proto = "tcp" | "udp";
+/** One of "Tcp", "Udp". */
+export type Proto = "Tcp" | "Udp";
 
 export interface StoredRule {
   matcher: Matcher;
@@ -44,13 +44,13 @@ export interface StoredZone {
   target: Target;
   interfaces: string[];
   services: string[];
-  rules: StoredRule[];
+  rules: Array<tilo.Entry<StoredRule>>;
   masquerade: boolean;
   deleted_rules: string[];
 }
 
-/** One of "default", "accept", "reject", "drop". */
-export type Target = "default" | "accept" | "reject" | "drop";
+/** One of "Default", "Accept", "Reject", "Drop". */
+export type Target = "Default" | "Accept" | "Reject" | "Drop";
 
 /** One of "drop", "block", "public", "external", "dmz", "work", "home", "internal", "trusted". */
 export type ZoneKind = "drop" | "block" | "public" | "external" | "dmz" | "work" | "home" | "internal" | "trusted";
@@ -94,35 +94,39 @@ export interface Config extends tilo.Resource {
   readonly panic_mode: boolean;
   default_zone: ZoneKind;
   zones: Record<string, StoredZone>;
-  start(): Promise<tilo.Run | void>;
+  start(): Promise<void>;
   /** Runs `start` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   startMany(items: StartArgs[]): Promise<tilo.ActionAnswer[]>;
-  stop(): Promise<tilo.Run | void>;
+  stop(): Promise<void>;
   /** Runs `stop` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   stopMany(items: StopArgs[]): Promise<tilo.ActionAnswer[]>;
-  enterPanicMode(): Promise<tilo.Run | void>;
+  enterPanicMode(): Promise<void>;
   /** Runs `enter-panic-mode` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   enterPanicModeMany(items: EnterPanicModeArgs[]): Promise<tilo.ActionAnswer[]>;
-  exitPanicMode(): Promise<tilo.Run | void>;
+  exitPanicMode(): Promise<void>;
   /** Runs `exit-panic-mode` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   exitPanicModeMany(items: ExitPanicModeArgs[]): Promise<tilo.ActionAnswer[]>;
   deleteRule(args: {
     zone: ZoneKind;
     rule: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `delete-rule` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   deleteRuleMany(items: DeleteRuleArgs[]): Promise<tilo.ActionAnswer[]>;
   import(args: {
     config: unknown;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `import` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   importMany(items: ImportArgs[]): Promise<tilo.ActionAnswer[]>;
   readBlocked(): Promise<void>;
 }
 
+/** The actions `Config` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const CONFIG_ACTIONS = ["start", "startMany", "stop", "stopMany", "enterPanicMode", "enterPanicModeMany", "exitPanicMode", "exitPanicModeMany", "deleteRule", "deleteRuleMany", "import", "importMany", "readBlocked"] as const;
+
 /** The `firewall.config` kind at `path`. */
 export function config(ws: tilo.Workspace, path: string): Config {
-  return resourceProxy(ws, path, SURFACE) as unknown as Config;
+  return resourceProxy(ws, path, SURFACE, CONFIG_ACTIONS) as unknown as Config;
 }
 
 /** Applied configuration — `firewall.applied`. */
@@ -131,13 +135,17 @@ export interface Applied extends tilo.Resource {
   applied(args: {
     device: string;
     config: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `applied` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   appliedMany(items: AppliedArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 
+/** The actions `Applied` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const APPLIED_ACTIONS = ["applied", "appliedMany"] as const;
+
 /** The `firewall.applied` kind at `path`. */
 export function applied(ws: tilo.Workspace, path: string): Applied {
-  return resourceProxy(ws, path, SURFACE) as unknown as Applied;
+  return resourceProxy(ws, path, SURFACE, APPLIED_ACTIONS) as unknown as Applied;
 }
 

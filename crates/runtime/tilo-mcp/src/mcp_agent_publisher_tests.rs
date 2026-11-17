@@ -56,6 +56,7 @@ fn row(provider: &str, app: &str, resource: &str, action: &str) -> CatalogueRow 
         }),
         has_children: false,
         visibility: None,
+        surface: None,
     }
 }
 

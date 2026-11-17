@@ -17,7 +17,7 @@ all-or-nothing steps, all of them one run.
 from __future__ import annotations
 
 from typing import Any, Literal, NotRequired, TypedDict
-from tilo import Resource, Run
+from tilo import Entry, Resource, Run
 
 __all__ = [
     "Bookmark",
@@ -85,13 +85,13 @@ ForgetArgs = TypedDict("ForgetArgs", {
 class Folder(Resource):
     """Folder — `files.folder`."""
     __surface__ = "so.tilo.file-explorer@cb62eaabb4a7bfc3"
-    places: list[Bookmark]
+    places: list[Entry[Bookmark]]
 
     def add_bookmark(self,
         *,
         place: str,
         at: int | None = None,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         args: dict[str, Any] = {}
         args["place"] = place
@@ -103,7 +103,7 @@ class Folder(Resource):
         """Runs `add-bookmark` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("add-bookmark", items)
 
-    def remove_bookmark(self, *, place: str) -> Run | None:
+    def remove_bookmark(self, *, place: str) -> None:
         """Runs the app's action."""
         return self.action("remove-bookmark", place=place)
 
@@ -116,7 +116,7 @@ class Folder(Resource):
         device: str,
         parent: str,
         name: str,
-    ) -> Any | Run:
+    ) -> Any:
         """Runs the app's action."""
         return self.action("new-folder", device=device, parent=parent, name=name)
 
@@ -126,7 +126,7 @@ class Folder(Resource):
         folder: str,
         entry: str,
         name: str,
-    ) -> Any | Run:
+    ) -> Any:
         """Runs the app's action."""
         return self.action("rename", device=device, folder=folder, entry=entry, name=name)
 
@@ -135,7 +135,7 @@ class Folder(Resource):
         device: str,
         folder: str,
         entries: list[str],
-    ) -> Any | Run:
+    ) -> Any:
         """Runs the app's action."""
         return self.action("trash", device=device, folder=folder, entries=entries)
 
@@ -146,7 +146,7 @@ class Folder(Resource):
         entries: list[str],
         to: str,
         create: bool | None = None,
-    ) -> Any | Run:
+    ) -> Any:
         """Runs the app's action."""
         args: dict[str, Any] = {}
         args["device"] = device
@@ -163,7 +163,7 @@ class Folder(Resource):
         from_: str,
         entries: list[str],
         to: str,
-    ) -> Any | Run:
+    ) -> Any:
         """Runs the app's action."""
         args: dict[str, Any] = {}
         args["device"] = device
@@ -177,7 +177,7 @@ class Folder(Resource):
         device: str,
         paths: list[str],
         folder: str,
-    ) -> Any | Run:
+    ) -> Any:
         """Runs the app's action."""
         return self.action("import-mounted", device=device, paths=paths, folder=folder)
 
@@ -188,7 +188,7 @@ class Folder(Resource):
         account: str,
         entries: list[Any],
         destination: Any,
-    ) -> Any | Run:
+    ) -> Any:
         """Runs the app's action."""
         return self.action("cloud-import", device=device, job_id=job_id, account=account, entries=entries, destination=destination)
 
@@ -199,7 +199,7 @@ class Folder(Resource):
         name: str,
         text: str,
         replace: bool | None = None,
-    ) -> Any | Run:
+    ) -> Any:
         """Runs the app's action."""
         args: dict[str, Any] = {}
         args["device"] = device
@@ -217,7 +217,7 @@ class Folder(Resource):
         entries: list[str],
         name: str | None = None,
         format: str | None = None,
-    ) -> Any | Run:
+    ) -> Any:
         """Runs the app's action."""
         args: dict[str, Any] = {}
         args["device"] = device
@@ -235,7 +235,7 @@ class Folder(Resource):
         archive: str,
         to: Any | None = None,
         if_exists: str | None = None,
-    ) -> Any | Run:
+    ) -> Any:
         """Runs the app's action."""
         args: dict[str, Any] = {}
         args["device"] = device
@@ -250,7 +250,7 @@ class Folder(Resource):
         *,
         device: str,
         receipt: Receipt,
-    ) -> Any | Run:
+    ) -> Any:
         """Runs the app's action."""
         return self.action("record-clipboard-transfer", device=device, receipt=receipt)
 
@@ -258,11 +258,11 @@ class Folder(Resource):
         *,
         device: str,
         receipt: Receipt,
-    ) -> Any | Run:
+    ) -> Any:
         """Runs the app's action."""
         return self.action("record-trash-restore", device=device, receipt=receipt)
 
-    def revert(self, *, op: str) -> Any | Run:
+    def revert(self, *, op: str) -> Any:
         """Runs the app's action."""
         return self.action("revert", op=op)
 
@@ -299,6 +299,10 @@ class Folder(Resource):
         """Runs the app's action."""
         return self.action("cloud-progress")
 
+    # The actions a call reaches before the resource is read: `await tracker.create(...)`
+    # needs no `load()` first.
+    __actions__ = frozenset({"add_bookmark", "add_bookmark_many", "remove_bookmark", "remove_bookmark_many", "new_folder", "rename", "trash", "move", "copy_into", "import_mounted", "cloud_import", "write_file", "compress", "extract", "record_clipboard_transfer", "record_trash_restore", "revert", "hand_over", "read_text", "copy_selection", "clipboard_status", "open_terminal", "cloud_progress"})
+
 
 class Tree(Resource):
     """Files — `files.tree`."""
@@ -315,7 +319,7 @@ class Recent(Resource):
         path: str,
         last_use: RecentUse,
         at_ms: int,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         return self.action("note", device=device, path=path, last_use=last_use, at_ms=at_ms)
 
@@ -328,7 +332,7 @@ class Recent(Resource):
         device: str,
         from_: str,
         to: str,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         args: dict[str, Any] = {}
         args["device"] = device
@@ -344,12 +348,16 @@ class Recent(Resource):
         *,
         device: str,
         path: str,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         return self.action("forget", device=device, path=path)
 
     def forget_many(self, items: list[ForgetArgs]) -> list[dict[str, Any]]:
         """Runs `forget` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("forget", items)
+
+    # The actions a call reaches before the resource is read: `await tracker.create(...)`
+    # needs no `load()` first.
+    __actions__ = frozenset({"note", "note_many", "moved", "moved_many", "forget", "forget_many"})
 
 

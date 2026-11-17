@@ -293,6 +293,9 @@ enum Ty {
     Number,
     Bool,
     List(Box<Self>),
+    /// A collection's items, as its read lists them: each with the id
+    /// an action takes it by, and its value.
+    Collection(Box<Self>),
     Map(Box<Self>),
     Option(Box<Self>),
     Union(Vec<Self>),
@@ -483,9 +486,8 @@ impl Resolver<'_> {
             FieldType::Int => Ty::Int,
             FieldType::Float | FieldType::Duration => Ty::Number,
             FieldType::Bool => Ty::Bool,
-            FieldType::List(item) | FieldType::Set(item) | FieldType::Collection(item) => {
-                Ty::List(inner(item))
-            }
+            FieldType::Collection(item) => Ty::Collection(inner(item)),
+            FieldType::List(item) | FieldType::Set(item) => Ty::List(inner(item)),
             FieldType::Map(item) => Ty::Map(inner(item)),
             FieldType::Option(item) => Ty::Option(inner(item)),
             FieldType::Union(cases) => Ty::Union(cases.iter().map(|case| self.ty(case)).collect()),
@@ -662,6 +664,7 @@ fn python_type(ty: &Ty) -> String {
         Ty::Number => "float".to_owned(),
         Ty::Bool => "bool".to_owned(),
         Ty::List(item) => format!("list[{}]", python_type(item)),
+        Ty::Collection(item) => format!("list[Entry[{}]]", python_type(item)),
         Ty::Map(item) => format!("dict[str, {}]", python_type(item)),
         Ty::Option(item) => format!("{} | None", python_type(item)),
         Ty::Union(cases) => {
@@ -689,6 +692,7 @@ fn typescript_type(ty: &Ty) -> String {
                 format!("{item}[]")
             }
         }
+        Ty::Collection(item) => format!("Array<tilo.Entry<{}>>", typescript_type(item)),
         Ty::Map(item) => format!("Record<string, {}>", typescript_type(item)),
         Ty::Option(item) => format!("{} | null", typescript_type(item)),
         Ty::Union(cases) => {
@@ -872,7 +876,7 @@ fn python_module(app: &App, types: &Types) -> String {
     out.push_str("\"\"\"\n\n");
     out.push_str("from __future__ import annotations\n\n");
     out.push_str("from typing import Any, Literal, NotRequired, TypedDict\n");
-    let _ = writeln!(out, "from tilo import Resource, Run\n");
+    let _ = writeln!(out, "from tilo import Entry, Resource, Run\n");
     let mut all: Vec<String> = types
         .declarations
         .iter()
@@ -1017,6 +1021,7 @@ fn python_class(out: &mut String, class: &Class, surface: &str) {
         return;
     }
     let mut taken: Vec<String> = Vec::new();
+    let mut actions: Vec<String> = Vec::new();
     for (field, first) in distinct(&class.fields) {
         let name = python_name(&field.name);
         if !first {
@@ -1077,7 +1082,8 @@ fn python_class(out: &mut String, class: &Class, surface: &str) {
             );
             continue;
         }
-        taken.push(name);
+        taken.push(name.clone());
+        actions.push(name);
         python_action(out, action);
         out.push('\n');
         if let Some(many) = &action.many {
@@ -1091,10 +1097,22 @@ fn python_class(out: &mut String, class: &Class, surface: &str) {
                 );
                 continue;
             }
-            taken.push(bulk);
+            taken.push(bulk.clone());
+            actions.push(bulk);
             python_many(out, action, many);
             out.push('\n');
         }
+    }
+    if !actions.is_empty() {
+        let names: Vec<String> = actions.iter().map(|name| format!("\"{name}\"")).collect();
+        let _ = writeln!(
+            out,
+            "    # The actions a call reaches before the resource is read: `await tracker.create(...)`\n\
+             \x20   # needs no `load()` first.\n\
+             \x20   __actions__ = frozenset({{{}}})",
+            names.join(", ")
+        );
+        out.push('\n');
     }
     out.push('\n');
 }
@@ -1234,13 +1252,12 @@ fn python_many(out: &mut String, action: &Action, many: &Many) {
 /// What an action answers: what the app declares, and the `Run` that follows one still
 /// running.
 fn python_result(action: &Action) -> String {
-    let declared = action.result.as_ref().map(python_type);
-    match (action.kind, declared) {
-        (ActionKind::Read, Some(ty)) => ty,
-        (ActionKind::Read, None) => "None".to_owned(),
-        (_, Some(ty)) => format!("{ty} | Run"),
-        (_, None) => "Run | None".to_owned(),
-    }
+    // An action call waits for its run and answers its result: a caller never
+    // gets a `Run` back from a typed method, only what the action produced.
+    action
+        .result
+        .as_ref()
+        .map_or_else(|| "None".to_owned(), python_type)
 }
 
 // -- TypeScript -------------------------------------------------------------
@@ -1464,6 +1481,7 @@ fn typescript_class(out: &mut String, class: &Class) {
         class.name
     );
     let mut taken: Vec<String> = Vec::new();
+    let mut actions: Vec<String> = Vec::new();
     for (field, first) in distinct(&class.fields) {
         if !first {
             let _ = writeln!(
@@ -1520,6 +1538,7 @@ fn typescript_class(out: &mut String, class: &Class) {
             continue;
         }
         taken.push(action.camel.clone());
+        actions.push(action.camel.clone());
         typescript_action(out, action);
         if let Some(many) = &action.many {
             let bulk = format!("{}Many", action.camel);
@@ -1532,19 +1551,36 @@ fn typescript_class(out: &mut String, class: &Class) {
                 );
                 continue;
             }
-            taken.push(bulk);
+            taken.push(bulk.clone());
+            actions.push(bulk);
             typescript_many(out, action, many);
         }
     }
     out.push_str("}\n\n");
+    let listed: Vec<String> = actions.iter().map(|name| format!("\"{name}\"")).collect();
+    let _ = writeln!(
+        out,
+        "/** The actions `{class}` reaches before it is read: `ws` calls them without a\n\
+         \x20 `load()` first. */",
+        class = class.name
+    );
+    let _ = writeln!(
+        out,
+        "export const {}_ACTIONS = [{}] as const;\n",
+        class.name.to_uppercase(),
+        listed.join(", ")
+    );
     let made = factory(class);
     let _ = write!(
         out,
         "/** The `{}` kind at `path`. */\n\
          export function {made}(ws: tilo.Workspace, path: string): {} {{\n\
-         \x20 return resourceProxy(ws, path, SURFACE) as unknown as {};\n\
+         \x20 return resourceProxy(ws, path, SURFACE, {}_ACTIONS) as unknown as {};\n\
          }}\n\n",
-        class.kind, class.name, class.name,
+        class.kind,
+        class.name,
+        class.name.to_uppercase(),
+        class.name,
     );
 }
 
@@ -1657,13 +1693,12 @@ fn typescript_many(out: &mut String, action: &Action, many: &Many) {
 /// What an action answers: what the app declares, and the `Run` that follows one still
 /// running.
 fn typescript_result(action: &Action) -> String {
-    let declared = action.result.as_ref().map(typescript_type);
-    match (action.kind, declared) {
-        (ActionKind::Read, Some(ty)) => ty,
-        (ActionKind::Read, None) => "void".to_owned(),
-        (_, Some(ty)) => format!("{ty} | tilo.Run"),
-        (_, None) => "tilo.Run | void".to_owned(),
-    }
+    // An action call waits for its run and answers its result: a caller never
+    // gets a `Run` back from a typed method, only what the action produced.
+    action
+        .result
+        .as_ref()
+        .map_or_else(|| "void".to_owned(), typescript_type)
 }
 #[cfg(test)]
 mod tests {
@@ -1809,7 +1844,7 @@ mod tests {
             assert!(
                 ts.contains(
                     "export interface CreateArgs {\n  title: string;\n  parent?: string;\n  \
-                     body?: string;\n"
+                     body?: string;\n  status?: Status;\n"
                 ),
                 "{ts}"
             );

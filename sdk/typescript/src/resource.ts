@@ -26,6 +26,14 @@ const MANY_BYTES = 4 * 1024 * 1024;
 /** One step of a field path: a field's name, a map key, or `{item: id}`. */
 export type Step = string | Record<string, unknown>;
 
+/** One item of a collection field, as its read lists it: the id an action
+ * takes it by, and its value. `issues[0].id` names the issue `rename` takes,
+ * and `issues[0].value.title` is its title. */
+export interface Entry<T> {
+  id: string;
+  value: T;
+}
+
 /**
  * A resource as a typed object: its fields, its actions and its edits.
  *
@@ -82,6 +90,18 @@ export function kebab(name: string): string {
     out += character.toLowerCase();
   }
   return out;
+}
+
+/** Whether a call's answer is a run to follow rather than a result: the
+ * `Run` is recognised by what it is, since the module that defines it loads
+ * through this one. */
+function isRun(value: unknown): value is Run {
+  return (
+    value !== null &&
+    typeof value === "object" &&
+    typeof (value as Run).invocationId === "string" &&
+    typeof (value as Run).result === "function"
+  );
 }
 
 /** A field path as the field-edit action takes it. */
@@ -191,14 +211,22 @@ class ResourceImpl {
   readonly workspace: Workspace;
   readonly surface: string | null;
   readonly #pending: Promise<unknown>[] = [];
+  /** The action names the generated types declare, reachable before a read. */
+  readonly #actions: Set<string>;
   #answer: Record<string, unknown> | null = null;
   /** The proxy that fronts this implementation, which reads answer. */
   self: unknown = null;
 
-  constructor(workspace: Workspace, path: string, surface: string | null = null) {
+  constructor(
+    workspace: Workspace,
+    path: string,
+    surface: string | null = null,
+    actions: readonly string[] = [],
+  ) {
     this.workspace = workspace;
     this.path = path;
     this.surface = surface;
+    this.#actions = new Set(actions);
   }
 
   get kind(): string {
@@ -261,7 +289,17 @@ class ResourceImpl {
   }
 
   async action(name: string, args: Record<string, unknown> = {}): Promise<unknown> {
-    return this.workspace.call(`${this.path}#${kebab(name)}`, args, this.surface);
+    const answer = await this.workspace.call(
+      `${this.path}#${kebab(name)}`,
+      args,
+      this.surface,
+    );
+    // A typed call answers what the action produced, waiting for a run still
+    // under way rather than handing the caller one to follow.
+    if (isRun(answer)) {
+      return await answer.result();
+    }
+    return answer;
   }
 
   /**
@@ -344,6 +382,14 @@ class ResourceImpl {
 
   /** What an unknown name is: an action, by its name in the app's words. */
   missing(name: string): unknown {
+    // An action needs no read: the types that name it are the surface.
+    if (name.length > MANY_SUFFIX.length && name.endsWith(MANY_SUFFIX)) {
+      const action = kebab(name.slice(0, -MANY_SUFFIX.length));
+      return (items: Record<string, unknown>[] = []) => this.many(action, items);
+    }
+    if (this.#actions.has(name)) {
+      return (args: Record<string, unknown> = {}) => this.action(name, args);
+    }
     if (this.#answer === null) {
       throw new Error(
         `${this.path} is not read yet: \`await ws.resource(path).load()\` first`,
@@ -352,10 +398,6 @@ class ResourceImpl {
     const key = this.wireKey(name);
     if (this.has(key)) {
       return wrap(this, [key], (this.#answer.fields as Record<string, unknown>)[key]);
-    }
-    if (name.length > MANY_SUFFIX.length && name.endsWith(MANY_SUFFIX)) {
-      const action = kebab(name.slice(0, -MANY_SUFFIX.length));
-      return (items: Record<string, unknown>[] = []) => this.many(action, items);
     }
     return (args: Record<string, unknown> = {}) => this.action(name, args);
   }
@@ -366,9 +408,14 @@ class ResourceImpl {
  * the app's version the types were made from, which generated types pass, and
  * which every call through them sends.
  */
-export function resourceProxy(workspace: Workspace, path: string, surface: Surface = null): Resource {
+export function resourceProxy(
+  workspace: Workspace,
+  path: string,
+  surface: Surface = null,
+  actions: readonly string[] = [],
+): Resource {
   const named = typeof surface === "string" ? surface : (surface?.surface ?? null);
-  const impl = new ResourceImpl(workspace, path, named === "" ? null : named);
+  const impl = new ResourceImpl(workspace, path, named === "" ? null : named, actions);
   const proxy = new Proxy(impl, {
     get(target, property, receiver) {
       if (typeof property === "symbol") {

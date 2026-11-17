@@ -216,25 +216,25 @@ export interface ClearHistoryArgs {
 
 /** Browser — `browser.application`. */
 export interface Application extends tilo.Resource {
-  bookmarks: Bookmark[];
+  bookmarks: Array<tilo.Entry<Bookmark>>;
   preferences: Settings;
   readonly site_exceptions: string[];
   readonly site_forms: Record<string, RememberedForm>;
   addBookmark(args: {
     url: string;
     title?: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `add-bookmark` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   addBookmarkMany(items: AddBookmarkArgs[]): Promise<tilo.ActionAnswer[]>;
   removeBookmark(args: {
     bookmark: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `remove-bookmark` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   removeBookmarkMany(items: RemoveBookmarkArgs[]): Promise<tilo.ActionAnswer[]>;
   setSiteProtection(args: {
     origin: string;
     enabled: boolean;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `set-site-protection` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   setSiteProtectionMany(items: SetSiteProtectionArgs[]): Promise<tilo.ActionAnswer[]>;
   rememberForms(args: {
@@ -243,28 +243,32 @@ export interface Application extends tilo.Resource {
     forms: RememberedForm[];
     whole: boolean;
     at: number;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `remember-forms` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   rememberFormsMany(items: RememberFormsArgs[]): Promise<tilo.ActionAnswer[]>;
   forgetForm(args: {
     origin: string;
     signature: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `forget-form` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   forgetFormMany(items: ForgetFormArgs[]): Promise<tilo.ActionAnswer[]>;
   forgetSiteForms(args: {
     origin: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `forget-site-forms` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   forgetSiteFormsMany(items: ForgetSiteFormsArgs[]): Promise<tilo.ActionAnswer[]>;
-  forgetAllForms(): Promise<tilo.Run | void>;
+  forgetAllForms(): Promise<void>;
   /** Runs `forget-all-forms` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   forgetAllFormsMany(items: ForgetAllFormsArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 
+/** The actions `Application` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const APPLICATION_ACTIONS = ["addBookmark", "addBookmarkMany", "removeBookmark", "removeBookmarkMany", "setSiteProtection", "setSiteProtectionMany", "rememberForms", "rememberFormsMany", "forgetForm", "forgetFormMany", "forgetSiteForms", "forgetSiteFormsMany", "forgetAllForms", "forgetAllFormsMany"] as const;
+
 /** The `browser.application` kind at `path`. */
 export function application(ws: tilo.Workspace, path: string): Application {
-  return resourceProxy(ws, path, SURFACE) as unknown as Application;
+  return resourceProxy(ws, path, SURFACE, APPLICATION_ACTIONS) as unknown as Application;
 }
 
 /** Personal bookmarks — `browser.personal-bookmarks`. */
@@ -277,31 +281,35 @@ export interface PersonalBookmarks extends tilo.Resource {
   addBookmark(args: {
     url: string;
     title: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `add-bookmark` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   addBookmarkMany(items: PersonalBookmarksAddBookmarkArgs[]): Promise<tilo.ActionAnswer[]>;
   removeBookmark(args: {
     url: string;
     observed_tags: string[];
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `remove-bookmark` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   removeBookmarkMany(items: PersonalBookmarksRemoveBookmarkArgs[]): Promise<tilo.ActionAnswer[]>;
   importBookmarks(args: {
     bundle: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `import-bookmarks` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   importBookmarksMany(items: ImportBookmarksArgs[]): Promise<tilo.ActionAnswer[]>;
   removeImportedNode(args: {
     source: string;
     id: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `remove-imported-node` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   removeImportedNodeMany(items: RemoveImportedNodeArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 
+/** The actions `PersonalBookmarks` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const PERSONALBOOKMARKS_ACTIONS = ["addBookmark", "addBookmarkMany", "removeBookmark", "removeBookmarkMany", "importBookmarks", "importBookmarksMany", "removeImportedNode", "removeImportedNodeMany"] as const;
+
 /** The `browser.personal-bookmarks` kind at `path`. */
 export function personalBookmarks(ws: tilo.Workspace, path: string): PersonalBookmarks {
-  return resourceProxy(ws, path, SURFACE) as unknown as PersonalBookmarks;
+  return resourceProxy(ws, path, SURFACE, PERSONALBOOKMARKS_ACTIONS) as unknown as PersonalBookmarks;
 }
 
 /** Browsing history — `browser.browsing-history`. */
@@ -314,33 +322,37 @@ export interface BrowsingHistory extends tilo.Resource {
     url: string;
     title: string;
     at: number;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `visit` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   visitMany(items: VisitArgs[]): Promise<tilo.ActionAnswer[]>;
   importHistoryBundle(args: {
     bundle: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `import-history-bundle` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   importHistoryBundleMany(items: ImportHistoryBundleArgs[]): Promise<tilo.ActionAnswer[]>;
   nameVisit(args: {
     url: string;
     title: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `name-visit` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   nameVisitMany(items: NameVisitArgs[]): Promise<tilo.ActionAnswer[]>;
   forget(args: {
     url: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `forget` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   forgetMany(items: ForgetArgs[]): Promise<tilo.ActionAnswer[]>;
-  clearHistory(): Promise<tilo.Run | void>;
+  clearHistory(): Promise<void>;
   /** Runs `clear-history` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   clearHistoryMany(items: ClearHistoryArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 
+/** The actions `BrowsingHistory` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const BROWSINGHISTORY_ACTIONS = ["visit", "visitMany", "importHistoryBundle", "importHistoryBundleMany", "nameVisit", "nameVisitMany", "forget", "forgetMany", "clearHistory", "clearHistoryMany"] as const;
+
 /** The `browser.browsing-history` kind at `path`. */
 export function browsingHistory(ws: tilo.Workspace, path: string): BrowsingHistory {
-  return resourceProxy(ws, path, SURFACE) as unknown as BrowsingHistory;
+  return resourceProxy(ws, path, SURFACE, BROWSINGHISTORY_ACTIONS) as unknown as BrowsingHistory;
 }
 
 /** Page record — `browser.page-record`. */
@@ -349,19 +361,27 @@ export interface PageRecord extends tilo.Resource {
   readonly tabs: Record<string, Tab>;
 }
 
+/** The actions `PageRecord` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const PAGERECORD_ACTIONS = [] as const;
+
 /** The `browser.page-record` kind at `path`. */
 export function pageRecord(ws: tilo.Workspace, path: string): PageRecord {
-  return resourceProxy(ws, path, SURFACE) as unknown as PageRecord;
+  return resourceProxy(ws, path, SURFACE, PAGERECORD_ACTIONS) as unknown as PageRecord;
 }
 
 /** Address book — `browser.address-book`. */
 export interface AddressBook extends tilo.Resource {
   enabled: boolean;
-  profiles: AddressProfile[];
+  profiles: Array<tilo.Entry<AddressProfile>>;
 }
+
+/** The actions `AddressBook` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const ADDRESSBOOK_ACTIONS = [] as const;
 
 /** The `browser.address-book` kind at `path`. */
 export function addressBook(ws: tilo.Workspace, path: string): AddressBook {
-  return resourceProxy(ws, path, SURFACE) as unknown as AddressBook;
+  return resourceProxy(ws, path, SURFACE, ADDRESSBOOK_ACTIONS) as unknown as AddressBook;
 }
 

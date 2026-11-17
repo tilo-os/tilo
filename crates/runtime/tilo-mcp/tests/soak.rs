@@ -113,6 +113,7 @@ fn row(index: usize) -> CatalogueRow {
         action: Some(descriptor),
         has_children: false,
         visibility: None,
+        surface: None,
     }
 }
 

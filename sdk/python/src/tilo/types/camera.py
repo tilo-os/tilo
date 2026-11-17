@@ -17,7 +17,7 @@ all-or-nothing steps, all of them one run.
 from __future__ import annotations
 
 from typing import Any, Literal, NotRequired, TypedDict
-from tilo import Resource, Run
+from tilo import Entry, Resource, Run
 
 __all__ = [
     "CaptureKind",
@@ -29,9 +29,9 @@ __all__ = [
     "RecordScanArgs",
 ]
 
-CaptureKind = Literal["photo", "video"]
+CaptureKind = Literal["Photo", "Video"]
 
-Facing = Literal["back", "front", "wide"]
+Facing = Literal["Back", "Front", "Wide"]
 
 class ScanEntry(TypedDict):
     raw: str
@@ -60,7 +60,7 @@ RecordScanArgs = TypedDict("RecordScanArgs", {
 
 class Camera(Resource):
     """Camera — `camera`."""
-    __surface__ = "so.tilo.camera@334a749412a4e922"
+    __surface__ = "so.tilo.camera@ce81c8d61f18a2f6"
     @property
     def scans(self) -> list[ScanEntry]:
         """Read only."""
@@ -70,7 +70,7 @@ class Camera(Resource):
         """Read only."""
         return self.fields["recent"]
 
-    def register_capture(self, *, capture: SharedCapture) -> Run | None:
+    def register_capture(self, *, capture: SharedCapture) -> None:
         """Runs the app's action."""
         return self.action("register-capture", capture=capture)
 
@@ -78,12 +78,16 @@ class Camera(Resource):
         """Runs `register-capture` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("register-capture", items)
 
-    def record_scan(self, *, raw: str) -> Run | None:
+    def record_scan(self, *, raw: str) -> None:
         """Runs the app's action."""
         return self.action("record-scan", raw=raw)
 
     def record_scan_many(self, items: list[RecordScanArgs]) -> list[dict[str, Any]]:
         """Runs `record-scan` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("record-scan", items)
+
+    # The actions a call reaches before the resource is read: `await tracker.create(...)`
+    # needs no `load()` first.
+    __actions__ = frozenset({"register_capture", "register_capture_many", "record_scan", "record_scan_many"})
 
 

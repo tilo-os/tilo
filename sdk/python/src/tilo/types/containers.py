@@ -17,7 +17,7 @@ all-or-nothing steps, all of them one run.
 from __future__ import annotations
 
 from typing import Any, Literal, NotRequired, TypedDict
-from tilo import Resource, Run
+from tilo import Entry, Resource, Run
 
 __all__ = [
     "CreateDraft",
@@ -42,7 +42,7 @@ class Engine(Resource):
     __surface__ = "so.tilo.containers@5426b1fbca56758c"
     draft: CreateDraft
 
-    def clear_create(self) -> Run | None:
+    def clear_create(self) -> None:
         """Runs the app's action."""
         return self.action("clear-create")
 
@@ -53,5 +53,9 @@ class Engine(Resource):
     def create(self) -> None:
         """Runs the app's action."""
         return self.action("create")
+
+    # The actions a call reaches before the resource is read: `await tracker.create(...)`
+    # needs no `load()` first.
+    __actions__ = frozenset({"clear_create", "clear_create_many", "create"})
 
 

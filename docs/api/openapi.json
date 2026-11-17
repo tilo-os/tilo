@@ -15107,20 +15107,12 @@
                             "type": "integer"
                           },
                           "area": {
-                            "oneOf": [
-                              {
-                                "const": "Staged",
-                                "type": "string"
-                              },
-                              {
-                                "const": "Unstaged",
-                                "type": "string"
-                              },
-                              {
-                                "const": "Untracked",
-                                "type": "string"
-                              }
-                            ]
+                            "enum": [
+                              "Staged",
+                              "Unstaged",
+                              "Untracked"
+                            ],
+                            "type": "string"
                           },
                           "deletions": {
                             "maximum": 4294967295,
@@ -16524,6 +16516,51 @@
             "type": [
               "string",
               "null"
+            ]
+          },
+          "message_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "original": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "oneOf": [
+                  {
+                    "items": {
+                      "maximum": 255,
+                      "minimum": 0,
+                      "type": "integer"
+                    },
+                    "type": "array"
+                  },
+                  {
+                    "content": true,
+                    "pattern": "^tilo\\.content:[0-9a-f]{64}(\\.[A-Za-z0-9_-]{43})?$",
+                    "type": "string"
+                  },
+                  {
+                    "pattern": "^blake3:[0-9a-f]{64}:[0-9]+(:[0-9a-f]{64}\\.[A-Za-z0-9_-]{43})?$",
+                    "type": "string"
+                  },
+                  {
+                    "properties": {
+                      "inline": {
+                        "type": "array"
+                      }
+                    },
+                    "type": "object"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
             ]
           }
         },
@@ -24923,12 +24960,12 @@
       "terminal.session.rerun.Arguments": {
         "type": "object",
         "properties": {
-          "runs": {
+          "command": {
             "type": "string"
           }
         },
         "required": [
-          "runs"
+          "command"
         ],
         "description": ""
       },
@@ -24942,7 +24979,7 @@
       "terminal.session.rerun-test.Arguments": {
         "type": "object",
         "properties": {
-          "runs": {
+          "command": {
             "type": "string"
           },
           "test": {
@@ -24950,7 +24987,7 @@
           }
         },
         "required": [
-          "runs",
+          "command",
           "test"
         ],
         "description": ""
@@ -24968,7 +25005,7 @@
         "required": [],
         "description": ""
       },
-      "terminal.session.record-run.Arguments": {
+      "terminal.session.record-command.Arguments": {
         "type": "object",
         "properties": {
           "command": {
@@ -25248,7 +25285,51 @@
             "type": "integer"
           },
           "actor": {
-            "type": "string"
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "oneOf": [
+                  {
+                    "additionalProperties": false,
+                    "properties": {
+                      "person": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "person"
+                    ],
+                    "type": "object"
+                  },
+                  {
+                    "additionalProperties": false,
+                    "properties": {
+                      "agent": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "agent"
+                    ],
+                    "type": "object"
+                  },
+                  {
+                    "additionalProperties": false,
+                    "properties": {
+                      "bot": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "bot"
+                    ],
+                    "type": "object"
+                  }
+                ]
+              }
+            ]
           },
           "session": {
             "type": "string"
@@ -25262,7 +25343,6 @@
           "cwd",
           "exit",
           "ended_ms",
-          "actor",
           "session",
           "run"
         ],
@@ -31948,8 +32028,8 @@
     {
       "app": "so.tilo.terminal",
       "resource": "terminal.session",
-      "action": "record-run",
-      "arguments": "#/components/schemas/terminal.session.record-run.Arguments"
+      "action": "record-command",
+      "arguments": "#/components/schemas/terminal.session.record-command.Arguments"
     },
     {
       "app": "so.tilo.terminal",

@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.calendar@0489bf8990ba967c";
+export const SURFACE = "so.tilo.calendar@5da3833e465e4850";
 
 export interface Attendee {
   id: string;
@@ -52,10 +52,10 @@ export interface Event {
   recurrence_until: string | null;
   recurrence_count: number | null;
   recurrence_exdates: string[];
-  occurrence_overrides: OccurrenceOverride[];
+  occurrence_overrides: Array<tilo.Entry<OccurrenceOverride>>;
   timezone: string;
   organizer: string | null;
-  attendees: Attendee[];
+  attendees: Array<tilo.Entry<Attendee>>;
   reminder_min: number | null;
   project: string | null;
   calendar_id: string | null;
@@ -84,8 +84,8 @@ export interface EventData {
   calendar_id: string;
 }
 
-/** One of "needs_action", "accepted", "tentative", "declined". */
-export type InviteStatus = "needs_action" | "accepted" | "tentative" | "declined";
+/** One of "NeedsAction", "Accepted", "Tentative", "Declined". */
+export type InviteStatus = "NeedsAction" | "Accepted" | "Tentative" | "Declined";
 
 export interface OccurrenceOverride {
   original_date: string;
@@ -112,8 +112,8 @@ export interface OccurrenceOverrideData {
 /** One of "indigo", "emerald", "amber", "red", "blue", "violet", "slate". */
 export type Palette = "indigo" | "emerald" | "amber" | "red" | "blue" | "violet" | "slate";
 
-/** One of "none", "low", "medium", "high". */
-export type Priority = "none" | "low" | "medium" | "high";
+/** One of "None", "Low", "Medium", "High". */
+export type Priority = "None" | "Low" | "Medium" | "High";
 
 export interface Project {
   id: string;
@@ -143,8 +143,8 @@ export interface Removal {
   etag: string | null;
 }
 
-/** One of "none", "daily", "weekdays", "weekly", "monthly", "yearly". */
-export type Repeat = "none" | "daily" | "weekdays" | "weekly" | "monthly" | "yearly";
+/** One of "None", "Daily", "Weekdays", "Weekly", "Monthly", "Yearly". */
+export type Repeat = "None" | "Daily" | "Weekdays" | "Weekly" | "Monthly" | "Yearly";
 
 export interface Task {
   id: string;
@@ -193,7 +193,7 @@ export interface Person {
   phones: string[];
   emails: string[];
   photo: string;
-  endpoints: Endpoint[];
+  endpoints: Array<tilo.Entry<Endpoint>>;
 }
 
 export interface Projected {
@@ -311,97 +311,101 @@ export interface ForgetEndpointArgs {
 
 /** Calendar — `calendar.calendar`. */
 export interface Calendar extends tilo.Resource {
-  projects: Project[];
-  events: Event[];
-  tasks: Task[];
+  projects: Array<tilo.Entry<Project>>;
+  events: Array<tilo.Entry<Event>>;
+  tasks: Array<tilo.Entry<Task>>;
   notes: Record<string, string>;
   readonly remote: Record<string, RemoteCopy>;
   readonly sync_tokens: Record<string, string>;
   newEvent(args: {
     event: EventData;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `new-event` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   newEventMany(items: NewEventArgs[]): Promise<tilo.ActionAnswer[]>;
   newTask(args: {
     task: TaskData;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   newProject(args: {
     name: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   deleteEvent(args: {
     event: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   reschedule(args: {
     event: string;
     start: string;
     end: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   setStart(args: {
     event: string;
     start: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   moveToCalendar(args: {
     event: string;
     color: Palette;
     calendar?: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   invite(args: {
     event: string;
     email: string;
     name: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   deleteTask(args: {
     task: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   deleteProject(args: {
     project: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   importItems(args: {
     events: EventData[];
     tasks: TaskData[];
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   adoptRemoteEvent(args: {
     event: EventData;
     at: RemoteAt;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   adoptRemoteTask(args: {
     task: TaskData;
     at: RemoteAt;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   dropRemoteItem(args: {
     item: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   serverApplied(args: {
     event: string;
     at: RemoteAt;
     holds: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   serverRemoved(args: {
     item: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   pulled(args: {
     calendar: string;
     token: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   exportIcsContent(args?: {
     event?: string;
   }): Promise<void>;
 }
 
+/** The actions `Calendar` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const CALENDAR_ACTIONS = ["newEvent", "newEventMany", "newTask", "newProject", "deleteEvent", "reschedule", "setStart", "moveToCalendar", "invite", "deleteTask", "deleteProject", "importItems", "adoptRemoteEvent", "adoptRemoteTask", "dropRemoteItem", "serverApplied", "serverRemoved", "pulled", "exportIcsContent"] as const;
+
 /** The `calendar.calendar` kind at `path`. */
 export function calendar(ws: tilo.Workspace, path: string): Calendar {
-  return resourceProxy(ws, path, SURFACE) as unknown as Calendar;
+  return resourceProxy(ws, path, SURFACE, CALENDAR_ACTIONS) as unknown as Calendar;
 }
 
 /** Accounts — `tilo.accounts`. */
 export interface Accounts extends tilo.Resource {
-  accounts: PersonAccount[];
+  accounts: Array<tilo.Entry<PersonAccount>>;
   active: Record<string, string>;
   publishBrowserIdentity(args: {
     root: string;
     origin: string;
     display_name: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `publish-browser-identity` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   publishBrowserIdentityMany(items: PublishBrowserIdentityArgs[]): Promise<tilo.ActionAnswer[]>;
   saveAccount(args: {
@@ -411,38 +415,42 @@ export interface Accounts extends tilo.Resource {
     config: unknown;
     enabled: boolean;
     tint: number;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `save-account` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   saveAccountMany(items: SaveAccountArgs[]): Promise<tilo.ActionAnswer[]>;
   removeAccount(args: {
     account: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `remove-account` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   removeAccountMany(items: RemoveAccountArgs[]): Promise<tilo.ActionAnswer[]>;
   setActiveAccount(args: {
     account: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `set-active-account` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   setActiveAccountMany(items: SetActiveAccountArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 
+/** The actions `Accounts` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const ACCOUNTS_ACTIONS = ["publishBrowserIdentity", "publishBrowserIdentityMany", "saveAccount", "saveAccountMany", "removeAccount", "removeAccountMany", "setActiveAccount", "setActiveAccountMany"] as const;
+
 /** The `tilo.accounts` kind at `path`. */
 export function accounts(ws: tilo.Workspace, path: string): Accounts {
-  return resourceProxy(ws, path, SURFACE) as unknown as Accounts;
+  return resourceProxy(ws, path, SURFACE, ACCOUNTS_ACTIONS) as unknown as Accounts;
 }
 
 /** Contact identities — `tilo.contacts.identities`. */
 export interface Identities extends tilo.Resource {
-  people: Person[];
+  people: Array<tilo.Entry<Person>>;
   projectContact(args: {
     person: string;
     label: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `project-contact` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   projectContactMany(items: ProjectContactArgs[]): Promise<tilo.ActionAnswer[]>;
   removeContact(args: {
     person: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `remove-contact` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   removeContactMany(items: RemoveContactArgs[]): Promise<tilo.ActionAnswer[]>;
   confirmEndpoint(args: {
@@ -450,7 +458,7 @@ export interface Identities extends tilo.Resource {
     endpoint: string;
     service: string;
     recipient: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `confirm-endpoint` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   confirmEndpointMany(items: ConfirmEndpointArgs[]): Promise<tilo.ActionAnswer[]>;
   confirmAccount(args: {
@@ -460,7 +468,7 @@ export interface Identities extends tilo.Resource {
     scope: string;
     recipient: string;
     revision: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `confirm-account` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   confirmAccountMany(items: ConfirmAccountArgs[]): Promise<tilo.ActionAnswer[]>;
   replaceEndpoint(args: {
@@ -469,7 +477,7 @@ export interface Identities extends tilo.Resource {
     endpoint: string;
     service: string;
     recipient: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `replace-endpoint` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   replaceEndpointMany(items: ReplaceEndpointArgs[]): Promise<tilo.ActionAnswer[]>;
   replaceAccount(args: {
@@ -480,37 +488,41 @@ export interface Identities extends tilo.Resource {
     scope: string;
     recipient: string;
     revision: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `replace-account` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   replaceAccountMany(items: ReplaceAccountArgs[]): Promise<tilo.ActionAnswer[]>;
   projectPhones(args: {
     person: string;
     phones: string[];
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `project-phones` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   projectPhonesMany(items: ProjectPhonesArgs[]): Promise<tilo.ActionAnswer[]>;
   projectEmails(args: {
     person: string;
     emails: string[];
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `project-emails` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   projectEmailsMany(items: ProjectEmailsArgs[]): Promise<tilo.ActionAnswer[]>;
   projectContacts(args: {
     people: Projected[];
     removed: string[];
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `project-contacts` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   projectContactsMany(items: ProjectContactsArgs[]): Promise<tilo.ActionAnswer[]>;
   forgetEndpoint(args: {
     person: string;
     endpoint: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `forget-endpoint` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   forgetEndpointMany(items: ForgetEndpointArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 
+/** The actions `Identities` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const IDENTITIES_ACTIONS = ["projectContact", "projectContactMany", "removeContact", "removeContactMany", "confirmEndpoint", "confirmEndpointMany", "confirmAccount", "confirmAccountMany", "replaceEndpoint", "replaceEndpointMany", "replaceAccount", "replaceAccountMany", "projectPhones", "projectPhonesMany", "projectEmails", "projectEmailsMany", "projectContacts", "projectContactsMany", "forgetEndpoint", "forgetEndpointMany"] as const;
+
 /** The `tilo.contacts.identities` kind at `path`. */
 export function identities(ws: tilo.Workspace, path: string): Identities {
-  return resourceProxy(ws, path, SURFACE) as unknown as Identities;
+  return resourceProxy(ws, path, SURFACE, IDENTITIES_ACTIONS) as unknown as Identities;
 }
 

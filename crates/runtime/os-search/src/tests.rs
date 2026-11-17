@@ -154,6 +154,7 @@ pub(crate) fn row(provider: &str, resource: &str, label: &str, action: &str) -> 
         }),
         has_children: false,
         visibility: None,
+        surface: None,
     }
 }
 

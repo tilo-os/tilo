@@ -17,7 +17,7 @@ all-or-nothing steps, all of them one run.
 from __future__ import annotations
 
 from typing import Any, Literal, NotRequired, TypedDict
-from tilo import Resource, Run
+from tilo import Entry, Resource, Run
 
 __all__ = [
     "Connection",
@@ -118,13 +118,13 @@ class Project(Resource):
     def verifications(self) -> dict[str, str]:
         """Read only."""
         return self.fields["verifications"]
-    nodes: list[OperatorNode]
+    nodes: list[Entry[OperatorNode]]
     @property
     def connections(self) -> list[Connection]:
         """Read only."""
         return self.fields["connections"]
 
-    def import_report(self, *, json: str) -> Run | None:
+    def import_report(self, *, json: str) -> None:
         """Runs the app's action."""
         return self.action("import-report", json=json)
 
@@ -132,7 +132,7 @@ class Project(Resource):
         """Runs `import-report` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("import-report", items)
 
-    def remove_report(self, *, report: str) -> Run | None:
+    def remove_report(self, *, report: str) -> None:
         """Runs the app's action."""
         return self.action("remove-report", report=report)
 
@@ -140,7 +140,7 @@ class Project(Resource):
         """Runs `remove-report` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("remove-report", items)
 
-    def import_verification(self, *, json: str) -> Run | None:
+    def import_verification(self, *, json: str) -> None:
         """Runs the app's action."""
         return self.action("import-verification", json=json)
 
@@ -148,7 +148,7 @@ class Project(Resource):
         """Runs `import-verification` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("import-verification", items)
 
-    def remove_verification(self, *, report: str) -> Run | None:
+    def remove_verification(self, *, report: str) -> None:
         """Runs the app's action."""
         return self.action("remove-verification", report=report)
 
@@ -164,7 +164,7 @@ class Project(Resource):
         x: int,
         y: int,
         output_width: int | None = None,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         args: dict[str, Any] = {}
         args["node"] = node
@@ -184,7 +184,7 @@ class Project(Resource):
         *,
         node: str,
         shape: list[int],
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         return self.action("set-shape", node=node, shape=shape)
 
@@ -192,7 +192,7 @@ class Project(Resource):
         """Runs `set-shape` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("set-shape", items)
 
-    def remove_node(self, *, node: str) -> Run | None:
+    def remove_node(self, *, node: str) -> None:
         """Runs the app's action."""
         return self.action("remove-node", node=node)
 
@@ -206,7 +206,7 @@ class Project(Resource):
         from_port: str,
         to_node: str,
         to_port: str,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         return self.action("connect", from_node=from_node, from_port=from_port, to_node=to_node, to_port=to_port)
 
@@ -218,12 +218,16 @@ class Project(Resource):
         *,
         node: str,
         port: str,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         return self.action("disconnect", node=node, port=port)
 
     def disconnect_many(self, items: list[DisconnectArgs]) -> list[dict[str, Any]]:
         """Runs `disconnect` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back."""
         return self.many("disconnect", items)
+
+    # The actions a call reaches before the resource is read: `await tracker.create(...)`
+    # needs no `load()` first.
+    __actions__ = frozenset({"import_report", "import_report_many", "remove_report", "remove_report_many", "import_verification", "import_verification_many", "remove_verification", "remove_verification_many", "add_node", "add_node_many", "set_shape", "set_shape_many", "remove_node", "remove_node_many", "connect", "connect_many", "disconnect", "disconnect_many"})
 
 

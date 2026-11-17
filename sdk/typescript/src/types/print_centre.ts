@@ -34,8 +34,12 @@ export interface Defaults extends tilo.Resource {
   // the app's `refresh` action is the SDK's own: run it with `action("refresh")`.
 }
 
+/** The actions `Defaults` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const DEFAULTS_ACTIONS = [] as const;
+
 /** The `print-centre.defaults` kind at `path`. */
 export function defaults(ws: tilo.Workspace, path: string): Defaults {
-  return resourceProxy(ws, path, SURFACE) as unknown as Defaults;
+  return resourceProxy(ws, path, SURFACE, DEFAULTS_ACTIONS) as unknown as Defaults;
 }
 

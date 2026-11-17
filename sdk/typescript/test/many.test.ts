@@ -6,13 +6,13 @@ import { Tilo } from "../src/index.ts";
 import { tasks } from "../src/types/index.ts";
 import { FakeApi, TASKS, WORKSPACE_ID } from "./fakeApi.ts";
 
-async function tracker(api: FakeApi): Promise<tasks.Tracker> {
+async function tracker(api: FakeApi): Promise<tasks.Issues> {
   api.surface = tasks.SURFACE;
-  const issues = tasks.tracker(
+  const issues = tasks.issues(
     new Tilo({ url: "https://api.test", key: api.key, fetch: api.fetch }).workspace("jane-doe"),
     TASKS,
   );
-  return (await issues.load()) as tasks.Tracker;
+  return (await issues.load()) as tasks.Issues;
 }
 
 function groupCalls(api: FakeApi) {

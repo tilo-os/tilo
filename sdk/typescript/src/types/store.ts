@@ -47,14 +47,14 @@ export interface Catalog extends tilo.Resource {
   reports: Record<string, Report>;
   draftReport(args: {
     app_id: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `draft-report` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   draftReportMany(items: DraftReportArgs[]): Promise<tilo.ActionAnswer[]>;
   recordModerationCase(args: {
     app_id: string;
     case_id: string;
     status: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `record-moderation-case` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   recordModerationCaseMany(items: RecordModerationCaseArgs[]): Promise<tilo.ActionAnswer[]>;
   inspectCatalogue(args?: {
@@ -97,8 +97,12 @@ export interface Catalog extends tilo.Resource {
   }): Promise<void>;
 }
 
+/** The actions `Catalog` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const CATALOG_ACTIONS = ["draftReport", "draftReportMany", "recordModerationCase", "recordModerationCaseMany", "inspectCatalogue", "setSearch", "showView", "showMore", "browseRemote", "setCategory", "clearFilters", "showDetails", "showRuntimeDetails", "setTechnicalDetails", "openReference", "showCatalogue", "showRemotes", "showTrust", "prepareModeration"] as const;
+
 /** The `store.catalog` kind at `path`. */
 export function catalog(ws: tilo.Workspace, path: string): Catalog {
-  return resourceProxy(ws, path, SURFACE) as unknown as Catalog;
+  return resourceProxy(ws, path, SURFACE, CATALOG_ACTIONS) as unknown as Catalog;
 }
 

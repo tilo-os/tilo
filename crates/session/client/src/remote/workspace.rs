@@ -54,7 +54,7 @@ impl SessionActions {
     /// `asks` picks: a session that cannot carry it now asks it again once the connection that
     /// is the device's does (`Inner::ask`), and a failure it cannot ask again is answered at
     /// once.
-    fn ask<T: Send + 'static>(
+    pub(super) fn ask<T: Send + 'static>(
         &self,
         asks: fn(&mut Waiting) -> &mut Asks<T>,
         message: impl FnOnce(u64) -> RemoteActionMessage,

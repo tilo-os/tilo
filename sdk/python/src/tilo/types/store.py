@@ -17,7 +17,7 @@ all-or-nothing steps, all of them one run.
 from __future__ import annotations
 
 from typing import Any, Literal, NotRequired, TypedDict
-from tilo import Resource, Run
+from tilo import Entry, Resource, Run
 
 __all__ = [
     "Report",
@@ -48,7 +48,7 @@ class Catalog(Resource):
     __surface__ = "so.tilo.store@d903fd33913efeca"
     reports: dict[str, Report]
 
-    def draft_report(self, *, app_id: str) -> Run | None:
+    def draft_report(self, *, app_id: str) -> None:
         """Runs the app's action."""
         return self.action("draft-report", app_id=app_id)
 
@@ -61,7 +61,7 @@ class Catalog(Resource):
         app_id: str,
         case_id: str,
         status: str,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         return self.action("record-moderation-case", app_id=app_id, case_id=case_id, status=status)
 
@@ -155,5 +155,9 @@ class Catalog(Resource):
     ) -> None:
         """Runs the app's action."""
         return self.action("prepare-moderation", app=app, appeal=appeal)
+
+    # The actions a call reaches before the resource is read: `await tracker.create(...)`
+    # needs no `load()` first.
+    __actions__ = frozenset({"draft_report", "draft_report_many", "record_moderation_case", "record_moderation_case_many", "inspect_catalogue", "set_search", "show_view", "show_more", "browse_remote", "set_category", "clear_filters", "show_details", "show_runtime_details", "set_technical_details", "open_reference", "show_catalogue", "show_remotes", "show_trust", "prepare_moderation"})
 
 

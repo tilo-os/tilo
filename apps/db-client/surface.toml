@@ -59,9 +59,9 @@ params = [
 [[resources.types]]
 name = "Engine"
 cases = [
-  { name = "sqlite" },
-  { name = "postgres" },
-  { name = "mysql" },
+  { name = "Sqlite" },
+  { name = "Postgres" },
+  { name = "MySql" },
 ]
 
 [[resources.types]]

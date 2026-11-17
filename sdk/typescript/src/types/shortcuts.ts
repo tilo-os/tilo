@@ -27,8 +27,8 @@ export const SURFACE = "so.tilo.shortcuts@720723bfb1ff289c";
 export interface Draft {
   name: string;
   shortcut_id: string;
-  inputs: unknown[];
-  steps: StepNode[];
+  inputs: Array<tilo.Entry<unknown>>;
+  steps: Array<tilo.Entry<StepNode>>;
   output: unknown | null;
   triggers: unknown[];
   step_timeout_secs: number | null;
@@ -171,46 +171,46 @@ export interface RemoveInputArgs {
 
 /** Shortcuts — `shortcuts.workbench`. */
 export interface Workbench extends tilo.Resource {
-  drafts: Draft[];
+  drafts: Array<tilo.Entry<Draft>>;
   ignored: string[];
   draftProposal(args: {
     shortcut: unknown;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `draft-proposal` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   draftProposalMany(items: DraftProposalArgs[]): Promise<tilo.ActionAnswer[]>;
   ignoreProposal(args: {
     key: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `ignore-proposal` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   ignoreProposalMany(items: IgnoreProposalArgs[]): Promise<tilo.ActionAnswer[]>;
   allowProposal(args: {
     key: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `allow-proposal` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   allowProposalMany(items: AllowProposalArgs[]): Promise<tilo.ActionAnswer[]>;
   newDraft(args: {
     name: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `new-draft` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   newDraftMany(items: NewDraftArgs[]): Promise<tilo.ActionAnswer[]>;
   duplicateDraft(args: {
     draft: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `duplicate-draft` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   duplicateDraftMany(items: DuplicateDraftArgs[]): Promise<tilo.ActionAnswer[]>;
   draftShortcut(args: {
     shortcut: unknown;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `draft-shortcut` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   draftShortcutMany(items: DraftShortcutArgs[]): Promise<tilo.ActionAnswer[]>;
   openShortcut(args: {
     shortcut: unknown;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `open-shortcut` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   openShortcutMany(items: OpenShortcutArgs[]): Promise<tilo.ActionAnswer[]>;
   duplicateShortcut(args: {
     shortcut: unknown;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `duplicate-shortcut` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   duplicateShortcutMany(items: DuplicateShortcutArgs[]): Promise<tilo.ActionAnswer[]>;
   setSchedule(args: {
@@ -218,26 +218,26 @@ export interface Workbench extends tilo.Resource {
     enabled: boolean;
     hour: number;
     minute: number;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `set-schedule` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   setScheduleMany(items: SetScheduleArgs[]): Promise<tilo.ActionAnswer[]>;
   discard(args: {
     draft: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `discard` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   discardMany(items: DiscardArgs[]): Promise<tilo.ActionAnswer[]>;
   addStep(args: {
     draft: string;
     block: string;
     step: unknown;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `add-step` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   addStepMany(items: AddStepArgs[]): Promise<tilo.ActionAnswer[]>;
   replaceStep(args: {
     draft: string;
     path: string;
     step: unknown;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `replace-step` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   replaceStepMany(items: ReplaceStepArgs[]): Promise<tilo.ActionAnswer[]>;
   bindArgument(args: {
@@ -245,27 +245,27 @@ export interface Workbench extends tilo.Resource {
     path: string;
     param: string;
     binding: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `bind-argument` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   bindArgumentMany(items: BindArgumentArgs[]): Promise<tilo.ActionAnswer[]>;
   removeStep(args: {
     draft: string;
     path: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `remove-step` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   removeStepMany(items: RemoveStepArgs[]): Promise<tilo.ActionAnswer[]>;
   moveStep(args: {
     draft: string;
     path: string;
     earlier: boolean;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `move-step` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   moveStepMany(items: MoveStepArgs[]): Promise<tilo.ActionAnswer[]>;
   setStepPolicy(args: {
     draft: string;
     path: string;
     policy: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `set-step-policy` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   setStepPolicyMany(items: SetStepPolicyArgs[]): Promise<tilo.ActionAnswer[]>;
   setNested(args: {
@@ -273,32 +273,36 @@ export interface Workbench extends tilo.Resource {
     path: string;
     block: string;
     index: number;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `set-nested` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   setNestedMany(items: SetNestedArgs[]): Promise<tilo.ActionAnswer[]>;
   setOutput(args: {
     draft: string;
     binding: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `set-output` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   setOutputMany(items: SetOutputArgs[]): Promise<tilo.ActionAnswer[]>;
   addInput(args: {
     draft: string;
     name: string;
     kind: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `add-input` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   addInputMany(items: AddInputArgs[]): Promise<tilo.ActionAnswer[]>;
   removeInput(args: {
     draft: string;
     name: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `remove-input` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   removeInputMany(items: RemoveInputArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 
+/** The actions `Workbench` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const WORKBENCH_ACTIONS = ["draftProposal", "draftProposalMany", "ignoreProposal", "ignoreProposalMany", "allowProposal", "allowProposalMany", "newDraft", "newDraftMany", "duplicateDraft", "duplicateDraftMany", "draftShortcut", "draftShortcutMany", "openShortcut", "openShortcutMany", "duplicateShortcut", "duplicateShortcutMany", "setSchedule", "setScheduleMany", "discard", "discardMany", "addStep", "addStepMany", "replaceStep", "replaceStepMany", "bindArgument", "bindArgumentMany", "removeStep", "removeStepMany", "moveStep", "moveStepMany", "setStepPolicy", "setStepPolicyMany", "setNested", "setNestedMany", "setOutput", "setOutputMany", "addInput", "addInputMany", "removeInput", "removeInputMany"] as const;
+
 /** The `shortcuts.workbench` kind at `path`. */
 export function workbench(ws: tilo.Workspace, path: string): Workbench {
-  return resourceProxy(ws, path, SURFACE) as unknown as Workbench;
+  return resourceProxy(ws, path, SURFACE, WORKBENCH_ACTIONS) as unknown as Workbench;
 }
 

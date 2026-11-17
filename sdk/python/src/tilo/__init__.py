@@ -44,7 +44,7 @@ from ._models import (
     WorkspaceList,
     WorkspaceUsage,
 )
-from ._resource import FieldMap, Resource
+from ._resource import Entry, FieldMap, Resource
 from ._run import Run
 from ._transport import HttpTransport, NativeTransport, Transport
 from ._workspace import Files, Members, RunOpening, Workspace, WorkspaceKeys
@@ -55,6 +55,7 @@ __all__ = [
     "AccountKeys",
     "AskPending",
     "AsyncTilo",
+    "Entry",
     "Event",
     "FieldMap",
     "Files",

@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.notes@d00ab9647430874b";
+export const SURFACE = "so.tilo.notes@4f4053f8b0fc02d4";
 
 export interface MarkdownFile {
   path: string;
@@ -151,93 +151,93 @@ export interface WriteNoteArgs {
 
 /** Notebook — `notes.notebook`. */
 export interface Notebook extends tilo.Resource {
-  pages: Page[];
-  tags: Tag[];
+  pages: Array<tilo.Entry<Page>>;
+  tags: Array<tilo.Entry<Tag>>;
   readonly images: Record<string, unknown>;
   newNote(args: {
     title: string;
     parent?: string;
-  }): Promise<unknown | tilo.Run>;
+  }): Promise<unknown>;
   newChild(args: {
     page: string;
     title: string;
-  }): Promise<unknown | tilo.Run>;
+  }): Promise<unknown>;
   rename(args: {
     page: string;
     title: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `rename` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   renameMany(items: RenameArgs[]): Promise<tilo.ActionAnswer[]>;
   delete(args: {
     page: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `delete` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   deleteMany(items: DeleteArgs[]): Promise<tilo.ActionAnswer[]>;
   moveNote(args: {
     page: string;
     parent?: string;
     before?: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `move-note` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   moveNoteMany(items: MoveNoteArgs[]): Promise<tilo.ActionAnswer[]>;
   moveUp(args: {
     page: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `move-up` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   moveUpMany(items: MoveUpArgs[]): Promise<tilo.ActionAnswer[]>;
   moveDown(args: {
     page: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `move-down` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   moveDownMany(items: MoveDownArgs[]): Promise<tilo.ActionAnswer[]>;
   indent(args: {
     page: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `indent` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   indentMany(items: IndentArgs[]): Promise<tilo.ActionAnswer[]>;
   outdent(args: {
     page: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `outdent` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   outdentMany(items: OutdentArgs[]): Promise<tilo.ActionAnswer[]>;
   duplicate(args: {
     page: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `duplicate` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   duplicateMany(items: DuplicateArgs[]): Promise<tilo.ActionAnswer[]>;
   newTag(args: {
     name: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `new-tag` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   newTagMany(items: NewTagArgs[]): Promise<tilo.ActionAnswer[]>;
   tag(args: {
     page: string;
     name: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `tag` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   tagMany(items: TagArgs[]): Promise<tilo.ActionAnswer[]>;
   deleteTag(args: {
     tag: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `delete-tag` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   deleteTagMany(items: DeleteTagArgs[]): Promise<tilo.ActionAnswer[]>;
   keepImage(args: {
     bytes: unknown;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `keep-image` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   keepImageMany(items: KeepImageArgs[]): Promise<tilo.ActionAnswer[]>;
   placeImage(args: {
     page: string;
     bytes: unknown;
     alt?: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `place-image` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   placeImageMany(items: PlaceImageArgs[]): Promise<tilo.ActionAnswer[]>;
   createPage(args: {
     title: string;
     markdown?: string;
     origin?: Origin;
-  }): Promise<unknown | tilo.Run>;
+  }): Promise<unknown>;
   importMarkdown(args: {
     title: string;
     markdown: string;
@@ -245,22 +245,22 @@ export interface Notebook extends tilo.Resource {
     note?: string;
     path?: string;
     origin?: Origin;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `import-markdown` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   importMarkdownMany(items: ImportMarkdownArgs[]): Promise<tilo.ActionAnswer[]>;
   importMarkdownFiles(args: {
     files: MarkdownFile[];
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `import-markdown-files` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   importMarkdownFilesMany(items: ImportMarkdownFilesArgs[]): Promise<tilo.ActionAnswer[]>;
   appendToNote(args: {
     markdown: string;
     title?: string;
-  }): Promise<unknown | tilo.Run>;
+  }): Promise<unknown>;
   writeNote(args: {
     page: string;
     markdown: string;
-  }): Promise<tilo.Run | void>;
+  }): Promise<void>;
   /** Runs `write-note` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   writeNoteMany(items: WriteNoteArgs[]): Promise<tilo.ActionAnswer[]>;
   exportMarkdownContent(args?: {
@@ -269,8 +269,12 @@ export interface Notebook extends tilo.Resource {
   }): Promise<void>;
 }
 
+/** The actions `Notebook` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const NOTEBOOK_ACTIONS = ["newNote", "newChild", "rename", "renameMany", "delete", "deleteMany", "moveNote", "moveNoteMany", "moveUp", "moveUpMany", "moveDown", "moveDownMany", "indent", "indentMany", "outdent", "outdentMany", "duplicate", "duplicateMany", "newTag", "newTagMany", "tag", "tagMany", "deleteTag", "deleteTagMany", "keepImage", "keepImageMany", "placeImage", "placeImageMany", "createPage", "importMarkdown", "importMarkdownMany", "importMarkdownFiles", "importMarkdownFilesMany", "appendToNote", "writeNote", "writeNoteMany", "exportMarkdownContent"] as const;
+
 /** The `notes.notebook` kind at `path`. */
 export function notebook(ws: tilo.Workspace, path: string): Notebook {
-  return resourceProxy(ws, path, SURFACE) as unknown as Notebook;
+  return resourceProxy(ws, path, SURFACE, NOTEBOOK_ACTIONS) as unknown as Notebook;
 }
 

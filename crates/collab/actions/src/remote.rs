@@ -66,6 +66,7 @@ mod resource_read;
 mod search;
 pub mod session_actions;
 mod session_state;
+mod surfaces;
 pub use session_state::{SessionState, SyncState, WorkspaceState};
 mod shared_host;
 pub mod task_programs;
@@ -995,6 +996,14 @@ pub trait ActionHost {
     fn change_feed(&self) -> Option<std::sync::Arc<dyn ChangeFeed>> {
         None
     }
+
+    /// The surface the signed package `app_id` the workspace installed
+    /// publishes, running or not: what an agent reads its types from, and a
+    /// change of its records is decided against, before the app opens.
+    fn installed_surface(&self, app_id: &str) -> Pending<Option<Vec<u8>>> {
+        let _ = app_id;
+        Pending::ready(None)
+    }
 }
 
 /// Everything that crosses the wire for remote action use.
@@ -1169,6 +1178,13 @@ pub enum RemoteActionMessage {
     ChangesResponse {
         correlation: u64,
         result: Result<ChangePage, ActionHostError>,
+    },
+    /// Ask for the surface `app`'s signed package publishes, as its text.
+    SurfaceRequest { correlation: u64, app: String },
+    /// Answer to [`Self::SurfaceRequest`]: the text, when the workspace has it.
+    SurfaceResponse {
+        correlation: u64,
+        result: Result<Option<String>, ActionHostError>,
     },
     /// Ask the device for a link its web origin serves the content of
     /// `link.files` at, for a little while ([`ContentLink`]): what a page
@@ -1480,6 +1496,9 @@ pub fn serve<H: ActionHost + Clone + Send + 'static>(
         RemoteActionMessage::ChangedRequest { correlation, scope } => {
             watch::noticed(host, caller, correlation, scope)
         }
+        RemoteActionMessage::SurfaceRequest { correlation, app } => {
+            surfaces::surfaced(host, correlation, &app)
+        }
         RemoteActionMessage::CatalogueResponse { .. }
         | RemoteActionMessage::Receipt(_)
         | RemoteActionMessage::Update { .. }
@@ -1498,6 +1517,7 @@ pub fn serve<H: ActionHost + Clone + Send + 'static>(
         | RemoteActionMessage::SearchResponse { .. }
         | RemoteActionMessage::ChangesResponse { .. }
         | RemoteActionMessage::ChangedResponse { .. }
+        | RemoteActionMessage::SurfaceResponse { .. }
         | RemoteActionMessage::CatalogueChanged { .. } => return None,
     };
     // An abandoned answer still answers: the caller hears a refusal.
@@ -1588,6 +1608,12 @@ pub fn refuse(
                 result: Err(error),
             }
         }
+        RemoteActionMessage::SurfaceRequest { correlation, .. } => {
+            RemoteActionMessage::SurfaceResponse {
+                correlation: *correlation,
+                result: Err(error),
+            }
+        }
         RemoteActionMessage::CatalogueResponse { .. }
         | RemoteActionMessage::Receipt(_)
         | RemoteActionMessage::Update { .. }
@@ -1606,6 +1632,7 @@ pub fn refuse(
         | RemoteActionMessage::SearchResponse { .. }
         | RemoteActionMessage::ChangesResponse { .. }
         | RemoteActionMessage::ChangedResponse { .. }
+        | RemoteActionMessage::SurfaceResponse { .. }
         | RemoteActionMessage::CatalogueChanged { .. } => return None,
     })
 }
@@ -2131,6 +2158,7 @@ mod tests {
             action: Some(descriptor(resource, action)),
             has_children: false,
             visibility: None,
+            surface: None,
         }
     }
 
