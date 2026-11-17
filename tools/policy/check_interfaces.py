@@ -897,10 +897,16 @@ def service_versions(root: Path = ROOT) -> dict[str, int]:
 def app_service_versions(root: Path = ROOT) -> list[str]:
     """Every committed app manifest asks for each service at the version the
     system serves: two sides speak only when their numbers are equal, so an app
-    asking for any other is refused at install on the system built beside it."""
+    asking for any other is refused at install on the system built beside it.
+    The examples are app manifests too: `tilo-app new --from-example` copies
+    one into a new app, scaffolded on the same image."""
     served = service_versions(root)
     problems = []
-    for manifest in sorted(root.glob("apps/**/tilo-app.toml")):
+    manifests = [
+        *root.glob("apps/**/tilo-app.toml"),
+        *root.glob("examples/apps/**/tilo-app.toml"),
+    ]
+    for manifest in sorted(manifests):
         if "target" in manifest.parts:
             continue
         try:
