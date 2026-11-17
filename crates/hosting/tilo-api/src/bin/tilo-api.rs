@@ -46,9 +46,11 @@ fn origins(name: &str) -> Result<Vec<String>, String> {
 }
 
 fn main() -> Result<(), String> {
-    tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
-        .init();
+    // With no filter of its own a site keeps warnings, as the server beside it
+    // does: among them why an approval was refused.
+    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn"));
+    tracing_subscriber::fmt().with_env_filter(filter).init();
     let listen: std::net::SocketAddr = var("TILO_API_LISTEN")?
         .parse()
         .map_err(|error| format!("TILO_API_LISTEN: {error}"))?;

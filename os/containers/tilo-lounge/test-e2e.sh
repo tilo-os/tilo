@@ -330,6 +330,10 @@ await_flow() {
 }
 
 verify_records_read
+# The keys of people's sealed stores are kept apart from the stack's state, by
+# the server's own word and by where the files lie (stack.sh keys): here as
+# the stack comes up, and again below once every flow's people have been here.
+keys_apart || { echo "FAIL: the stack does not keep people's keys apart from its state" >&2; exit 1; }
 
 # The startup identity first, in its own flow: the visa run reads the key its
 # page approved.
@@ -375,6 +379,9 @@ if wants restart; then
     timing 'phase=the Lounge started again on its volume'
   fi
 fi
+
+# Where people's keys lie, now that every flow's people have been here.
+keys_apart || failed+=(people-keys)
 
 # What the services complained about while the flows ran, on every run,
 # passing or not.

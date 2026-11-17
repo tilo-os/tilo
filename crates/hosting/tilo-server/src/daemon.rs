@@ -601,7 +601,13 @@ impl Server {
                 shell_payloads,
                 // The folder its operator names for the keys of people's
                 // sealed stores, apart from the state it copies and backs up.
-                people_keys: std::env::var_os(PEOPLE_KEYS_ENV).map(PathBuf::from),
+                // The answer is handed on when it is empty too: a server
+                // whose operator named none says so every time it starts.
+                people_keys: Some(
+                    std::env::var_os(PEOPLE_KEYS_ENV)
+                        .map(PathBuf::from)
+                        .unwrap_or_default(),
+                ),
             },
             identity.clone(),
             endpoint.clone(),

@@ -33,6 +33,14 @@ nor split again, and `stack.sh restart NAME` rebuilds and restarts one service
 while the others keep running. Each service gets its own state and runtime
 directory under the stack's state. `stack.sh help` lists every command.
 
+The keys of people's sealed stores (their sign-ins, provider keys and vault
+items on the server) are kept in a folder beside the stack's state, never in
+it: the state's path with `-keys` after it, or the folder `TILO_SH_PEOPLE_KEYS`
+names. A copy of the state alone then opens nobody's vault. The server says in
+its log, every time it starts, where it keeps them, and as a warning when that
+is in its state. `stack.sh` hands a service only variables its image sets, and
+stops the start at one the image does not set instead of leaving it out.
+
 `TILO_SH_REMOTE=0` runs everything here instead, which is what the end-to-end
 check (`stack.sh check`), `up --images` and the VM host need. A checkout whose
 cargo drop-in cannot forward ports (a drop-in from before `exec --forward`),

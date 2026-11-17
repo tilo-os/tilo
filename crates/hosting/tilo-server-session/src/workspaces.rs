@@ -69,7 +69,7 @@ pub async fn ask_host(
     }
 }
 
-/// Ask `client`'s relay to enter this device into `workspace`, and answer the
+/// Ask `client`'s server to enter this device into `workspace`, and answer the
 /// invitation text the device redeems to hold it: [`ENTER_WORKSPACE`]'s ask, and
 /// the invitation it answers with, in the shape every join redeems.
 ///

@@ -12,8 +12,9 @@ use tilo_server_protocol::certify::{
 };
 use tilo_user_identity::{
     CertificationPolicy, DeviceCapabilities, DeviceCert, RevocationEntry, RevocationReason,
-    STAND_IN_LIFETIME_NS, certification::MAX_CERTIFICATION_LABEL_BYTES, check_agent_grant,
-    sign_device_cert_async, sign_revocation_entry_async, verify_device_cert_at,
+    STAND_IN_LIFETIME_NS,
+    certification::{CERTIFICATION_CLOCK_ALLOWANCE_NS, MAX_CERTIFICATION_LABEL_BYTES},
+    check_agent_grant, sign_device_cert_async, sign_revocation_entry_async, verify_device_cert_at,
 };
 // Answering a pairing is the dialer's: a page holds no root and answers none.
 #[cfg(any(feature = "dial", test))]
@@ -60,25 +61,81 @@ pub async fn issue_device_cert(
     label: &str,
     role: IssuedRole,
 ) -> Result<DeviceCert, CertifyError> {
+    let now = tilo_clock::unix_now_ns();
+    issue_member_cert(root, device_public_key, label, role, now, now).await
+}
+
+/// Have `root` certify `device_public_key`, this browser's own device key,
+/// for the proof a service signs its person in with
+/// ([`sign_in_proof`](crate::sign_in_proof)).
+///
+/// The service reads the certificate by its own clock the moment the answer
+/// arrives, and that clock may be behind this device's. So the certificate is
+/// dated as a paired device's is
+/// ([`prepare_device_cert`](tilo_user_identity::prepare_device_cert)): valid
+/// from [`CERTIFICATION_CLOCK_ALLOWANCE_NS`] before this device's clock, and a
+/// browser's lifetime long from there. The service keeps its exact check:
+/// a device further ahead of it than that is still refused, and there is no
+/// second allowance.
+///
+/// # Errors
+///
+/// As [`issue_device_cert`].
+pub async fn issue_sign_in_cert(
+    root: &dyn DeviceSigner,
+    device_public_key: [u8; 32],
+    label: &str,
+) -> Result<DeviceCert, CertifyError> {
+    let now = tilo_clock::unix_now_ns();
+    let starts = read_at_once_elsewhere(now);
+    issue_member_cert(
+        root,
+        device_public_key,
+        label,
+        IssuedRole::Browser,
+        now,
+        starts,
+    )
+    .await
+}
+
+/// When a certificate issued at `now_ns` starts, if another machine reads it
+/// by its own clock the moment it arrives:
+/// [`CERTIFICATION_CLOCK_ALLOWANCE_NS`] earlier, the one rule for how far two
+/// clocks may differ. Every verifier keeps its exact check.
+const fn read_at_once_elsewhere(now_ns: u64) -> u64 {
+    now_ns.saturating_sub(CERTIFICATION_CLOCK_ALLOWANCE_NS)
+}
+
+/// [`issue_device_cert`] at `now_ns`: a certificate valid from `starts_ns`
+/// that lasts `role`'s lifetime from there.
+async fn issue_member_cert(
+    root: &dyn DeviceSigner,
+    device_public_key: [u8; 32],
+    label: &str,
+    role: IssuedRole,
+    now_ns: u64,
+    starts_ns: u64,
+) -> Result<DeviceCert, CertifyError> {
     let user_public_key = root.device_public_key();
     if device_public_key == user_public_key {
         return Err(CertifyError::Request(
             "the root certifies devices, never itself".into(),
         ));
     }
-    let now = tilo_clock::unix_now_ns();
     let cert = DeviceCert {
         user_public_key,
         device_public_key,
         device_label: label.to_owned(),
         capabilities: DeviceCapabilities::member(),
-        issued_at_ns: now,
-        expires_at_ns: Some(now.saturating_add(role.lifetime_ns())),
+        issued_at_ns: starts_ns,
+        expires_at_ns: Some(starts_ns.saturating_add(role.lifetime_ns())),
         signature: [0; 64],
         issuer: None,
     };
     let cert = signed(root, cert).await?;
-    verify_device_cert_at(&cert, now).map_err(|error| CertifyError::Request(error.to_string()))?;
+    verify_device_cert_at(&cert, now_ns)
+        .map_err(|error| CertifyError::Request(error.to_string()))?;
     Ok(cert)
 }
 
@@ -96,12 +153,19 @@ async fn signed(root: &dyn DeviceSigner, mut cert: DeviceCert) -> Result<DeviceC
 /// last until revoked (`None`); a grant admits no devices and has no life of
 /// its own to extend.
 ///
+/// The service that holds the grant's key reads the certificate by its own
+/// clock the moment the answer arrives, so it is dated as
+/// [`issue_sign_in_cert`]'s is: valid from
+/// [`CERTIFICATION_CLOCK_ALLOWANCE_NS`] before this device's clock. It ends
+/// when it was asked to, and the most a grant may last counts from that
+/// earlier start, so the allowance lengthens no grant.
+///
 /// # Errors
 ///
 /// [`CertifyError::Request`] for the root's own key, capabilities that are no
 /// grant's, an expiry not in the future or (but for a server key) missing or
-/// beyond [`MAX_AGENT_GRANT_LIFETIME_NS`], a label a certificate does not
-/// carry, or a signature that does not verify.
+/// beyond [`MAX_AGENT_GRANT_LIFETIME_NS`] from the certificate's start, a
+/// label a certificate does not carry, or a signature that does not verify.
 pub async fn issue_agent_grant(
     root: &dyn DeviceSigner,
     device_public_key: [u8; 32],
@@ -129,15 +193,19 @@ pub async fn issue_agent_grant(
     if capabilities.agent.is_none() {
         return Err(CertifyError::Request("a grant reaches workspaces".into()));
     }
-    // The rule every verifier applies to a grant, from the one place it is written.
+    let starts = read_at_once_elsewhere(now);
+    // The rule every verifier applies to a grant, from the one place it is written:
+    // its expiry lies ahead of this device's clock, and it lasts no longer than a
+    // grant may from the start its certificate carries.
     check_agent_grant(&capabilities, now, expires_at_ns)
+        .and_then(|()| check_agent_grant(&capabilities, starts, expires_at_ns))
         .map_err(|error| CertifyError::Request(error.to_string()))?;
     let cert = DeviceCert {
         user_public_key,
         device_public_key,
         device_label: label.to_owned(),
         capabilities,
-        issued_at_ns: now,
+        issued_at_ns: starts,
         expires_at_ns,
         signature: [0; 64],
         issuer: None,
@@ -440,9 +508,101 @@ mod tests {
     use super::*;
     use ed25519_dalek::SigningKey;
     use tilo_user_identity::{
-        AgentScope, CERTIFICATION_SCHEMA_VERSION, CertificationRequest,
+        AgentScope, CERTIFICATION_SCHEMA_VERSION, CertificationRequest, DeviceCertError,
         MAX_AGENT_GRANT_LIFETIME_NS, verify_device_cert, verify_issued_cert,
     };
+
+    /// The page's clock in the tests that hold it, in Unix milliseconds: a
+    /// browser's clock reads whole milliseconds.
+    const PAGE_MS: u64 = 1_800_000_000_000;
+
+    /// `issue` with this thread's clock, the page's, held at [`PAGE_MS`].
+    fn at_the_page<T>(issue: impl Future<Output = T>) -> T {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        tilo_clock::with_wall_ms(PAGE_MS, || runtime.block_on(issue))
+    }
+
+    #[test]
+    fn what_a_service_reads_at_once_is_valid_from_the_clock_allowance_before_the_page_s_clock() {
+        let page_ns = PAGE_MS * 1_000_000;
+        let starts = page_ns - CERTIFICATION_CLOCK_ALLOWANCE_NS;
+        let root = SigningKey::from_bytes(&[21; 32]);
+        let device = SigningKey::from_bytes(&[22; 32]).verifying_key().to_bytes();
+        let key = SigningKey::from_bytes(&[23; 32]).verifying_key().to_bytes();
+
+        // The certificate a sign-in proof carries: a service whose clock is
+        // the whole allowance behind the page's takes it, one a nanosecond
+        // further behind refuses it as before, and it lasts no longer.
+        let cert = at_the_page(issue_sign_in_cert(&root, device, "Tilo on the web")).unwrap();
+        assert_eq!(cert.issued_at_ns, starts);
+        assert_eq!(
+            cert.expires_at_ns,
+            Some(starts + CertificationPolicy::browser().lifetime_ns)
+        );
+        assert_eq!(cert.capabilities, DeviceCapabilities::member());
+        assert_eq!(verify_device_cert_at(&cert, starts), Ok(()));
+        assert_eq!(
+            verify_device_cert_at(&cert, starts - 1),
+            Err(DeviceCertError::NotYetValid)
+        );
+        let own = root.verifying_key().to_bytes();
+        assert!(matches!(
+            at_the_page(issue_sign_in_cert(&root, own, "Root")),
+            Err(CertifyError::Request(_))
+        ));
+
+        // A certificate the root issues for a device of its own is dated by
+        // this device's clock alone, as before.
+        let browser = at_the_page(issue_device_cert(
+            &root,
+            device,
+            "Browser",
+            IssuedRole::Browser,
+        ))
+        .unwrap();
+        assert_eq!(browser.issued_at_ns, page_ns);
+
+        // An agent's grant likewise, and it ends when it was asked to.
+        let all = DeviceCapabilities::agent_grant(AgentScope::AllWorkspaces);
+        let week = 7 * 24 * 60 * 60 * 1_000_000_000;
+        let grant = at_the_page(issue_agent_grant(
+            &root,
+            key,
+            "Claude Code via api.example",
+            all.clone(),
+            Some(page_ns + week),
+        ))
+        .unwrap();
+        assert_eq!(grant.issued_at_ns, starts);
+        assert_eq!(grant.expires_at_ns, Some(page_ns + week));
+        assert_eq!(verify_device_cert_at(&grant, starts), Ok(()));
+        assert_eq!(
+            verify_device_cert_at(&grant, starts - 1),
+            Err(DeviceCertError::NotYetValid)
+        );
+
+        // The most a grant may last counts from the start its certificate
+        // carries, so the allowance lengthens none; and an expiry that does
+        // not lie ahead of the page's clock is no grant.
+        let longest = starts + MAX_AGENT_GRANT_LIFETIME_NS;
+        let lasting = |expiry| {
+            at_the_page(issue_agent_grant(
+                &root,
+                key,
+                "Claude Code",
+                all.clone(),
+                Some(expiry),
+            ))
+        };
+        assert_eq!(lasting(longest).unwrap().expires_at_ns, Some(longest));
+        assert!(matches!(
+            lasting(longest + 1),
+            Err(CertifyError::Request(_))
+        ));
+        assert!(matches!(lasting(page_ns), Err(CertifyError::Request(_))));
+    }
 
     #[tokio::test]
     async fn a_page_root_issues_browser_node_and_session_certificates_but_never_its_own() {

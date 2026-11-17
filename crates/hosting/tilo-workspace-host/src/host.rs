@@ -55,10 +55,15 @@ pub struct HostConfig {
     pub apps: Option<Arc<dyn AppActionServer>>,
     /// Classifies co-edit bodies for every workspace the host opens.
     pub shell_payloads: Arc<dyn crate::payloads::ShellPayloads>,
-    /// Where the keys of people's sealed stores are kept, when that is apart
-    /// from `state_root`: a folder a copy or a backup of the state does not
-    /// take along, so that such a copy opens nobody's sign-ins, keys or
-    /// vault items. `None` keeps each key beside its sealed file.
+    /// What a server's operator answered for the folder that keeps the keys
+    /// of people's sealed stores apart from `state_root`: one a copy or a
+    /// backup of the state does not take along, so that such a copy opens
+    /// nobody's sign-ins, keys or vault items. An empty answer names none.
+    /// The folder keeps the keys when it is there. When it is not, or none
+    /// was named, each key is kept beside its sealed file, and the server
+    /// says so in its log as it opens. `None` on a person's own device,
+    /// where nobody is asked: each key is kept beside its sealed file and
+    /// nothing is said.
     pub people_keys: Option<PathBuf>,
 }
 
@@ -241,13 +246,17 @@ impl HostSessions {
         let (Some(governance), Some(actions)) = (governance, own_server) else {
             return Ok((sessions, None));
         };
-        if let Some(keys) = &cfg.people_keys {
-            // Said before any person's store is opened: each key is made,
-            // or found, where it is kept from then on.
-            accounts::keep_vault_keys_apart(
-                &cfg.state_root.join("workspaces").join("people"),
-                keys,
-            );
+        if let Some(named) = &cfg.people_keys {
+            // Decided and said before any person's store is opened: each key
+            // is made, or found, where it is kept from then on.
+            let people_keys = crate::people_keys::decide(named, &cfg.state_root);
+            people_keys.say(&cfg.state_root);
+            if let Some(keys) = people_keys.folder() {
+                accounts::keep_vault_keys_apart(
+                    &cfg.state_root.join("workspaces").join("people"),
+                    keys,
+                );
+            }
         }
         let workspaces = crate::workspaces::Workspaces::open(
             sessions.workspace_services(&cfg, &identity, endpoint, revocations, channels),

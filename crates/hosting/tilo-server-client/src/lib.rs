@@ -79,7 +79,7 @@ pub use host::{Carrier, Host};
 pub use https::{Answer, AnswerFuture, HttpClient, HttpFuture};
 pub use pairing::{
     IssuedRole, NODE_CERT_LIFETIME_NS, certify_with_root, issue_agent_grant, issue_device_cert,
-    issue_stand_in, revoke_device,
+    issue_sign_in_cert, issue_stand_in, revoke_device,
 };
 #[cfg(feature = "dial")]
 pub use pairing::{answer_pairing, decide_pairing, next_pairings, pending_pairings};

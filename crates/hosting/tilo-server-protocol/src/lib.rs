@@ -45,6 +45,7 @@ pub mod certify;
 pub mod compaction;
 pub mod config;
 pub mod directory;
+mod earlier;
 pub mod entering;
 pub mod home_peer;
 pub mod host_voice;

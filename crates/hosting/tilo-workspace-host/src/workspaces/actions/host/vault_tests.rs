@@ -824,6 +824,8 @@ fn copy_folder(from: &std::path::Path, to: &std::path::Path) {
 async fn a_copy_of_the_state_folder_alone_opens_nothing_of_a_persons_vault() {
     let dir = tempfile::tempdir().unwrap();
     let (state, keys) = (dir.path().join("state"), dir.path().join("keys"));
+    // The folder its operator made for the keys: a server makes none.
+    std::fs::create_dir(&keys).unwrap();
     let (key, owner) = governor();
     let server = test_server_keeping_keys_apart(&state, &keys, &key, &owner).await;
     let workspaces = server.workspaces();
@@ -873,4 +875,223 @@ async fn a_copy_of_the_state_folder_alone_opens_nothing_of_a_persons_vault() {
     let opened = accounts::vault_items::VaultItems::open_in(&hers_in(&copy))
         .expect("the copy opens with its keys");
     assert_eq!(opened.facts().len(), 1);
+}
+
+/// A server that kept each person's key in its state, beside the vault the
+/// key opens, is then told a folder for the keys. Nobody is locked out of
+/// their vault. The key moves under the folder the first time the vault is
+/// opened, once it was read back from there: the very key, and no new one.
+/// A key whose place under the folder cannot be made stays where it lies
+/// and opens its vault from there, at that start and at the one after it.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_key_left_in_the_state_opens_its_vault_and_moves_apart_once_a_folder_is_named() {
+    let dir = tempfile::tempdir().unwrap();
+    let (key, owner) = governor();
+    let asking = caller(&owner);
+    let hers = (&owner, &asking);
+    for movable in [true, false] {
+        let state = dir.path().join(format!("state-{movable}"));
+        let keys = dir.path().join(format!("keys-{movable}"));
+
+        // Before any folder was named, her key lies in the state.
+        let server = test_server_keeping_keys_apart(&state, no_folder(), &key, &owner).await;
+        let (_, workspace_id, actions) = governed(server.workspaces()).await;
+        let login = a_login("https://example.test");
+        ask(&actions, workspace_id, hers, person_vault::ADD, login)
+            .await
+            .expect("she keeps a login");
+        server.shutdown().await;
+        let beside = files_called(&state, "vault.key");
+        assert_eq!(beside.len(), 1, "her key lies beside her vault");
+        let sealed_under = std::fs::read(&beside[0]).unwrap();
+
+        // The folder is named, and it is there. Her keys' place under it is
+        // free, or it is taken by a link that leads nowhere, under which
+        // nothing can be made.
+        std::fs::create_dir(&keys).unwrap();
+        let her_place = keys.join(hex::encode(owner.user_public_key));
+        if !movable {
+            std::os::unix::fs::symlink(dir.path().join("nowhere"), &her_place).unwrap();
+        }
+        for (kept, start) in (1..).zip(["the first start with the folder", "the start after it"]) {
+            let server = test_server_keeping_keys_apart(&state, &keys, &key, &owner).await;
+            let (_, workspace_id, actions) = governed(server.workspaces()).await;
+            let listed = ask(&actions, workspace_id, hers, person_vault::LIST, json!({}))
+                .await
+                .unwrap_or_else(|error| panic!("{start} locked her out of her vault: {error:?}"));
+            assert_eq!(
+                listed["items"].as_array().map(Vec::len),
+                Some(kept),
+                "{start}: {listed}"
+            );
+            let in_state = files_called(&state, "vault.key");
+            let apart = files_called(&keys, "vault.key");
+            if movable {
+                assert_eq!(
+                    in_state,
+                    Vec::<std::path::PathBuf>::new(),
+                    "{start}: her key still lies in the state"
+                );
+                assert_eq!(apart.len(), 1, "{start}: {apart:?}");
+                assert!(apart[0].starts_with(&her_place), "{start}: {apart:?}");
+                assert!(
+                    std::fs::read(&apart[0]).unwrap() == sealed_under,
+                    "{start}: the key kept apart is not the one her vault was sealed under"
+                );
+            } else {
+                assert_eq!(in_state, beside, "{start}: her key left its place");
+                assert_eq!(apart, Vec::<std::path::PathBuf>::new(), "{start}");
+                assert!(
+                    std::fs::read(&in_state[0]).unwrap() == sealed_under,
+                    "{start}: her key was replaced"
+                );
+            }
+            // What she keeps from now on is sealed under the same key.
+            let more = a_login(&format!("https://{kept}.example.test"));
+            ask(&actions, workspace_id, hers, person_vault::ADD, more)
+                .await
+                .unwrap_or_else(|error| panic!("{start} kept nothing more for her: {error:?}"));
+            server.shutdown().await;
+        }
+    }
+}
+
+/// What a server is told whose operator named no folder for people's keys:
+/// nothing, as an environment without the setting, or with it empty, reads.
+fn no_folder() -> &'static std::path::Path {
+    std::path::Path::new("")
+}
+
+/// What a server in a test wrote to its log.
+#[derive(Clone, Default)]
+struct Logged(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+
+impl std::io::Write for Logged {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.0.lock().unwrap().extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for Logged {
+    type Writer = Self;
+    fn make_writer(&'a self) -> Self {
+        self.clone()
+    }
+}
+
+impl Logged {
+    /// How much was written so far.
+    fn written(&self) -> usize {
+        self.0.lock().unwrap().len()
+    }
+
+    /// The lines written after the first `from` bytes that say where
+    /// people's keys are kept.
+    fn said_since(&self, from: usize) -> Vec<String> {
+        String::from_utf8_lossy(&self.0.lock().unwrap()[from..])
+            .lines()
+            .filter(|line| line.contains("the keys of people's sealed stores"))
+            .map(str::to_owned)
+            .collect()
+    }
+}
+
+/// A server says as it starts where it keeps the keys of people's vaults:
+/// one line at every start, a warning for as long as they lie in its state.
+/// A folder it was named that is not there it does not make; it says so and
+/// goes on opening each vault with the key beside it. Nothing it logs, at
+/// any level, holds a key.
+#[tokio::test]
+async fn a_server_says_at_every_start_where_it_keeps_peoples_keys_and_logs_no_key() {
+    let logged = Logged::default();
+    let _subscribed = tracing::subscriber::set_default(
+        tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::TRACE)
+            .with_ansi(false)
+            .with_writer(logged.clone())
+            .finish(),
+    );
+    let dir = tempfile::tempdir().unwrap();
+    let (state, keys) = (dir.path().join("state"), dir.path().join("keys"));
+    let named = keys.display().to_string();
+    let (key, owner) = governor();
+    let asking = caller(&owner);
+    let hers = (&owner, &asking);
+
+    // No folder is named: the keys lie in the state, and the server says so.
+    let from = logged.written();
+    let server = test_server_keeping_keys_apart(&state, no_folder(), &key, &owner).await;
+    let said = logged.said_since(from);
+    assert_eq!(said.len(), 1, "{said:?}");
+    assert!(
+        said[0].contains("WARN")
+            && said[0].contains("are kept in the state folder")
+            && said[0].contains("TILO_PEOPLE_KEYS names no folder"),
+        "{said:?}"
+    );
+    let (_, workspace_id, actions) = governed(server.workspaces()).await;
+    let login = a_login("https://example.test");
+    ask(&actions, workspace_id, hers, person_vault::ADD, login)
+        .await
+        .expect("she keeps a login");
+    server.shutdown().await;
+    let beside = files_called(&state, "vault.key");
+    assert_eq!(beside.len(), 1, "her key lies beside her vault");
+    let her_key = std::fs::read(&beside[0]).unwrap();
+
+    // A folder is named that is not there: the server makes none, says so,
+    // and her vault opens with the key where it lies.
+    let from = logged.written();
+    let server = test_server_keeping_keys_apart(&state, &keys, &key, &owner).await;
+    let said = logged.said_since(from);
+    assert_eq!(said.len(), 1, "{said:?}");
+    assert!(
+        said[0].contains("WARN")
+            && said[0].contains("are kept in the state folder")
+            && said[0].contains("where no folder is")
+            && said[0].contains(&named),
+        "{said:?}"
+    );
+    let (_, workspace_id, actions) = governed(server.workspaces()).await;
+    let listed = ask(&actions, workspace_id, hers, person_vault::LIST, json!({}))
+        .await
+        .expect("her vault opens");
+    assert_eq!(
+        listed["items"].as_array().map(Vec::len),
+        Some(1),
+        "{listed}"
+    );
+    assert!(!keys.exists(), "the server made the folder it was named");
+    assert_eq!(files_called(&state, "vault.key"), beside);
+    server.shutdown().await;
+
+    // The folder is there: the server says the keys are kept apart, and
+    // warns of nothing.
+    std::fs::create_dir(&keys).unwrap();
+    let from = logged.written();
+    let server = test_server_keeping_keys_apart(&state, &keys, &key, &owner).await;
+    let said = logged.said_since(from);
+    assert_eq!(said.len(), 1, "{said:?}");
+    assert!(
+        said[0].contains("INFO")
+            && said[0].contains("are kept apart from the state folder")
+            && said[0].contains(&named),
+        "{said:?}"
+    );
+    server.shutdown().await;
+
+    let all = logged.0.lock().unwrap().clone();
+    assert!(
+        !all.windows(her_key.len()).any(|window| window == her_key),
+        "the log holds her key as it is kept"
+    );
+    let text = String::from_utf8_lossy(&all);
+    for spelled in [hex::encode(&her_key), hex::encode_upper(&her_key)] {
+        assert!(!text.contains(&spelled), "the log holds her key in hex");
+    }
 }
