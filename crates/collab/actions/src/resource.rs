@@ -723,7 +723,6 @@ pub fn listed_for_people(kind: &str, label: &str) -> bool {
 
 /// One open/presented resource and the actions it exports. Resources
 /// nest via [`children`](ResourceSpec::children).
-#[derive(Clone)]
 pub struct ResourceSpec {
     pub id: ResourceId,
     /// A stable kind tag (e.g. `"tube.video"`, `"ebook.annotation"`),
@@ -752,6 +751,27 @@ pub struct ResourceSpec {
     pub personal: bool,
     /// What it is, as people name it, when its type says ([`ResourceType`]).
     pub resource_type: Option<ResourceType>,
+}
+
+/// Written out rather than derived: a derived `clone` is inlined into every
+/// app that copies a resource, this one is compiled once.
+impl Clone for ResourceSpec {
+    #[inline(never)]
+    fn clone(&self) -> Self {
+        Self {
+            id: self.id.clone(),
+            kind: self.kind.clone(),
+            label: self.label.clone(),
+            presentation: self.presentation.clone(),
+            semantic_identity: self.semantic_identity.clone(),
+            app_id: self.app_id.clone(),
+            children: self.children.clone(),
+            actions: self.actions.clone(),
+            views: self.views.clone(),
+            personal: self.personal,
+            resource_type: self.resource_type.clone(),
+        }
+    }
 }
 
 impl ResourceSpec {

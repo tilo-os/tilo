@@ -490,9 +490,15 @@ impl ChainCore {
         }
     }
 
-    /// Keep `entry`, an action and who invoked it, in the record of
+    /// Keep `action`, an action's JSON, invoked by `invoker`, with the
     /// waiting actions, after the others. Its entry there.
-    fn keep_unsent(&self, entry: String) -> Result<String, ActionError> {
+    fn keep_unsent(&self, action: &[u8], invoker: &ActionInvoker) -> Result<String, ActionError> {
+        if !self.open_unsent(true) {
+            return Err(ActionError::Refused(PART_ARRIVING.into()));
+        }
+        let action: serde_json::Value =
+            serde_json::from_slice(action).map_err(ActionError::Encode)?;
+        let entry = serde_json::to_string(&(action, invoker)).map_err(ActionError::Encode)?;
         let chain = self.chain.as_str().to_owned();
         self.edit_unsent(move |doc| {
             let list = match doc.get(ROOT, chain.as_str())? {
@@ -1339,6 +1345,39 @@ impl ChainCore {
         }
     }
 
+    /// The actions waiting for a part of this chain, oldest first: each
+    /// entry's id, its action's JSON and who invoked it.
+    fn unsent(&self) -> Vec<(String, serde_json::Value, ActionInvoker)> {
+        if !self.open_unsent(false) {
+            return Vec::new();
+        }
+        let kind = self.part.kind;
+        self.workspace
+            .store
+            .read(&self.waiting_resource.id, |doc| {
+                let Ok(Some((Value::Object(ObjType::List), list))) =
+                    doc.get(ROOT, self.chain.as_str())
+                else {
+                    return Vec::new();
+                };
+                doc.list_range(&list, ..)
+                    .filter_map(|item| {
+                        let id = item.id().to_string();
+                        let value = item.value.into_value();
+                        serde_json::from_str::<(serde_json::Value, ActionInvoker)>(
+                            value.as_str().unwrap_or_default(),
+                        )
+                        .map(|(action, invoker)| (id, action, invoker))
+                        .map_err(
+                            |error| tracing::warn!(kind, %error, "a waiting write does not read"),
+                        )
+                        .ok()
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
     /// Take the entry `id` out of the record of waiting actions.
     fn forget_unsent(&self, id: &str) {
         let chain = self.chain.as_str().to_owned();
@@ -1502,7 +1541,7 @@ impl<P: Chained> ChainState<P> {
                 Err(error) => Err(error),
             };
             self.core.forget_unsent(&entry.id);
-            answer::<P>(&entry.id, written);
+            answer(P::KIND, &entry.id, written);
         }
         self.draining.set(false);
         if self.follow_unsent() {
@@ -1623,16 +1662,22 @@ impl<P: Chained> ChainState<P> {
 
     /// The actions waiting for a part of this chain, oldest first.
     fn unsent(&self) -> Vec<Unsent<P>> {
-        if !self.core.open_unsent(false) {
-            return Vec::new();
-        }
         self.core
-            .workspace
-            .store
-            .read(&self.core.waiting_resource.id, |doc| {
-                read_unsent::<P>(doc, &self.core.chain)
+            .unsent()
+            .into_iter()
+            .filter_map(|(id, action, invoker)| {
+                let action = serde::Deserialize::deserialize(action)
+                    .map_err(|error: serde_json::Error| {
+                        tracing::warn!(kind = P::KIND, %error, "a waiting write does not read");
+                    })
+                    .ok()?;
+                Some(Unsent {
+                    id,
+                    action,
+                    invoker,
+                })
             })
-            .unwrap_or_default()
+            .collect()
     }
 
     /// Keep `action`, invoked by `invoker`, in the record of waiting
@@ -1642,11 +1687,8 @@ impl<P: Chained> ChainState<P> {
         action: &P::Action,
         invoker: &ActionInvoker,
     ) -> Result<String, ActionError> {
-        if !self.core.open_unsent(true) {
-            return Err(ActionError::Refused(PART_ARRIVING.into()));
-        }
-        let entry = serde_json::to_string(&(action, invoker)).map_err(ActionError::Encode)?;
-        self.core.keep_unsent(entry)
+        let action = serde_json::to_vec(action).map_err(ActionError::Encode)?;
+        self.core.keep_unsent(&action, invoker)
     }
 
     /// Write `action` into its part now, as [`Self::apply_as`], or say the
@@ -1705,51 +1747,44 @@ impl<P: Chained> ChainState<P> {
         let parts = self.parts();
         let mut prepared = Vec::with_capacity(group.actions.len());
         let mut places = Vec::with_capacity(group.actions.len());
-        let mut per_part: BTreeMap<u64, Vec<usize>> = BTreeMap::new();
+        let mut indices = Vec::with_capacity(group.actions.len());
         for action in &group.actions {
             let mut action = action.clone();
             P::prepare(&mut action, &base, &parts).map_err(ActionError::Refused)?;
             places.push(P::place(&action, &base));
             self.may(&action)?;
-            let index = P::part_for(&action, &parts).map_err(ActionError::Refused)?;
-            per_part.entry(index).or_default().push(prepared.len());
+            indices.push(P::part_for(&action, &parts).map_err(ActionError::Refused)?);
             prepared.push(action);
         }
         drop(base);
         drop(parts);
+        let per_part = by_part(&indices);
         // Every part a member changes must be here: the group is one step, so
         // none of it is written while a part is on its way.
-        let mut opened = Vec::with_capacity(per_part.len());
-        for index in per_part.keys() {
+        for (index, _) in &per_part {
             match self
                 .core
                 .open_or_start(*index)
                 .map_err(|error| self.core.refused(error))?
             {
-                Opened::Held | Opened::Started => opened.push(*index),
+                Opened::Held | Opened::Started => {}
                 Opened::Asked => return Ok(Write::Arriving),
             }
         }
         let head = self.core.parts.borrow().keys().next_back().copied();
         let mut written = None;
         let mut created = Vec::new();
-        for index in opened {
+        for (index, members) in per_part {
             if let Some(previous) = head.filter(|head| head.checked_add(1) == Some(index)) {
                 self.carry(previous, index, invoker)?;
             }
-            let members: Vec<P::Action> = per_part
-                .get(&index)
-                .map(|members| {
-                    members
-                        .iter()
-                        .filter_map(|at| prepared.get(*at).cloned())
-                        .collect()
-                })
-                .unwrap_or_default();
-            let place = per_part
-                .get(&index)
-                .and_then(|members| members.first())
+            let place = members
+                .first()
                 .and_then(|at| places.get(*at).cloned().flatten());
+            let members: Vec<P::Action> = members
+                .iter()
+                .filter_map(|at| prepared.get(*at).cloned())
+                .collect();
             let group = tilo_resource::group::ActionGroup { actions: members };
             let encoded = tilo_actions::EncodedAction::encode(
                 tilo_resource::group::group_type::<P>(),
@@ -1899,6 +1934,24 @@ impl<P: Chained> ChainState<P> {
             .collect();
         self.core.read(P::RESOURCE_TABLE, &held, payload, &prepare)
     }
+}
+
+/// The members of a group by the part each changes (`indices`, in the
+/// group's order), parts in order: one function for every part type.
+#[inline(never)]
+fn by_part(indices: &[u64]) -> Vec<(u64, Vec<usize>)> {
+    let mut per_part: BTreeMap<u64, Vec<usize>> = BTreeMap::new();
+    for (at, index) in indices.iter().enumerate() {
+        per_part.entry(*index).or_default().push(at);
+    }
+    per_part.into_iter().collect()
+}
+
+/// A history verb on a part, from its payload: decoded by one function for
+/// every part type.
+#[inline(never)]
+fn part_edit(payload: &[u8]) -> Result<PartEdit, String> {
+    tilo_actions::decode_json(payload).map_err(|error| error.to_string())
 }
 
 /// Offer the chain's read on every resource under an item that its part's
@@ -2126,8 +2179,7 @@ impl<P: Chained> ResourceApi for ChainState<P> {
         invoker: &ActionInvoker,
     ) -> Result<tilo_actions::ActionOutput, String> {
         if action.type_id == PART_EDIT_TYPE {
-            let edit: PartEdit =
-                tilo_actions::decode_json(&action.payload).map_err(|error| error.to_string())?;
+            let edit = part_edit(&action.payload)?;
             let value = self
                 .apply_history(&edit, invoker)
                 .map_err(|error| error.to_string())?;
@@ -2776,42 +2828,14 @@ fn unsent_checkout(me: &tilo_resource::MemberId) -> DocumentCheckout {
     DocumentCheckout::new(id, kind)
 }
 
-/// The actions the record of waiting actions `doc` keeps for `chain`, in
-/// order, each with its entry there; one that does not read is left out and
-/// logged.
-fn read_unsent<P: Chained>(
-    doc: &ui_core::automerge::AutoCommit,
-    chain: &DocumentId,
-) -> Vec<Unsent<P>> {
-    let Ok(Some((Value::Object(ObjType::List), list))) = doc.get(ROOT, chain.as_str()) else {
-        return Vec::new();
-    };
-    doc.list_range(&list, ..)
-        .filter_map(|item| {
-            let id = item.id().to_string();
-            let value = item.value.into_value();
-            serde_json::from_str::<(P::Action, ActionInvoker)>(value.as_str().unwrap_or_default())
-                .map(|(action, invoker)| Unsent {
-                    id,
-                    action,
-                    invoker,
-                })
-                .map_err(
-                    |error| tracing::warn!(kind = P::KIND, %error, "a waiting write does not read"),
-                )
-                .ok()
-        })
-        .collect()
-}
-
 /// Tell whoever waits for the action kept as `id` what became of it; a
 /// refusal nobody waits for is logged.
-fn answer<P: Chained>(id: &str, written: Result<u64, ActionError>) {
+fn answer(kind: &str, id: &str, written: Result<u64, ActionError>) {
     match ANSWERS.with(|answers| answers.borrow_mut().remove(id)) {
         Some(later) => later(written),
         None => {
             if let Err(error) = written {
-                tracing::warn!(kind = P::KIND, %error, "a write that waited for its part was refused");
+                tracing::warn!(kind, %error, "a write that waited for its part was refused");
             }
         }
     }

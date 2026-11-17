@@ -544,6 +544,12 @@ fn asking_spec<E: Effect>(
         .with_bound(fixed)
 }
 
+/// A copy of `params`, made by one function for every effect vocabulary.
+#[inline(never)]
+fn params_from(params: &[ActionParam]) -> Vec<ActionParam> {
+    params.to_vec()
+}
+
 /// [`Effect::item_specs`] of the vocabulary `key`, whose declarations
 /// `declarations` are: each type is kept per field, bound here to `item`.
 fn item_specs<E: Effect>(
@@ -559,7 +565,7 @@ fn item_specs<E: Effect>(
         .filter_map(|decl| {
             let first = decl.params.first()?.name.to_string();
             let ty = kept_type((key, decl.id, Some(decl.item?)), || {
-                let rest = decl.params.get(1..).unwrap_or_default().to_vec();
+                let rest = params_from(decl.params.get(1..).unwrap_or_default());
                 let build = encoder::<E>(operation, decl.id, Bound::OverCaller);
                 Arc::clone(decl.spec_with(operation, rest, build).action_type())
             });
@@ -822,7 +828,7 @@ impl EffectDecl {
     /// that takes an entry or content still asks for it.
     pub fn spec<E: Effect>(&self, operation: &'static str) -> ActionSpec {
         let build = encoder::<E>(operation, self.id, Bound::None);
-        let spec = self.spec_with(operation, self.params.clone(), build);
+        let spec = self.spec_with(operation, params_from(&self.params), build);
         let asks_words = matches!(
             spec.input(),
             tilo_actions::ActionInput::Prompted {

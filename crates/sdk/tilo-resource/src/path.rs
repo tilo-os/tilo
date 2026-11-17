@@ -1429,8 +1429,16 @@ fn edits_coalesce(
 
 impl<R> Clone for Edit<R> {
     fn clone(&self) -> Self {
-        Self::new(self.path.clone(), self.op.clone())
+        let (path, op) = clone_edit(&self.path, &self.op);
+        Self::new(path, op)
     }
+}
+
+/// A copy of an edit's path and operation, made by one function for every
+/// resource type.
+#[inline(never)]
+fn clone_edit(path: &[Segment], op: &EditOp) -> (Vec<Segment>, EditOp) {
+    (path.to_vec(), op.clone())
 }
 
 impl<R> std::fmt::Debug for Edit<R> {

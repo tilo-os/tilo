@@ -3904,15 +3904,29 @@ impl ResourceStore {
         id: &DocumentId,
         migrate: impl FnOnce(&mut AutoCommit) -> Result<T, String>,
     ) -> Result<T, String> {
+        let mut migrate = Some(migrate);
+        let mut outcome = None;
+        self.migrate_with(id, &mut |doc| {
+            outcome = migrate.take().map(|migrate| migrate(doc));
+        })?;
+        outcome.unwrap_or_else(|| Err("the document was not migrated".into()))
+    }
+
+    /// [`Self::migrate`] by one function for every caller: the generic
+    /// shell above only carries the outcome.
+    fn migrate_with(
+        &self,
+        id: &DocumentId,
+        migrate: &mut dyn FnMut(&mut AutoCommit),
+    ) -> Result<(), String> {
         self.with_action_state(id, |doc, _, actions| {
             let before = doc.get_heads();
-            let outcome = migrate(doc);
+            migrate(doc);
             for change in doc.get_changes(&before) {
                 actions.writers.borrow_mut().note(change.actor_id().clone());
             }
-            outcome
         })
-        .map_err(|error| error.to_string())?
+        .map_err(|error| error.to_string())
     }
 
     /// The open record `id` as a whole-document snapshot with its heads, for
