@@ -348,14 +348,14 @@ impl ResourceRoot {
     /// children beyond what [`Self::published_children`] keeps per child (no
     /// surface, which alone publishes rows or binds edits to them, and no
     /// content resource naming the root), and the record reads as the
-    /// resource. `None` otherwise, and for a participant's view, which is
+    /// resource. `None` otherwise, and for a presence's view, which is
     /// never kept.
     pub(super) fn shared_resources(
         &self,
-        participant: Option<&tilo_actions::ParticipantId>,
+        presence: Option<&tilo_actions::PresenceId>,
         doc: &AutoCommit,
     ) -> Option<Vec<SharedResource>> {
-        if participant.is_some() || self.typed.unreadable().is_some() {
+        if presence.is_some() || self.typed.unreadable().is_some() {
             return None;
         }
         let surface = self.has_surface();

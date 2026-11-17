@@ -1,7 +1,7 @@
 //! Closed local call controls. Identity and capture authority never come from this wire.
 use serde::{Deserialize, Serialize};
 
-/// One message's bound. A call has no participant limit; a status names
+/// One message's bound. A call has no member limit; a status names
 /// each person (64 bytes) and the people whose pictures it shows (64
 /// each), so this carries well over a thousand of them, and a
 /// [`Command::Pictures`] answer always at least one whole picture of the
@@ -75,17 +75,17 @@ pub enum Command {
     Pictures {
         after: u64,
     },
-    /// How loud this device plays one participant (a person id), in
+    /// How loud this device plays one member (a person id), in
     /// percent of as they arrive: `0` silences them,
     /// up to [`MAX_VOLUME_PERCENT`]. Only what this device hears changes;
     /// nobody else's call does, so it carries no intent.
     SetVolume {
-        participant: String,
+        member: String,
         percent: u16,
     },
 }
 
-/// The loudest a participant is played ([`Command::SetVolume`]): twice as
+/// The loudest a member is played ([`Command::SetVolume`]): twice as
 /// they arrive.
 pub const MAX_VOLUME_PERCENT: u16 = 200;
 
@@ -322,7 +322,7 @@ pub struct Input {
 }
 
 /// Whose pictures this device publishes and receives now, never an inferred
-/// participant roster.
+/// member roster.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Inventory {
     pub revision: Option<u64>,
@@ -499,10 +499,9 @@ impl Request {
                                 if (&left.person, left.source) < (&right.person, right.source))
                         })
                 }
-                Command::SetVolume {
-                    participant,
-                    percent,
-                } => person_valid(participant) && *percent <= MAX_VOLUME_PERCENT,
+                Command::SetVolume { member, percent } => {
+                    person_valid(member) && *percent <= MAX_VOLUME_PERCENT
+                }
                 Command::SetMuted { .. }
                 | Command::SetDeafened { .. }
                 | Command::SetCamera { .. }

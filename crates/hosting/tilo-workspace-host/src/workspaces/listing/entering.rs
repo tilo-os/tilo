@@ -306,11 +306,11 @@ impl Workspaces {
 }
 
 impl Workspaces {
-    /// Hand `workspace`'s channel participants the request `cert`'s device
+    /// Hand `workspace`'s channel key holders the request `cert`'s device
     /// made in its entry, as they take every member's. The Welcome it asks
     /// for is kept for the device's subscription, whose replay writes it
     /// first ([`crate::peer::Arriving`]); the entry's answer waits neither
-    /// for it nor for the request to be retained, so the participants commit
+    /// for it nor for the request to be retained, so the key holders commit
     /// it while the answer travels and the device subscribes. A request for
     /// another group than the workspace's own, by another device, or not
     /// signed by it is not handed on.
@@ -345,7 +345,7 @@ impl Workspaces {
             request: Box::new(access),
             delivery: 0,
         };
-        // Retaining the request is the participants' business, not the
+        // Retaining the request is the key holders' business, not the
         // answer's: the device is expected, so its replay waits for the
         // Welcome however late the request is taken.
         let workspaces = self.clone();

@@ -199,8 +199,8 @@ pub use content::{
 };
 pub use context::{
     ActionApp, ActionContext, ActionFacet, ActionInvoker, ActionResource, CHANGE_MESSAGE_PREFIX,
-    CONTINUATION_PREFIX, Cause, ChangeKind, InvokerDevice, MAX_PARTICIPANT_ID_BYTES, PLACE_FACET,
-    ParticipantId, RISK_FACET, WorkGroup,
+    CONTINUATION_PREFIX, Cause, ChangeKind, InvokerDevice, MAX_PRESENCE_ID_BYTES, PLACE_FACET,
+    PresenceId, RISK_FACET, WorkGroup,
 };
 pub use contract::{
     AGENTS_AUDIENCE_TAG, ARGUMENT_RISK_TAG, ATTENDED_TAG, ActionContract, ActionKind, ActionNeed,
@@ -260,7 +260,7 @@ pub use resource::{
     listed_row, listed_row_problems, plural, singular, sole_text_argument,
 };
 pub use schema::{
-    CatalogueSchemaEntry, ContextRequirement, PARTICIPANT_VIEW_TAG, REQUIRES_TAG_PREFIX,
+    CatalogueSchemaEntry, ContextRequirement, PRESENCE_VIEW_TAG, REQUIRES_TAG_PREFIX,
     catalogue_schema, catalogue_schema_bytes,
 };
 pub use selection::{

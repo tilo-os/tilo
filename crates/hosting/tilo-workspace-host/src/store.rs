@@ -696,7 +696,7 @@ mod tests {
                 let tmp = tempfile::tempdir().unwrap();
                 let root = tmp.path().to_path_buf();
                 let gate = std::sync::Arc::new(std::sync::Barrier::new(4));
-                // Spawn every participant before joining: interleaving spawn/join
+                // Spawn every key holder before joining: interleaving spawn/join
                 // would deadlock the barrier.
                 let mut workers = Vec::with_capacity(4);
                 for _ in 0..4 {

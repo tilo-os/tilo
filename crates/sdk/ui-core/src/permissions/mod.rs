@@ -1279,12 +1279,12 @@ impl WeakPermissions {
     }
 }
 
-/// A participant's permissions as they stand *now*, following every change the
+/// A member's permissions as they stand *now*, following every change the
 /// host makes while the app runs: a role changed by the record's owner, a grant
 /// revoked, a capability granted. Read-only: only the host changes them.
 ///
 /// A [`PermissionContext`] is a snapshot; code that decides once at launch
-/// what a participant may do goes stale the moment their role changes. Hold
+/// what a member may do goes stale the moment their role changes. Hold
 /// one of these instead and ask again when it matters (every frame is cheap).
 #[derive(Clone)]
 pub struct LivePermissions(SharedPermissions);
@@ -1301,7 +1301,7 @@ impl LivePermissions {
         Self(SharedPermissions::new(context))
     }
 
-    /// May the participant do this, as of now?
+    /// May the member do this, as of now?
     pub fn check(&self, scope: &PermissionScope) -> bool {
         self.0.borrow().check(scope)
     }
@@ -1311,7 +1311,7 @@ impl LivePermissions {
         self.0.borrow().answer(node, kind)
     }
 
-    /// Whether anyone besides the participant belongs to the workspace, its owner
+    /// Whether anyone besides the member belongs to the workspace, its owner
     /// or a member, here now or not: what the workspace holds is shared with them.
     pub fn workspace_has_others(&self) -> bool {
         let context = self.0.borrow();

@@ -80,7 +80,7 @@ pub(crate) struct Run {
         ui_core::history_mode::folder::FolderHistorySource,
         &'static HistoryDefinition,
     )>,
-    /// The names of the participants, as the host's roster has them.
+    /// The names of the members, as the host's roster has them.
     pub(crate) people: super::People,
     /// Opens another record in this window, in a window someone uses.
     pub(crate) opener: Option<super::launch::OpenHere>,
@@ -237,7 +237,7 @@ impl Run {
             .open(arguments))
     }
 
-    pub(crate) fn for_participant(mut self, me: Option<&tilo_resource::MemberId>) -> Self {
+    pub(crate) fn for_member(mut self, me: Option<&tilo_resource::MemberId>) -> Self {
         self.people = super::People::new(me);
         self
     }
@@ -303,7 +303,7 @@ struct Version<R: Resource> {
 /// the view is built.
 pub struct Fixture<R: Resource> {
     scenario: Option<String>,
-    /// The participant the capture's window reads as
+    /// The member the capture's window reads as
     /// ([`RecordEnv::me`](super::RecordEnv::me)), for a scene with
     /// something of their own in it.
     person: tilo_resource::MemberId,
@@ -342,7 +342,7 @@ impl<R: Resource> Fixture<R> {
         self.scenario.as_deref()
     }
 
-    /// Who the capture's window is for: the participant the view reads as
+    /// Who the capture's window is for: the member the view reads as
     /// its own ([`RecordEnv::me`](super::RecordEnv::me)). A scene that holds
     /// something of the person's own — a seat at the table, an issue
     /// assigned to them — stages it for them.

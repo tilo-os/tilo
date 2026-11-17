@@ -143,7 +143,7 @@ impl PeerOutbox<'_> {
         }
     }
     /// Whether the workspace this replica holds retired the write:
-    /// a participant or store refused that very write for good, or holds a
+    /// a key holder or store refused that very write for good, or holds a
     /// durable receipt that names it. Either is the workspace's answer that
     /// the frame is spent, and only those: a refusal that waits for another
     /// write retires nothing.

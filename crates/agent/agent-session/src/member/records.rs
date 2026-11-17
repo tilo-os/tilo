@@ -6,11 +6,11 @@
 use automerge::ReadDoc as _;
 use tilo_peer_state::document_frame::DocumentRoute;
 
-use super::AgentParticipant;
+use super::AgentMember;
 use super::running::imports;
 use crate::planner::Step;
 
-impl AgentParticipant {
+impl AgentMember {
     /// Whether the record `record` of `app` is known to hold more than a
     /// new record of its app starts with. Not known is not written.
     pub(super) fn written(&mut self, app: &str, record: &str) -> bool {

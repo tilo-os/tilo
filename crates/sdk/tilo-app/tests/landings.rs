@@ -1,6 +1,6 @@
 #![allow(clippy::unwrap_used, reason = "test assertions")]
 
-//! Where a participant's action leaves them is the framework's: the surface
+//! Where a presence's action leaves them is the framework's: the surface
 //! is told, and reads it back, instead of keeping its own copy. An effect
 //! told where to act (`#[param(place)]`) acts there and leaves them there.
 
@@ -42,12 +42,12 @@ impl Script {
     }
 }
 
-/// What a participant does at a place in the script.
+/// What a presence does at a place in the script.
 #[derive(Clone, Debug, PartialEq, Eq, Effect)]
 #[effect(operation = "test.script.effects", catalogue = "tests/locales")]
 pub enum ScriptEffect {
     /// Mark a line.
-    #[effect(view, participant)]
+    #[effect(view, presence)]
     Mark {
         #[param(place, "Where to mark; the caret when not given")]
         at: Option<Place>,
@@ -104,15 +104,15 @@ impl ResourceSurface<Script, ScriptEffect> for Page {
         self.live = Some(cx.live());
     }
 
-    fn landed(&mut self, participant: &tilo_actions::ParticipantId, place: &Place) {
+    fn landed(&mut self, presence: &tilo_actions::PresenceId, place: &Place) {
         assert_eq!(
-            self.live.as_ref().unwrap().place_of(participant).as_ref(),
+            self.live.as_ref().unwrap().place_of(presence).as_ref(),
             Some(place)
         );
         LANDED.with(|landed| {
             landed
                 .borrow_mut()
-                .push((participant.as_str().to_owned(), place.clone()));
+                .push((presence.as_str().to_owned(), place.clone()));
         });
     }
 }
@@ -130,11 +130,11 @@ impl ResourceApp for ScriptApp {
 }
 
 #[test]
-fn a_participants_verb_leaves_them_where_it_lands_and_the_surface_is_told() {
+fn a_presences_verb_leaves_them_where_it_lands_and_the_surface_is_told() {
     let mut app = TestApp::<ScriptApp>::new().unwrap();
-    let agent = tilo_actions::ParticipantId::new("agent-1").unwrap();
+    let agent = tilo_actions::PresenceId::new("agent-1").unwrap();
     app.call_by(
-        tilo_actions::ActionInvoker::person("agent").with_participant(agent),
+        tilo_actions::ActionInvoker::person("agent").with_presence(agent),
         "test.script",
         "append",
         serde_json::json!({"text": "Hello"}),
@@ -148,7 +148,7 @@ fn a_participants_verb_leaves_them_where_it_lands_and_the_surface_is_told() {
         [("agent-1".to_owned(), Place::Item(line.to_string()))]
     );
 
-    // The person at the device is nobody's participant: nothing lands.
+    // The person at the device is nobody's presence: nothing lands.
     app.call("append", serde_json::json!({"text": "Mine"}))
         .unwrap();
     app.settle();
@@ -156,7 +156,7 @@ fn a_participants_verb_leaves_them_where_it_lands_and_the_surface_is_told() {
 }
 
 #[test]
-fn an_effect_told_where_to_act_acts_there_and_leaves_its_participant_there() {
+fn an_effect_told_where_to_act_acts_there_and_leaves_its_presence_there() {
     let mut app = TestApp::<ScriptApp>::new().unwrap();
     app.invoke(Script::APPEND.with("Title")).unwrap();
     let line = app.state().lines.ids().next().unwrap().to_string();
@@ -170,14 +170,14 @@ fn an_effect_told_where_to_act_acts_there_and_leaves_its_participant_there() {
         "the place is published as one, not as free text"
     );
 
-    let agent = tilo_actions::ParticipantId::new("agent-2").unwrap();
+    let agent = tilo_actions::PresenceId::new("agent-2").unwrap();
     let place = Place::Range {
         item: line.clone(),
         start: 0,
         end: 5,
     };
     app.call_by(
-        tilo_actions::ActionInvoker::person("agent").with_participant(agent.clone()),
+        tilo_actions::ActionInvoker::person("agent").with_presence(agent.clone()),
         "test.script",
         "mark",
         serde_json::json!({"at": {"item": line, "start": 0, "end": 5}}),
@@ -196,7 +196,7 @@ fn an_effect_told_where_to_act_acts_there_and_leaves_its_participant_there() {
     // Not told where: it acts at the caret and nobody moves.
     let before = LANDED.with(|landed| landed.borrow().len());
     app.call_by(
-        tilo_actions::ActionInvoker::person("agent").with_participant(agent),
+        tilo_actions::ActionInvoker::person("agent").with_presence(agent),
         "test.script",
         "mark",
         serde_json::json!({}),

@@ -35,7 +35,7 @@ use tilo_actions::remote::{
     RemoteActionFrame, RemoteActionMessage, RemoteActionTarget, application_open_target,
 };
 use tilo_agent_session::{
-    AgentControl, AgentIdentity, AgentParticipant, ModelPlanner, ParticipantConfig, Replica, Seed,
+    AgentControl, AgentIdentity, AgentMember, MemberConfig, ModelPlanner, Replica, Seed,
     StepAction, record_provider,
 };
 use tilo_peer_state::document_frame::DocumentRoute;
@@ -50,7 +50,7 @@ use tilo_relay_protocol::WorkspaceId;
 const ATTEMPTS: usize = 40;
 
 struct Agent<'a> {
-    agent: &'a mut AgentParticipant,
+    agent: &'a mut AgentMember,
     route: DocumentRoute,
 }
 
@@ -77,7 +77,7 @@ impl Driveable for Agent<'_> {
 async fn ask(
     browser: &tilo_session_client::Link,
     events: &tilo_session_client::Events,
-    agent: &mut AgentParticipant,
+    agent: &mut AgentMember,
     agent_key: [u8; 32],
     message: RemoteActionMessage,
 ) -> RemoteActionMessage {
@@ -241,8 +241,8 @@ async fn every_web_app_over_the_session() {
         .unwrap();
     let agent_key = agent_device.cert.device_public_key;
     let control = AgentControl::new(delegation.clone());
-    let mut agent = AgentParticipant::start(
-        ParticipantConfig {
+    let mut agent = AgentMember::start(
+        MemberConfig {
             host: host.iroh(),
             host_cert: host_device.cert.clone(),
             workspace: WORKSPACE.into(),
@@ -602,7 +602,7 @@ async fn planning_agent(
     apps: &[&str],
     planner: Box<dyn tilo_agent_session::Planner>,
     store: tilo_content::ContentStore,
-) -> (AgentParticipant, std::sync::Arc<AgentControl>) {
+) -> (AgentMember, std::sync::Arc<AgentControl>) {
     planning_agent_as("planner", root, host, apps, (planner, store)).await
 }
 
@@ -616,7 +616,7 @@ async fn planning_agent_as(
         Box<dyn tilo_agent_session::Planner>,
         tilo_content::ContentStore,
     ),
-) -> (AgentParticipant, std::sync::Arc<AgentControl>) {
+) -> (AgentMember, std::sync::Arc<AgentControl>) {
     planning_agent_labelled((id, id), root, host, apps, planning).await
 }
 
@@ -631,7 +631,7 @@ async fn planning_agent_labelled(
         Box<dyn tilo_agent_session::Planner>,
         tilo_content::ContentStore,
     ),
-) -> (AgentParticipant, std::sync::Arc<AgentControl>) {
+) -> (AgentMember, std::sync::Arc<AgentControl>) {
     let agent_device = enrol(
         root,
         &format!("Agent: {id}"),
@@ -659,8 +659,8 @@ async fn planning_agent_labelled(
         .await
         .unwrap();
     let control = AgentControl::new(delegation.clone());
-    let mut agent = AgentParticipant::start(
-        ParticipantConfig {
+    let mut agent = AgentMember::start(
+        MemberConfig {
             host: host.iroh(),
             host_cert: host_device.cert.clone(),
             workspace: WORKSPACE.into(),
@@ -808,7 +808,7 @@ fn offers(turn: &str, id: &str) -> bool {
 
 /// Run `text` as a task of `agent` to its end.
 fn run_task(
-    agent: &mut AgentParticipant,
+    agent: &mut AgentMember,
     control: &AgentControl,
     text: &str,
 ) -> tilo_relay_protocol::agents::AgentTask {
@@ -1193,11 +1193,7 @@ const FIRST_SHEET: &str = "00000000-0000-4000-8000-000000000001";
 
 /// What the cells `range` of the first sheet of the workbook at `route`
 /// show, row by row.
-fn sheet_rows(
-    agent: &mut AgentParticipant,
-    route: &DocumentRoute,
-    range: &str,
-) -> serde_json::Value {
+fn sheet_rows(agent: &mut AgentMember, route: &DocumentRoute, range: &str) -> serde_json::Value {
     let read = tilo_actions::api::ActionAddress::new("sheets.workbook", "read-cells");
     let arguments = serde_json::json!({"sheet": "Sheet1", "range": range});
     agent
@@ -1778,7 +1774,7 @@ fn last_turn(body: &str) -> String {
 
 /// The plain text of the chat's message parts `agent` holds beside its
 /// chat record at `route`.
-fn chat_parts_text(agent: &AgentParticipant, route: &DocumentRoute) -> String {
+fn chat_parts_text(agent: &AgentMember, route: &DocumentRoute) -> String {
     let Some(chat) = agent.app(route) else {
         return String::new();
     };
@@ -1875,7 +1871,7 @@ async fn a_chat_post_by_another_agent_is_news_with_its_text_and_wakes_a_wait() {
         )
         .unwrap();
     // Posted as a written task, as a step of a plan is.
-    let post = |poster: &mut AgentParticipant, text: &str| {
+    let post = |poster: &mut AgentMember, text: &str| {
         let step = serde_json::json!([{"app": CHAT, "resource": "chat.messages",
             "action": "post", "arguments": {"channel": chat::record::CHAT_CHANNEL, "text": text}}]);
         let task = poster_control.message(&step.to_string()).unwrap();
@@ -1983,7 +1979,7 @@ async fn a_chat_post_by_another_agent_is_news_with_its_text_and_wakes_a_wait() {
 
 /// Post `text` in the chat's `#chat` channel as `poster`, as a written
 /// task runs a plan's step.
-fn post_in_chat(poster: &mut AgentParticipant, control: &AgentControl, text: &str) {
+fn post_in_chat(poster: &mut AgentMember, control: &AgentControl, text: &str) {
     let step = serde_json::json!([{"app": CHAT, "resource": "chat.messages",
         "action": "post", "arguments": {"channel": chat::record::CHAT_CHANNEL, "text": text}}]);
     assert_eq!(
@@ -1994,7 +1990,7 @@ fn post_in_chat(poster: &mut AgentParticipant, control: &AgentControl, text: &st
 
 /// The plain text of the chat record `agent` holds at `route` (its roster,
 /// its channels), without its messages.
-fn chat_record_text(agent: &AgentParticipant, route: &DocumentRoute) -> String {
+fn chat_record_text(agent: &AgentMember, route: &DocumentRoute) -> String {
     agent
         .app(route)
         .and_then(|chat| chat.read(tilo_agent_session::search::plain_text))
@@ -2002,7 +1998,7 @@ fn chat_record_text(agent: &AgentParticipant, route: &DocumentRoute) -> String {
 }
 
 /// Pump every agent of `agents` for `long`, as their loops would run.
-async fn pump_for(agents: &mut [&mut AgentParticipant], long: Duration) {
+async fn pump_for(agents: &mut [&mut AgentMember], long: Duration) {
     let until = Instant::now() + long;
     while Instant::now() < until {
         for agent in agents.iter_mut() {
@@ -2017,9 +2013,9 @@ async fn pump_for(agents: &mut [&mut AgentParticipant], long: Duration) {
 /// agent who has not opened it yet.
 struct RelayWorkspace {
     host: crate::support::TestHost,
-    ana: (AgentParticipant, std::sync::Arc<AgentControl>),
-    rae: (AgentParticipant, std::sync::Arc<AgentControl>),
-    ben: (AgentParticipant, std::sync::Arc<AgentControl>),
+    ana: (AgentMember, std::sync::Arc<AgentControl>),
+    rae: (AgentMember, std::sync::Arc<AgentControl>),
+    ben: (AgentMember, std::sync::Arc<AgentControl>),
     _state: tempfile::TempDir,
 }
 

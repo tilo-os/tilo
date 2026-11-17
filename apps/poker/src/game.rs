@@ -99,7 +99,7 @@ impl Move {
 /// One player's part in a hand.
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct InHand {
-    /// The participant.
+    /// The player.
     pub player: String,
     /// The seat they play from.
     pub seat: u8,
@@ -395,7 +395,7 @@ fn after(at: usize, n: usize) -> usize {
 /// The poker table.
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct Table {
-    /// Everyone sitting at the table, by participant id.
+    /// Everyone sitting at the table, by player id.
     pub players: BTreeMap<String, Player>,
     pub hand: Hand,
     /// The seat the button was on for the last hand.
@@ -594,7 +594,7 @@ impl Table {
         let me = cx
             .author()
             .and_then(MemberId::person_id)
-            .ok_or("only a participant can sit down")?
+            .ok_or("only a player can sit down")?
             .to_owned();
         if self.players.contains_key(&me) {
             return Err("you already have a seat");

@@ -1,9 +1,9 @@
-//! Per-participant view operations: `move-caret`, `select-range`,
+//! Per-presence view operations: `move-caret`, `select-range`,
 //! `select-block`, `select-all` and `find-text`.
 //!
-//! They change only the invoking participant's [`ParticipantView`](crate::actions::participant::ParticipantView) (caret,
+//! They change only the invoking presence's [`PresenceView`](crate::actions::presence::PresenceView) (caret,
 //! selection, Find), never the document; they are published as the
-//! participant view effects of [`crate::effects::WordProcessorEffect`]. The
+//! presence view effects of [`crate::effects::WordProcessorEffect`]. The
 //! request is applied with [`apply`](crate::actions::view_ops::apply) against the current document, which
 //! runs the same [`editing`](crate::actions::editing) function the keyboard/mouse path uses.
 
@@ -11,10 +11,10 @@ use automerge::AutoCommit;
 use serde::{Deserialize, Serialize};
 
 use super::editing::{self, CaretTarget, EditResult, EditingError};
-use super::participant::{ParticipantView, ViewPoint};
+use super::presence::{PresenceView, ViewPoint};
 use super::{RegionKind, SelectionTarget};
 
-/// One view change requested by a participant.
+/// One view change requested by a presence.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case", tag = "op")]
 pub enum ViewOperation {
@@ -27,7 +27,7 @@ pub enum ViewOperation {
 
 /// Apply one view operation to the invoker's view. Pure; returns no
 /// envelopes, only the next view.
-pub fn apply(view: &ParticipantView, doc: &AutoCommit, operation: &ViewOperation) -> EditResult {
+pub fn apply(view: &PresenceView, doc: &AutoCommit, operation: &ViewOperation) -> EditResult {
     match operation {
         ViewOperation::MoveCaret { to } => editing::move_caret(view, doc, to),
         ViewOperation::SelectRange { range } => editing::select_range(view, doc, range),
@@ -37,10 +37,10 @@ pub fn apply(view: &ParticipantView, doc: &AutoCommit, operation: &ViewOperation
     }
 }
 
-/// `go-to` on a search hit or a cell for a participant view: select one exact body range, as the widget's
+/// `go-to` on a search hit or a cell for a presence view: select one exact body range, as the widget's
 /// `navigate_to_range` does for its own window.
 pub fn navigate_to(
-    view: &ParticipantView,
+    view: &PresenceView,
     doc: &AutoCommit,
     block: &str,
     start: usize,

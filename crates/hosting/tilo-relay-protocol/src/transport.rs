@@ -538,7 +538,7 @@ pub enum Envelope {
 
     /// What `participation` shows besides its voice from now on (its
     /// camera, a shared screen). The relay records it on the participation
-    /// and tells the call's participants and the workspace's call list when it
+    /// and tells the call's members and the workspace's call list when it
     /// changed. Not answered.
     VoiceShow {
         workspace_id: WorkspaceId,

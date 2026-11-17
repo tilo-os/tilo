@@ -18,7 +18,7 @@ fn focused_app(text: &str) -> ChatApp {
         mentions: 0,
         archived: false,
         direct: false,
-        participants: Vec::new(),
+        members: Vec::new(),
     }];
     app.rect = Rect::new(0.0, 0.0, 1100.0, 720.0);
     let mut doc = AutoCommit::new();

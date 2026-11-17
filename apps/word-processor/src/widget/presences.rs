@@ -1,24 +1,24 @@
-//! Per-participant Writer views held by one widget: one per invoking participant besides
-//! the window's own caret, keyed by the host's [`ParticipantId`]. They are presentation
-//! state, never written to the document, bounded by [`MAX_PARTICIPANT_VIEWS`] and
-//! [`PARTICIPANT_VIEW_TTL`], and held as Automerge cursors so a concurrent edit moves them
+//! Per-presence Writer views held by one widget: one per invoking presence besides
+//! the window's own caret, keyed by the host's [`PresenceId`]. They are presentation
+//! state, never written to the document, bounded by [`MAX_PRESENCE_VIEWS`] and
+//! [`PRESENCE_VIEW_TTL`], and held as Automerge cursors so a concurrent edit moves them
 //! with its characters.
 
 use std::collections::HashMap;
 
 use automerge::{AutoCommit, Cursor, ObjId, ObjType, ReadDoc, Value};
-use tilo_actions::ParticipantId;
+use tilo_actions::PresenceId;
 use ui::time::{Duration, Instant};
 
 use crate::actions::RegionKind;
-use crate::actions::participant::{FindState, ParticipantView, ViewPoint};
+use crate::actions::presence::{FindState, PresenceView, ViewPoint};
 
-pub(crate) const MAX_PARTICIPANT_VIEWS: usize = 64;
-pub(crate) const PARTICIPANT_VIEW_TTL: Duration = Duration::from_secs(10 * 60);
+pub(crate) const MAX_PRESENCE_VIEWS: usize = 64;
+pub(crate) const PRESENCE_VIEW_TTL: Duration = Duration::from_secs(10 * 60);
 /// The `find-text` argument bound, in bytes.
 pub(crate) use crate::actions::editing::MAX_FIND_QUERY_BYTES;
-/// Upper bound on a participant's display label, in bytes.
-pub(crate) const MAX_PARTICIPANT_LABEL_BYTES: usize = 128;
+/// Upper bound on a presence's display label, in bytes.
+pub(crate) const MAX_PRESENCE_LABEL_BYTES: usize = 128;
 
 #[derive(Debug, Clone)]
 struct Pinned {
@@ -37,35 +37,35 @@ struct Entry {
 }
 
 #[derive(Debug, Default)]
-pub(crate) struct ParticipantViews {
-    entries: HashMap<ParticipantId, Entry>,
-    joining: Vec<(ParticipantId, Instant)>,
-    resolved_at: std::cell::RefCell<HashMap<ParticipantId, DocVersion>>,
+pub(crate) struct PresenceViews {
+    entries: HashMap<PresenceId, Entry>,
+    joining: Vec<(PresenceId, Instant)>,
+    resolved_at: std::cell::RefCell<HashMap<PresenceId, DocVersion>>,
 }
 
 thread_local! {
-    static OUTCOMES: std::cell::RefCell<Vec<(ParticipantId, ParticipantView)>> =
+    static OUTCOMES: std::cell::RefCell<Vec<(PresenceId, PresenceView)>> =
         const { std::cell::RefCell::new(Vec::new()) };
 }
 
-pub(crate) fn note_participant_outcome(next: &ParticipantView) {
-    let Some(participant) = ui::invocation_scope::current_participant() else {
+pub(crate) fn note_presence_outcome(next: &PresenceView) {
+    let Some(presence) = ui::invocation_scope::current_presence() else {
         return;
     };
     OUTCOMES.with_borrow_mut(|outcomes| {
-        outcomes.retain(|(id, _)| *id != participant);
-        if outcomes.len() >= MAX_PARTICIPANT_VIEWS {
+        outcomes.retain(|(id, _)| *id != presence);
+        if outcomes.len() >= MAX_PRESENCE_VIEWS {
             outcomes.remove(0);
         }
-        outcomes.push((participant, next.clone()));
+        outcomes.push((presence, next.clone()));
     });
 }
 
-fn take_outcomes() -> Vec<(ParticipantId, ParticipantView)> {
+fn take_outcomes() -> Vec<(PresenceId, PresenceView)> {
     OUTCOMES.with_borrow_mut(std::mem::take)
 }
 
-impl ParticipantViews {
+impl PresenceViews {
     #[cfg(test)]
     pub(crate) fn len(&self) -> usize {
         self.entries.len()
@@ -76,117 +76,109 @@ impl ParticipantViews {
         self.entries.is_empty()
     }
 
-    pub(crate) fn contains(&self, participant: &ParticipantId) -> bool {
-        self.entries.contains_key(participant)
-            || self.joining.iter().any(|(id, _)| id == participant)
+    pub(crate) fn contains(&self, presence: &PresenceId) -> bool {
+        self.entries.contains_key(presence) || self.joining.iter().any(|(id, _)| id == presence)
     }
 
-    pub(crate) fn join(&mut self, participant: ParticipantId, now: Instant) -> bool {
-        if self.contains(&participant) {
+    pub(crate) fn join(&mut self, presence: PresenceId, now: Instant) -> bool {
+        if self.contains(&presence) {
             return false;
         }
-        if self.joining.len() >= MAX_PARTICIPANT_VIEWS {
+        if self.joining.len() >= MAX_PRESENCE_VIEWS {
             self.joining.remove(0);
         }
-        self.joining.push((participant, now));
+        self.joining.push((presence, now));
         true
     }
 
-    pub(crate) fn note_resolution(&self, participant: &ParticipantId, doc: &AutoCommit) {
+    pub(crate) fn note_resolution(&self, presence: &PresenceId, doc: &AutoCommit) {
         let mut resolved = self.resolved_at.borrow_mut();
-        if resolved.len() >= MAX_PARTICIPANT_VIEWS && !resolved.contains_key(participant) {
+        if resolved.len() >= MAX_PRESENCE_VIEWS && !resolved.contains_key(presence) {
             resolved.clear();
         }
-        resolved.insert(participant.clone(), doc_version(doc));
+        resolved.insert(presence.clone(), doc_version(doc));
     }
 
-    /// Adopt the noted outcomes of participant edits that applied.
+    /// Adopt the noted outcomes of presence edits that applied.
     pub(crate) fn adopt_outcomes(&mut self, doc: &AutoCommit, now: Instant) {
         let outcomes = take_outcomes();
         if outcomes.is_empty() {
             return;
         }
         let heads = doc_version(doc);
-        for (participant, next) in outcomes {
+        for (presence, next) in outcomes {
             let applied = self
                 .resolved_at
                 .borrow_mut()
-                .remove(&participant)
+                .remove(&presence)
                 .is_some_and(|before| before != heads);
             if applied {
-                self.joining.retain(|(id, _)| *id != participant);
-                self.set(&participant, &next, doc, now);
+                self.joining.retain(|(id, _)| *id != presence);
+                self.set(&presence, &next, doc, now);
             }
         }
     }
 
-    pub(crate) fn participants(&self) -> impl Iterator<Item = &ParticipantId> {
+    pub(crate) fn presences(&self) -> impl Iterator<Item = &PresenceId> {
         self.entries.keys()
     }
 
-    pub(crate) fn view(
-        &self,
-        participant: &ParticipantId,
-        doc: &AutoCommit,
-    ) -> Option<ParticipantView> {
-        self.entries
-            .get(participant)
-            .map(|entry| resolve(entry, doc))
+    pub(crate) fn view(&self, presence: &PresenceId, doc: &AutoCommit) -> Option<PresenceView> {
+        self.entries.get(presence).map(|entry| resolve(entry, doc))
     }
 
-    pub(crate) fn label(&self, participant: &ParticipantId) -> Option<&str> {
-        self.entries.get(participant)?.label.as_deref()
+    pub(crate) fn label(&self, presence: &PresenceId) -> Option<&str> {
+        self.entries.get(presence)?.label.as_deref()
     }
 
-    /// Store `view` for `participant`, settled against `doc` as it is now, so call it
-    /// after the participant's envelopes were applied.
+    /// Store `view` for `presence`, settled against `doc` as it is now, so call it
+    /// after the presence's envelopes were applied.
     pub(crate) fn set(
         &mut self,
-        participant: &ParticipantId,
-        view: &ParticipantView,
+        presence: &PresenceId,
+        view: &PresenceView,
         doc: &AutoCommit,
         now: Instant,
     ) {
         let label = self
             .entries
-            .get(participant)
+            .get(presence)
             .and_then(|entry| entry.label.clone());
         let entry = pin(view, label, doc, now);
-        self.entries.insert(participant.clone(), entry);
+        self.entries.insert(presence.clone(), entry);
         self.expire(now);
-        self.evict_lru_except(participant);
+        self.evict_lru_except(presence);
     }
 
-    pub(crate) fn set_label(&mut self, participant: &ParticipantId, label: &str) {
-        if let Some(entry) = self.entries.get_mut(participant) {
-            entry.label = Some(truncate(label, MAX_PARTICIPANT_LABEL_BYTES).to_string());
+    pub(crate) fn set_label(&mut self, presence: &PresenceId, label: &str) {
+        if let Some(entry) = self.entries.get_mut(presence) {
+            entry.label = Some(truncate(label, MAX_PRESENCE_LABEL_BYTES).to_string());
         }
     }
 
     #[cfg(test)]
-    pub(crate) fn touch(&mut self, participant: &ParticipantId, now: Instant) {
-        if let Some(entry) = self.entries.get_mut(participant) {
+    pub(crate) fn touch(&mut self, presence: &PresenceId, now: Instant) {
+        if let Some(entry) = self.entries.get_mut(presence) {
             entry.touched = now;
         }
     }
 
-    pub(crate) fn remove(&mut self, participant: &ParticipantId) -> bool {
+    pub(crate) fn remove(&mut self, presence: &PresenceId) -> bool {
         let joining = self.joining.len();
-        self.joining.retain(|(id, _)| id != participant);
-        self.resolved_at.borrow_mut().remove(participant);
-        self.entries.remove(participant).is_some() || self.joining.len() != joining
+        self.joining.retain(|(id, _)| id != presence);
+        self.resolved_at.borrow_mut().remove(presence);
+        self.entries.remove(presence).is_some() || self.joining.len() != joining
     }
 
     pub(crate) fn expire(&mut self, now: Instant) {
-        self.entries.retain(|_, entry| {
-            now.saturating_duration_since(entry.touched) <= PARTICIPANT_VIEW_TTL
-        });
+        self.entries
+            .retain(|_, entry| now.saturating_duration_since(entry.touched) <= PRESENCE_VIEW_TTL);
         self.joining
-            .retain(|(_, joined)| now.saturating_duration_since(*joined) <= PARTICIPANT_VIEW_TTL);
+            .retain(|(_, joined)| now.saturating_duration_since(*joined) <= PRESENCE_VIEW_TTL);
     }
 
-    fn evict_lru_except(&mut self, keep: &ParticipantId) {
-        while self.entries.len() > MAX_PARTICIPANT_VIEWS {
+    fn evict_lru_except(&mut self, keep: &PresenceId) {
+        while self.entries.len() > MAX_PRESENCE_VIEWS {
             let Some(oldest) = self
                 .entries
                 .iter()
@@ -201,9 +193,9 @@ impl ParticipantViews {
     }
 
     pub(crate) fn rebase(&mut self, doc: &AutoCommit) {
-        for (participant, joined) in std::mem::take(&mut self.joining) {
-            if let Some(view) = ParticipantView::at_document_end(doc) {
-                self.set(&participant, &view, doc, joined);
+        for (presence, joined) in std::mem::take(&mut self.joining) {
+            if let Some(view) = PresenceView::at_document_end(doc) {
+                self.set(&presence, &view, doc, joined);
             }
         }
         if self.entries.is_empty() {
@@ -263,7 +255,7 @@ fn pin_point(doc: &AutoCommit, region: RegionKind, point: ViewPoint) -> Pinned {
     Pinned { point, cursor }
 }
 
-fn pin(view: &ParticipantView, label: Option<String>, doc: &AutoCommit, now: Instant) -> Entry {
+fn pin(view: &PresenceView, label: Option<String>, doc: &AutoCommit, now: Instant) -> Entry {
     let view = view.settle(doc);
     let region = view.region;
     let query = truncate(&view.find.query, MAX_FIND_QUERY_BYTES).to_string();
@@ -288,9 +280,9 @@ fn resolve_point(doc: &AutoCommit, region: RegionKind, pinned: &Pinned) -> Optio
     Some(ViewPoint::new(block.clone(), pinned.point.offset.min(len)))
 }
 
-fn resolve(entry: &Entry, doc: &AutoCommit) -> ParticipantView {
+fn resolve(entry: &Entry, doc: &AutoCommit) -> PresenceView {
     let Some(caret) = resolve_point(doc, entry.region, &entry.caret) else {
-        let mut view = ParticipantView::at_document_end(doc).unwrap_or_default();
+        let mut view = PresenceView::at_document_end(doc).unwrap_or_default();
         view.find = entry.find.clone();
         return view;
     };
@@ -298,7 +290,7 @@ fn resolve(entry: &Entry, doc: &AutoCommit) -> ParticipantView {
         .anchor
         .as_ref()
         .and_then(|anchor| resolve_point(doc, entry.region, anchor));
-    ParticipantView {
+    PresenceView {
         caret,
         anchor,
         region: entry.region,

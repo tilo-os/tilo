@@ -641,7 +641,7 @@ tilo_test_env::scenario! {
 #[effect(operation = "test.shelf.view", catalogue = "tests/locales")]
 pub enum ShelfView {
     /// Type at the invoker's caret.
-    #[effect(edit, participant)]
+    #[effect(edit, member)]
     TypeHere { text: String },
     /// Scroll to the top.
     #[effect(view)]

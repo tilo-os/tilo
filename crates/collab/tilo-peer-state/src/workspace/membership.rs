@@ -10,11 +10,11 @@
 //! is given, so the owner's role holds every part by default, and anyone else
 //! writes what their role and grants let them ([`settings`], [`sandbox`]).
 //!
-//! An admission through an invitation is the inviter's: any participant that
+//! An admission through an invitation is the inviter's: any key holder that
 //! may invite writes it, with the joiner's device and the redemption receipt
 //! carrying the signed invitation, and every receiver checks that invitation
 //! itself ([`invitation_admits`]). A device certified by a member's root is
-//! that member's device: any participant writes it in.
+//! that member's device: any key holder writes it in.
 
 use super::AdmissionFailure;
 use std::collections::BTreeMap;
@@ -559,7 +559,7 @@ fn identities(
             .get(&person)
             .is_some_and(|(_, redeemer)| redeemer == device);
         // A device certified by a member's root is that member's: any
-        // participant writes it in when it first asks.
+        // key holder writes it in when it first asks.
         let further = !before.identities.contains_key(device)
             && held.role_of(&person).is_some()
             && identity.admission.is_none()

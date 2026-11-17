@@ -1,4 +1,4 @@
-//! The content a participant keeps for its workspaces' records, answered to a member that asks for
+//! The content a member keeps for its workspaces' records, answered to a member that asks for
 //! it ([`neighbour_wire::content`]): a page's pictures, an agent's content store.
 
 /// What this device keeps of the content its workspaces' records reference.

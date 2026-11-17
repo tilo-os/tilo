@@ -1,7 +1,7 @@
-//! The agent in the workspace: a certified participant beside browsers and
+//! The agent in the workspace: a certified member beside browsers and
 //! native devices.
 //!
-//! [`AgentParticipant`] holds a certified relay session under the agent's own
+//! [`AgentMember`] holds a certified relay session under the agent's own
 //! device key and joins the workspace's durable and live planes. It holds the
 //! records it works in as replicas of their resources, each in its own
 //! confined app worker ([`ConfinedReplica`]), acts
@@ -12,9 +12,9 @@
 //! focuses, where in it the action left it (the record's own item and
 //! position, [`ConfinedReplica::presence`]), and its own view of itself as an
 //! agent with its label, colour and activity ([`tilo_session_client::saying`]) — so every
-//! participant's window draws it there as it draws any member. Other
-//! participants' presence arrives the same way and is readable through
-//! [`AgentParticipant::remote_members`].
+//! member's window draws it there as it draws any member. Other
+//! members' presence arrives the same way and is readable through
+//! [`AgentMember::remote_members`].
 //!
 //! It never acts while paused or stopped ([`AgentControl`]), never outside
 //! its delegated apps, and never confirms by its own word: a step that asks
@@ -135,13 +135,13 @@ const WORKSPACE_SETTLE: Duration = Duration::from_millis(300);
 /// The longest a finished task waits for the host to acknowledge its
 /// changes before it is reported anyway. A record just made waits for its
 /// channel's keys first, which can take several seconds while the workspace's
-/// participants admit everyone who asked; reported earlier, the next task
+/// members admit everyone who asked; reported earlier, the next task
 /// would not find it.
 const COMMIT_WAIT: Duration = Duration::from_secs(20);
 
 /// The longest a plan waits for the host: the keys of a record it is about,
 /// or a record the workspace sends only once it is opened. Keys no
-/// participant sends (to a device none admits any more) must not hold the
+/// member sends (to a device none admits any more) must not hold the
 /// agent forever: the task is planned with what the workspace shows.
 const KEYS_WAIT: Duration = Duration::from_secs(10);
 
@@ -173,7 +173,7 @@ pub enum Next {
     WhenWoken,
 }
 
-/// What [`AgentParticipant::run_until`] did.
+/// What [`AgentMember::run_until`] did.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Pumped {
     /// Pumps taken.
@@ -185,7 +185,7 @@ pub struct Pumped {
 }
 
 /// Where the agent's session goes.
-pub struct ParticipantConfig {
+pub struct MemberConfig {
     /// The workspace's host.
     pub host: Host,
     /// The host's certificate.
@@ -225,7 +225,7 @@ type WitnessAnswer =
               the workspace was admitted, whether the agent left, and whether the \
               workspace sends its records only when they are opened"
 )]
-pub struct AgentParticipant {
+pub struct AgentMember {
     identity: AgentIdentity,
     control: Arc<AgentControl>,
     peer: Link,
@@ -360,11 +360,11 @@ pub struct AgentParticipant {
     coordinator: Option<decompose::Coordinator>,
 }
 
-impl AgentParticipant {
+impl AgentMember {
     /// Connect as `identity` and join `config.workspace`'s durable and live
     /// planes.
     pub fn start(
-        config: ParticipantConfig,
+        config: MemberConfig,
         identity: AgentIdentity,
         control: Arc<AgentControl>,
         catalogue: AppCatalogue,
@@ -385,7 +385,7 @@ impl AgentParticipant {
     /// memberships and keys, as a device keeps them across a restart, and
     /// opens what the workspace sealed while it was away.
     pub fn start_with_store(
-        config: ParticipantConfig,
+        config: MemberConfig,
         identity: AgentIdentity,
         control: Arc<AgentControl>,
         catalogue: AppCatalogue,
@@ -2334,7 +2334,7 @@ mod tests;
 /// The agent's session with the workspace's host, joined to the workspace and keeping its content,
 /// waking the agent whenever something arrives.
 fn join(
-    config: &ParticipantConfig,
+    config: &MemberConfig,
     identity: &AgentIdentity,
     workspace_id: WorkspaceId,
     store: Arc<dyn tilo_session_client::PeerStore>,

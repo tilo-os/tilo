@@ -12,8 +12,8 @@ use tilo_peer_state::document_frame::DocumentRoute;
 
 use super::parts::is_part;
 use super::running::{Running, step_brief};
-use super::{AgentParticipant, MOST_ARRIVED_CHARS, MOST_NEWS_REPLANS, MOST_WAIT_RECORDS};
-use crate::message_lines::{names_participant, participant_names, shown_line};
+use super::{AgentMember, MOST_ARRIVED_CHARS, MOST_NEWS_REPLANS, MOST_WAIT_RECORDS};
+use crate::message_lines::{member_names, names_member, shown_line};
 use crate::planner::{MESSAGE_APPS, MOST_WAITS, Step, StepAction, Wait};
 use crate::workspace_records::Reading;
 
@@ -221,7 +221,7 @@ pub(super) fn wait_alternatives(wanted: &str) -> Vec<Vec<WaitWord>> {
     alternatives
 }
 
-/// The most records of an app read for the names they give participants.
+/// The most records of an app read for the names they give members.
 const MOST_NAMING_RECORDS: usize = 4;
 
 /// What arrived for a waiting task.
@@ -452,7 +452,7 @@ impl Waiting {
     }
 }
 
-impl AgentParticipant {
+impl AgentMember {
     /// The running task's wait for a message, while it waits.
     pub(super) fn waiting(&self) -> Option<&Waiting> {
         self.running.as_ref()?.waits.current.as_ref()
@@ -554,7 +554,7 @@ impl AgentParticipant {
     }
 
     /// `lines`, messages the record at `route` added, as a person reads
-    /// them: a sender named by participant id is shown by the name its
+    /// them: a sender named by member id is shown by the name its
     /// app's records give it (a chat's roster), unless that is `from`, who
     /// changed the record and is named beside the lines anyway.
     pub(super) fn shown_lines(
@@ -563,10 +563,10 @@ impl AgentParticipant {
         lines: Vec<String>,
         from: Option<&str>,
     ) -> Vec<String> {
-        if !lines.iter().any(|line| names_participant(line)) {
+        if !lines.iter().any(|line| names_member(line)) {
             return lines;
         }
-        let names = self.participant_names(route);
+        let names = self.member_names(route);
         let name = |id: &str| {
             names
                 .get(id)
@@ -577,8 +577,8 @@ impl AgentParticipant {
     }
 
     /// The names the records of `route`'s app in the workspace give
-    /// participants: those open, else those not open.
-    fn participant_names(&self, route: &DocumentRoute) -> HashMap<String, String> {
+    /// members: those open, else those not open.
+    fn member_names(&self, route: &DocumentRoute) -> HashMap<String, String> {
         let naming = |held: &DocumentRoute| {
             held.app_id == route.app_id
                 && held.cluster_id == route.cluster_id
@@ -587,7 +587,7 @@ impl AgentParticipant {
         let mut names = HashMap::new();
         for (held, replica) in &self.apps {
             if naming(held)
-                && let Some(found) = replica.read(participant_names)
+                && let Some(found) = replica.read(member_names)
             {
                 names.extend(found);
             }
@@ -603,7 +603,7 @@ impl AgentParticipant {
             .take(MOST_NAMING_RECORDS)
             .collect();
         for held in unopened {
-            if let Some(found) = self.unopened.read(&held, participant_names) {
+            if let Some(found) = self.unopened.read(&held, member_names) {
                 names.extend(found);
             }
         }

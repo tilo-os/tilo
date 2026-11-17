@@ -233,7 +233,7 @@ impl CollaborationManager {
             SdkConnectSource::Fd(fd),
             SdkIdentitySource::Ready(Some(SdkJoinIdentity {
                 presentation: harness_presentation(),
-                participant_kind: "person",
+                member_kind: "person",
                 signer: harness_document_signer(),
             })),
             route,

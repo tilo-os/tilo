@@ -22,7 +22,7 @@ pub(crate) fn fixture() -> Fixture {
 }
 
 /// A device of a second person, enrolled into a workspace another person governs:
-/// a participant that neither governs nor hosts the workspace.
+/// a key holder that neither governs nor hosts the workspace.
 pub(crate) fn member_device_fixture() -> Fixture {
     fixture_with(
         &SigningKey::from_bytes(&[96; 32]),

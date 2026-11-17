@@ -2,7 +2,7 @@
 //! it.
 //!
 //! A body is paragraphs ([`BlockContent`]) written in the SDK editor: text
-//! with marks, a mention being a marked run naming a participant. Its plain
+//! with marks, a mention being a marked run naming a member. Its plain
 //! text (paragraphs joined by a line break) is what search, notifications,
 //! agents and edit history read, and the byte offsets of its mentions are
 //! offsets into that text. A message written before bodies were rich has
@@ -49,8 +49,8 @@ pub fn legacy(id: &str, text: &str, mentions: &[Mention]) -> Vec<BlockContent> {
 
 /// Who `blocks` mention: every mention mark, at its byte offset in
 /// [`plain_text`], and every `@name` typed by hand that no mark covers,
-/// resolved against `participants` as a hand-typed mention always was.
-pub fn mentions(blocks: &[BlockContent], participants: &[crate::record::Person]) -> Vec<Mention> {
+/// resolved against `members` as a hand-typed mention always was.
+pub fn mentions(blocks: &[BlockContent], members: &[crate::record::Person]) -> Vec<Mention> {
     let mut found = Vec::new();
     let mut offset = 0usize;
     for block in blocks {
@@ -70,7 +70,7 @@ pub fn mentions(blocks: &[BlockContent], participants: &[crate::record::Person])
         offset = offset.saturating_add(block.text.len()).saturating_add(1);
     }
     let text = plain_text(blocks);
-    for typed in crate::mention::resolve(&text, participants) {
+    for typed in crate::mention::resolve(&text, members) {
         let overlaps = found
             .iter()
             .any(|marked| typed.start < marked.end() && marked.start < typed.end());

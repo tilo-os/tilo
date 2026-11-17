@@ -1,8 +1,8 @@
-//! Joins that name a participant: an Agent's exact identity, and a
+//! Joins that name a member: an Agent's exact identity, and a
 //! Person's presentation handle that never becomes their actor.
 use super::*;
 
-struct ParticipantJoinFixture {
+struct MemberJoinFixture {
     state: Arc<AppBrokerState>,
     fanout: Arc<FanoutState>,
     client: runtime_collab::CollabClient,
@@ -11,7 +11,7 @@ struct ParticipantJoinFixture {
     actor: String,
 }
 
-impl ParticipantJoinFixture {
+impl MemberJoinFixture {
     fn new(agents: &[String]) -> Self {
         let root = SigningKey::from_bytes(&[101; 32]);
         let device = SigningKey::from_bytes(&[102; 32]);
@@ -73,7 +73,7 @@ async fn signed_agent_join_preserves_exact_ascii_and_multibyte_identity() {
         .run_until(async {
             let ascii = "a".repeat(128);
             let multibyte = "\u{e9}".repeat(64);
-            let fixture = ParticipantJoinFixture::new(&[
+            let fixture = MemberJoinFixture::new(&[
                 ascii.clone(),
                 multibyte.clone(),
                 // The old display-name truncation would silently select this
@@ -126,11 +126,8 @@ async fn signed_agent_join_refuses_invalid_ids_without_display_prefix_fallback()
     // app-authorship admission there (`spawn_local`).
     tokio::task::LocalSet::new()
         .run_until(async {
-            let fixture = ParticipantJoinFixture::new(&[
-                "a".repeat(64),
-                "a".repeat(128),
-                "\u{e9}".repeat(64),
-            ]);
+            let fixture =
+                MemberJoinFixture::new(&["a".repeat(64), "a".repeat(128), "\u{e9}".repeat(64)]);
             for invalid in [
                 "a".repeat(129),
                 "\u{e9}".repeat(65),

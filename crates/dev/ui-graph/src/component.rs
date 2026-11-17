@@ -403,7 +403,7 @@ pub enum Type {
     Int,
     Float,
     Bool,
-    /// A participant: a person or an agent.
+    /// A member: a person or an agent.
     Actor,
     /// A resource the component presents.
     Resource,
@@ -480,7 +480,7 @@ pub enum Value {
     Int(i64),
     Float(f64),
     Bool(bool),
-    /// A participant: their identity, and what the room calls them.
+    /// A member: their identity, and what the room calls them.
     Actor {
         identity: String,
         name: String,

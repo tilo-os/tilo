@@ -47,6 +47,6 @@ search filters and sort, views (to be published as `ResourceViewSpec`).
    only so far). Verb parameters carry it too (`JsonSchema::field_type`, derived); a parameter
    declared only by its schema is read from the schema.
 
-Native side, independent of tilolang: the local agent participant invents its standing instead
+Native side, independent of tilolang: the local agent member invents its standing instead
 of using the workspace's grants and keeps no ledger, and the "ask only for a direct person" rule has
 four copies. Those are fixed in the native code, since step 2 lands on top of them.

@@ -11,7 +11,7 @@ use collab_types::DocumentMutation;
 use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_session_client::Outbox;
 
-use super::AgentParticipant;
+use super::AgentMember;
 
 /// Whether the wire record `record` is a part of a chain, held beside its
 /// app's record rather than opened.
@@ -19,7 +19,7 @@ pub(crate) fn is_part(record: &str) -> bool {
     ui::record::DocumentId::parse(record).is_some_and(|id| id.chain_part().is_some())
 }
 
-impl AgentParticipant {
+impl AgentMember {
     /// Merge `mutation` of the part at `route` into the open record that
     /// keeps it. `None` when no open record of its app holds it (it waits
     /// with the unopened records then); else the holder's route.

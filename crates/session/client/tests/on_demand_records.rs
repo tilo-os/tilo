@@ -188,7 +188,7 @@ async fn a_join_replays_eager_records_and_a_page_opens_the_rest() {
         .send(Cmd::OpenRecordAt(workspace(), archive.clone()))
         .unwrap();
     // The host's answer comes once it sent the history; the history opens
-    // once a participant admitted the page to each record.
+    // once a member admitted the page to each record.
     until("the opened records", &mut at_reader, |received| {
         received.opened.len() == 2 && received.of(&part(0)) > 0 && received.of(&archive) > 0
     })
@@ -216,7 +216,7 @@ async fn a_join_replays_eager_records_and_a_page_opens_the_rest() {
         .unwrap();
     durable(&author).await;
     for (page, received) in [(&early, &mut at_early), (&reader, &mut at_reader)] {
-        // The new part opens once a participant admitted the page to it; a
+        // The new part opens once a member admitted the page to it; a
         // change that reached a page it should not have would have opened
         // by then too.
         until("the marker and the new part", received, |received| {

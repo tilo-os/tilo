@@ -235,7 +235,7 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase launch_actions_are_the_participants_own_undoable_edits;
+    phase launch_actions_are_the_members_own_undoable_edits;
     {
         let mut app = TestApp::<SketchApp>::launched(&["/pictures/harbour.png"]).unwrap();
         app.harness().relayout();

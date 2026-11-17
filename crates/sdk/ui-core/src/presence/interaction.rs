@@ -1232,7 +1232,7 @@ fn actor_label(presence: &PresenceCtx, interaction: &SemanticInteraction) -> Str
         (Some(member), Some(name)) if !member.is_person() => presence.kind_label(member, name),
         (Some(_), Some(name)) => name.to_owned(),
         (None, name) => crate::i18n::widget_format(
-            "participant-shortcut",
+            "member-shortcut",
             &[("name", name.unwrap_or_default().into())],
         ),
         (Some(member), None) if !member.is_person() => {
@@ -2273,8 +2273,8 @@ mod tests {
                 presence.names.insert(user.clone(), "Quill".into());
                 assert_eq!(actor_label(&presence, &agent), "Quill · Agent");
             }
-            // A roster that knows a participant only by its key hands that key
-            // back as its name; the card names the kind of participant instead.
+            // A roster that knows a member only by its key hands that key
+            // back as its name; the card names the kind of member instead.
             {
                 let key = "a4b05b334073f7dc3c31652f1b0143be8b7f5e0c2d9a1f6b3e4c5d6a7b8c9d0e";
                 let user = MemberId::person(key);

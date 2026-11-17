@@ -27,7 +27,7 @@ use tilo_actions::remote::{
 use tilo_actions::{ActionFailure, ActionOutput, PROMPTED_PARAM};
 use tilo_peer_state::document_frame::DocumentRoute;
 
-use super::AgentParticipant;
+use super::AgentMember;
 
 pub use tilo_actions::remote::RECORD_PROVIDER;
 
@@ -110,7 +110,7 @@ pub(crate) fn open_row_needing(
 #[derive(Default)]
 pub(super) struct Answered(VecDeque<(InvokeRequest, InvocationReceipt)>);
 
-impl AgentParticipant {
+impl AgentMember {
     /// Answer one remote-action frame `from` sent, if it is a request.
     #[expect(
         clippy::too_many_lines,

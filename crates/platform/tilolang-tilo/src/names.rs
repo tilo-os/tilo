@@ -1,10 +1,10 @@
-//! How a view names the workspace's participants.
+//! How a view names the workspace's members.
 //!
 //! The record holds ids, the same on every replica; the workspace's member list knows the names:
-//! what it calls each participant, the instance's own person among them. A tilolang host names
+//! what it calls each member, the instance's own person among them. A tilolang host names
 //! people by the list its instance's connection heard last ([`Told`]).
 //!
-//! Naming is by what a participant is ([`actor_name`]): a person by their name, an app by its own
+//! Naming is by what a member is ([`actor_name`]): a person by their name, an app by its own
 //! name, an agent by the name it goes by. A history row, a presence mark and a catch-up line say
 //! who acted, never an internal id and never part of one.
 
@@ -12,7 +12,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use collaboration::history_source::authors::{ParticipantNames, UNKNOWN_AUTHOR_NAME, name_words};
+use collaboration::history_source::authors::{MemberNames, UNKNOWN_AUTHOR_NAME, name_words};
 
 use crate::runtime::ids::MemberId;
 use crate::runtime::{Actor, NameHost};
@@ -31,7 +31,7 @@ pub fn unnamed(who: &Actor) -> String {
 /// person or agent a scenario named by that name, an app acting by itself (one of its triggers,
 /// or an update to a later build) as the app, and anyone else as `names` calls them.
 #[must_use]
-pub fn named(who: &Actor, names: &dyn ParticipantNames) -> String {
+pub fn named(who: &Actor, names: &dyn MemberNames) -> String {
     match who {
         Actor::Member(MemberId::Person(id)) => id.strip_prefix(SCENARIO).map_or_else(
             || {
@@ -63,12 +63,12 @@ pub fn installed(who: &Actor) -> String {
 /// The names the session's catalogue gives, and no roster of its own.
 struct Installed;
 
-impl ParticipantNames for Installed {}
+impl MemberNames for Installed {}
 
-/// What a participant reads as when the reader's own process knows no name for them.
+/// What a member reads as when the reader's own process knows no name for them.
 pub struct Unnamed;
 
-impl ParticipantNames for Unnamed {
+impl MemberNames for Unnamed {
     /// An agent by its name, and that it is one: a row of history, a face and a mark say so
     /// beside a person's changes.
     fn agent(&self, name: &str) -> String {
@@ -82,7 +82,7 @@ impl NameHost for Unnamed {
     }
 }
 
-/// What the member list calls the participants.
+/// What the member list calls the members.
 #[derive(Default, PartialEq, Eq)]
 struct Said {
     me: Option<String>,
@@ -166,20 +166,16 @@ mod tests {
     /// What a window with nobody named yet calls each actor: by what they are, never by part
     /// of a key.
     #[test]
-    fn a_participant_nobody_named_is_named_by_what_they_are_never_by_part_of_their_id() {
+    fn a_member_nobody_named_is_named_by_what_they_are_never_by_part_of_their_id() {
         let told = Told::new("me-id", Rc::new(Unnamed));
         let rows: &[(Actor, &str, &str)] = &[
             (agent("planner"), "Planner (agent)", "an agent by its name"),
             (
                 person("0123456789abcdef0123456789abcdef"),
-                "Unknown participant",
+                "Unknown member",
                 "a key nobody named is never shown, in full or cut short",
             ),
-            (
-                person("tomas"),
-                "Unknown participant",
-                "a person nobody named",
-            ),
+            (person("tomas"), "Unknown member", "a person nobody named"),
             (person("scenario:Mia"), "Mia", "a scenario's sample person"),
             (
                 agent("scenario:Scout"),
@@ -195,7 +191,7 @@ mod tests {
             ),
             (
                 agent(""),
-                "Unknown participant (agent)",
+                "Unknown member (agent)",
                 "an agent that gave no name still reads as an agent",
             ),
             (
@@ -225,12 +221,12 @@ mod tests {
     }
 
     #[test]
-    fn a_participant_is_named_as_the_window_said_and_by_what_they_are_when_nobody_did() {
+    fn a_member_is_named_as_the_window_said_and_by_what_they_are_when_nobody_did() {
         let id = "95522b97c3d1e0f4a7b8c9d0e1f2a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4";
         let told = Told::new(id, Rc::new(Unnamed));
         assert_eq!(
             told.name(&person(id)),
-            "Unknown participant",
+            "Unknown member",
             "a key nobody named is never shown, in full or cut short"
         );
         assert_eq!(told.name(&agent("planner")), "Planner (agent)");

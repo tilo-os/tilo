@@ -29,8 +29,8 @@ use crate::common::{Body as _, Driveable};
 use collab_types::DocumentMutation;
 use tilo_actions::api::ActionDescriptor;
 use tilo_agent_session::{
-    AgentControl, AgentIdentity, AgentParticipant, ParticipantConfig, PlanContext, Planner,
-    Replica, ReplicaActor, Seed, Step, StepAction,
+    AgentControl, AgentIdentity, AgentMember, MemberConfig, PlanContext, Planner, Replica,
+    ReplicaActor, Seed, Step, StepAction,
 };
 use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_relay_protocol::WorkspaceId;
@@ -259,8 +259,8 @@ async fn an_agent_waits_for_a_public_workspaces_records_and_never_founds_them() 
         .unwrap();
     let planned = std::sync::Arc::new(Mutex::new(Vec::new()));
     let control = AgentControl::new(delegation.clone());
-    let mut agent = AgentParticipant::start(
-        ParticipantConfig {
+    let mut agent = AgentMember::start(
+        MemberConfig {
             host: host.iroh(),
             host_cert: host_device.cert.clone(),
             workspace: workspace.clone(),
@@ -414,7 +414,7 @@ async fn an_agent_waits_for_a_public_workspaces_records_and_never_founds_them() 
 }
 
 /// Run the agent's current task to its end.
-fn run_task(agent: &mut AgentParticipant, control: &AgentControl) {
+fn run_task(agent: &mut AgentMember, control: &AgentControl) {
     let deadline = tilo_test_env::hang_deadline();
     agent.run_until(Some(deadline), |_| {
         control

@@ -1,12 +1,12 @@
-//! Per-participant views of one open artwork: one per remote participant,
-//! beside this screen's own. A participant's presence is published under its
+//! Per-presence views of one open artwork: one per remote presence,
+//! beside this screen's own. A presence's selection is published under its
 //! own identity, so what one has selected never shapes another's view.
 //!
-//! Where a participant is, is said in the artwork's own terms: a range over
+//! Where a presence is, is said in the artwork's own terms: a range over
 //! its marks, in the order every member holds them, so a peer's
 //! selection resolves on the other machine without coordinates.
 //!
-//! - **Keyed by [`ParticipantId`]**, which the host derives from the
+//! - **Keyed by [`PresenceId`]**, which the host derives from the
 //!   authenticated invoker: the view routes, it is never authority.
 //! - **Bounded**: at most [`MAX_PEER_VIEWS`] views (least recently used
 //!   evicted first), dropped after [`PEER_VIEW_TTL`] idle.
@@ -15,7 +15,7 @@
 use std::collections::HashMap;
 use std::ops::Range;
 
-use ui::tilo_actions::ParticipantId;
+use ui::tilo_actions::PresenceId;
 use ui::time::{Duration, Instant};
 
 use crate::model::Artwork;
@@ -23,11 +23,11 @@ use crate::model::Artwork;
 pub const MAX_PEER_VIEWS: usize = 64;
 pub const PEER_VIEW_TTL: Duration = Duration::from_secs(10 * 60);
 pub const MAX_PEER_LABEL_BYTES: usize = 128;
-/// The item a participant's place in an artwork is named by: the artwork
+/// The item a presence's place in an artwork is named by: the artwork
 /// itself. A [`Place`](ui::tilo_resource::Place) range over it counts marks.
 pub const SELECTION_ITEM: &str = "selection";
 
-/// Where one participant is in the artwork: marks `start..end`, in the order
+/// Where one presence is in the artwork: marks `start..end`, in the order
 /// the artwork keeps them (bottom to top).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct PeerView {
@@ -67,25 +67,25 @@ struct Entry {
     touched: Instant,
 }
 
-/// The participant views of one canvas.
+/// The presence views of one canvas.
 #[derive(Debug, Default)]
 pub struct PeerViews {
-    entries: HashMap<ParticipantId, Entry>,
+    entries: HashMap<PresenceId, Entry>,
 }
 
 impl PeerViews {
-    pub fn contains(&self, participant: &ParticipantId) -> bool {
-        self.entries.contains_key(participant)
+    pub fn contains(&self, presence: &PresenceId) -> bool {
+        self.entries.contains_key(presence)
     }
 
-    /// A participant joined with an empty selection; `true` when it is new.
-    pub fn join(&mut self, participant: &ParticipantId, now: Instant) -> bool {
-        if self.entries.contains_key(participant) {
+    /// A presence joined with an empty selection; `true` when it is new.
+    pub fn join(&mut self, presence: &PresenceId, now: Instant) -> bool {
+        if self.entries.contains_key(presence) {
             return false;
         }
         self.evict(now);
         self.entries.insert(
-            participant.clone(),
+            presence.clone(),
             Entry {
                 view: PeerView::default(),
                 label: None,
@@ -95,27 +95,27 @@ impl PeerViews {
         true
     }
 
-    pub fn leave(&mut self, participant: &ParticipantId) {
-        self.entries.remove(participant);
+    pub fn leave(&mut self, presence: &PresenceId) {
+        self.entries.remove(presence);
     }
 
-    pub fn set_label(&mut self, participant: &ParticipantId, label: &str) {
+    pub fn set_label(&mut self, presence: &PresenceId, label: &str) {
         let label = truncate(label);
-        if let Some(entry) = self.entries.get_mut(participant) {
+        if let Some(entry) = self.entries.get_mut(presence) {
             entry.label = Some(label);
         }
     }
 
-    pub fn view(&self, participant: &ParticipantId) -> Option<&PeerView> {
-        self.entries.get(participant).map(|entry| &entry.view)
+    pub fn view(&self, presence: &PresenceId) -> Option<&PeerView> {
+        self.entries.get(presence).map(|entry| &entry.view)
     }
 
-    /// Store `participant`'s view. `false` when it holds no view here — an
+    /// Store `presence`'s view. `false` when it holds no view here — an
     /// expired binding, or one that was never joined — in which case nothing
     /// is created: a place nobody's view asked for is not presence.
-    pub fn set(&mut self, participant: &ParticipantId, view: PeerView, now: Instant) -> bool {
+    pub fn set(&mut self, presence: &PresenceId, view: PeerView, now: Instant) -> bool {
         self.evict(now);
-        let Some(entry) = self.entries.get_mut(participant) else {
+        let Some(entry) = self.entries.get_mut(presence) else {
             return false;
         };
         entry.view = view;
@@ -133,7 +133,7 @@ impl PeerViews {
                 .entries
                 .iter()
                 .min_by_key(|(_, entry)| entry.touched)
-                .map(|(participant, _)| participant.clone())
+                .map(|(presence, _)| presence.clone())
             else {
                 break;
             };
@@ -141,10 +141,10 @@ impl PeerViews {
         }
     }
 
-    pub fn iter(&self) -> impl Iterator<Item = (&ParticipantId, &PeerView, Option<&str>)> {
+    pub fn iter(&self) -> impl Iterator<Item = (&PresenceId, &PeerView, Option<&str>)> {
         self.entries
             .iter()
-            .map(|(participant, entry)| (participant, &entry.view, entry.label.as_deref()))
+            .map(|(presence, entry)| (presence, &entry.view, entry.label.as_deref()))
     }
 
     pub fn len(&self) -> usize {
@@ -173,8 +173,8 @@ fn truncate(label: &str) -> String {
 mod tests {
     use super::*;
 
-    fn participant(id: &str) -> ParticipantId {
-        ParticipantId::new(id).unwrap()
+    fn presence(id: &str) -> PresenceId {
+        PresenceId::new(id).unwrap()
     }
 
     fn art() -> Artwork {
@@ -187,7 +187,7 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        /// The views participants hold of an artwork.
+        /// The views presences hold of an artwork.
         /// Each case was a test of its own and builds its own fixture; a failure names its phase.
         fn a_peer_view_is_joined_selects_and_keeps_its_bounds;
 
@@ -195,7 +195,7 @@ mod tests {
         {
             let now = Instant::now();
             let mut views = PeerViews::default();
-            let task = participant("agent-task:one");
+            let task = presence("agent-task:one");
             assert!(views.join(&task, now));
             assert!(!views.join(&task, now), "joining twice changes nothing");
             assert_eq!(views.view(&task), Some(&PeerView::default()));
@@ -224,7 +224,7 @@ mod tests {
         {
             let now = Instant::now();
             let mut views = PeerViews::default();
-            let stray = participant("agent-task:stray");
+            let stray = presence("agent-task:stray");
             assert!(!views.set(&stray, PeerView::new(0, 1, 4), now));
             assert!(views.is_empty(), "nothing is created for it");
         }
@@ -233,9 +233,9 @@ mod tests {
         {
             let now = Instant::now();
             let mut views = PeerViews::default();
-            let stale = participant("agent-task:stale");
+            let stale = presence("agent-task:stale");
             views.join(&stale, now.checked_sub(PEER_VIEW_TTL).unwrap());
-            views.join(&participant("agent-task:fresh"), now);
+            views.join(&presence("agent-task:fresh"), now);
             views.evict(now);
             assert!(!views.contains(&stale));
             assert!(
@@ -244,11 +244,11 @@ mod tests {
             );
 
             for index in 0..MAX_PEER_VIEWS {
-                views.join(&participant(&format!("agent-task:{index:03}")), now);
+                views.join(&presence(&format!("agent-task:{index:03}")), now);
             }
             assert!(views.len() <= MAX_PEER_VIEWS, "{} views held", views.len());
             assert!(
-                views.contains(&participant(&format!(
+                views.contains(&presence(&format!(
                     "agent-task:{:03}",
                     MAX_PEER_VIEWS - 1
                 ))),
@@ -260,7 +260,7 @@ mod tests {
         {
             let now = Instant::now();
             let mut views = PeerViews::default();
-            let task = participant("agent-task:one");
+            let task = presence("agent-task:one");
             views.join(&task, now);
             views.set_label(&task, &"é".repeat(MAX_PEER_LABEL_BYTES));
             let (_, _, label) = views.iter().next().unwrap();

@@ -180,7 +180,7 @@ fn the_loaned_record_reads_at_committed_heads_and_nothing_else_discloses() {
         address: tilo_actions::ActionAddress::new("fixture.document", "read"),
         argument: None,
         actor: tilo_actions::Actor::Member(tilo_actions::MemberId::person("original-reader")),
-        participant: None,
+        presence: None,
     };
     let lease = crate::invocation_scope::PublishedInvocationLease::new(
         request,

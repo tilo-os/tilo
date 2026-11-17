@@ -220,7 +220,7 @@ pub struct Instance {
     pub workspace: String,
     /// The window's instance: the tab it takes.
     pub instance: u64,
-    /// The participant at the window, whose steps its undo takes back.
+    /// The member at the window, whose steps its undo takes back.
     pub person: String,
     /// The host's end of the window's patch connection.
     pub patch: OwnedFd,

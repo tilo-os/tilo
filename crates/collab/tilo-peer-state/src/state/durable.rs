@@ -137,7 +137,7 @@ impl StatePeer {
         Ok(Some((receipt, accepted)))
     }
     /// The workspace's durable receipt for a route, as governance holds it:
-    /// written by any participant or store whose device this replica knows.
+    /// written by any key holder or store whose device this replica knows.
     pub(super) fn durable_receipt(
         &self,
         app: &str,

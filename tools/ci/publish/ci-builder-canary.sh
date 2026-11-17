@@ -17,7 +17,7 @@
 #
 # `browser` reads the image and a few files, so t keeps its verdict until the image changes and
 # every publication waits for it. `browser-tests` compiles the browser peer and the agent
-# participant, which reads nearly every source file and so moved with every commit: it runs on
+# session, which reads nearly every source file and so moved with every commit: it runs on
 # release candidates, when asked and when t has room. The same tests run on every commit in the
 # pinned builder (`test/tilo-session-client`, `test-x86_64/tilo-agent-session`), so what the
 # candidate adds is the image alone.

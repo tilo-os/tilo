@@ -7660,7 +7660,7 @@
               "null"
             ]
           },
-          "participants": {
+          "members": {
             "items": {
               "oneOf": [
                 {

@@ -49,7 +49,7 @@ use tilo_lock::MutexRecover as _;
 use tilo_peer_state::document_frame::DocumentRoute;
 
 use super::{Job, Needs, Shared, Worker, caller_context, invoke_arguments, take_all};
-use crate::participant::actions::record_of;
+use crate::member::actions::record_of;
 use tilo_relay_protocol::WorkspaceId;
 
 /// Terminal's app id: its session records are what the host runs.

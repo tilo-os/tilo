@@ -2210,7 +2210,7 @@ fn delivered_times(fixture: &mut Fixture) -> Vec<u64> {
     times
 }
 
-/// Any participant of a channel admits a device asking for it, so a member's
+/// Any key holder of a channel admits a device asking for it, so a member's
 /// access request reaches every member, whether this relay governs the workspace
 /// or not.
 #[tokio::test]

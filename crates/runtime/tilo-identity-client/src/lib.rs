@@ -183,7 +183,7 @@ pub mod wire {
     #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
     pub enum KeyAccess {
         Ready,
-        /// Asked the channel's participants for access and not admitted yet.
+        /// Asked the channel's key holders for access and not admitted yet.
         Waiting,
         Removed,
         /// The channel cannot be provisioned on this device right now.

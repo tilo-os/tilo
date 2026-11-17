@@ -914,7 +914,7 @@ impl Core {
     }
 
     /// Note that the code running shows something only the window knows, when it draws a view: a
-    /// participant's name, a day or a time of day in the person's formats, a word in the language
+    /// member's name, a day or a time of day in the person's formats, a word in the language
     /// their window speaks. The boundary runs again when any of them changes, and no other does.
     pub(crate) fn read_person(&self) {
         self.in_view(crate::handles::ViewState::read_person);

@@ -526,7 +526,7 @@ pub(super) fn publish_changes_for(
 /// The relay's compactor folds the sealed history of the channels this
 /// relay takes part in with their keys, so a newcomer replays one snapshot and
 /// the writes since rather than every write the workspace's members ever made.
-impl crate::compaction::ParticipantKeys for Workspaces {
+impl crate::compaction::GroupKeys for Workspaces {
     fn keys<'a>(
         &'a self,
         route: &'a crate::compaction::Route,

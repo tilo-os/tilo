@@ -1690,7 +1690,7 @@ impl Widget for TileHost {
         dyn crate::widget::Continuable,
         dyn crate::widget::FloatingSurfaceProvider,
         dyn crate::widget::AudiencePresentationProvider,
-        dyn crate::collaboration::participants::CollaborationTopology,
+        dyn crate::collaboration::presences::CollaborationTopology,
         dyn crate::history_mode::capability::FrameworkHistoryTopology,
         dyn crate::widget::controls::ActionControls,
         dyn crate::search::capability::SearchSource,
@@ -2702,7 +2702,7 @@ impl crate::history_mode::capability::FrameworkHistoryTopology for TileHost {
     }
 }
 
-impl crate::collaboration::participants::CollaborationTopology for TileHost {
+impl crate::collaboration::presences::CollaborationTopology for TileHost {
     fn collaboration_children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
         match &mut self.content {
             TileContent::App(live) => vec![live.as_mut()],

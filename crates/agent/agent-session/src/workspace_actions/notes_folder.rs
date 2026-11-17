@@ -36,7 +36,7 @@ use tilo_relay_protocol::WorkspaceId;
 use tilo_lock::MutexRecover as _;
 
 use super::{Needs, Worker};
-use crate::participant::actions::record_provider;
+use crate::member::actions::record_provider;
 
 /// The app whose workspace record the notebook is.
 pub use ui::apps::NOTES as NOTES_APP;
@@ -517,10 +517,8 @@ impl Worker {
                 }
                 Err(error) => {
                     let error = match &error {
-                        crate::participant::actions::Outcome::Rejected(error) => error.to_string(),
-                        crate::participant::actions::Outcome::Failed(error) => {
-                            error.message.clone()
-                        }
+                        crate::member::actions::Outcome::Rejected(error) => error.to_string(),
+                        crate::member::actions::Outcome::Failed(error) => error.message.clone(),
                     };
                     tracing::warn!(page = %edit.page, action = edit.action, %error,
                         "a note file's change was not applied to its note");

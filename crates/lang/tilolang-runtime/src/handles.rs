@@ -143,7 +143,7 @@ pub struct ViewState {
     pub state_seen: Vec<(StateKey, Value)>,
     /// Every `space` field read, with the value it had.
     pub space_reads: Vec<(String, f64)>,
-    /// Whether it showed anything only the window knows: what it calls a participant
+    /// Whether it showed anything only the window knows: what it calls a member
     /// (`who.name()`), a day or a time of day in the person's formats, a word in the language
     /// their window speaks. A boundary runs again when the person's environment changes, and no
     /// other does.
@@ -191,7 +191,7 @@ impl ViewState {
         }
     }
 
-    /// Note that this run showed something only the window knows: a participant's name, a day or
+    /// Note that this run showed something only the window knows: a member's name, a day or
     /// a time of day in the person's formats, a word in the language their window speaks.
     pub(crate) fn read_person(&mut self) {
         self.person_reads = true;

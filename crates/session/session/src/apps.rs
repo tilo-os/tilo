@@ -34,7 +34,7 @@ mod launch;
 use crate::agents::Kept;
 use crate::search::AppActions;
 
-/// The agent the person's workspace records name: a participant without a window, which the session
+/// The agent the person's workspace records name: a member without a window, which the session
 /// runs for the person who keeps it.
 use ui::apps::AGENT as AGENT_PACKAGE;
 

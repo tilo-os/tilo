@@ -1,9 +1,9 @@
-//! Who is reading and writing: the participant a view is for.
+//! Who is reading and writing: the member a view is for.
 //!
 //! The id is the one the host gives the view (`ViewCx::me`), the same id
-//! every action that participant takes is signed with, so authorship,
+//! every action that member takes is signed with, so authorship,
 //! reactions and read watermarks are attributed alike on every replica. What
-//! is resolved here is only how to show that participant before the workspace
+//! is resolved here is only how to show that member before the workspace
 //! names them: a display name, a monogram and a colour.
 //!
 //! The demo used by screenshots and tests reads as [`LocalIdentity::demo`],
@@ -16,7 +16,7 @@ use crate::model;
 /// What the demo's own person is called: a name, like anyone else's.
 pub const DEMO_NAME: &str = "Quinn Davis";
 
-/// The participant a view is for, as it is shown.
+/// The member a view is for, as it is shown.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LocalIdentity {
     pub id: MemberId,
@@ -36,9 +36,9 @@ impl LocalIdentity {
         }
     }
 
-    /// Participant `id` as this device shows its own person: the display
+    /// Member `id` as this device shows its own person: the display
     /// name of the person's public identity record.
-    pub fn for_participant(id: &MemberId) -> Self {
+    pub fn for_member(id: &MemberId) -> Self {
         let name = ui::local_identity::own_name().unwrap_or_else(|| unnamed_label(id));
         Self {
             initials: initials_of(&name),
@@ -62,12 +62,9 @@ fn fnv1a(bytes: &[u8]) -> u64 {
     std::hash::Hasher::finish(&hasher)
 }
 
-/// Distinguish unnamed participants without exposing their complete routing id.
+/// Distinguish unnamed members without exposing their complete routing id.
 pub(crate) fn unnamed_label(id: &MemberId) -> String {
-    crate::i18n::t_args(
-        "chat-person-unnamed",
-        &[("tag", participant_tag(id).into())],
-    )
+    crate::i18n::t_args("chat-person-unnamed", &[("tag", member_tag(id).into())])
 }
 
 /// Shared person rows cannot use the current-reader label without an identity tag.
@@ -78,10 +75,7 @@ pub(crate) fn shared_name_label(id: &MemberId, name: &str) -> String {
     } else if name.trim() == "You" {
         crate::i18n::t_args(
             "chat-person-relative-name",
-            &[
-                ("name", name.trim().into()),
-                ("tag", participant_tag(id).into()),
-            ],
+            &[("name", name.trim().into()), ("tag", member_tag(id).into())],
         )
     } else {
         name.to_owned()
@@ -126,7 +120,7 @@ pub(crate) fn acting_label(
     )
 }
 
-fn participant_tag(member: &MemberId) -> String {
+fn member_tag(member: &MemberId) -> String {
     let id = member.id();
     let body = id.rsplit(['@', ':']).next().unwrap_or(id);
     let tail: String = body
@@ -153,7 +147,7 @@ fn initials_of(name: &str) -> String {
 }
 
 /// `initials_of`, for a caller that has just learned the name the workspace
-/// gave this participant and has to move the monogram with it.
+/// gave this member and has to move the monogram with it.
 pub fn initials_for(name: &str) -> String {
     initials_of(name)
 }
@@ -169,9 +163,9 @@ mod tests {
         assert_eq!(me.name, DEMO_NAME, "case demo: name");
 
         let alice = MemberId::person("alice");
-        let a = LocalIdentity::for_participant(&alice);
+        let a = LocalIdentity::for_member(&alice);
         assert_eq!(a.id, alice);
-        assert_eq!(a, LocalIdentity::for_participant(&alice), "stable");
+        assert_eq!(a, LocalIdentity::for_member(&alice), "stable");
         assert_eq!(a.color_idx, color_from_bytes(b"alice"));
 
         assert_eq!(

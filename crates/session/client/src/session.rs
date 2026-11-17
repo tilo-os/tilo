@@ -371,7 +371,7 @@ impl std::fmt::Debug for Commands {
     }
 }
 
-/// The session carries the client's commands: what a participant says to its workspaces goes
+/// The session carries the client's commands: what a member says to its workspaces goes
 /// through the relay session it keeps with its host.
 impl Outbox for Commands {
     fn send(&self, command: Cmd) -> Result<(), Closed> {
@@ -448,8 +448,8 @@ struct Task {
     /// ([`crate::session::plane`]).
     planes: plane::Planes,
     record: PeerRecord,
-    /// This device's side of the workspaces' encrypted channels: the engine every participant runs,
-    /// here as a reader that asks for access and follows the participants' commits.
+    /// This device's side of the workspaces' encrypted channels: the engine every member runs,
+    /// here as a reader that asks for access and follows the members' commits.
     workspace_keys: tilo_workspace_keys::SharedKeys,
     /// What the channels say to and hear from the host: `None` when the device's own key service
     /// settles [`Self::workspace_keys`] ([`start_session_lent`]).
@@ -627,7 +627,7 @@ impl Task {
 
     /// Tell the host this device's certificate as soon as it subscribed this
     /// connection to `workspace_id`, which its bootstrap ahead of the replay
-    /// says: the workspace's channel participants take a device's access
+    /// says: the workspace's channel members take a device's access
     /// request only once they hold its certificate, so a page told only at
     /// `Ready` got its keys a whole replay late. Returns `false` when the
     /// session could not take it.
@@ -2063,7 +2063,7 @@ impl Task {
         true
     }
 
-    /// Take this device into `route`'s channel, with the participants its
+    /// Take this device into `route`'s channel, with the members its
     /// workspace's governance admits.
     fn open_channel(&mut self, route: &DocumentRoute) {
         if !self.route_keys.contains_key(route) {

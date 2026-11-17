@@ -1,4 +1,4 @@
-//! The table as each participant sees it: the seats around the board, their own cards face
+//! The table as each player sees it: the seats around the board, their own cards face
 //! up and everyone else's face down until the showdown, and the moves open to them now.
 
 use std::rc::Rc;
@@ -375,7 +375,7 @@ fn waiting(table: &Table, people: &People, me: Option<&str>) -> String {
     }
 }
 
-/// The moves open to this participant now.
+/// The moves open to this player now.
 fn controls(cx: &ViewCx<Table>, table: &Table, people: &People, me: Option<&str>) -> Element {
     let mut row = Row::new()
         .with_rhythm(Rhythm::Sibling)
@@ -420,7 +420,7 @@ fn controls(cx: &ViewCx<Table>, table: &Table, people: &People, me: Option<&str>
     Box::new(row)
 }
 
-/// The moves open on this participant's turn.
+/// The moves open on this player's turn.
 fn turn(cx: &ViewCx<Table>, hand: &game::Hand, me: &str) -> Element {
     let mut row = Row::new()
         .with_rhythm(Rhythm::Sibling)

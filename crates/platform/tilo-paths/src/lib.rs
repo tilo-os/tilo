@@ -202,7 +202,7 @@ impl Drop for ProfileScope {
 /// the per-user base folders, [`env_dir`] of the XDG variables and
 /// [`AppPaths::for_app`] all resolve below it, whatever the process
 /// environment says, and no workspace is mounted. A host that runs a
-/// participant (an agent) on its own thread gives it a profile apart from
+/// member (an agent) on its own thread gives it a profile apart from
 /// the host user's this way. Threads the scoped thread starts do not
 /// inherit it.
 pub fn scope_profile(root: impl Into<PathBuf>) -> ProfileScope {

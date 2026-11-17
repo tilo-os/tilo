@@ -720,7 +720,7 @@ mod tests {
     async fn an_open_plane_with_more_devices_than_it_reads_says_how_many_it_does_not_hear() {
         use tilo_live::relay::{Admission, Denied, Peer, Relay, RelayAuthority};
 
-        /// A relay with no one to admit: a local plane is its own relay's participant.
+        /// A relay with no one to admit: a local plane is its own relay's member.
         struct Nobody;
         impl RelayAuthority for Nobody {
             fn admit<'a>(&'a self, _peer: Peer, _proof: &'a [u8]) -> Admission<'a> {

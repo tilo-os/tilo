@@ -39,7 +39,7 @@ tilo-actions = { version = "0.1.0", path = "../../collab/actions" }
 # Every first-party app's id, one constant each.
 tilo-app-id = { version = "0.1.0", path = "../../platform/tilo-app-id" }
 # An app id written as words for a person, the one spelling every surface naming an app or a
-# participant uses.
+# member uses.
 collaboration = { version = "0.1.0", path = "../../collab/collaboration" }
 app-catalogue = { version = "0.1.0", path = "../../packaging/app-catalogue", optional = true }
 settings-store = { version = "0.1.0", path = "../../system/settings-store", optional = true }

@@ -873,7 +873,7 @@ pub(crate) const STANDING_WAIT: std::time::Duration = std::time::Duration::from_
 /// workspace's payload adapter.
 ///
 /// A device can hold a record's keys, and write, before the host has settled
-/// its own admission of that device: the keys come from another participant,
+/// its own admission of that device: the keys come from another key holder,
 /// and a page counts itself in once its person is a member, while its device's
 /// row is still on its way into the workspace's governance. Decided against
 /// the projection of that moment, such a change would be refused for a grant
@@ -1290,7 +1290,7 @@ mod standing_wait_tests {
     const PAGE: [u8; 32] = [2; 32];
 
     /// A page's change that reaches the host before the host has projected
-    /// the page's standing (its keys came from another participant, its
+    /// the page's standing (its keys came from another key holder, its
     /// admission is still settling) waits, and is decided against the
     /// projection that admits the page, not refused against the one before.
     #[tokio::test]

@@ -4806,7 +4806,7 @@ tilo_test_env::scenario! {
 
     phase doctor_accepts_the_cli_only_agent_without_a_published_surface;
     {
-        // The agent is a `type = "cli"` participant: it is never handed a
+        // The agent is a `type = "cli"` member: it is never handed a
         // surface, so it has no controls to publish, and packaging it must pass
         // the same preflight as every graphical app.
         let agent = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../apps/agent");

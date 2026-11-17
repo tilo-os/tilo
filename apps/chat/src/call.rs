@@ -4,7 +4,7 @@
 //!
 //! * [`CallState`] — the per-peer view state of the current call: which
 //!   voice channel, whether the overlay is expanded, where the user has
-//!   dragged the floating overlay, whether the participant list is expanded,
+//!   dragged the floating overlay, whether the member list is expanded,
 //!   and local presentation controls. Current stream state comes from the
 //!   native service; durable voice rows are replayable history.
 //! * [`CallAction`] — the enumerable surface of call actions. Chat's live UI
@@ -37,7 +37,7 @@ pub enum CallAction {
 #[derive(Clone, Debug)]
 #[allow(
     clippy::struct_excessive_bools,
-    reason = "each bool is an independent peer-local call toggle (active/expanded/participants_expanded/muted/deafened/audio_only/sharing) that the UI reads and writes individually — grouping them would just relocate the boolean soup, not remove it"
+    reason = "each bool is an independent peer-local call toggle (active/expanded/members_expanded/muted/deafened/audio_only/sharing) that the UI reads and writes individually — grouping them would just relocate the boolean soup, not remove it"
 )]
 pub struct CallState {
     /// The call panel is open for an explicit local join attempt. This is
@@ -50,10 +50,10 @@ pub struct CallState {
     /// Shared attachment/drag state used by call, navigation, browser `PiP`,
     /// and shell-owned floating surfaces.
     pub placement: ui::floating_surface::FloatingPlacement,
-    /// Whether the participant list inside the overlay is expanded. Auto
+    /// Whether the member list inside the overlay is expanded. Auto
     /// behaviour: small calls expand, large calls collapse to a count chip
     /// until the user opens it.
-    pub participants_expanded: bool,
+    pub members_expanded: bool,
     /// Local mic muted.
     pub muted: bool,
     /// Local output deafened (implies muted while active).
@@ -79,7 +79,7 @@ impl Default for CallState {
             channel: String::new(),
             expanded: false,
             placement: ui::floating_surface::FloatingPlacement::attached(Size::new(360.0, 220.0)),
-            participants_expanded: true,
+            members_expanded: true,
             muted: true,
             deafened: false,
             audio_only: true,
@@ -146,14 +146,14 @@ impl CallState {
         self.featured = None;
     }
 
-    /// Whether to auto-expand the participant list for `n` participants.
+    /// Whether to auto-expand the member list for `n` members.
     /// Small calls show every face; big calls collapse until summoned.
-    pub fn auto_participants_expanded(n: usize) -> bool {
+    pub fn auto_members_expanded(n: usize) -> bool {
         n <= 8
     }
 }
 
-/// Each call participant's speaking ring, following who the call hears:
+/// Each call member's speaking ring, following who the call hears:
 /// a ring is there the moment someone is heard and eases out when they
 /// pause ([`ui::motion::Speaking`]). Settled quiet rings are dropped, so a
 /// silent call costs nothing.
@@ -250,15 +250,15 @@ mod tests {
             assert!(state.muted);
         }
 
-        phase participant_list_auto_expands_only_for_small_calls;
+        phase member_list_auto_expands_only_for_small_calls;
         {
-            assert!(CallState::auto_participants_expanded(3));
-            assert!(CallState::auto_participants_expanded(8));
-            assert!(!CallState::auto_participants_expanded(9));
-            assert!(CallState::auto_participants_expanded(0), "an empty call");
-            assert!(CallState::auto_participants_expanded(1), "alone in it");
+            assert!(CallState::auto_members_expanded(3));
+            assert!(CallState::auto_members_expanded(8));
+            assert!(!CallState::auto_members_expanded(9));
+            assert!(CallState::auto_members_expanded(0), "an empty call");
+            assert!(CallState::auto_members_expanded(1), "alone in it");
             assert!(
-                !CallState::auto_participants_expanded(usize::MAX),
+                !CallState::auto_members_expanded(usize::MAX),
                 "the largest count there is"
             );
         }

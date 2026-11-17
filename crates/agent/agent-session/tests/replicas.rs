@@ -191,7 +191,7 @@ fn an_agent_mount_and_a_person_mount_converge() {
     );
 }
 
-/// The record's identity alone, as a participant holds it before the
+/// The record's identity alone, as a member holds it before the
 /// creator's content arrives: the shortest prefix of the creator's history
 /// that names the record.
 fn identity_only(page: &Replica) -> Vec<u8> {
@@ -249,7 +249,7 @@ fn content(app: &Replica) -> serde_json::Value {
     body
 }
 
-/// Only the record's creator writes its initial content: a participant that
+/// Only the record's creator writes its initial content: a member that
 /// joins, before or after that content arrives, adds nothing of its own, so
 /// nobody's later edits land in a copy the merge hides.
 #[test]
@@ -682,7 +682,10 @@ fn a_bot_granted_posting_is_offered_the_chains_post_and_starts_a_part() {
         .collect();
     assert_eq!(
         posted,
-        [(ui::tilo_resource::MemberId::bot("b1"), "welcome!".to_owned())]
+        [(
+            ui::tilo_resource::MemberId::bot("b1"),
+            "welcome!".to_owned()
+        )]
     );
 }
 

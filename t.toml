@@ -2549,7 +2549,7 @@ default = false
 arch = ["x86_64", "aarch64"]
 
 # The browser regressions that once broke on a builder, run in the candidate. They compile the
-# browser peer and the agent participant, which read nearly every source file, so in every
+# browser peer and the agent session, which read nearly every source file, so in every
 # head's publication they ran again for each commit while the image stayed the same. Each commit
 # runs the same tests in the pinned builder (`test/tilo-session-client`,
 # `test-x86_64/tilo-agent-session`), so what this adds is the canary: it gates a release's

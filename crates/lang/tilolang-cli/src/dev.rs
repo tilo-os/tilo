@@ -132,7 +132,7 @@ const TOOL_SOURCES: [&str; 4] = [
 const PACKAGE_ID_ENV: &str = "TILO_PACKAGE_ID";
 
 /// The variables a session names to an app it starts, which would make the desktop's app a
-/// participant of a session it is not part of.
+/// member of a session it is not part of.
 const SESSION_ENV_PREFIXES: [&str; 2] = ["TILO_SVC_", "TILO_RUNTIME_"];
 const SESSION_ENV: [&str; 10] = [
     "TILO_WORKSPACE_ID",

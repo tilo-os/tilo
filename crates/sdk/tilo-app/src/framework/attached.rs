@@ -6,13 +6,13 @@
 //! sight. An [`AttachedView`] mounts the app's real component over the
 //! record exactly as a window does, lays it out and never paints it; every
 //! operation goes through the view's bound dispatcher, the API a person's
-//! click takes, admitted for the participant as invoker and checked against
-//! its permissions. Where the action landed is where the participant's
+//! click takes, admitted for the member as invoker and checked against
+//! its permissions. Where the action landed is where the member's
 //! presence shows ([`AttachedView::landed`]), and the person's devices draw
 //! the same record from synced state when someone looks.
 //!
 //! Sync is the caller's: [`AttachedView::take_changes`] returns this
-//! participant's own changes since the last call (the whole document the
+//! member's own changes since the last call (the whole document the
 //! first time, for a record it created) and [`AttachedView::merge`] takes a
 //! peer's, through the record store's replication frontier as a browser
 //! page's mounts do. The parts of a chain the app keeps beside the record
@@ -62,7 +62,7 @@ struct Published {
     at: Standing,
     /// The tree as the view's frame publishes it.
     tree: Rc<Vec<tilo_actions::ResourceSpec>>,
-    /// The tree as the participant may reach it, made from `tree` the first
+    /// The tree as the member may reach it, made from `tree` the first
     /// time it is asked for.
     permitted: Option<Rc<Vec<tilo_actions::ResourceSpec>>>,
 }
@@ -109,7 +109,7 @@ pub struct AttachedView {
     /// The task the invoker is carrying out, recorded with what it does.
     context: Option<tilo_actions::ActionContext>,
     landed: Landed,
-    /// What this participant sent of the record, and its own changes set
+    /// What this member sent of the record, and its own changes set
     /// aside for the next publication.
     sync: RecordSync,
     /// Each record the view holds beside its own (the parts of a chain), by
@@ -322,7 +322,7 @@ impl AttachedView {
         }
         // A record joined starts where it was handed over: the only write
         // its view may make on open is a storage migration, which is sent
-        // with the participant's first changes, as a window's is, so the
+        // with the member's first changes, as a window's is, so the
         // workspace and its other holders take it rather than diverge.
         let started = joined_at.or_else(|| {
             records
@@ -367,7 +367,7 @@ impl AttachedView {
         &self.me
     }
 
-    /// The participant's permissions changed: a role granted or taken away.
+    /// The member's permissions changed: a role granted or taken away.
     pub fn set_permissions(&mut self, permissions: PermissionContext) {
         self.permissions.set(permissions);
         self.unsettle();
@@ -450,7 +450,7 @@ impl AttachedView {
         tree
     }
 
-    /// The tree the view publishes, as the participant may reach it, shared:
+    /// The tree the view publishes, as the member may reach it, shared:
     /// [`Self::resources`] without a copy of it.
     #[must_use]
     pub fn published(&self) -> Rc<Vec<tilo_actions::ResourceSpec>> {
@@ -484,14 +484,14 @@ impl AttachedView {
         permitted
     }
 
-    /// The tree the view publishes, as the participant may reach it.
+    /// The tree the view publishes, as the member may reach it.
     #[must_use]
     pub fn resources(&self) -> Vec<tilo_actions::ResourceSpec> {
         self.published().as_ref().clone()
     }
 
     /// The items the view's tree leaves out past each collection's published
-    /// page, as the participant may reach them: children of the record's
+    /// page, as the member may reach them: children of the record's
     /// resource.
     #[must_use]
     pub fn resources_past_page(&self) -> Vec<tilo_actions::ResourceSpec> {
@@ -517,7 +517,7 @@ impl AttachedView {
     }
 
     /// The items the view's tree leaves out past each collection's published
-    /// page whose label is `name`, built alone and only if the participant
+    /// page whose label is `name`, built alone and only if the member
     /// may reach them: what a path naming one of them costs, however many
     /// items the record holds.
     #[must_use]
@@ -541,7 +541,7 @@ impl AttachedView {
 
     /// The items the view's tree leaves out past each collection's published
     /// page from `offset` on, built alone as [`Self::resources_past_page`]
-    /// builds them, and only those the participant may reach: what a page
+    /// builds them, and only those the member may reach: what a page
     /// costs.
     #[must_use]
     pub fn past_page_range(&self, offset: usize, take: usize) -> Vec<tilo_actions::ResourceSpec> {
@@ -559,7 +559,7 @@ impl AttachedView {
             .collect()
     }
 
-    /// The resource `id` the view publishes for this participant, resolved
+    /// The resource `id` the view publishes for this member, resolved
     /// without building every other one: what an invocation on an address
     /// already known asks for.
     #[must_use]
@@ -573,7 +573,7 @@ impl AttachedView {
         )
     }
 
-    /// The resource `id` with its own actions, as the participant may reach
+    /// The resource `id` with its own actions, as the member may reach
     /// them, and none of its children: what an address on it is answered
     /// from, which costs that resource and not the items it holds.
     fn resource_alone(&self, id: &str) -> Option<tilo_actions::ResourceSpec> {
@@ -613,7 +613,7 @@ impl AttachedView {
             .find(|descriptor| descriptor.address == *address)
     }
 
-    /// Every document operation the participant may perform through the
+    /// Every document operation the member may perform through the
     /// view now, with its typed parameters.
     #[must_use]
     pub fn operations(&self) -> Vec<ActionDescriptor> {
@@ -624,7 +624,7 @@ impl AttachedView {
     }
 
     /// Perform the operation `address` names through the view, for the
-    /// participant: permission, confirmation and strict argument binding
+    /// member: permission, confirmation and strict argument binding
     /// exactly as for a person's click (`confirmed` when the person it acts
     /// for confirmed it). The change it made leaves with
     /// [`Self::take_changes`].
@@ -655,7 +655,7 @@ impl AttachedView {
     }
 
     /// Whom [`Self::invoke_appearing`] admits an operation for: the
-    /// participant, or the person the task says it acts for now, showing
+    /// member, or the person the task says it acts for now, showing
     /// `appearance`.
     #[must_use]
     pub fn invoker_appearing(
@@ -768,7 +768,7 @@ impl AttachedView {
         }
         self.landed.0.borrow_mut().clear();
         // History names the app the view is of, as its window does, within
-        // whatever task the participant carries out.
+        // whatever task the member carries out.
         let ambient = self.context.clone().unwrap_or_default().enriched_by(
             &tilo_actions::ActionContext::default()
                 .with_app(self.definition.app_id(), self.definition.title()),
@@ -816,9 +816,9 @@ impl AttachedView {
         )
     }
 
-    /// [`Self::invoke`] acting at `place` instead of at the participant's
+    /// [`Self::invoke`] acting at `place` instead of at the member's
     /// caret: `place` is given as the operation's place parameter
-    /// (`#[param(place)]`), and the participant lands there.
+    /// (`#[param(place)]`), and the member lands there.
     ///
     /// # Errors
     /// As [`Self::invoke`]; refused as invalid arguments when the operation
@@ -851,13 +851,13 @@ impl AttachedView {
         self.invoke(address, &arguments, confirmed)
     }
 
-    /// The task the participant carries out from now on (`None`: none),
+    /// The task the member carries out from now on (`None`: none),
     /// recorded with each thing it does.
     pub fn set_context(&mut self, context: Option<tilo_actions::ActionContext>) {
         self.context = context;
     }
 
-    /// The task the participant carries out, when it has one.
+    /// The task the member carries out, when it has one.
     #[must_use]
     pub const fn context(&self) -> Option<&tilo_actions::ActionContext> {
         self.context.as_ref()
@@ -896,7 +896,7 @@ impl AttachedView {
             .unwrap_or(false)
     }
 
-    /// The last action the view applied for the participant's latest
+    /// The last action the view applied for the member's latest
     /// invocation: where its presence shows.
     #[must_use]
     pub fn landed(&self) -> Option<ActionEnvelope> {
@@ -909,23 +909,23 @@ impl AttachedView {
         self.records.read(&self.checkout.id, read)
     }
 
-    /// The participant's changes since the last call, or `None` when it
-    /// changed nothing. The first call on a record the participant created
+    /// The member's changes since the last call, or `None` when it
+    /// changed nothing. The first call on a record the member created
     /// returns it whole.
     ///
     /// # Errors
     /// The record's changes could not be collected (it is not open here or
-    /// its store is busy). Distinct from `Ok(None)`: what the participant
+    /// its store is busy). Distinct from `Ok(None)`: what the member
     /// changed is still in the record, unsent, and goes with the next call.
     pub fn take_changes(&mut self) -> Result<Option<DocumentMutation>, String> {
         // What the view writes as it lays a merged change out goes with
-        // this participant's changes, as it did when it laid out on merge.
+        // this member's changes, as it did when it laid out on merge.
         self.settle();
         publish(&mut self.sync, &self.records, &self.checkout.id)
     }
 
     /// Run `during` while the view's records are held for reading, as a
-    /// frame's read holds them: collecting this participant's changes, or
+    /// frame's read holds them: collecting this member's changes, or
     /// setting them aside, finds the store busy. `None` when the record is
     /// not open. For tests of what a host answers then.
     #[cfg(any(test, feature = "test-support"))]
@@ -947,7 +947,7 @@ impl AttachedView {
         {
             return Ok(false);
         }
-        // What this participant did and has not taken stays its own: when
+        // What this member did and has not taken stays its own: when
         // it cannot be set aside, the peer's change is not merged either.
         if self.sync.snapshotted() {
             self.sync
@@ -1078,9 +1078,9 @@ impl AttachedView {
         self.records.read(record, read)
     }
 
-    /// The participant's changes to `record`, one the view holds beside
+    /// The member's changes to `record`, one the view holds beside
     /// its own ([`Self::records_beside`]), since the last call: the whole
-    /// record the first time, for one the participant started.
+    /// record the first time, for one the member started.
     ///
     /// # Errors
     /// As [`Self::take_changes`].
@@ -1093,7 +1093,7 @@ impl AttachedView {
         publish(sync, &self.records, record)
     }
 
-    /// The participant's changes to every record the view holds beside its
+    /// The member's changes to every record the view holds beside its
     /// own ([`Self::take_record_changes`]), by record; all or none of them.
     ///
     /// # Errors
@@ -1164,8 +1164,8 @@ impl AttachedView {
         {
             return Ok(false);
         }
-        // What this participant did and has not taken stays its own. A part
-        // first met through a peer's change is not this participant's to
+        // What this member did and has not taken stays its own. A part
+        // first met through a peer's change is not this member's to
         // publish whole: it starts from what the record already holds.
         let heads = self
             .records
@@ -1190,7 +1190,7 @@ impl AttachedView {
 }
 
 /// What to publish next of `record` as `sync` stands: the record whole the
-/// first time, then this participant's own changes set aside since; `None`
+/// first time, then this member's own changes set aside since; `None`
 /// when it changed nothing.
 ///
 /// A failure to collect them is an error, never `None`: a host answers a
@@ -1203,7 +1203,7 @@ fn publish(
 ) -> Result<Option<DocumentMutation>, String> {
     let failed = |error: String| {
         format!(
-            "this participant's change to {} could not be collected: {error}",
+            "this member's change to {} could not be collected: {error}",
             id.as_str()
         )
     };
@@ -1218,18 +1218,18 @@ fn publish(
     Ok(sync.take_set_aside())
 }
 
-/// Why a peer's change to `record` was not merged: this participant's own
+/// Why a peer's change to `record` was not merged: this member's own
 /// changes to it could not be set aside first, so the record is left as it
 /// was, its own changes still to go out, rather than merged around them.
 fn set_aside_failed(record: &ui_core::record::DocumentId, error: &str) -> String {
     format!(
-        "a peer's change to {} was not merged: this participant's own changes to it \
+        "a peer's change to {} was not merged: this member's own changes to it \
          could not be set aside first ({error})",
         record.as_str()
     )
 }
 
-/// The heads of the record `document` holds: what a participant joining it
+/// The heads of the record `document` holds: what a member joining it
 /// was given, past which anything its view writes while it opens is refused
 /// ([`refuse_written_on_open`]).
 /// The storage keys `mutation` writes, top down to what it put or deleted, in
@@ -1289,7 +1289,7 @@ fn heads_of(document: &[u8]) -> Result<Vec<ui_core::automerge::ChangeHash>, Stri
 }
 
 /// Refuse a view that wrote to the record `checkout` names, one its
-/// participant joined at `joined_at`, as it opened ([`written_on_open`]).
+/// member joined at `joined_at`, as it opened ([`written_on_open`]).
 fn refuse_written_on_open(
     definition: &ApplicationDefinition,
     records: &RecordStore,
@@ -1299,9 +1299,9 @@ fn refuse_written_on_open(
     match records.with(&checkout.id, |doc| written_on_open(doc, joined_at)) {
         Some(Some(wrote)) => Err(format!(
             "{} wrote to a record it joined as it opened ({wrote}): only the record's \
-             creator writes its initial content, and a participant that joins adds \
+             creator writes its initial content, and a member that joins adds \
              nothing on open. What the record starts with belongs in the app's seed; \
-             what a participant adds belongs behind a control they use",
+             what a member adds belongs behind a control they use",
             definition.app_id
         )),
         _ => Ok(()),
@@ -1313,8 +1313,8 @@ fn refuse_written_on_open(
 /// migration, or the structure and identity every member derives the same
 /// way, is the framework's and none of the app's.
 ///
-/// Refused rather than kept: the participant's own changes are sent from
-/// where it joined, so the view's write would be sent as if the participant
+/// Refused rather than kept: the member's own changes are sent from
+/// where it joined, so the view's write would be sent as if the member
 /// had made it, which no member did. Deferring it until
 /// the record's content arrives would only move that fork later.
 fn written_on_open(

@@ -2,7 +2,7 @@
 //! device or a cloud host governs. Their record is this profile's own file,
 //! never the desktop session's; each workspace syncs over one direct link
 //! with the host its enrollment pins, which also carries the workspace's
-//! channel governance between this device and its participants, as the host
+//! channel governance between this device and its key holders, as the host
 //! forwards what each member's link brings to the others.
 use neighbour_wire::NeighbourMsg;
 use std::{

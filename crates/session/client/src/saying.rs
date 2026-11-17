@@ -1,4 +1,4 @@
-//! This session's presence tracks, as a participant's client says on them: the workspace's live
+//! This session's presence tracks, as a member's client says on them: the workspace's live
 //! plane, which every device of the workspace says its word on.
 
 use std::sync::Arc;

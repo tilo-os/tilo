@@ -104,7 +104,7 @@ fn asks_for(payload: &[u8], hash: &str) -> bool {
 }
 
 /// Bob's page answers `ask` with the pieces the host lacks of `file`, as every
-/// participant answers them ([`neighbour_wire::content::answer`]), and leaves
+/// key holder answers them ([`neighbour_wire::content::answer`]), and leaves
 /// out one piece when `lost` says the relay's route drops it. How many pieces
 /// it sent.
 fn answer_window(

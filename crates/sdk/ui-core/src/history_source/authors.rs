@@ -22,7 +22,7 @@ use collaboration::history_source::authors::handle_actor_hex;
 /// The data half of naming authors, below the toolkit: decoding an actor
 /// id, telling a device's actors apart and the colours history paints.
 pub use collaboration::history_source::authors::{
-    AGENT_NAMESPACE, APP_NAMESPACE, BOT_NAMESPACE, DeviceActors, ParticipantNames, ResolveAuthor,
+    AGENT_NAMESPACE, APP_NAMESPACE, BOT_NAMESPACE, DeviceActors, MemberNames, ResolveAuthor,
     SHORTCUT_NAMESPACE, UNKNOWN_AUTHOR_NAME, actor_handle, actor_name, app_name, app_words,
     author_coloured, device_actor, name_words, set_installed_apps, short_id, stable_hue,
 };
@@ -43,7 +43,7 @@ pub struct WriterPlace<'a> {
 /// Registrations win over inference: the collaboration layer resolves peer
 /// identity and the local process resolves the user, so both call
 /// [`AuthorDirectory::register`]. Everything else falls through the
-/// handle-decode and then the unknown-participant path.
+/// handle-decode and then the unknown-member path.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct AuthorDirectory {
     by_actor: HashMap<String, HistoryAuthor>,
@@ -87,7 +87,7 @@ fn actor_key(actor: &str) -> String {
 }
 
 impl AuthorDirectory {
-    /// An empty directory. Every actor resolves to an unknown participant
+    /// An empty directory. Every actor resolves to an unknown member
     /// until something registers it.
     pub fn new() -> Self {
         Self::default()
@@ -100,7 +100,7 @@ impl AuthorDirectory {
         self.by_actor.insert(actor_hex.to_lowercase(), author);
     }
 
-    /// The directory presence names the workspace's participants through: every
+    /// The directory presence names the workspace's members through: every
     /// device by what the workspace calls it, every agent as that agent for the
     /// person it works for, and every person by the root key they write as. What
     /// a folder file's version names — the person who signed it and the computer
@@ -172,9 +172,9 @@ impl AuthorDirectory {
             .map(String::as_str)
     }
 
-    /// Name the workspace's participants as its roster names them (participant
-    /// id, name): a change written under a participant's key, or under their
-    /// handle, reads as theirs instead of as an unknown participant.
+    /// Name the workspace's members as its roster names them (member
+    /// id, name): a change written under a member's key, or under their
+    /// handle, reads as theirs instead of as an unknown member.
     pub fn register_roster<'a>(
         &mut self,
         people: impl IntoIterator<Item = (&'a tilo_actions::MemberId, &'a str)>,
@@ -247,7 +247,7 @@ impl AuthorDirectory {
                 } else {
                     noted.name.clone()
                 };
-                // The key a participant's own handle actor has, so an actor
+                // The key a member's own handle actor has, so an actor
                 // history resolves by its handle alone agrees too.
                 let identity = automerge::ActorId::from(name.as_bytes()).to_hex_string();
                 let (shown, rgb) = (!agent)
@@ -425,7 +425,7 @@ impl AuthorDirectory {
             .or_else(|| handle_actor_hex(key).and_then(|handle| self.by_actor.get(&handle)));
         if let Some(a) = registered {
             let mut presented = a.clone();
-            presented.name = participant_display_label(&presented.name);
+            presented.name = member_display_label(&presented.name);
             let override_key = actor_handle(key).unwrap_or_else(|| key.to_owned());
             if let Some(rgb) = self.color_overrides.get(&override_key) {
                 presented = presented.with_rgb(*rgb);
@@ -437,10 +437,10 @@ impl AuthorDirectory {
             // An app's change reads as the app: its own name, with no fragment of its actor id
             // beside it, which would say nothing a person reads.
             Some(handle) if is_app_actor(&handle) => {
-                self.author_from_identity(participant_display_label(&handle), &handle, "")
+                self.author_from_identity(member_display_label(&handle), &handle, "")
             }
             Some(handle) => {
-                self.author_from_identity(participant_display_label(&handle), &handle, short)
+                self.author_from_identity(member_display_label(&handle), &handle, short)
             }
             None => self.author_from_identity(UNKNOWN_AUTHOR_NAME, key, short),
         }
@@ -649,7 +649,7 @@ impl AuthorDirectory {
     }
 
     /// True when this actor has an explicitly registered identity, as opposed
-    /// to a decoded handle or the unknown-participant fallback. The chrome
+    /// to a decoded handle or the unknown-member fallback. The chrome
     /// uses this to decide whether a row's author is trustworthy enough to,
     /// say, offer a "message them" affordance.
     pub fn is_registered(&self, actor_hex: &str) -> bool {
@@ -770,7 +770,7 @@ pub fn read_as(member: &tilo_actions::MemberId) {
 /// removes only the protocol prefix and adds a persistent, readable kind
 /// label. An app reads as its own name in the person's language (`app:so.tilo.lang.today` is
 /// "Today"), never as its id. Human names and other identifiers pass through unchanged.
-pub fn participant_display_label(actor: &str) -> String {
+pub fn member_display_label(actor: &str) -> String {
     match agent_actor_name(actor) {
         Some(name) => agent_display_label(&name),
         None => match app_actor(actor) {
@@ -795,8 +795,8 @@ fn app_actor(id: &str) -> Option<&str> {
 
 /// What the actor `actor` is called to the person reading, by what it is: a person by their
 /// name, an app by its own name in their language, an agent by its name. Never an id, and never
-/// part of one: a participant nobody named is [`UNKNOWN_AUTHOR_NAME`].
-pub fn participant_name(actor: &str) -> String {
+/// part of one: a member nobody named is [`UNKNOWN_AUTHOR_NAME`].
+pub fn member_name(actor: &str) -> String {
     actor_name(actor, &CatalogueNames)
 }
 
@@ -804,13 +804,13 @@ pub fn participant_name(actor: &str) -> String {
 /// window's language, and no roster of its own.
 struct CatalogueNames;
 
-impl ParticipantNames for CatalogueNames {
+impl MemberNames for CatalogueNames {
     fn app(&self, app_id: &str) -> String {
         app_name(app_id, crate::i18n::I18nManager::window_locale().as_str())
     }
 }
 
-/// [`participant_name`] for an actor that names software (`app:`, `agent:`, `bot:`,
+/// [`member_name`] for an actor that names software (`app:`, `agent:`, `bot:`,
 /// `shortcut:`), and nothing for an id that names no actor: what presence shows for someone
 /// it knows only an id of, until the roster names them.
 pub fn software_name(actor: &str) -> Option<String> {
@@ -823,7 +823,7 @@ pub fn software_name(actor: &str) -> Option<String> {
     ]
     .iter()
     .any(|namespace| actor.starts_with(namespace))
-    .then(|| participant_name(actor))
+    .then(|| member_name(actor))
 }
 
 /// The readable name of an `agent:<id>` actor, without the kind label:
@@ -833,7 +833,7 @@ pub fn software_name(actor: &str) -> Option<String> {
 pub fn agent_actor_name(actor: &str) -> Option<String> {
     let name = actor.trim().strip_prefix("agent:")?.trim();
     Some(if name.is_empty() {
-        crate::i18n::widget_format("participant-unknown-agent", &[])
+        crate::i18n::widget_format("member-unknown-agent", &[])
     } else {
         name.to_string()
     })
@@ -842,7 +842,7 @@ pub fn agent_actor_name(actor: &str) -> Option<String> {
 /// `name` with the localized agent kind label, as every agent is shown in
 /// history, presence and activity.
 pub fn agent_display_label(name: &str) -> String {
-    crate::i18n::widget_format("participant-agent", &[("name", name.into())])
+    crate::i18n::widget_format("member-agent", &[("name", name.into())])
 }
 
 /// Build a [`HistoryAuthor`] from the local identity
@@ -969,7 +969,7 @@ mod noted_mount_tests {
         assert_eq!(
             (handle.identity_short.as_str(), handle.avatar_hue),
             (ada.identity_short.as_str(), ada.avatar_hue),
-            "one participant, one identity, whichever actor wrote"
+            "one member, one identity, whichever actor wrote"
         );
         let agent_task = resolve(&crate::record::author_writer(&record, "agent-task:scout"));
         let scout = resolve(&crate::record::author_writer(&record, "Scout"));
@@ -1081,13 +1081,13 @@ mod tests {
 
         phase agent_actors_are_presented_as_named_agents_not_wire_ids;
         {
-            assert_eq!(participant_display_label("agent:scribe"), "scribe · Agent");
+            assert_eq!(member_display_label("agent:scribe"), "scribe · Agent");
             assert_eq!(
-                participant_display_label("agent:opaque-runtime-id"),
+                member_display_label("agent:opaque-runtime-id"),
                 "opaque-runtime-id · Agent"
             );
-            assert_eq!(participant_display_label("agent:"), "Unknown agent · Agent");
-            assert_eq!(participant_display_label("Ada"), "Ada");
+            assert_eq!(member_display_label("agent:"), "Unknown agent · Agent");
+            assert_eq!(member_display_label("Ada"), "Ada");
 
             let actor = automerge::ActorId::from("agent:scribe".as_bytes());
             let resolved = AuthorDirectory::new().resolve(&actor.to_hex_string());
@@ -1107,7 +1107,7 @@ mod tests {
         // actor id stands beside it: a person reads "Notes changed one note", not "app:so.t".
         {
             let app = "app:so.tilo.lang.notes";
-            assert_eq!(participant_display_label(app), "Notes");
+            assert_eq!(member_display_label(app), "Notes");
             assert!(is_app_actor(app));
             assert!(!is_app_actor("agent:scribe"));
 

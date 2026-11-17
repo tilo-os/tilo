@@ -345,8 +345,8 @@ pub fn runtime_resource(target: &wire::ResourceRef) -> Option<ResourceRef> {
     ResourceRef::parse_id(&target.id, target.ty.clone())
 }
 
-/// The id a participant goes by in a view and on the wire: the spelling the toolkit's widgets
-/// read a participant from (an author's colour, an agent's caret, an avatar), until the render
+/// The id a member goes by in a view and on the wire: the spelling the toolkit's widgets
+/// read a member from (an author's colour, an agent's caret, an avatar), until the render
 /// protocol carries the actor itself.
 #[must_use]
 pub fn actor_key(who: &crate::runtime::Actor) -> String {

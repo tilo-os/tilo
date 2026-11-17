@@ -24,6 +24,8 @@ used in code.
   invocation. Not a member.
 - **Member**: a person, agent or bot in a workspace, with a role.
 - **Role**: what a member may do in a workspace.
+- **Presence**: one member in one open view (a window, an agent's private view). A member can have
+  several.
 
 Every change records who made it and who they acted for, as a graph:
 `(Quinten, Xaver) → Agent 1 → Automation 1 → change`. A change is allowed only if every person in

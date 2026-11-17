@@ -1,5 +1,5 @@
 //! Pure editor input primitives: what the keyboard, the palette and an agent call to turn
-//! a participant's input into positional [`RichTextAction`]s and that participant's next
+//! a presence's input into positional [`RichTextAction`]s and that presence's next
 //! view. Nothing here reads a widget, a clock or a random number.
 
 use automerge::AutoCommit;
@@ -8,7 +8,7 @@ use ui::widget::Edits;
 
 use tilo_document::{BodyOrder, ClipAttr};
 
-use super::participant::{FindState, ParticipantView, PendingCaret, ViewPoint};
+use super::presence::{FindState, PendingCaret, PresenceView, ViewPoint};
 use super::{
     MAX_ACTION_TEXT_BYTES, MAX_RESOURCE_SEARCH_HITS, MarkVal, RegionKind, RichTextAction,
     SearchTarget, SelectionTarget, Span, WpResourceCtx, apply_named_style_action,
@@ -44,7 +44,7 @@ impl std::fmt::Display for EditingError {
 
 impl std::error::Error for EditingError {}
 
-pub type EditOutcome = (Vec<RichTextAction>, ParticipantView);
+pub type EditOutcome = (Vec<RichTextAction>, PresenceView);
 pub type EditResult = Result<EditOutcome, EditingError>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -251,18 +251,18 @@ impl<'a> RegionDoc<'a> {
 
 struct Resolved<'a> {
     rd: RegionDoc<'a>,
-    view: ParticipantView,
+    view: PresenceView,
     caret_len: usize,
     has_anchor: bool,
     selection: Option<(ViewPoint, ViewPoint)>,
 }
 
-fn resolve<'a>(view: &ParticipantView, doc: &'a AutoCommit) -> Result<Resolved<'a>, EditingError> {
+fn resolve<'a>(view: &PresenceView, doc: &'a AutoCommit) -> Result<Resolved<'a>, EditingError> {
     resolve_in(view, doc, None)
 }
 
 fn resolve_in<'a>(
-    view: &ParticipantView,
+    view: &PresenceView,
     doc: &'a AutoCommit,
     body: Option<&'a BodyOrder>,
 ) -> Result<Resolved<'a>, EditingError> {
@@ -394,8 +394,8 @@ fn non_empty_spans(ranges: &[Range3]) -> Vec<Span> {
         .collect()
 }
 
-fn collapsed(view: &ParticipantView, caret: ViewPoint) -> ParticipantView {
-    ParticipantView {
+fn collapsed(view: &PresenceView, caret: ViewPoint) -> PresenceView {
+    PresenceView {
         caret,
         anchor: None,
         pending: None,
@@ -406,7 +406,7 @@ fn collapsed(view: &ParticipantView, caret: ViewPoint) -> ParticipantView {
 #[derive(Debug, Clone)]
 pub(crate) struct TypeTarget {
     region: RegionKind,
-    view: ParticipantView,
+    view: PresenceView,
     selection: Option<(ViewPoint, ViewPoint)>,
 }
 
@@ -643,7 +643,7 @@ impl EraseTarget {
 #[derive(Debug, Clone)]
 pub(crate) struct MarkTarget {
     region: RegionKind,
-    view: ParticipantView,
+    view: PresenceView,
     selection_blocks: Vec<Range3>,
     font_ranges: Vec<Range3>,
     active: [bool; 6],
@@ -723,7 +723,7 @@ impl MarkTarget {
 #[derive(Debug, Clone)]
 pub(crate) struct StyleTarget {
     region: RegionKind,
-    view: ParticipantView,
+    view: PresenceView,
     blocks: Vec<String>,
 }
 
@@ -781,7 +781,7 @@ impl StyleTarget {
 #[derive(Debug, Clone)]
 pub(crate) struct PasteTarget {
     region: RegionKind,
-    view: ParticipantView,
+    view: PresenceView,
     start: ViewPoint,
     end: ViewPoint,
     end_len: usize,
@@ -844,17 +844,17 @@ impl PasteTarget {
 }
 
 /// Typing: replace the selection or insert at the caret, and the caret moves past the text.
-pub fn type_text(view: &ParticipantView, doc: &AutoCommit, text: &str) -> EditResult {
+pub fn type_text(view: &PresenceView, doc: &AutoCommit, text: &str) -> EditResult {
     let r = resolve(view, doc)?;
     Ok(TypeTarget::new(&r).build(text))
 }
 
-pub fn new_paragraph(view: &ParticipantView, doc: &AutoCommit) -> EditResult {
+pub fn new_paragraph(view: &PresenceView, doc: &AutoCommit) -> EditResult {
     new_paragraph_in(view, doc, None)
 }
 
 pub fn new_paragraph_in(
-    view: &ParticipantView,
+    view: &PresenceView,
     doc: &AutoCommit,
     body: Option<&BodyOrder>,
 ) -> EditResult {
@@ -915,7 +915,7 @@ pub fn new_paragraph_in(
 }
 
 pub fn delete(
-    view: &ParticipantView,
+    view: &PresenceView,
     doc: &AutoCommit,
     direction: DeleteDirection,
     count: usize,
@@ -926,28 +926,23 @@ pub fn delete(
 
 /// Toggle a mark on the selection; super and sub cover the whole caret block and clear
 /// their sibling when turned on.
-pub fn toggle_mark(view: &ParticipantView, doc: &AutoCommit, mark: InlineMark) -> EditResult {
+pub fn toggle_mark(view: &PresenceView, doc: &AutoCommit, mark: InlineMark) -> EditResult {
     let r = resolve(view, doc)?;
     Ok(MarkTarget::new(&r).toggle(mark))
 }
 
-pub fn set_mark(
-    view: &ParticipantView,
-    doc: &AutoCommit,
-    name: &str,
-    value: MarkVal,
-) -> EditResult {
+pub fn set_mark(view: &PresenceView, doc: &AutoCommit, name: &str, value: MarkVal) -> EditResult {
     let r = resolve(view, doc)?;
     Ok(MarkTarget::new(&r).set(name, Some(value)))
 }
 
-pub fn clear_mark(view: &ParticipantView, doc: &AutoCommit, name: &str) -> EditResult {
+pub fn clear_mark(view: &PresenceView, doc: &AutoCommit, name: &str) -> EditResult {
     let r = resolve(view, doc)?;
     Ok(MarkTarget::new(&r).set(name, None))
 }
 
 pub fn set_paragraph_style(
-    view: &ParticipantView,
+    view: &PresenceView,
     doc: &AutoCommit,
     style: &ParagraphStyle,
 ) -> EditResult {
@@ -955,18 +950,18 @@ pub fn set_paragraph_style(
     Ok(StyleTarget::new(&r).paragraph(style))
 }
 
-pub fn apply_named_style(view: &ParticipantView, doc: &AutoCommit, style: &str) -> EditResult {
+pub fn apply_named_style(view: &PresenceView, doc: &AutoCommit, style: &str) -> EditResult {
     let r = resolve(view, doc)?;
     Ok(StyleTarget::new(&r).named(style))
 }
 
-pub fn paste(view: &ParticipantView, doc: &AutoCommit, content: &PasteContent) -> EditResult {
+pub fn paste(view: &PresenceView, doc: &AutoCommit, content: &PasteContent) -> EditResult {
     let blocks = clip_blocks(content)?;
     let r = resolve(view, doc)?;
     Ok(PasteTarget::new(&r).build(blocks))
 }
 
-pub fn move_caret(view: &ParticipantView, doc: &AutoCommit, to: &CaretTarget) -> EditResult {
+pub fn move_caret(view: &PresenceView, doc: &AutoCommit, to: &CaretTarget) -> EditResult {
     let base = view.settle(doc);
     let rd = RegionDoc::open(doc, base.region)?;
     let caret = match to {
@@ -986,7 +981,7 @@ pub fn move_caret(view: &ParticipantView, doc: &AutoCommit, to: &CaretTarget) ->
     Ok((Vec::new(), collapsed(&base, caret)))
 }
 
-fn selected(base: &ParticipantView, anchor: ViewPoint, caret: ViewPoint) -> ParticipantView {
+fn selected(base: &PresenceView, anchor: ViewPoint, caret: ViewPoint) -> PresenceView {
     let mut next = collapsed(base, caret);
     if anchor != next.caret {
         next.anchor = Some(anchor);
@@ -994,11 +989,7 @@ fn selected(base: &ParticipantView, anchor: ViewPoint, caret: ViewPoint) -> Part
     next
 }
 
-pub fn select_range(
-    view: &ParticipantView,
-    doc: &AutoCommit,
-    range: &SelectionTarget,
-) -> EditResult {
+pub fn select_range(view: &PresenceView, doc: &AutoCommit, range: &SelectionTarget) -> EditResult {
     let base = view.settle(doc);
     let rd = RegionDoc::open(doc, base.region)?;
     let anchor = rd.point(&range.start_block, range.start)?;
@@ -1006,7 +997,7 @@ pub fn select_range(
     Ok((Vec::new(), selected(&base, anchor, caret)))
 }
 
-pub fn select_block(view: &ParticipantView, doc: &AutoCommit, block: &str) -> EditResult {
+pub fn select_block(view: &PresenceView, doc: &AutoCommit, block: &str) -> EditResult {
     let base = view.settle(doc);
     let rd = RegionDoc::open(doc, base.region)?;
     let anchor = rd.point(block, 0)?;
@@ -1014,7 +1005,7 @@ pub fn select_block(view: &ParticipantView, doc: &AutoCommit, block: &str) -> Ed
     Ok((Vec::new(), selected(&base, anchor, caret)))
 }
 
-pub fn select_all(view: &ParticipantView, doc: &AutoCommit) -> EditResult {
+pub fn select_all(view: &PresenceView, doc: &AutoCommit) -> EditResult {
     let base = view.settle(doc);
     let rd = RegionDoc::open(doc, base.region)?;
     let (Some(first), Some(last)) = (rd.first(), rd.last()) else {
@@ -1025,7 +1016,7 @@ pub fn select_all(view: &ParticipantView, doc: &AutoCommit) -> EditResult {
 }
 
 /// Find over the body like the Find bar, filling the view's bounded hits; view-only.
-pub fn find(view: &ParticipantView, doc: &AutoCommit, query: &str) -> EditResult {
+pub fn find(view: &PresenceView, doc: &AutoCommit, query: &str) -> EditResult {
     if query.len() > MAX_FIND_QUERY_BYTES {
         return Err(EditingError::Invalid(format!(
             "a find query is at most {MAX_FIND_QUERY_BYTES} bytes"
@@ -1181,13 +1172,13 @@ fn markdown_clip_blocks(markdown: &str) -> Result<Vec<ClipBlock>, EditingError> 
 pub const LARGE_REFUSAL: &str =
     "large-removal: this replaces more than 2048 characters; select less or erase in steps";
 
-pub fn large_selection(view: &ParticipantView, doc: &AutoCommit) -> bool {
+pub fn large_selection(view: &PresenceView, doc: &AutoCommit) -> bool {
     resolve(view, doc)
         .is_ok_and(|r| r.selection.is_some() && r.removed_chars() > LARGE_REMOVAL_CHARS)
 }
 
 pub fn set_format(
-    view: &ParticipantView,
+    view: &PresenceView,
     doc: &AutoCommit,
     name: &str,
     on: Option<bool>,
@@ -1210,18 +1201,18 @@ pub fn set_format(
     Ok(target.set(name, Some(value)))
 }
 
-pub fn clear_format(view: &ParticipantView, doc: &AutoCommit, name: &str) -> EditResult {
+pub fn clear_format(view: &PresenceView, doc: &AutoCommit, name: &str) -> EditResult {
     if !VALUED_MARKS.contains(&name) && InlineMark::from_name(name).is_none() {
         return Err(EditingError::Invalid("unknown mark".into()));
     }
     clear_mark(view, doc, name)
 }
 
-fn context(view: &ParticipantView, doc: &AutoCommit) -> Result<WpResourceCtx, EditingError> {
+fn context(view: &PresenceView, doc: &AutoCommit) -> Result<WpResourceCtx, EditingError> {
     view.ctx(doc).ok_or(EditingError::NoCaret)
 }
 
-pub fn align(view: &ParticipantView, doc: &AutoCommit, align: &str) -> EditResult {
+pub fn align(view: &PresenceView, doc: &AutoCommit, align: &str) -> EditResult {
     if !matches!(align, "left" | "center" | "right" | "justify") {
         return Err(EditingError::Invalid(
             "align is left, center, right or justify".into(),
@@ -1240,7 +1231,7 @@ pub fn align(view: &ParticipantView, doc: &AutoCommit, align: &str) -> EditResul
 }
 
 pub fn insert_table_here(
-    view: &ParticipantView,
+    view: &PresenceView,
     doc: &AutoCommit,
     rows: usize,
     columns: usize,
@@ -1262,7 +1253,7 @@ pub fn insert_table_here(
     ))
 }
 
-pub fn insert_page_break(view: &ParticipantView, doc: &AutoCommit) -> EditResult {
+pub fn insert_page_break(view: &PresenceView, doc: &AutoCommit) -> EditResult {
     let ctx = context(view, doc)?;
     Ok((
         vec![super::insert_page_break_action(
@@ -1273,7 +1264,7 @@ pub fn insert_page_break(view: &ParticipantView, doc: &AutoCommit) -> EditResult
     ))
 }
 
-pub fn set_hyperlink(view: &ParticipantView, doc: &AutoCommit, target: &str) -> EditResult {
+pub fn set_hyperlink(view: &PresenceView, doc: &AutoCommit, target: &str) -> EditResult {
     let target = target.trim();
     if !valid_hyperlink_target(target) {
         return Err(EditingError::Invalid(
@@ -1294,7 +1285,7 @@ pub fn set_hyperlink(view: &ParticipantView, doc: &AutoCommit, target: &str) -> 
     ))
 }
 
-pub fn replace_selection(view: &ParticipantView, doc: &AutoCommit, text: &str) -> EditResult {
+pub fn replace_selection(view: &PresenceView, doc: &AutoCommit, text: &str) -> EditResult {
     let r = resolve(view, doc)?;
     if r.selection.is_none() {
         return Err(EditingError::NeedsSelection);
@@ -1302,7 +1293,7 @@ pub fn replace_selection(view: &ParticipantView, doc: &AutoCommit, text: &str) -
     Ok(TypeTarget::new(&r).build(text))
 }
 
-pub fn comment_range(view: &ParticipantView, doc: &AutoCommit) -> Result<Span, EditingError> {
+pub fn comment_range(view: &PresenceView, doc: &AutoCommit) -> Result<Span, EditingError> {
     let ctx = context(view, doc)?;
     let selection = ctx.selection.ok_or(EditingError::NeedsSelection)?;
     if ctx.region != RegionKind::Body
@@ -1321,7 +1312,7 @@ pub fn comment_range(view: &ParticipantView, doc: &AutoCommit) -> Result<Span, E
 }
 
 pub fn place_image(
-    view: &ParticipantView,
+    view: &PresenceView,
     doc: &AutoCommit,
     content: &tilo_content::ContentStore,
     hash: &str,
@@ -1448,7 +1439,7 @@ mod tests {
         }
     }
 
-    fn place(wp: &mut crate::widget::Editor, view: &ParticipantView) {
+    fn place(wp: &mut crate::widget::Editor, view: &PresenceView) {
         let model = wp.model_mut();
         model.clear_anchor();
         if let Some(anchor) = &view.anchor {
@@ -1464,12 +1455,12 @@ mod tests {
         });
     }
 
-    fn at(block: &str, offset: usize) -> ParticipantView {
-        ParticipantView::at(ViewPoint::new(block, offset), RegionKind::Body)
+    fn at(block: &str, offset: usize) -> PresenceView {
+        PresenceView::at(ViewPoint::new(block, offset), RegionKind::Body)
     }
 
-    fn sel(anchor: (&str, usize), caret: (&str, usize)) -> ParticipantView {
-        ParticipantView {
+    fn sel(anchor: (&str, usize), caret: (&str, usize)) -> PresenceView {
+        PresenceView {
             anchor: Some(ViewPoint::new(anchor.0, anchor.1)),
             ..at(caret.0, caret.1)
         }
@@ -1482,7 +1473,7 @@ mod tests {
             .collect()
     }
 
-    fn root(view: &ParticipantView, doc: &AutoCommit) -> ResourceSpec {
+    fn root(view: &PresenceView, doc: &AutoCommit) -> ResourceSpec {
         let mut published =
             published_for(&view.ctx(doc).expect("view has a caret"), doc).into_iter();
         let mut root = published.next().expect("the document is published");
@@ -1506,7 +1497,7 @@ mod tests {
     }
 
     fn invoke(
-        view: &ParticipantView,
+        view: &PresenceView,
         doc: &AutoCommit,
         id: &str,
         args: serde_json::Value,
@@ -1800,7 +1791,7 @@ mod tests {
         )]
     }
 
-    fn views(ids: &[String]) -> Vec<ParticipantView> {
+    fn views(ids: &[String]) -> Vec<PresenceView> {
         vec![
             at(&ids[0], 0),
             at(&ids[0], 3),
@@ -1878,7 +1869,7 @@ mod tests {
         {
             let (mut state, _, ids) = writer(&["Intro", "Middle"]);
             let mut agent = at(&ids[0], 0);
-            let step = |agent: &mut ParticipantView,
+            let step = |agent: &mut PresenceView,
                         doc: &mut AutoCommit,
                         id: &str,
                         args: serde_json::Value| {
@@ -2298,7 +2289,7 @@ mod tests {
             ] {
                 let spec = spec(&root, id);
                 assert_eq!(spec.kind, OperationKind::View, "{id}");
-                assert!(spec.contract.is_participant_view(), "{id}");
+                assert!(spec.contract.is_presence_view(), "{id}");
                 assert!(
                     matches!(spec.contract.confirmation, ConfirmationPolicy::None),
                     "{id}"
@@ -2322,7 +2313,7 @@ mod tests {
             let (state, _, ids) = writer(&["abc"]);
             let doc = &state.doc;
             assert_eq!(
-                type_text(&ParticipantView::default(), doc, "x").unwrap_err(),
+                type_text(&PresenceView::default(), doc, "x").unwrap_err(),
                 EditingError::NoCaret
             );
             assert_eq!(

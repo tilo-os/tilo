@@ -46,7 +46,7 @@ use tilo_test_env::wait_until;
 
 const WORKSPACE: &str = "0f8fad5b-d9cb-469f-a165-70867728950e";
 
-/// The scope every participant of the test joins: the workspace itself.
+/// The scope every device of the test joins: the workspace itself.
 fn scope() -> Scope {
     Scope::workspace(WORKSPACE)
 }
@@ -396,14 +396,14 @@ async fn three_native_devices_exchange_sealed_presence_and_audio_through_a_relay
     wait_until("both sessions admitted", || relay.counters().accepted == 2);
 
     // Sealed presence: the relay copies it unread, and both the dialled
-    // participant and the relay's own plane open it under the scope's keys.
+    // device and the relay's own plane open it under the scope's keys.
     a.publish(Track::Presence, 1, b"role=member").unwrap();
-    wait_until("presence reaches the other participant", || {
+    wait_until("presence reaches the other device", || {
         heard(&b, Track::Presence)
             .iter()
             .any(|object| object.body == b"role=member" && object.sender == a_key)
     });
-    wait_until("presence reaches the relay's own participant", || {
+    wait_until("presence reaches the relay's own device", || {
         heard(&relay_plane, Track::Presence)
             .iter()
             .any(|object| object.body == b"role=member" && object.sender == a_key)
@@ -446,7 +446,7 @@ async fn three_native_devices_exchange_sealed_presence_and_audio_through_a_relay
     assert_eq!(
         a.publish(Track::Presence, 2, b"role=member"),
         Ok(()),
-        "the remaining participant keeps publishing"
+        "the remaining device keeps publishing"
     );
 
     // A device removed before it dials is refused at the preface and never
@@ -479,7 +479,7 @@ async fn three_native_devices_exchange_sealed_presence_and_audio_through_a_relay
     )
     .await
     .unwrap();
-    wait_until("the moved relay admits the participant", || {
+    wait_until("the moved relay admits the device", || {
         moved.counters().accepted == 1
     });
     let moved_key = *moved_endpoint.id().as_bytes();
@@ -623,7 +623,7 @@ async fn a_plane_that_hears_no_presence_is_sent_none() {
     );
 }
 
-/// A participant the workspace admits while a plane is running is heard from
+/// A device the workspace admits while a plane is running is heard from
 /// then on: the plane started with the roster of the moment it joined, and
 /// the member arrives through [`Plane::set_roster`].
 #[tokio::test(flavor = "multi_thread")]
@@ -637,7 +637,7 @@ async fn a_device_that_joins_the_roster_after_the_plane_started_is_heard() {
     let _router = serve(&relay, &relay_endpoint);
     let keys = keys();
 
-    // `a` opens knowing only itself: the workspace had no other participant
+    // `a` opens knowing only itself: the workspace had no other device
     // when it joined. `b` is admitted afterwards, and `a` is told so.
     let a = Plane::join(
         Arc::new(native::Iroh::new(a_endpoint, addr(&relay_endpoint))),
@@ -669,7 +669,7 @@ async fn a_device_that_joins_the_roster_after_the_plane_started_is_heard() {
     });
 }
 
-/// A participant that joins after another has said its presence hears it
+/// A device that joins after another has said its presence hears it
 /// within one frame of subscribing: the reader starts at the track's latest
 /// group, not at whatever is said next. Nothing is published again here, so a
 /// plane that only heard the next heartbeat could not pass.
@@ -692,7 +692,7 @@ async fn a_plane_that_joins_after_presence_was_said_hears_it_without_a_new_one()
     )
     .await
     .unwrap();
-    wait_until("the first participant is admitted", || {
+    wait_until("the first device is admitted", || {
         relay.counters().accepted == 1
     });
     a.publish(Track::Presence, 1, b"role=member").unwrap();

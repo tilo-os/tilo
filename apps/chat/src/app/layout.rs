@@ -204,7 +204,7 @@ impl ChatApp {
     /// placement and the surrounding call chrome.
     pub(crate) fn call_video_rect(&self) -> Rect {
         if self.call.expanded {
-            // The host is the first cell of the responsive participant grid,
+            // The host is the first cell of the responsive member grid,
             // so the tile (and the VideoPlayer surface beneath it) fills its
             // share of the surface at every width — never a fixed fraction
             // that leaves the rest of the overlay empty.

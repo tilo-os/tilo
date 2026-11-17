@@ -709,7 +709,7 @@ mod tests {
     #[test]
     fn only_a_person_route_opens_its_committed_document() {
         assert!(!opens_committed_document("agent"));
-        assert!(!opens_committed_document(super::super::SERVICE_PARTICIPANT));
+        assert!(!opens_committed_document(super::super::SERVICE_MEMBER));
         assert!(opens_committed_document("person"));
     }
     #[tokio::test]
@@ -1577,8 +1577,8 @@ fn set_read_ready(inbound: &InboundBridge, ready: &AtomicBool, value: bool) {
 pub(super) struct NativeReadJoin {
     pub(super) client: runtime_collab::CollabClient,
     pub(super) presentation: Vec<u8>,
-    pub(super) participant_handle: String,
-    pub(super) participant_kind: String,
+    pub(super) member_handle: String,
+    pub(super) member_kind: String,
     pub(super) record_kind: String,
 }
 impl NativeReadJoin {
@@ -1595,8 +1595,8 @@ impl NativeReadJoin {
                 .join_channel_as_kind(
                     &key,
                     &self.presentation,
-                    &self.participant_handle,
-                    super::broker_participant_kind(&self.participant_kind),
+                    &self.member_handle,
+                    super::broker_member_kind(&self.member_kind),
                     &self.record_kind,
                 )
                 .await
@@ -1704,7 +1704,7 @@ async fn until_merged(read: &CommittedDocument, reads: &Reads, live: impl Fn() -
     }
 }
 
-/// Whether a route joined as `participant_kind` asks the broker for its
+/// Whether a route joined as `member_kind` asks the broker for its
 /// committed document. The broker serves committed reads only to a process
 /// the launcher holds custody of for that app, which an agent never is, so it
 /// refuses an agent's open. An agent works through the actions its session invokes, not
@@ -1712,8 +1712,8 @@ async fn until_merged(read: &CommittedDocument, reads: &Reads, live: impl Fn() -
 /// A headless service (`CollaborationManager::for_service`) holds no document
 /// either: it publishes actions and answers them, and its workspace never holds a
 /// record of it to read.
-fn opens_committed_document(participant_kind: &str) -> bool {
-    !matches!(participant_kind, "agent" | super::SERVICE_PARTICIPANT)
+fn opens_committed_document(member_kind: &str) -> bool {
+    !matches!(member_kind, "agent" | super::SERVICE_MEMBER)
 }
 
 #[allow(
@@ -1727,7 +1727,7 @@ pub(super) async fn install(
     join: NativeReadJoin,
 ) -> Result<bool, String> {
     let key = spec.channel_id();
-    if !opens_committed_document(join.participant_kind.as_str()) {
+    if !opens_committed_document(join.member_kind.as_str()) {
         open_on_own_channel(inbound, &key)?;
         return Ok(false);
     }

@@ -7,17 +7,17 @@ use tilo_resource::Effect;
 #[derive(Clone, Debug, PartialEq, Effect)]
 #[effect(operation = "console.effects")]
 pub enum ConsoleEffect {
-    #[effect(view, participant)]
+    #[effect(view, presence)]
     ViewSession {
         #[param("Id of the session")]
         session: String,
     },
-    #[effect(view, participant)]
+    #[effect(view, presence)]
     ViewAgent {
         #[param("The agent's client, by the name it goes by")]
         agent: String,
     },
-    #[effect(view, participant)]
+    #[effect(view, presence)]
     ViewConnect,
     StopAgent {
         #[param("The agent's client, by the name it goes by")]

@@ -5,7 +5,7 @@
 )]
 
 //! Who is editing, what a new record starts with, and which changes are
-//! someone's undo step: views and actions know their participant, a new
+//! someone's undo step: views and actions know their member, a new
 //! record is seeded by its creator without an undo step, content from
 //! outside syncs without being anyone's step, two devices creating the same
 //! record converge on one, and a drag is one step.
@@ -284,7 +284,7 @@ tilo_test_env::scenario! {
         clippy::arithmetic_side_effects,
         reason = "a phase is linted where the test function it was is not; the arithmetic is the old test's"
     )]
-    fn every_change_knows_its_participant_and_whose_undo_step_it_is;
+    fn every_change_knows_its_member_and_whose_undo_step_it_is;
 
     phase views_surfaces_and_actions_know_who_is_editing;
     {
@@ -318,7 +318,7 @@ tilo_test_env::scenario! {
         );
         assert!(shown(&mut app).contains("2 of yours"));
 
-        // A surface's immediate edit is attributed to its participant too.
+        // A surface's immediate edit is attributed to its member too.
         drag(&mut app, 10.0, 40.0);
         assert_eq!(app.state().level, 40.0);
         let last = app.versions().pop().unwrap();

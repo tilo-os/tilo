@@ -144,7 +144,7 @@ impl Body for tilo_agent_session::ConfinedReplica {
     }
 }
 
-/// Something an agent can drive: a replica, or a participant's record.
+/// Something an agent can drive: a replica, or a member's record.
 pub trait Driveable {
     /// Every operation the record publishes.
     fn survey(&mut self) -> Vec<ActionDescriptor>;

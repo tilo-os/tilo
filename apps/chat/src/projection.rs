@@ -68,7 +68,7 @@ impl Chat {
                 mentions: 0,
                 archived: channel.archived,
                 direct: false,
-                participants: Vec::new(),
+                members: Vec::new(),
             })
             .collect();
         rows
@@ -77,7 +77,7 @@ impl Chat {
     /// Every conversation `me` has, in sidebar order: the workspace's
     /// channels, and one direct conversation with each of the workspace's
     /// other people — the same one on every device, because its id names
-    /// the participants ([`Chat::direct_id`]) — with the conversations the
+    /// the members ([`Chat::direct_id`]) — with the conversations the
     /// record keeps for an agent among them.
     ///
     /// A conversation with an agent is named by what the workspace calls its agents (`agents`),
@@ -91,7 +91,7 @@ impl Chat {
     ) -> Vec<Channel> {
         let mut rows = self.channel_rows();
         let mut direct: Vec<(String, Channel)> = Vec::new();
-        let mut push = |id: &Id, participants: Vec<MemberId>, recorded: Option<&Conversation>| {
+        let mut push = |id: &Id, members: Vec<MemberId>, recorded: Option<&Conversation>| {
             let name = self.display_names(id, Some(me), agents);
             direct.push((
                 name.clone(),
@@ -106,13 +106,13 @@ impl Chat {
                     mentions: 0,
                     archived: recorded.is_some_and(|row| row.archived),
                     direct: true,
-                    participants,
+                    members,
                 },
             ));
         };
         for (id, channel) in self.channels.iter() {
             if !channel.is_channel() {
-                push(id, channel.participants.clone(), Some(channel));
+                push(id, channel.members.clone(), Some(channel));
             }
         }
         let mut listed: std::collections::HashSet<Id> = std::collections::HashSet::new();
@@ -133,12 +133,12 @@ impl Chat {
             if self.channels.contains(id) || listed.contains(id) {
                 continue;
             }
-            let Some(participants) = Chat::direct_participants(id) else {
+            let Some(members) = Chat::direct_members(id) else {
                 continue;
             };
-            if participants.contains(me) {
+            if members.contains(me) {
                 listed.insert(id.clone());
-                push(id, participants, None);
+                push(id, members, None);
             }
         }
         direct.sort_by(|left, right| {
@@ -168,37 +168,37 @@ impl Chat {
     #[must_use]
     pub fn display_names(&self, id: &Id, me: Option<&MemberId>, agents: &AgentNames) -> String {
         if let Some(conversation) = self.channels.get(id)
-            && !conversation.participants.is_empty()
+            && !conversation.members.is_empty()
             && !conversation.name.trim().is_empty()
         {
             return conversation.name.trim().to_owned();
         }
-        let participants = self.conversation_participants(id);
-        let named: Vec<String> = participants
+        let members = self.conversation_members(id);
+        let named: Vec<String> = members
             .iter()
-            .map(|participant| {
-                let agent_name = if participant.is_person() {
+            .map(|member| {
+                let agent_name = if member.is_person() {
                     None
                 } else {
                     agents
-                        .get(participant.id())
+                        .get(member.id())
                         .map(|name| name.trim().to_owned())
                         .filter(|name| !name.is_empty())
                 };
                 agent_name
                     .or_else(|| {
                         self.people
-                            .find(&crate::record::member_slot(participant))
+                            .find(&crate::record::member_slot(member))
                             .map(|person| person.name.trim().to_owned())
                             .filter(|name| !name.is_empty())
                     })
-                    .unwrap_or_else(|| crate::identity::unnamed_label(participant))
+                    .unwrap_or_else(|| crate::identity::unnamed_label(member))
             })
             .collect();
-        let others: Vec<String> = participants
+        let others: Vec<String> = members
             .iter()
             .zip(named.iter())
-            .filter(|(participant, _)| Some(*participant) != me)
+            .filter(|(member, _)| Some(*member) != me)
             .map(|(_, name)| name.clone())
             .collect();
         let shown = if others.is_empty() { named } else { others };

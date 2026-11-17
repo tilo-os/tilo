@@ -92,7 +92,7 @@ pub(crate) enum MenuTarget {
     Workspace,
     /// Someone else in the call, by person: how loud they play
     /// on this device.
-    CallParticipant(ui::tilo_resource::MemberId),
+    CallMember(ui::tilo_resource::MemberId),
 }
 
 /// The structural actions reachable from a context menu.
@@ -237,7 +237,7 @@ impl MenuAction {
     }
     /// Menu items for someone else in the call: how loud they play here,
     /// silenced or at one of a few levels, on this device only.
-    pub fn for_call_participant() -> [MenuAction; 5] {
+    pub fn for_call_member() -> [MenuAction; 5] {
         [
             MenuAction::Silence,
             MenuAction::Volume(50),
@@ -281,7 +281,7 @@ impl ChatApp {
         };
         let channel = matches!(target, MenuTarget::Channel(_));
         let listening = match &target {
-            MenuTarget::CallParticipant(id) => Some(self.call_listening(id.id())),
+            MenuTarget::CallMember(id) => Some(self.call_listening(id.id())),
             _ => None,
         };
         let checked = move |action: MenuAction| {

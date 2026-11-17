@@ -225,7 +225,7 @@ fn changes_of(mutation: &DocumentMutation) -> Vec<String> {
 
 impl Worker {
     /// Publish `mutation` as the member: sealed with the record's channel
-    /// keys, or held until a participant admits the member to it. The write
+    /// keys, or held until a member admits the member to it. The write
     /// is kept with what the request being served handed over, which is
     /// answered done only once the host holds it ([`Self::saving`]).
     pub(super) fn commit(
@@ -246,7 +246,7 @@ impl Worker {
     }
 
     /// Hand `mutation` to the session, which seals it with the record's
-    /// channel keys, or holds it until a participant admits the member.
+    /// channel keys, or holds it until a member admits the member.
     fn hand_over(
         &mut self,
         workspace_id: WorkspaceId,

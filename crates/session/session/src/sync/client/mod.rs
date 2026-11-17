@@ -2,7 +2,7 @@
 //! endpoint, the live plane, the workspaces this session holds and their channels, the person's
 //! device fabric, the transfers between their devices, and the roster the bar draws.
 //!
-//! The participant itself is `tilo_session_client::Client`, which every host links. [`Client`] here
+//! The member itself is `tilo_session_client::Client`, which every host links. [`Client`] here
 //! is that client plus this desktop's host. The endpoint keeps number 0's directory behind a gate
 //! and its relays held back ([`tilo_endpoint_reachability`]): a desktop with nobody else in its
 //! workspaces publishes nothing and keeps no relay.
@@ -1287,7 +1287,7 @@ impl GateShell for Gate {
     }
 }
 
-/// The session's client of the collaboration plane: the participant's own client, and the desktop
+/// The session's client of the collaboration plane: the member's own client, and the desktop
 /// host that carries it — the peer actor, the live plane, this device's workspaces and channels,
 /// its fabric and its transfers.
 pub struct Client {

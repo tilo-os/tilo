@@ -65,7 +65,7 @@ chat-call-status = Anrufstatus
 
 # Die Verbindungszeile unter dem Video des Anrufffensters.
 chat-call-connected = Verbunden
-chat-call-participant = { $name }: Lautstärke und Stummschaltung für dich
+chat-call-member = { $name }: Lautstärke und Stummschaltung für dich
 chat-call-silence = Für mich stummschalten
 chat-call-volume = Lautstärke { $percent } %
 chat-call-reconnecting = Verbindung wird wiederhergestellt
@@ -359,7 +359,7 @@ chat-call-untitled = Anruf
 chat-call-open-window = Den Anruf in Chat öffnen
 chat-call-expand = Vergrößern
 chat-call-expand-restore = Anruf vergrößern oder zurückholen
-chat-call-participants-show = Teilnehmende des Anrufs zeigen
+chat-call-members-show = Teilnehmende des Anrufs zeigen
 chat-call-camera-off-caption = Kamera aus
 chat-call-camera-starting = Deine Kamera startet
 chat-call-no-video = Kein Video

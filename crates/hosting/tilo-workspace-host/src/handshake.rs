@@ -50,7 +50,7 @@ pub trait Admit: Send + Sync {
     /// Let `cert`'s person in through the entry `entry` names and have the
     /// workspace admit the device, which proved it holds its key on the
     /// connection carrying the entry; and once admitted, hand the
-    /// workspace's channel participants the device's request for the keys of
+    /// workspace's channel key holders the device's request for the keys of
     /// its group. An entry the workspace already admitted (its answer was
     /// lost with an earlier connection) is answered again.
     fn enter<'a>(&'a self, cert: &'a DeviceCert, entry: Entry) -> EntryFuture<'a, Entered>;

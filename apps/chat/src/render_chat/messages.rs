@@ -827,7 +827,7 @@ impl ChatApp {
                 .is_some()
         {
             // The body as written: paragraphs, formatting, and mentions in
-            // their participants' colours, drawn by the editor that wrote it.
+            // their members' colours, drawn by the editor that wrote it.
             self.layout_body(
                 &m,
                 Point::new(column.text_x, *y),
@@ -1402,7 +1402,7 @@ impl ChatApp {
         let sp = &theme.tokens.spacing;
         let MessageColumn { text_x, .. } = column;
         let count = model::reply_count(&self.messages, &m.id);
-        let parts = model::thread_participants(&self.messages, &m.id);
+        let parts = model::thread_members(&self.messages, &m.id);
         let bar_h = thread_bar_h(theme);
         let pad = f64::from(sp.s2);
         let avatar = AvatarSize::Small.side(theme);

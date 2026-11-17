@@ -115,7 +115,7 @@ async fn dispatch_receipt_read(rig: &Rig) -> (u64, DurableInvocation) {
         address: tilo_actions::ActionAddress::new(delivered.resource, delivered.action),
         argument: delivered.argument,
         actor: delivered.actor,
-        participant: None,
+        presence: None,
     })
     .expect("the worker accepts the dispatcher's original custody");
     lease.check().unwrap();

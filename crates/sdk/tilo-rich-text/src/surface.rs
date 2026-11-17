@@ -56,7 +56,7 @@ fn not_kept(error: &ActionError) -> String {
 /// inside another resource ([`RichTextSurface::field`]) the owning
 /// resource's action carries it. Either way typing a word is one undo step;
 /// a member's edit, an undo or a restore is presented without moving
-/// the caret of the person typing; a participant who may only view can
+/// the caret of the person typing; a member who may only view can
 /// read, select and copy, and their edits never reach the document; and
 /// members' carets are keyed to paragraphs rather than positions on
 /// screen. In a framework app, History mode shows past versions in the same
@@ -236,7 +236,7 @@ impl<S: RichTextSource + 'static> RichTextSurface<S> {
         self.erased().insert_text_dyn(edits, text);
     }
 
-    /// Put a mention of the participant `id`, shown as `label`, at the caret
+    /// Put a mention of the member `id`, shown as `label`, at the caret
     /// (replacing a selection, such as the typed query the person picked it
     /// from), through the source's edits.
     pub fn insert_mention(&mut self, edits: &mut Edits<'_>, id: &str, label: &str) {
@@ -814,7 +814,7 @@ impl RichTextSurface<dyn ErasedSource> {
     }
 
     /// Apply what the person did since the last presentation, then show the
-    /// document as the edit left it. A participant who may only view is
+    /// document as the edit left it. A member who may only view is
     /// shown the document again, as if their edit never happened.
     fn commit(&mut self, edits: &mut Edits<'_>) {
         let Some((start, presented_end, edited_end)) = self.changed() else {

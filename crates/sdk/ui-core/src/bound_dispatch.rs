@@ -1800,7 +1800,7 @@ fn internal_refusal(code: &str) -> Option<&'static str> {
     })
 }
 
-/// The refusal of an invocation the participant may not take.
+/// The refusal of an invocation the presence may not take.
 pub(crate) fn denied(action: &tilo_actions::ActionSpec) -> tilo_actions::ApiError {
     tilo_actions::ApiError::Unavailable {
         code: "permission_denied".into(),
@@ -1893,9 +1893,9 @@ fn discover_bound_resources_with_filter(
             };
             if boundary.is_none() && (snapshot.is_none() || publishes()) {
                 let resources = binding.read_document(doc, |doc, _| {
-                    let participant = crate::invocation_scope::current_participant();
+                    let presence = crate::invocation_scope::current_presence();
                     let mut resources =
-                        crate::resources::resources_for(widget, participant.as_ref(), doc);
+                        crate::resources::resources_for(widget, presence.as_ref(), doc);
                     if !root {
                         resources = resources
                             .into_iter()
@@ -1906,7 +1906,7 @@ fn discover_bound_resources_with_filter(
                         && tilo_actions::api::resolve(&resources, address).is_none()
                         && let Some(resource) = crate::resources::resource_for(
                             widget,
-                            participant.as_ref(),
+                            presence.as_ref(),
                             doc,
                             &address.resource,
                         )
@@ -2569,9 +2569,8 @@ fn note_active_writer(writer: &[u8]) {
 pub(crate) fn own_device_refusal() -> tilo_actions::ApiError {
     tilo_actions::ApiError::Unavailable {
         code: "own_device".into(),
-        reason:
-            "This action acts on the device of whoever invokes it: here, the host participant's"
-                .into(),
+        reason: "This action acts on the device of whoever invokes it: here, the host presence's"
+            .into(),
     }
 }
 
@@ -2652,7 +2651,7 @@ pub(crate) fn execute_resource_operation(
     if spec.kind == tilo_actions::OperationKind::View
         && !crate::invocation_scope::view_operation_permitted(actor, local_author, &spec.contract)
     {
-        return Err(tilo_actions::ApiError::Unavailable { code: "private_view".into(), reason: "A member cannot move this participant's private focus or viewport; use Follow or Reveal explicitly".into() });
+        return Err(tilo_actions::ApiError::Unavailable { code: "private_view".into(), reason: "A member cannot move this presence's private focus or viewport; use Follow or Reveal explicitly".into() });
     }
     let mut context = spec.history_context(resource.id.as_str(), &resource.kind, &resource.label);
     if let Some(ambient) = ambient {
@@ -2986,8 +2985,8 @@ pub(crate) fn invoke_resource_action(
         result = Some(
             binding
                 .with_record_frame(document, false, |doc, path| {
-                    let participant = crate::invocation_scope::current_participant();
-                    let resolved = participant
+                    let presence = crate::invocation_scope::current_presence();
+                    let resolved = presence
                         .is_none()
                         .then(|| resolve_document_action(widget, doc, binding, &target.address.address))
                         .flatten();
@@ -3001,7 +3000,7 @@ pub(crate) fn invoke_resource_action(
                             widget,
                             doc,
                             Walk::Component,
-                            participant.as_ref(),
+                            presence.as_ref(),
                             &mut resources,
                         );
                         if tilo_actions::api::resolve(&resources, &target.address.address).is_none()
@@ -3081,7 +3080,7 @@ pub(crate) fn invoke_resource_action(
                     {
                         return Err(tilo_actions::ApiError::Unavailable {
                             code: "private_view".into(),
-                            reason: "A member cannot move this participant's private focus or viewport; use Follow or Reveal explicitly".into(),
+                            reason: "A member cannot move this presence's private focus or viewport; use Follow or Reveal explicitly".into(),
                         }.into());
                     }
                     if let Some(scope) = scope {
@@ -3307,13 +3306,13 @@ fn collect_published(
     widget: &dyn Widget,
     doc: &AutoCommit,
     walk: Walk,
-    participant: Option<&tilo_actions::ParticipantId>,
+    presence: Option<&tilo_actions::PresenceId>,
     resources: &mut Vec<ResourceSpec>,
 ) {
     let mut taken = crate::resources::TakenResources::default();
     for_each_published(widget, walk, &mut |widget, root| {
-        let found = match participant {
-            Some(participant) => crate::resources::resources_for(widget, Some(participant), doc),
+        let found = match presence {
+            Some(presence) => crate::resources::resources_for(widget, Some(presence), doc),
             None => crate::resources::resources(widget, doc),
         };
         let found: Vec<_> = found
@@ -3337,11 +3336,11 @@ fn resolve_published(
     walk: Walk,
     id: &str,
 ) -> Option<ResourceSpec> {
-    let participant = crate::invocation_scope::current_participant();
+    let presence = crate::invocation_scope::current_presence();
     let mut found = None;
     for_each_published(widget, walk, &mut |widget, root| {
         if found.is_none() {
-            found = crate::resources::resource_for(widget, participant.as_ref(), doc, id)
+            found = crate::resources::resource_for(widget, presence.as_ref(), doc, id)
                 .map(|resource| below_root(root, resource));
         }
     });
@@ -3357,15 +3356,15 @@ pub(crate) fn collect_unbound_resources(
     collect_published(widget, doc, Walk::Unbound, None, resources);
 }
 
-/// [`collect_unbound_resources`] rebuilt for one participant view.
+/// [`collect_unbound_resources`] rebuilt for one presence view.
 /// Never cached: it is the invoker's tree at invoke time.
-pub(crate) fn collect_participant_resources(
+pub(crate) fn collect_presence_resources(
     widget: &dyn Widget,
     doc: &AutoCommit,
-    participant: &tilo_actions::ParticipantId,
+    presence: &tilo_actions::PresenceId,
     resources: &mut Vec<ResourceSpec>,
 ) {
-    collect_published(widget, doc, Walk::Unbound, Some(participant), resources);
+    collect_published(widget, doc, Walk::Unbound, Some(presence), resources);
 }
 
 /// Resource `id` resolved in the outer tree rooted at `widget`.

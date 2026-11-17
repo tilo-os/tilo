@@ -35,7 +35,7 @@ pub enum AdmissionOutcome {
 
 /// Apply certificate, role and immutable redemption receipt to the caller's
 /// existing canonical workspace document as one transaction, written by any
-/// participant's device. The invitation is checked on its own: it
+/// key holder's device. The invitation is checked on its own: it
 /// verifies, has not expired, names this workspace and the joiner when narrowed,
 /// was issued by a member who may invite with its role, and was not
 /// redeemed before. Whether its writer may admit is decided as every receiver

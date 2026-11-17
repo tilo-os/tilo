@@ -805,7 +805,7 @@ fn ordered_roster(ws: &Workspace) -> Vec<(UserId, CapRole)> {
 }
 
 /// A member by name, numbered when another member here shares it
-/// ([`ui::presence::ParticipantLabels`]), or by a shortened id.
+/// ([`ui::presence::MemberLabels`]), or by a shortened id.
 fn member_name_or_short_id(ws: &Workspace, id: &MemberId) -> String {
     member_named(ws, id).map_or_else(|| short_id(id.id()), |member| member.name.trim().to_owned())
 }

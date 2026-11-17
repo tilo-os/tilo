@@ -21,7 +21,7 @@ type Invoked = Arc<Mutex<Vec<(ActionInvoker, ActionContext, ActionAddress)>>>;
 /// Records `rec-*` held; a `send` queues an outbox entry and a field edit
 /// settles one.
 #[derive(Default)]
-struct FakeParticipant {
+struct FakeMember {
     invoked: Invoked,
     outbox: Arc<Mutex<Vec<OutboxRow>>>,
     history: Arc<Mutex<Vec<(DocumentRoute, ActionContext)>>>,
@@ -39,7 +39,7 @@ fn route(app: &str, record: &str) -> DocumentRoute {
     }
 }
 
-impl ApiParticipant for FakeParticipant {
+impl ApiMember for FakeMember {
     fn workspace(&self) -> &str {
         WORKSPACE
     }
@@ -137,10 +137,7 @@ impl Performer for Scripted {
     }
 }
 
-fn api(
-    fake: FakeParticipant,
-    results: Vec<Result<Value, PerformError>>,
-) -> BotApi<FakeParticipant> {
+fn api(fake: FakeMember, results: Vec<Result<Value, PerformError>>) -> BotApi<FakeMember> {
     BotApi::new(
         Arc::new(Mutex::new(fake)),
         "b1".into(),
@@ -205,7 +202,7 @@ fn block<T>(pending: Pending<T>) -> T {
 
 #[test]
 fn a_caller_that_is_not_this_bot_is_refused() {
-    let api = api(FakeParticipant::default(), vec![]);
+    let api = api(FakeMember::default(), vec![]);
     let person = Caller::local_person("ada").in_workspace(WORKSPACE);
     assert!(matches!(
         block(api.invoke(&person, post())),
@@ -224,7 +221,7 @@ fn a_caller_that_is_not_this_bot_is_refused() {
 
 #[test]
 fn a_step_is_recorded_as_the_bot_with_its_run_step_and_cause() {
-    let fake = FakeParticipant::default();
+    let fake = FakeMember::default();
     let invoked = fake.invoked.clone();
     let api = api(fake, vec![]);
     api.set_cause(Some(Cause {
@@ -249,7 +246,7 @@ fn a_step_is_recorded_as_the_bot_with_its_run_step_and_cause() {
 
 #[test]
 fn a_record_the_bot_does_not_hold_is_unknown() {
-    let api = api(FakeParticipant::default(), vec![]);
+    let api = api(FakeMember::default(), vec![]);
     assert!(matches!(
         block(api.invoke(&bot(), request("so.tilo.chat", "other", "post"))),
         Err(ActionHostError::UnknownAction)
@@ -258,7 +255,7 @@ fn a_record_the_bot_does_not_hold_is_unknown() {
 
 #[test]
 fn a_step_already_in_history_is_answered_not_repeated() {
-    let fake = FakeParticipant::default();
+    let fake = FakeMember::default();
     let request = post();
     fake.history.lock().unwrap().push((
         route("so.tilo.chat", "rec-1"),
@@ -277,7 +274,7 @@ fn a_step_already_in_history_is_answered_not_repeated() {
 
 #[test]
 fn an_outside_step_answers_the_connectors_result_and_settles_its_entry() {
-    let fake = FakeParticipant::default();
+    let fake = FakeMember::default();
     let outbox = fake.outbox.clone();
     let api = api(
         fake,
@@ -300,7 +297,7 @@ fn an_outside_step_answers_the_connectors_result_and_settles_its_entry() {
 
 #[test]
 fn a_refused_op_settles_failed_and_an_unavailable_one_stays_pending() {
-    let fake = FakeParticipant::default();
+    let fake = FakeMember::default();
     let outbox = fake.outbox.clone();
     let api = api(
         fake,
@@ -330,7 +327,7 @@ fn a_refused_op_settles_failed_and_an_unavailable_one_stays_pending() {
 /// so the step after it reads the message it sent.
 #[test]
 fn a_retried_step_hands_over_the_entry_it_queued_before() {
-    let fake = FakeParticipant::default();
+    let fake = FakeMember::default();
     let outbox = fake.outbox.clone();
     let history = fake.history.clone();
     let queued_in_history = fake.queued_in_history.clone();
@@ -374,9 +371,9 @@ fn a_bot_reads_the_records_it_holds_through_the_record_api() {
     use automerge::transaction::Transactable as _;
     let mut doc = automerge::AutoCommit::new();
     doc.put(automerge::ROOT, "title", "Plan").unwrap();
-    let fake = FakeParticipant {
+    let fake = FakeMember {
         records: std::collections::BTreeMap::from([("rec-1".to_owned(), doc.save())]),
-        ..FakeParticipant::default()
+        ..FakeMember::default()
     };
     let api = api(fake, vec![]);
     let reads = api.record_reads().unwrap();

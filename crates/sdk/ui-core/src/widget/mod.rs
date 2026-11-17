@@ -1546,11 +1546,11 @@ impl EventCtx<'_> {
     }
 }
 
-/// One remote participant's live presence (caret/selection), published by a multi-
-/// participant widget under that participant's identity.
+/// One remote presence's live presence (caret/selection), published by a multi-
+/// presence widget under that presence's identity.
 #[derive(Clone, Debug, PartialEq)]
-pub struct ParticipantPresence {
-    pub participant: tilo_actions::ParticipantId,
+pub struct ViewPresence {
+    pub presence: tilo_actions::PresenceId,
     pub label: Option<String>,
     pub key: PresenceKey,
     pub payload: crate::collaboration::PresencePayload,
@@ -1910,7 +1910,7 @@ pub(crate) fn take_collab_requests(
     };
     let mut requests = capability::capability_mut::<dyn Collaborative>(&mut *widget)
         .map_or_else(Vec::new, Collaborative::take_collab_requests);
-    for child in crate::collaboration::participants::collaboration_children(widget) {
+    for child in crate::collaboration::presences::collaboration_children(widget) {
         requests.extend(take_collab_requests(child));
     }
     requests
@@ -1928,7 +1928,7 @@ pub(crate) fn handle_collab_event(
     if let Some(collaborative) = capability::capability_mut::<dyn Collaborative>(&mut *widget) {
         collaborative.handle_collab_event(event);
     }
-    for child in crate::collaboration::participants::collaboration_children(widget) {
+    for child in crate::collaboration::presences::collaboration_children(widget) {
         handle_collab_event(child, event);
     }
 }

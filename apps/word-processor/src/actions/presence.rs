@@ -1,4 +1,4 @@
-//! Per-participant view state: a person's window or an agent task owns one caret,
+//! Per-presence view state: a person's window or an agent task owns one caret,
 //! selection, region and Find state, and the resource tree is built from it. It is
 //! presentation state and never written into the document.
 
@@ -46,11 +46,11 @@ pub struct PendingCaret {
     pub offset: usize,
 }
 
-/// One participant's view of a Writer document: the caret, the selection's fixed end
+/// One presence's view of a Writer document: the caret, the selection's fixed end
 /// (`None` or the caret's own means no selection) and character offsets within the region.
 /// A `pending` caret replaces the caret once its edit lands; readers settle first.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct ParticipantView {
+pub struct PresenceView {
     pub caret: ViewPoint,
     pub anchor: Option<ViewPoint>,
     pub region: RegionKind,
@@ -58,7 +58,7 @@ pub struct ParticipantView {
     pub pending: Option<PendingCaret>,
 }
 
-impl ParticipantView {
+impl PresenceView {
     pub fn at(caret: ViewPoint, region: RegionKind) -> Self {
         Self {
             caret,
@@ -294,13 +294,13 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        /// A participant view as the context the document publishes its actions for.
-        fn a_participant_view_projects_to_the_published_context;
+        /// A presence view as the context the document publishes its actions for.
+        fn a_presence_view_projects_to_the_published_context;
 
         phase collapsed_view_projects_caret_context;
         {
             let (doc, ids) = doc_with(&["hello", "world"]);
-            let view = ParticipantView::at(ViewPoint::new(&ids[1], 2), RegionKind::Body);
+            let view = PresenceView::at(ViewPoint::new(&ids[1], 2), RegionKind::Body);
             let ctx = view.ctx(&doc).unwrap();
             assert_eq!(ctx.caret_block, ids[1]);
             assert_eq!(ctx.caret_offset, 2);
@@ -312,10 +312,10 @@ mod tests {
         phase backwards_selection_is_ordered_with_per_block_spans;
         {
             let (doc, ids) = doc_with(&["hello", "big", "world"]);
-            let view = ParticipantView {
+            let view = PresenceView {
                 caret: ViewPoint::new(&ids[0], 3),
                 anchor: Some(ViewPoint::new(&ids[2], 2)),
-                ..ParticipantView::default()
+                ..PresenceView::default()
             };
             let ctx = view.ctx(&doc).unwrap();
             assert_eq!(
@@ -346,24 +346,24 @@ mod tests {
         phase unknown_caret_publishes_nothing_and_find_is_bounded;
         {
             let (doc, ids) = doc_with(&["abc"]);
-            assert!(ParticipantView::default().ctx(&doc).is_none());
-            let stale = ParticipantView::at(ViewPoint::new("gone", 0), RegionKind::Body);
+            assert!(PresenceView::default().ctx(&doc).is_none());
+            let stale = PresenceView::at(ViewPoint::new("gone", 0), RegionKind::Body);
             assert!(stale.ctx(&doc).is_none());
             let hits = (0..200).map(|i| SearchTarget {
                 block: ids[0].clone(),
                 start: i,
                 end: i + 1,
             });
-            let view = ParticipantView {
+            let view = PresenceView {
                 find: FindState::new("a", hits),
-                ..ParticipantView::at(ViewPoint::new(&ids[0], 0), RegionKind::Body)
+                ..PresenceView::at(ViewPoint::new(&ids[0], 0), RegionKind::Body)
             };
             assert_eq!(view.find.hits.len(), MAX_RESOURCE_SEARCH_HITS);
             assert_eq!(
                 view.ctx(&doc).unwrap().search_hits.len(),
                 MAX_RESOURCE_SEARCH_HITS
             );
-            let end = ParticipantView::at_document_end(&doc).unwrap();
+            let end = PresenceView::at_document_end(&doc).unwrap();
             assert_eq!(end.caret, ViewPoint::new(&ids[0], 3));
         }
     }

@@ -361,7 +361,7 @@ impl Worker {
     /// in no person's name.
     pub(super) fn bounded(&self, caller: &Caller) -> Option<Bounded> {
         if let Some(person) = caller.acting().person_id() {
-            if person == self.participant {
+            if person == self.member {
                 return None;
             }
             return Some(Bounded {
@@ -420,7 +420,7 @@ impl Worker {
             {
                 Ok(policy)
             }
-            None if who.person == self.participant && !self.governed(workspace_id) => {
+            None if who.person == self.member && !self.governed(workspace_id) => {
                 let owner = ui::permissions::PermissionContext::member_of(
                     cluster,
                     &ui::permissions::MemberId::person(who.person.clone()),
@@ -458,7 +458,7 @@ impl Worker {
         caller: &Caller,
         kind: ActionKind,
     ) -> bool {
-        if super::acts_for(caller, &self.participant) {
+        if super::acts_for(caller, &self.member) {
             return true;
         }
         let Some(who) = self.bounded(caller) else {
@@ -487,7 +487,7 @@ impl Worker {
 
     /// Whether `who` may see the workspace's records at all.
     pub(super) fn admits_bounded(&self, workspace_id: WorkspaceId, who: &Bounded) -> bool {
-        (who.person == self.participant && !self.governed(workspace_id))
+        (who.person == self.member && !self.governed(workspace_id))
             || self
                 .shared
                 .link

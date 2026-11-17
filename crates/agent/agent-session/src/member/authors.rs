@@ -12,7 +12,7 @@
 use tilo_actions::api::ActionDescriptor;
 use tilo_peer_state::document_frame::DocumentRoute;
 
-use super::AgentParticipant;
+use super::AgentMember;
 use crate::workspace_records::Reading;
 
 /// The kind of the rich text a record publishes as its body: an app whose
@@ -25,7 +25,7 @@ const DOCUMENT_TEXT: &str = "tilo.rich-text";
 /// one- or two-letter heading is in any text.
 const SHORTEST_NAMED_TITLE: usize = 3;
 
-impl AgentParticipant {
+impl AgentMember {
     /// Whether the records of `app` are written documents
     /// ([`DOCUMENT_TEXT`] at their root), read from what a new record of it
     /// publishes.

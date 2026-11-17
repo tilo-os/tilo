@@ -1,6 +1,6 @@
 //! The discover → invoke → observe loop of a task.
 //!
-//! The agent is a participant like any person at the palette: it reads the
+//! The agent is a member like any person at the palette: it reads the
 //! live, permission-filtered catalogue the broker publishes to it, invokes
 //! one published operation at a time through the broker's invocation path,
 //! and reads back what each step did — its result, how its own view changed,

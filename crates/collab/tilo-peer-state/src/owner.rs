@@ -915,7 +915,7 @@ impl NativeWorkspaceOwner {
         Ok(reports)
     }
     /// The workspace changes `message` carries, from any device of the workspace: each
-    /// participant admits every other's, and the workspace's governance that now
+    /// key holder admits every other's, and the workspace's governance that now
     /// carries what this device published retires it
     /// ([`publication::retire_member_changes`]). A delta that does not
     /// carry them all retires nothing.

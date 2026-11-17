@@ -394,7 +394,7 @@ pub fn demo(me: &str) -> Chat {
 /// `me` as the person reading it.
 #[must_use]
 pub fn demo_part(me: &str) -> ChatPart {
-    let participants = demo(me).participants();
+    let members = demo(me).members();
     let mut part = ChatPart::default();
     let mine = |id: &str| {
         if id == crate::model::ME {
@@ -419,7 +419,7 @@ pub fn demo_part(me: &str) -> ChatPart {
         part.messages.push(
             Id::from_raw(id),
             Message {
-                mentions: crate::mention::resolve(&message.text, &participants),
+                mentions: crate::mention::resolve(&message.text, &members),
                 edited: message.edited,
                 history: message
                     .history

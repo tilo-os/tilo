@@ -1,11 +1,11 @@
-//! One participant device's side of one workspace.
+//! One key-holding device's side of one workspace.
 //!
 //! A workspace's MLS group holds exactly the devices its membership lets read
 //! it: a projection the caller computes from the workspace's membership and
 //! access policy (`allowed`), never a second record of who belongs. Every
-//! participant device keeps a [`GroupPeer`] and follows the same rules:
+//! key-holding device keeps a [`GroupPeer`] and follows the same rules:
 //!
-//! - **Any participant commits.** [`GroupPeer::reconcile`] writes the one
+//! - **Any key holder commits.** [`GroupPeer::reconcile`] writes the one
 //!   commit that moves the group to `allowed`: it removes every member the
 //!   projection no longer names, and adds every allowed device that asked
 //!   ([`GroupPeer::learn_request`]) with the Welcome and the bundle of
@@ -41,7 +41,7 @@
 //!   over. A commit whose branch split off below the frames a device holds
 //!   decides nothing there; the device publishes its own branch again for
 //!   the other side to decide on.
-//! - **Any participant creates the group, once.** A participant that holds
+//! - **Any key holder creates the group, once.** A key holder that holds
 //!   no state for a workspace waits and asks; one that sees no genesis
 //!   ([`GroupPeer::found`]) creates the group, and one that has seen a
 //!   genesis never creates another. Two geneses made at once compete like
@@ -57,16 +57,16 @@
 //! - **Falling behind starts over.** Hosts keep only a workspace's newest
 //!   frame, so a member that finds a frame it can never reach (it missed
 //!   one, or followed a branch that lost) waits again with a fresh member
-//!   key and asks anew; any participant admits it, history included.
+//!   key and asks anew; any key holder admits it, history included.
 //!
 //! A device that cannot name the workspace's record (it lost the route that
 //! says whose record the workspace carries) cannot tell who may read it, so it
-//! commits nothing; it still follows the commits of the participants that
+//! commits nothing; it still follows the commits of the key holders that
 //! can ([`GroupPeer::follow`]).
 //!
 //! Removal takes effect at the membership op, which the caller's broker
 //! enforces on its own; the commit that rotates the key comes from whichever
-//! participant reconciles next. A store (carrier) device never keeps a peer.
+//! key holder reconciles next. A store (carrier) device never keeps a peer.
 //!
 //! State is written before anything it produced leaves the device: a frame
 //! reaches [`GroupPeer::outbox`] only once the state holding it is
@@ -206,7 +206,7 @@ impl Reconciled {
     }
 }
 
-/// One participant device's state for one workspace.
+/// One key-holding device's state for one workspace.
 pub struct GroupPeer {
     workspace: WorkspaceId,
     device: Ed25519PublicKey,
@@ -409,7 +409,7 @@ impl GroupPeer {
     }
 
     /// Create `workspace`'s group with this device alone in it, and queue its
-    /// genesis. Only for a workspace no genesis is known of: a participant
+    /// genesis. Only for a workspace no genesis is known of: a key holder
     /// that holds no state for a workspace first waits and catches up with
     /// what its workspace retains, then creates the group with [`Self::found`].
     ///
@@ -466,10 +466,10 @@ impl GroupPeer {
             ))
             .await?;
         // The group is founded with the member key this device asked with
-        // while it waited: participants that hold its request then see it in
+        // while it waited: key holders that hold its request then see it in
         // the group with the key it asked with. With any other key they take
         // the request for a device that lost its state and admit it again,
-        // a commit that sets every participant committing at once.
+        // a commit that sets every key holder committing at once.
         let member = match std::mem::replace(&mut self.record, MemberRecord::Removed) {
             MemberRecord::Waiting(member) => *member,
             other => {
@@ -875,7 +875,7 @@ impl GroupPeer {
     /// device is already admitted: for a device key held apart from this
     /// state (a browser's page custody). A removed device starts waiting
     /// again. With `fresh`, a waiting device asks with a new member key: the
-    /// participants then see a device they may have admitted already (whose
+    /// key holders then see a device they may have admitted already (whose
     /// Welcome never arrived here) asking with another key, and admit it
     /// again.
     ///
@@ -1326,7 +1326,7 @@ impl GroupPeer {
             .check()
             .map_err(|error| governance(error.to_string()))?;
         if allowed.is_some_and(|allowed| !allowed.contains(&frame.signed_by)) {
-            return Err(governance("frame is not signed by a participant"));
+            return Err(governance("frame is not signed by a key holder"));
         }
         let incoming = digest(&frame)?;
         match &frame.action {
@@ -1451,7 +1451,7 @@ impl GroupPeer {
             // the winner from where it stands, so it starts over and asks
             // again, handing over what it sealed on its branch once it is
             // back. Ignoring the winner as old would leave it on a branch no
-            // other participant follows, sealing under keys none of them
+            // other key holder follows, sealing under keys none of them
             // hold.
             return self.desynchronise(vault);
         }

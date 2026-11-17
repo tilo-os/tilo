@@ -11,7 +11,7 @@ use tilo_actions::api::{ActionAddress, ActionDescriptor};
 use tilo_peer_state::document_frame::DocumentRoute;
 
 use super::{
-    AgentParticipant, MOST_OPENED_BY_TITLE, MOST_REFERENCED_APPS, MOST_SNAPSHOT_CHARS,
+    AgentMember, MOST_OPENED_BY_TITLE, MOST_REFERENCED_APPS, MOST_SNAPSHOT_CHARS,
     MOST_SNAPSHOT_READS, MOST_SNAPSHOTS, MOST_SNAPSHOTS_CHARS, SNAPSHOT_READS, actions,
 };
 use crate::apps::Seed;
@@ -20,7 +20,7 @@ use crate::profile::Catalog;
 use crate::worker::ConfinedReplica;
 use crate::workspace_records::Reading;
 
-impl AgentParticipant {
+impl AgentMember {
     /// The workspace's records the agent has not opened, those people have open
     /// first, each of `apps` named as its app names it (a document's first
     /// heading) when it is among those offered to open, so a task can say
@@ -524,7 +524,7 @@ impl AgentParticipant {
     }
 }
 
-impl AgentParticipant {
+impl AgentMember {
     /// The open record `route` read through the record API, with what its app keeps beside it.
     pub(super) fn read_record(&self, route: &DocumentRoute) -> Result<ActionOutput, String> {
         let replica = self

@@ -1,4 +1,4 @@
-//! A workspace's presence: what one participant said, in a frame a reader on
+//! A workspace's presence: what one device said, in a frame a reader on
 //! the roster can open, and the board a reader keeps of everyone's last word.
 //!
 //! Presence is one sealed object per [`Presence`] frame on [`Track::Presence`]

@@ -771,7 +771,7 @@ fn prepared_runners_share_factory_view_action_and_palette_behaviour() {
                     use automerge::transaction::Transactable;
                     assert_eq!(doc.pending_ops(), 0);
                     // A fresh CRDT actor sorts before the copied historical actors.
-                    // It is independent of the authenticated participant identity.
+                    // It is independent of the authenticated member identity.
                     doc.set_actor(automerge::ActorId::from([0_u8].as_slice()));
                     assert_eq!(doc.pending_ops(), 0);
                 })

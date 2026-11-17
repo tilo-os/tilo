@@ -54,7 +54,7 @@ const MOST_SCANNED_VALUES: usize = 1 << 20;
 pub struct ConfinedReplica {
     app_id: String,
     workspace: String,
-    participant: String,
+    member: String,
     /// JSON [`ReplicaActor`], sent again to a revived worker.
     actor: String,
     record: DocumentId,
@@ -71,7 +71,7 @@ struct Inner {
     fresh: bool,
     /// An operation ran since the last take; the worker may hold changes.
     dirty: bool,
-    /// This participant's changes taken and put back ([`ConfinedReplica::put_back`]):
+    /// This member's changes taken and put back ([`ConfinedReplica::put_back`]):
     /// the next take returns them first.
     kept: Vec<u8>,
     /// The records the app keeps beside this one that are held with it
@@ -133,13 +133,13 @@ fn changes_since(document: &mut AutoCommit, held: &mut AutoCommit) -> Option<Vec
 }
 
 impl ConfinedReplica {
-    /// Hold a record of `app_id` in `workspace` as `participant`, in a new
+    /// Hold a record of `app_id` in `workspace` as `member`, in a new
     /// confined worker: [`crate::Replica::open`].
     pub fn open(
         catalogue: &AppCatalogue,
         app_id: &str,
         workspace: &str,
-        participant: &str,
+        member: &str,
         actor: &ReplicaActor,
         seed: Seed,
     ) -> Result<Self, AppError> {
@@ -168,7 +168,7 @@ impl ConfinedReplica {
             .call(&Request::Open {
                 app_id: definition.app_id().to_owned(),
                 workspace: workspace.to_owned(),
-                participant: participant.to_owned(),
+                member: member.to_owned(),
                 actor: actor.clone(),
                 seed,
             })
@@ -183,7 +183,7 @@ impl ConfinedReplica {
         let replica = Self {
             app_id: definition.app_id().to_owned(),
             workspace: workspace.to_owned(),
-            participant: participant.to_owned(),
+            member: member.to_owned(),
             actor,
             record,
             content: None,
@@ -311,7 +311,7 @@ impl ConfinedReplica {
             .call(&Request::Open {
                 app_id: self.app_id.clone(),
                 workspace: self.workspace.clone(),
-                participant: self.participant.clone(),
+                member: self.member.clone(),
                 actor: self.actor.clone(),
                 seed: Some((self.record.as_str().to_owned(), vec![inner.mirror.save()])),
             })
@@ -436,7 +436,7 @@ impl ConfinedReplica {
         }
     }
 
-    /// Every document operation the participant may perform now:
+    /// Every document operation the member may perform now:
     /// [`crate::Replica::survey`]. Empty when the worker cannot answer.
     #[must_use]
     pub fn survey(&self) -> Vec<ActionDescriptor> {
@@ -780,7 +780,7 @@ impl ConfinedReplica {
     /// Before an effect or view runs, put into the worker the content the
     /// record's document refers to that the workspace has and the worker does
     /// not hold: what an effect reads of the record (an export's pictures)
-    /// may have been placed by another participant, in another worker.
+    /// may have been placed by another member, in another worker.
     /// Document operations take nothing more than they name. Bounded by
     /// [`REFERENCED_CONTENT_ITEMS`] and [`REFERENCED_CONTENT_BYTES`]; what
     /// is left out is logged.
@@ -901,7 +901,7 @@ impl ConfinedReplica {
         read(self.lock().mirror.document())
     }
 
-    /// This participant's changes since the last call, or `None`:
+    /// This member's changes since the last call, or `None`:
     /// [`crate::Replica::take_mutation`]. The first call on a new record
     /// returns the whole document.
     ///
@@ -964,7 +964,7 @@ impl ConfinedReplica {
             }
             Reply::Mutation(Some((false, bytes))) => {
                 // What must be in the record is the worker's own change, not
-                // every change of the record: another participant's change
+                // every change of the record: another member's change
                 // that arrived before what it builds on waits in the mirror's
                 // queue, and is no reason to refuse this one. When the bytes
                 // name no single change of their own — a document, a bundle —
@@ -1008,7 +1008,7 @@ impl ConfinedReplica {
         }
     }
 
-    /// Merge another participant's durable change: [`crate::Replica::apply`].
+    /// Merge another member's durable change: [`crate::Replica::apply`].
     ///
     /// # Errors
     ///
@@ -1064,7 +1064,7 @@ impl ConfinedReplica {
         result
     }
 
-    /// Merge another participant's durable change into `record`: this
+    /// Merge another member's durable change into `record`: this
     /// one ([`Self::apply`]), or one its app keeps beside it, a part of its
     /// chain ([`crate::Replica::apply_record`]), mirrored here as this one
     /// is. A change to a part not held yet waits for its whole document.
@@ -1144,7 +1144,7 @@ impl ConfinedReplica {
         result
     }
 
-    /// This participant's changes to the records held beside this one since
+    /// This member's changes to the records held beside this one since
     /// the last call, by record, admitted here first:
     /// [`crate::Replica::take_record_mutations`]. A part the worker started
     /// comes whole; it must be a part of a chain not held here yet.
@@ -1469,9 +1469,9 @@ mod tests {
         replica
     }
 
-    /// Two changes of another participant's on `replica`'s record, the second
+    /// Two changes of another member's on `replica`'s record, the second
     /// building on the first, each on its own: what arrives out of order.
-    fn another_participants_two_changes(replica: &ConfinedReplica) -> (Vec<u8>, Vec<u8>) {
+    fn another_members_two_changes(replica: &ConfinedReplica) -> (Vec<u8>, Vec<u8>) {
         let saved = replica.lock().mirror.save();
         let mut doc = tilo_automerge_isolate::load(&saved).unwrap();
         doc.set_actor(automerge::ActorId::random());
@@ -1499,12 +1499,12 @@ mod tests {
     }
 
     /// A change of the worker's own that waits for a dependency is not
-    /// published as if it were whole, and one of another participant's that
+    /// published as if it were whole, and one of another member's that
     /// waits is no reason to refuse it.
     #[test]
     fn the_workers_change_is_published_though_anothers_waits_for_what_it_builds_on() {
         let replica = begun();
-        let (first, second) = another_participants_two_changes(&replica);
+        let (first, second) = another_members_two_changes(&replica);
         // The second change arrives first: it builds on the first, which the
         // record does not hold yet, so it waits in the record's queue.
         replica

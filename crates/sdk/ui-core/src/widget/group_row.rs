@@ -3908,7 +3908,7 @@ impl GroupRow {
 impl Widget for GroupRow {
     crate::provides!(
         dyn crate::widget::FloatingSurfaceProvider,
-        dyn crate::collaboration::participants::CollaborationTopology,
+        dyn crate::collaboration::presences::CollaborationTopology,
         dyn crate::component_lifecycle::ComponentLifecycle
     );
 
@@ -4847,7 +4847,7 @@ impl crate::component_lifecycle::ComponentLifecycle for GroupRow {
     }
 }
 
-impl crate::collaboration::participants::CollaborationTopology for GroupRow {
+impl crate::collaboration::presences::CollaborationTopology for GroupRow {
     fn collaboration_children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
         self.groups
             .iter_mut()

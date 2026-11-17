@@ -760,7 +760,7 @@ pub(super) async fn handle_delta_prefix(
     // Every change of the prefix reaches the workspace's governor once it is
     // kept, as one sent alone does (`handle_delta`): an access request and
     // the next checkpoint arriving together must not hide the request from
-    // the governor's own participant.
+    // the governor's own key holder.
     let notices: Vec<Vec<u8>> = if governor_tap.is_some() {
         envelopes.iter().filter_map(governor_notice).collect()
     } else {

@@ -376,7 +376,7 @@ fn bot(installation: &str) -> tilo_actions::ActionInvoker {
 }
 
 tilo_test_env::scenario! {
-    /// Who may change how a participant appears.
+    /// Who may change how a member appears.
     fn an_appearance_is_admitted_only_valid_and_from_its_bot;
 
     phase an_appearance_is_admitted_only_from_the_bot_allowed_it;

@@ -1,4 +1,4 @@
-//! Agents as session participants: who an agent is, what it may touch, and
+//! Agents as session members: who an agent is, what it may touch, and
 //! the vocabulary a browser uses to see and steer it.
 //!
 //! An agent is a device of the user. It holds its own device key and a

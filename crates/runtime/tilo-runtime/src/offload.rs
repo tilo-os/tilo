@@ -359,7 +359,7 @@ impl OffloadPeers for PlanePeers {
             // has nothing to answer with, and waiting for it costs the run
             // here more than it could ever save.
             let targets: Vec<EndpointAddr> = plane
-                .participants(&workspace)
+                .key_holders(&workspace)
                 .await
                 .into_iter()
                 .filter(|key| reachable(&workspace, *key))

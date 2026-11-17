@@ -52,7 +52,7 @@ pub const MAX_EMOJI_BYTES: usize = 64;
 pub const MAX_CUSTOM_NAME: usize = 32;
 
 /// Separates the parts of a reaction's key: never part of an emoji or of a
-/// participant id.
+/// member id.
 const KEY_SEPARATOR: char = '\u{1f}';
 
 /// One reaction: who reacted with which emoji, and when.
@@ -71,11 +71,11 @@ pub struct Reaction {
 }
 
 impl Reaction {
-    /// Whether `participant` made this reaction themselves: not a bot
+    /// Whether `member` made this reaction themselves: not a bot
     /// reacting for someone elsewhere.
     #[must_use]
-    pub fn is_own(&self, participant: &MemberId) -> bool {
-        self.persona.is_none() && self.by == *participant
+    pub fn is_own(&self, member: &MemberId) -> bool {
+        self.persona.is_none() && self.by == *member
     }
 
     fn key(&self) -> String {
@@ -128,12 +128,12 @@ impl ReactionGroup {
         self.reactors.len()
     }
 
-    /// Whether `participant` is among them themselves.
+    /// Whether `member` is among them themselves.
     #[must_use]
-    pub fn includes(&self, participant: &MemberId) -> bool {
+    pub fn includes(&self, member: &MemberId) -> bool {
         self.reactors
             .iter()
-            .any(|reactor| reactor.persona.is_none() && reactor.by == *participant)
+            .any(|reactor| reactor.persona.is_none() && reactor.by == *member)
     }
 }
 
@@ -190,18 +190,18 @@ impl Reactions {
         groups
     }
 
-    /// Whether `participant` reacted with `emoji` themselves.
+    /// Whether `member` reacted with `emoji` themselves.
     #[must_use]
-    pub fn reacted(&self, emoji: &str, participant: &MemberId) -> bool {
-        self.entries.contains_key(&key_of(emoji, participant, None))
+    pub fn reacted(&self, emoji: &str, member: &MemberId) -> bool {
+        self.entries.contains_key(&key_of(emoji, member, None))
     }
 
-    /// The edit that adds `participant`'s reaction with `emoji`, or takes it
+    /// The edit that adds `member`'s reaction with `emoji`, or takes it
     /// back when they already reacted with it: what a click on a pill or a
     /// pick in the picker does.
     #[must_use]
-    pub fn toggle(&self, emoji: &str, participant: &MemberId) -> EditOp {
-        if self.reacted(emoji, participant) {
+    pub fn toggle(&self, emoji: &str, member: &MemberId) -> EditOp {
+        if self.reacted(emoji, member) {
             EditOp::Unreact {
                 emoji: emoji.to_owned(),
             }

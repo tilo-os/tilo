@@ -118,7 +118,7 @@ async fn signed_reviewed_feedback_retries_once_and_reads_a_retained_receipt() {
     let route = create_feedback_record(&mut browser).await;
     browser.peer.barrier().unwrap().recv().unwrap().unwrap();
     let submission = approved(&route);
-    let mut queued = participant(&mut browser, &route, &person);
+    let mut queued = member(&mut browser, &route, &person);
     queued
         .invoke(
             &ActionAddress::new(
@@ -135,8 +135,8 @@ async fn signed_reviewed_feedback_retries_once_and_reads_a_retained_receipt() {
     browser.peer.close();
     drop(browser);
     browser = Browser::open_workspace(&hosted, &device, &host, &workspace.workspace).await;
-    publish_participant(&mut browser, &route, &mutation);
-    submit_local_participant(&mut browser, &route, &submission, &person);
+    publish_member(&mut browser, &route, &mutation);
+    submit_local_member(&mut browser, &route, &submission, &person);
     assert_signed_canonical(&mut browser, &submission, &host.cert, &device.cert).await;
     let read_address = ActionAddress::new(
         chat::projection::item_id("feedback", &submission.id),
@@ -188,7 +188,7 @@ async fn signed_reviewed_feedback_retries_once_and_reads_a_retained_receipt() {
     ));
     assert_one_report(&mut browser, &route, &submission, &person).await;
     assert_local_only_report_is_not_a_receipt(&mut browser, &route, &submission).await;
-    let mut maintainer = participant(&mut browser, &route, &person);
+    let mut maintainer = member(&mut browser, &route, &person);
     maintainer
         .invoke(
             &ActionAddress::new(
@@ -201,7 +201,7 @@ async fn signed_reviewed_feedback_retries_once_and_reads_a_retained_receipt() {
             false,
         )
         .unwrap();
-    publish_participant(
+    publish_member(
         &mut browser,
         &route,
         &maintainer.take_mutation().unwrap().unwrap(),
@@ -567,13 +567,13 @@ async fn assert_local_only_report_is_not_a_receipt(
     );
 }
 
-fn submit_local_participant(
+fn submit_local_member(
     browser: &mut Browser,
     route: &DocumentRoute,
     submission: &Submission,
     person: &str,
 ) {
-    let mut replica = participant(browser, route, person);
+    let mut replica = member(browser, route, person);
     replica
         .invoke(
             &ActionAddress::new(
@@ -587,11 +587,11 @@ fn submit_local_participant(
         )
         .unwrap();
     if let Some(mutation) = replica.take_mutation().unwrap() {
-        publish_participant(browser, route, &mutation);
+        publish_member(browser, route, &mutation);
     }
 }
 
-fn participant(browser: &mut Browser, route: &DocumentRoute, person: &str) -> Replica {
+fn member(browser: &mut Browser, route: &DocumentRoute, person: &str) -> Replica {
     browser.pump();
     let changes = browser
         .documents
@@ -613,7 +613,7 @@ fn participant(browser: &mut Browser, route: &DocumentRoute, person: &str) -> Re
     .unwrap()
 }
 
-fn publish_participant(
+fn publish_member(
     browser: &mut Browser,
     route: &DocumentRoute,
     mutation: &collab_types::DocumentMutation,

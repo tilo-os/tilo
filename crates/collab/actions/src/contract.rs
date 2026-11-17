@@ -878,11 +878,11 @@ impl ActionContract {
 
     /// Whether a view under this contract shows its resource to callers other
     /// than its publisher: a read of the record ([`Self::reads_record`]) or
-    /// the caller's own participant view. Any other view changes only what
+    /// the caller's own presence view. Any other view changes only what
     /// its caller sees, and keeps the resource it alone discloses private
     /// (the action directory's disclosure, `agent_disclosure`).
     pub fn discloses_resource(&self) -> bool {
-        self.reads_record() || self.is_participant_view()
+        self.reads_record() || self.is_presence_view()
     }
 
     /// Which of a resource's views the action directory discloses it

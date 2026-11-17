@@ -64,7 +64,7 @@ pub(super) fn admitted_ops(
 /// The workspace replays its records to a device once, when it joins, before any
 /// window of an app may run; a window opened later, or after a restart,
 /// would otherwise never hold them (a chat's messages from before this
-/// device joined). Opening a record still asks its channel's participants
+/// device joined). Opening a record still asks its channel's members
 /// for the keys, as for any record.
 pub(super) fn held_tree_records(
     channels: &Mutex<BrokerChannels>,

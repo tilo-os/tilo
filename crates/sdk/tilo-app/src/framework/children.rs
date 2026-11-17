@@ -13,7 +13,7 @@
 //! - **One API.** The container is published beside the app's resource
 //!   ([`ui_core::record::children_resource_id`]): every listed child with
 //!   its own actions, carried out on its record, checked against the
-//!   participant's roles in the workspace as the app's own actions are,
+//!   member's roles in the workspace as the app's own actions are,
 //!   attributed to whoever invokes them and written into the child's
 //!   history.
 //! - **One lifecycle.** The container's `create` (a child with its first

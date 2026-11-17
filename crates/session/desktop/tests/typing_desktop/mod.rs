@@ -241,7 +241,7 @@ impl Demo {
         self.records.len()
     }
 
-    /// Change `app`'s record from outside its window, as another participant's
+    /// Change `app`'s record from outside its window, as another member's
     /// edit reaches it: their copy of the record, with their change, merges
     /// into this one, and the document moves under the app that shows it.
     pub fn change_elsewhere(&self, app: &str) {

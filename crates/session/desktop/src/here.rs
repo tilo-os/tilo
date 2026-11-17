@@ -30,7 +30,7 @@ pub use collab_types::presence::{
 pub use screen::{Screen, ScreenWindow};
 pub use waves::{WAVE_AGAIN_MS, Wave, WaveEar, WaveFrom, WaveOut};
 
-/// The most bytes of a person's own words, as their live presence carries them (a participant's
+/// The most bytes of a person's own words, as their live presence carries them (a member's
 /// activity line).
 const MAX_OWN_WORDS_BYTES: usize = 96;
 
@@ -733,7 +733,7 @@ impl HereState {
     }
 
     /// Say what this person is doing in their own words; `None` (or only spaces) clears it. On one
-    /// line, at most [`ui::MAX_STATUS_CHARS`] characters and as many bytes as a live participant's
+    /// line, at most [`ui::MAX_STATUS_CHARS`] characters and as many bytes as a live member's
     /// activity carries.
     pub fn set_own_words(&mut self, words: Option<String>) {
         let words = words
@@ -992,7 +992,7 @@ impl HereState {
     /// never share a colour while the ring has room for both, and every page, seeing the same
     /// workspace, settles it alike. A person is settled by who they are (their user root) so their
     /// other devices wear their colour; an agent by its own publisher, in the colour what it is
-    /// wears ([`ui::presence::participant_color`]) — the one its own shell publishes and its face,
+    /// wears ([`ui::presence::member_color`]) — the one its own shell publishes and its face,
     /// its card and its marks wear in every app.
     ///
     /// The colour someone claims for themselves is the one they wear: it is the colour they chose
@@ -1007,7 +1007,7 @@ impl HereState {
     pub fn colors(&self) -> HashMap<String, (u8, u8, u8)> {
         // Each device here, by the person it is (an agent by its own
         // publisher), with the colour its shell claimed where it claimed one and the
-        // one its kind wears where it claimed none: [`ui::presence::participant_color`],
+        // one its kind wears where it claimed none: [`ui::presence::member_color`],
         // the rule every surface asks.
         let present: Vec<Settling<'_>> = self
             .members
@@ -1158,7 +1158,7 @@ impl HereState {
     /// The numbers the people here are told apart by, this page's own person included. Keyed by
     /// person, so two devices of one person are one name to number, and numbered in the order the
     /// workspace admitted them, as its roster numbers them.
-    fn labels<'a>(&'a self) -> ui::presence::ParticipantLabels {
+    fn labels<'a>(&'a self) -> ui::presence::MemberLabels {
         let mut named: Vec<(&'a str, String)> = Vec::new();
         // One name per person, whoever of theirs spoke first: a device that has not said whose it
         // is yet does not keep their name out.
@@ -1178,7 +1178,7 @@ impl HereState {
             let label = member_name(member).map_or_else(guest_label, str::to_owned);
             add(&mut named, self.person_of(&member.publisher), label);
         }
-        ui::presence::ParticipantLabels::by_joining(named.iter().map(|(id, name)| {
+        ui::presence::MemberLabels::by_joining(named.iter().map(|(id, name)| {
             // A person is spelled by their root key, the one every record stores.
             let admitted = self.joined.get(*id).copied();
             (*id, name.as_str(), admitted)
@@ -1248,7 +1248,7 @@ impl HereState {
 /// One device here as the settlement reads it: its publisher, the person it
 /// is (an agent, itself), the colour its shell claimed for that person where it
 /// claimed one, and the colour its kind wears where it claimed none
-/// ([`ui::presence::participant_color`]).
+/// ([`ui::presence::member_color`]).
 type Settling<'a> = (&'a str, &'a str, Option<(u8, u8, u8)>, (u8, u8, u8));
 
 /// `publisher` 's colour in `colors` ([`HereState::colors`]), or the neutral face while the

@@ -1,6 +1,6 @@
-//! Delivered invocations resolve against the invoker's own participant view,
+//! Delivered invocations resolve against the invoker's own presence view,
 //! rebuilt at invoke time; the invoker comes from the host-set delivery, and a
-//! remote participant may only change its own view.
+//! remote presence may only change its own view.
 
 use super::*;
 use crate::collaboration::CollabEvent;
@@ -8,10 +8,10 @@ use automerge::{ROOT, ReadDoc, transaction::Transactable};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
-use tilo_actions::{ActionSpec, ExecutionLocus, OperationKind, ParticipantId, ResourceSpec};
+use tilo_actions::{ActionSpec, ExecutionLocus, OperationKind, PresenceId, ResourceSpec};
 
-const MARK_TYPE: &str = "test.participant-mark";
-const VIEW_TYPE: &str = "test.participant-view";
+const MARK_TYPE: &str = "test.presence-mark";
+const VIEW_TYPE: &str = "test.presence-view";
 
 /// Writes which view built it into the document.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -29,19 +29,19 @@ impl tilo_actions::Action for Mark {
 
 #[derive(Default)]
 struct Probe {
-    joined: Vec<ParticipantId>,
-    left: Vec<ParticipantId>,
+    joined: Vec<PresenceId>,
+    left: Vec<PresenceId>,
     host: bool,
-    labels: HashMap<ParticipantId, String>,
-    carets: HashMap<ParticipantId, usize>,
-    /// Require this record marker in the document a participant tree is built
+    labels: HashMap<PresenceId, String>,
+    carets: HashMap<PresenceId, usize>,
+    /// Require this record marker in the document a presence tree is built
     /// against (proves a bound component uses its own record document).
     require_marker: Option<&'static str>,
-    /// (type, the participant current while the View op ran)
-    view_ops: Vec<(String, Option<ParticipantId>)>,
+    /// (type, the presence current while the View op ran)
+    view_ops: Vec<(String, Option<PresenceId>)>,
 }
 
-/// A two-view widget: its own view, plus one per joined participant.
+/// A two-view widget: its own view, plus one per joined presence.
 struct TwoViews(Rc<RefCell<Probe>>);
 
 fn tree(view: &str) -> Vec<ResourceSpec> {
@@ -57,7 +57,7 @@ fn tree(view: &str) -> Vec<ResourceSpec> {
                 ActionSpec::operation("move-caret", "Move", OperationKind::View, VIEW_TYPE, &())
                     .unwrap()
                     .with_contract(tilo_actions::ActionContract::view())
-                    .participant_view(),
+                    .presence_view(),
             )
             .with_action(
                 ActionSpec::operation("zoom", "Zoom", OperationKind::View, VIEW_TYPE, &())
@@ -69,7 +69,7 @@ fn tree(view: &str) -> Vec<ResourceSpec> {
 
 impl Widget for TwoViews {
     crate::provides!(
-        dyn crate::collaboration::participants::Participants,
+        dyn crate::collaboration::presences::Presences,
         dyn crate::resources::PublishesResources,
         dyn crate::widget::ResourceOperations
     );
@@ -91,12 +91,12 @@ impl crate::widget::ResourceOperations for TwoViews {
         let Some(crate::host_operation::OperationRequest { type_id, .. }) = op.unscoped() else {
             return Ok(None);
         };
-        let participant = crate::invocation_scope::current_participant();
+        let presence = crate::invocation_scope::current_presence();
         let mut probe = self.0.borrow_mut();
-        if let Some(participant) = &participant {
-            *probe.carets.entry(participant.clone()).or_default() += 1;
+        if let Some(presence) = &presence {
+            *probe.carets.entry(presence.clone()).or_default() += 1;
         }
-        probe.view_ops.push((type_id.to_owned(), participant));
+        probe.view_ops.push((type_id.to_owned(), presence));
         Ok(Some(crate::widget::ResourceOperationStart::Completed(
             tilo_actions::ActionOutput::default(),
         )))
@@ -113,12 +113,12 @@ impl crate::resources::PublishesResources for TwoViews {
     }
     fn resources_for(
         &self,
-        participant: Option<&ParticipantId>,
+        presence: Option<&PresenceId>,
         doc: &automerge::AutoCommit,
     ) -> Vec<ResourceSpec> {
-        match participant {
+        match presence {
             None => self.resources(doc),
-            Some(participant) if self.0.borrow().joined.contains(participant) => {
+            Some(presence) if self.0.borrow().joined.contains(presence) => {
                 if let Some(marker) = self.0.borrow().require_marker
                     && !matches!(
                         doc.get(&ROOT, "marker"),
@@ -127,54 +127,51 @@ impl crate::resources::PublishesResources for TwoViews {
                 {
                     return Vec::new();
                 }
-                tree(participant.as_str())
+                tree(presence.as_str())
             }
             Some(_) => Vec::new(),
         }
     }
 }
 
-impl crate::collaboration::participants::Participants for TwoViews {
-    fn join_participant(&mut self, participant: &ParticipantId) -> bool {
+impl crate::collaboration::presences::Presences for TwoViews {
+    fn join_presence(&mut self, presence: &PresenceId) -> bool {
         let mut probe = self.0.borrow_mut();
-        if probe.joined.contains(participant) {
+        if probe.joined.contains(presence) {
             return false;
         }
-        probe.joined.push(participant.clone());
+        probe.joined.push(presence.clone());
         true
     }
-    fn leave_participant(&mut self, participant: &ParticipantId) {
+    fn leave_presence(&mut self, presence: &PresenceId) {
         let mut probe = self.0.borrow_mut();
-        probe.joined.retain(|joined| joined != participant);
-        probe.left.push(participant.clone());
+        probe.joined.retain(|joined| joined != presence);
+        probe.left.push(presence.clone());
     }
-    fn set_participant_label(&mut self, participant: &ParticipantId, label: &str) {
+    fn set_presence_label(&mut self, presence: &PresenceId, label: &str) {
         self.0
             .borrow_mut()
             .labels
-            .insert(participant.clone(), label.to_owned());
+            .insert(presence.clone(), label.to_owned());
     }
-    fn participant_presence(
-        &self,
-        _: &automerge::AutoCommit,
-    ) -> Vec<crate::widget::ParticipantPresence> {
+    fn presences(&self, _: &automerge::AutoCommit) -> Vec<crate::widget::ViewPresence> {
         let probe = self.0.borrow();
         probe
             .joined
             .iter()
-            .map(|participant| crate::widget::ParticipantPresence {
-                participant: participant.clone(),
-                label: probe.labels.get(participant).cloned(),
+            .map(|presence| crate::widget::ViewPresence {
+                presence: presence.clone(),
+                label: probe.labels.get(presence).cloned(),
                 key: crate::PresenceKey::Widget {
                     path: vec![crate::PathSegment::Field("wp_block".into())],
                 },
                 payload: crate::PresencePayload::Caret {
-                    pos: probe.carets.get(participant).copied().unwrap_or(0),
+                    pos: probe.carets.get(presence).copied().unwrap_or(0),
                 },
             })
             .collect()
     }
-    fn set_participant_host(&mut self, host: bool) {
+    fn set_remote_only(&mut self, host: bool) {
         self.0.borrow_mut().host = host;
     }
 }
@@ -189,8 +186,8 @@ fn app() -> (App, Rc<RefCell<Probe>>) {
     (app, probe)
 }
 
-fn participant() -> ParticipantId {
-    ParticipantId::new("agent-alpha-view").unwrap()
+fn presence() -> PresenceId {
+    PresenceId::new("agent-alpha-view").unwrap()
 }
 
 fn deliver(
@@ -220,11 +217,11 @@ fn who(app: &App) -> Option<String> {
 
 fn host_context(
     actor: &tilo_actions::Acting,
-    participant: Option<ParticipantId>,
+    presence: Option<PresenceId>,
 ) -> tilo_actions::ActionContext {
     tilo_actions::ActionContext::default()
         .with_group("11111111-1111-4111-8111-111111111111", "task", "task")
-        .with_host_actor(actor, participant)
+        .with_host_actor(actor, presence)
 }
 
 crate::testing::test_app_widget!(TwoViews, "Two views");
@@ -258,7 +255,7 @@ fn bound_factory(
 }
 
 tilo_test_env::scenario! {
-    fn a_participants_invocations_reach_only_its_own_view;
+    fn a_presences_invocations_reach_only_its_own_view;
 
     phase delivered_invocation_resolves_against_the_invokers_own_view;
     {
@@ -268,16 +265,16 @@ tilo_test_env::scenario! {
             1,
             "mark",
             &tilo_actions::Actor::Member(tilo_actions::MemberId::agent("scribe")),
-            Some(host_context(&tilo_actions::Acting::agent("scribe"), Some(participant()))),
+            Some(host_context(&tilo_actions::Acting::agent("scribe"), Some(presence()))),
         );
         assert_eq!(
             who(&app).as_deref(),
-            Some(participant().as_str()),
-            "built from the agent's participant tree, rebuilt at invoke time"
+            Some(presence().as_str()),
+            "built from the agent's presence tree, rebuilt at invoke time"
         );
         assert_eq!(
             probe.borrow().joined,
-            vec![participant()],
+            vec![presence()],
             "first use creates its view"
         );
 
@@ -290,18 +287,18 @@ tilo_test_env::scenario! {
             .expect("attributed change");
         assert_eq!(
             context.invoker,
-            Some(tilo_actions::ActionInvoker::agent("scribe").with_participant(participant()))
+            Some(tilo_actions::ActionInvoker::agent("scribe").with_presence(presence()))
         );
 
-        // Without a participant the same address resolves in this window's view.
+        // Without a presence the same address resolves in this window's view.
         deliver(&mut app, 2, "mark", &tilo_actions::Actor::Member(tilo_actions::MemberId::agent("scribe")), None);
         assert_eq!(who(&app).as_deref(), Some("own"));
     }
 
-    phase a_context_naming_another_actor_never_routes_to_a_participant_view;
+    phase a_context_naming_another_actor_never_routes_to_a_presence_view;
     {
         let (mut app, probe) = app();
-        probe.borrow_mut().joined.push(participant());
+        probe.borrow_mut().joined.push(presence());
         // The delivery's actor is authoritative; a context whose invoker names a
         // different actor (forged or stale) is not a route to anybody's view.
         deliver(
@@ -309,7 +306,7 @@ tilo_test_env::scenario! {
             3,
             "mark",
             &tilo_actions::Actor::Member(tilo_actions::MemberId::person("guest")),
-            Some(host_context(&tilo_actions::Acting::agent("scribe"), Some(participant()))),
+            Some(host_context(&tilo_actions::Acting::agent("scribe"), Some(presence()))),
         );
         assert_eq!(who(&app).as_deref(), Some("own"));
         let changes = app.state.doc.get_changes(&[]);
@@ -325,7 +322,7 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase a_remote_participant_may_only_change_its_own_view;
+    phase a_remote_presence_may_only_change_its_own_view;
     {
         let (mut app, probe) = app();
         deliver(
@@ -333,12 +330,12 @@ tilo_test_env::scenario! {
             4,
             "move-caret",
             &tilo_actions::Actor::Member(tilo_actions::MemberId::agent("scribe")),
-            Some(host_context(&tilo_actions::Acting::agent("scribe"), Some(participant()))),
+            Some(host_context(&tilo_actions::Acting::agent("scribe"), Some(presence()))),
         );
         assert_eq!(
             probe.borrow().view_ops,
-            vec![(VIEW_TYPE.to_owned(), Some(participant()))],
-            "a participant-view op runs inside the invoker's scope"
+            vec![(VIEW_TYPE.to_owned(), Some(presence()))],
+            "a presence-view op runs inside the invoker's scope"
         );
         // An untagged View op would move this window's private view.
         deliver(
@@ -346,9 +343,9 @@ tilo_test_env::scenario! {
             5,
             "zoom",
             &tilo_actions::Actor::Member(tilo_actions::MemberId::agent("scribe")),
-            Some(host_context(&tilo_actions::Acting::agent("scribe"), Some(participant()))),
+            Some(host_context(&tilo_actions::Acting::agent("scribe"), Some(presence()))),
         );
-        // A remote actor without its own participant cannot move any view.
+        // A remote actor without its own presence cannot move any view.
         deliver(&mut app, 6, "move-caret", &tilo_actions::Actor::Member(tilo_actions::MemberId::agent("scribe")), None);
         assert_eq!(
             probe.borrow().view_ops.len(),
@@ -357,15 +354,15 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase participant_lifecycle_and_host_mode_reach_the_widget_tree;
+    phase presence_lifecycle_and_host_mode_reach_the_widget_tree;
     {
         let (mut app, probe) = app();
-        assert!(app.join_participant(&participant()));
-        assert!(!app.join_participant(&participant()), "idempotent");
-        app.leave_participant(&participant());
-        assert_eq!(probe.borrow().left, vec![participant()]);
+        assert!(app.join_presence(&presence()));
+        assert!(!app.join_presence(&presence()), "idempotent");
+        app.leave_presence(&presence());
+        assert_eq!(probe.borrow().left, vec![presence()]);
         assert!(probe.borrow().joined.is_empty());
-        app.set_participant_host(true);
+        app.set_remote_only(true);
         assert!(probe.borrow().host);
         assert!(
             tilo_actions::api::survey(&app.collect_resources())
@@ -374,21 +371,21 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase participant_presence_is_reported_with_its_label;
+    phase a_presence_is_reported_with_its_label;
     {
         let (mut app, _probe) = app();
-        assert!(app.participant_presence().is_empty());
-        app.join_participant(&participant());
-        app.set_participant_label(&participant(), "Scribe");
-        let presence = app.participant_presence();
-        assert_eq!(presence.len(), 1);
-        assert_eq!(presence[0].participant, participant());
-        assert_eq!(presence[0].label.as_deref(), Some("Scribe"));
-        app.leave_participant(&participant());
-        assert!(app.participant_presence().is_empty());
+        assert!(app.presences().is_empty());
+        app.join_presence(&presence());
+        app.set_presence_label(&presence(), "Scribe");
+        let shown = app.presences();
+        assert_eq!(shown.len(), 1);
+        assert_eq!(shown[0].presence, presence());
+        assert_eq!(shown[0].label.as_deref(), Some("Scribe"));
+        app.leave_presence(&presence());
+        assert!(app.presences().is_empty());
     }
 
-    phase a_bound_component_builds_participant_trees_against_its_own_record;
+    phase a_bound_component_builds_presence_trees_against_its_own_record;
     {
         let probe = Rc::new(RefCell::new(Probe {
             require_marker: Some("bound-record"),
@@ -446,38 +443,38 @@ tilo_test_env::scenario! {
             .push(Box::new(crate::widget::TileHost::from_component(component)));
         let mut app = App::new_with_controlled_inputs(State::new(), Box::new(column));
         app.init_layout();
-        assert!(app.join_participant(&participant()), "join reaches the bound root");
+        assert!(app.join_presence(&presence()), "join reaches the bound root");
 
-        // The boundary forwards a participant tree through its own record
+        // The boundary forwards a presence tree through its own record
         // document; built on the outer App document (no marker) it would be empty,
         // and the default would fall back to the boundary's own (schema) view.
-        fn bound_participant_tree(
+        fn bound_presence_tree(
             widget: &dyn Widget,
             doc: &automerge::AutoCommit,
-            participant: &ParticipantId,
+            presence: &PresenceId,
             found: &mut Option<Vec<ResourceSpec>>,
         ) {
             if found.is_none() && widget.name() == "BoundComponent" {
                 *found = Some(crate::resources::resources_for(
                     widget,
-                    Some(participant),
+                    Some(presence),
                     doc,
                 ));
             }
-            widget.for_each_child(&mut |child| bound_participant_tree(child, doc, participant, found));
+            widget.for_each_child(&mut |child| bound_presence_tree(child, doc, presence, found));
         }
         let mut resources = None;
-        bound_participant_tree(
+        bound_presence_tree(
             app.root_widget.as_ref(),
             &app.state.doc,
-            &participant(),
+            &presence(),
             &mut resources,
         );
         assert!(resources.is_some(), "a bound component boundary");
         // Resolution of a component target also rebuilds the invoker's tree.
         let snapshots = {
             let _scope = crate::invocation_scope::InvokerScope::enter(
-                tilo_actions::ActionInvoker::agent("scribe").with_participant(participant()),
+                tilo_actions::ActionInvoker::agent("scribe").with_presence(presence()),
             );
             crate::bound_dispatch::discover_bound_resources(
                 app.root_widget.as_ref(),
@@ -494,10 +491,10 @@ tilo_test_env::scenario! {
             snapshot.resources(),
             &tilo_actions::ActionAddress::new("test.doc", "mark"),
         )
-        .expect("participant resolves mark");
+        .expect("presence resolves mark");
         assert_eq!(
             spec.fixed_invocation_encoding().unwrap().payload,
-            tilo_actions::EncodedAction::encode(MARK_TYPE, &Mark(participant().as_str().into()))
+            tilo_actions::EncodedAction::encode(MARK_TYPE, &Mark(presence().as_str().into()))
                 .unwrap()
                 .payload,
             "not this window's own view"

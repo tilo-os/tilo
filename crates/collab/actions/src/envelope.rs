@@ -29,7 +29,7 @@ pub struct ActionEnvelope {
     /// The action's declared execution locus, carried so the transport can
     /// honor it.
     pub locus: ExecutionLocus,
-    /// The participant that authored this action, when named — a person, an
+    /// The member that authored this action, when named — a person, an
     /// agent, or another session reached through [`crate::api`].
     ///
     /// These bytes become the Automerge actor the change commits under, so
@@ -76,7 +76,7 @@ impl ActionEnvelope {
     }
 
     /// The actor this action's change commits under: the authoring
-    /// participant when named, else the [`ActionId`]-derived actor. Read off
+    /// member when named, else the [`ActionId`]-derived actor. Read off
     /// the envelope so a replaying replica never substitutes its own.
     pub fn actor(&self) -> ActorId {
         match &self.actor {

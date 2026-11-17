@@ -40,7 +40,7 @@
 //! fallback.
 //!
 //! The protocol (`worker/proto.rs`) carries app ids, record ids, the
-//! participant's public name, Automerge bytes and the policy a caller holds
+//! member's public name, Automerge bytes and the policy a caller holds
 //! — never a key. What a worker returns is untrusted: Automerge bytes are
 //! admitted through `tilo-automerge-isolate` before the host signs them
 //! ([`ConfinedReplica::take_mutation`]).

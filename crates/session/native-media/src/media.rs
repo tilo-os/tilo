@@ -63,7 +63,7 @@ pub trait MediaSession: Send {
     /// join.
     fn tick(&mut self, now: Instant) -> Result<State, Issue>;
     /// The streams this device publishes for the call, never an inferred
-    /// participant roster.
+    /// member roster.
     fn inventory(&self) -> Inventory {
         Inventory::default()
     }

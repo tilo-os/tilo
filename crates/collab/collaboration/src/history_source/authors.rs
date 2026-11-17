@@ -18,7 +18,7 @@ pub trait ResolveAuthor {
 
 /// Display name used for an actor with no registered identity and no
 /// self-declared handle. Deliberately not a person's name.
-pub const UNKNOWN_AUTHOR_NAME: &str = "Unknown participant";
+pub const UNKNOWN_AUTHOR_NAME: &str = "Unknown member";
 
 /// Number of hex characters of the actor id shown next to a name. Eight is the
 /// convention `HistoryAuthor::identity_short` documents.
@@ -36,7 +36,7 @@ pub const SHORTCUT_NAMESPACE: &str = "shortcut:";
 
 /// Where the words a reader names software by come from — a history row, a presence mark, a
 /// catch-up line: every surface that says who made a change.
-pub trait ParticipantNames {
+pub trait MemberNames {
     /// What the reader calls the person `id`, when they know a name for them. A person a reader
     /// has no name for is [`UNKNOWN_AUTHOR_NAME`], never their key.
     fn person(&self, _id: &str) -> Option<String> {
@@ -61,7 +61,7 @@ pub trait ParticipantNames {
 /// What the actor `id` is called to the person reading `names`: a person by their name, an app
 /// by its own name in their language, an agent by the name it goes by. The id itself is never
 /// shown, and never cut short: a reader who knows no name reads [`UNKNOWN_AUTHOR_NAME`].
-pub fn actor_name(id: &str, names: &dyn ParticipantNames) -> String {
+pub fn actor_name(id: &str, names: &dyn MemberNames) -> String {
     let id = id.trim();
     if let Some(app) = id.strip_prefix(APP_NAMESPACE) {
         return names.app(app.trim());
@@ -206,7 +206,7 @@ pub fn app_words(app_id: &str) -> String {
 
 /// Longest self-declared handle we will render. Anything longer is almost
 /// certainly not a handle (it is a key, a blob, or an attempt to blow out the
-/// row) and falls through to the unknown-participant path.
+/// row) and falls through to the unknown-member path.
 const MAX_HANDLE_LEN: usize = 64;
 
 /// History row whose colour is already decided (a person's own colour).
@@ -556,7 +556,7 @@ mod tests {
     /// A reader whose words are the source language's, and who knows one person by name.
     struct Reader;
 
-    impl ParticipantNames for Reader {
+    impl MemberNames for Reader {
         fn person(&self, id: &str) -> Option<String> {
             (id == "ada").then(|| "Ada Lovelace".to_owned())
         }

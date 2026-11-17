@@ -185,7 +185,7 @@ pub use platform::{Platform, PlatformBlobs, PlatformWeb, PlatformWords};
 pub struct Config {
     /// The package the window runs.
     pub app: String,
-    /// The participant at the window.
+    /// The member at the window.
     pub me: String,
     pub mode: Mode,
     /// The device that carries out the outside effects the workspace queues.

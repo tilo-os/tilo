@@ -76,7 +76,7 @@ pub struct Spec {
     pub workspace: String,
     /// The window's instance.
     pub instance: u64,
-    /// The participant at the window.
+    /// The member at the window.
     pub person: String,
     /// The tilolang apps installed here, by id, each with the id its records are kept under: a
     /// package the app uses that is one of them is another app, read from its own record.
@@ -1604,7 +1604,7 @@ impl Hosted {
             _ => return false,
         };
         let address = ActionAddress::new(resource, action);
-        // The invoker is who the broker admitted, with the participant and the person it acts
+        // The invoker is who the broker admitted, with the member and the person it acts
         // for that the broker set in the delivery's context; nothing else is trusted.
         let invoker = ActionInvoker::delivered(&actor, context.as_deref());
         // A member's own record is that person's alone: anyone else is refused before anything

@@ -190,14 +190,14 @@ impl SwitcherModel {
     }
 }
 
-/// The strip of the active workspace that `participant_id` has open, from the tab their presence
+/// The strip of the active workspace that `member_id` has open, from the tab their presence
 /// names.
-fn strip_of(desktop: &Layout, participant_id: &str) -> Option<StripId> {
+fn strip_of(desktop: &Layout, member_id: &str) -> Option<StripId> {
     let workspace = desktop.active_workspace()?;
     let tab = workspace
         .present
         .iter()
-        .find(|here| here.device == participant_id)?
+        .find(|here| here.device == member_id)?
         .tab?;
     workspace
         .strips

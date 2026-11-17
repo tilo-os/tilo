@@ -38,7 +38,7 @@ use tilo_user_identity::{
 
 pub const WORKSPACE: &str = "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71";
 
-/// A test's scratch directory for a host's or a participant's state, removed
+/// A test's scratch directory for a host's or a member's state, removed
 /// with it. It is in memory where the system has one
 /// ([`tilo_paths::memory_temp_dir`], `/dev/shm` on Linux), as `tilo-app`'s
 /// test profiles are. Every write still syncs as it does for a person, but a
@@ -638,12 +638,12 @@ pub async fn admitted_to(peer: &Link, workspace: tilo_relay_protocol::WorkspaceI
     .await;
 }
 
-/// Wait until a participant of the workspace admitted `peer` to the note's channel.
+/// Wait until a member of the workspace admitted `peer` to the note's channel.
 pub async fn admitted(peer: &Link) {
     wait_keyed(peer, &route()).await;
 }
 
-/// Whether a participant of the workspace admitted `peer` to `route`'s channel: it holds its keys.
+/// Whether a member of the workspace admitted `peer` to `route`'s channel: it holds its keys.
 pub fn keyed(peer: &Link, route: &DocumentRoute) -> bool {
     let prefix = format!("route {}/{}:", route.app_id, route.record);
     peer.status()
@@ -652,16 +652,16 @@ pub fn keyed(peer: &Link, route: &DocumentRoute) -> bool {
         .any(|line| line.starts_with(&prefix) && line.contains(": ready;"))
 }
 
-/// Wait until a participant of the workspace admitted `peer` to `route`'s channel.
+/// Wait until a member of the workspace admitted `peer` to `route`'s channel.
 pub async fn wait_keyed(peer: &Link, route: &DocumentRoute) {
-    wait_for("a participant to admit the page", || {
+    wait_for("a member to admit the page", || {
         let ready = keyed(peer, route);
         async move { ready.then_some(()) }
     })
     .await;
 }
 
-/// Write `mutation` to `route` from `peer`'s device, once a participant admitted it to the
+/// Write `mutation` to `route` from `peer`'s device, once a member admitted it to the
 /// record's channel, and wait until the host has it: what the workspace holds of that record from
 /// then on.
 pub async fn written(peer: &Link, route: &DocumentRoute, mutation: &DocumentMutation) {

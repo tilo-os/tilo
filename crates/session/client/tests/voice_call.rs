@@ -37,7 +37,7 @@ async fn an_invited_browser_and_the_owners_device_take_part_in_a_governed_call()
         })
         .unwrap();
     let alone = native(alice_link, granted).await;
-    assert_eq!(alone.participants.len(), 1);
+    assert_eq!(alone.members.len(), 1);
     assert!(alone.directions.publish && alone.directions.subscribe);
 
     // Bob's browser joins the host's session; as a guest it may not end the call.
@@ -79,12 +79,12 @@ async fn an_invited_browser_and_the_owners_device_take_part_in_a_governed_call()
     let bob_grant = browser(&page_link, granted).await;
     assert!(bob_grant.directions.publish && bob_grant.directions.subscribe);
     let alice_grant = native(alice_link, |envelope| {
-        granted(envelope).filter(|grant| grant.participants.len() == 2)
+        granted(envelope).filter(|grant| grant.members.len() == 2)
     })
     .await;
     assert_eq!(alice_grant.call, started.call);
     assert_eq!(
-        bob_grant.participants.len(),
+        bob_grant.members.len(),
         2,
         "each side sees the whole roster"
     );
@@ -114,19 +114,14 @@ async fn an_invited_browser_and_the_owners_device_take_part_in_a_governed_call()
     .await;
     assert!(listening.directions.subscribe);
     let speaking = native(alice_link, |envelope| {
-        granted(envelope).filter(|grant| {
-            grant
-                .participants
-                .iter()
-                .any(|participant| !participant.publishes)
-        })
+        granted(envelope).filter(|grant| grant.members.iter().any(|member| !member.publishes))
     })
     .await;
     assert!(
         speaking
-            .participants
+            .members
             .iter()
-            .any(|participant| participant.user_public_key == bob.verifying_key().to_bytes()),
+            .any(|member| member.user_public_key == bob.verifying_key().to_bytes()),
         "Alice sees Bob, silenced"
     );
 

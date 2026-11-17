@@ -820,9 +820,9 @@ fn summonses(chat: &chat::Chat, part: &chat::parts::ChatPart) -> Vec<Id> {
             continue;
         }
         let agents: Vec<MemberId> = chat
-            .conversation_participants(&message.channel)
+            .conversation_members(&message.channel)
             .into_iter()
-            .filter(|participant| !participant.is_person())
+            .filter(|member| !member.is_person())
             .collect();
         for agent in agents {
             // The reply of the attempt the message is in: a retry moved it on, so the reply that
@@ -926,11 +926,11 @@ fn turns(
             .iter()
             .filter(|(_, message)| message.channel == *id)
             .collect();
-        for participant in chat.conversation_participants(id) {
-            if participant.is_person() {
+        for member in chat.conversation_members(id) {
+            if member.is_person() {
                 continue;
             }
-            let agent = participant.id().to_owned();
+            let agent = member.id().to_owned();
             // The person's newest message the agent has not answered: the reply its id and the
             // agent's derive, which only the agent's answer to that message carries. An agent's
             // reply that is still working (its work is not finished) leaves the turn going, so a
@@ -945,7 +945,7 @@ fn turns(
                         && person_of(&message.author).is_some()
                         && unanswered(part.messages.get(&chat::record::reply_id_at(
                             message_id,
-                            &participant,
+                            &member,
                             message.attempts,
                         )))
                 })
@@ -1136,7 +1136,7 @@ mod tests {
             Id::from_raw(CONVERSATION),
             chat::record::Conversation {
                 name: "Tide".into(),
-                participants: vec![MemberId::person(ME), MemberId::agent(AGENT)],
+                members: vec![MemberId::person(ME), MemberId::agent(AGENT)],
                 ..chat::record::Conversation::default()
             },
         );

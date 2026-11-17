@@ -96,7 +96,7 @@ tilo_test_env::scenario! {
         let off = bar(&dispatcher).flag("pin", "Pin", &Tally::paths().pinned, false);
         let entry = off.parts().actions.first().cloned().expect("a part");
         assert!(entry.toggles && !entry.on, "it shows the flag's value");
-        assert!(entry.enabled, "the participant may edit the record");
+        assert!(entry.enabled, "the member may edit the record");
 
         assert!(off.press(&press(&entry.id)));
         assert!(

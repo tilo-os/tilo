@@ -510,12 +510,12 @@ fn call_params() -> Vec<ActionParam> {
         ActionParam::optional(
             "publish",
             ParamType::Boolean,
-            "Start, set-directions: participants may send audio. Set-denial: the person may not. False when omitted.",
+            "Start, set-directions: members may send audio. Set-denial: the person may not. False when omitted.",
         ),
         ActionParam::optional(
             "subscribe",
             ParamType::Boolean,
-            "Start, set-directions: participants hear each other. Set-denial: the person may not. False when omitted.",
+            "Start, set-directions: members hear each other. Set-denial: the person may not. False when omitted.",
         ),
         ActionParam::optional(
             "person",

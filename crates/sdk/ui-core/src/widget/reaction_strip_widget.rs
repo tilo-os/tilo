@@ -87,7 +87,7 @@ impl ReactionStripWidget {
         }
     }
 
-    /// How a reactor is named in a pill's tooltip (a participant's display
+    /// How a reactor is named in a pill's tooltip (a member's display
     /// name); by default their id.
     #[must_use]
     pub fn with_names(mut self, names: impl Fn(&Reactor) -> String + 'static) -> Self {

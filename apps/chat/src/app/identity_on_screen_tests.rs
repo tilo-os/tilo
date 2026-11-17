@@ -6,7 +6,7 @@ use ui::widget::Widget;
 #[test]
 fn a_live_peer_joins_through_the_user_action() {
     let mut app = ChatApp::new(
-        crate::identity::LocalIdentity::for_participant(&MemberId::person("person-1")),
+        crate::identity::LocalIdentity::for_member(&MemberId::person("person-1")),
         ChatRuntime::Unavailable,
         ContentStore::memory(),
     )
@@ -52,7 +52,7 @@ fn a_live_peer_joins_through_the_user_action() {
 #[test]
 fn a_record_that_does_not_read_keeps_the_introduction_and_the_channels() {
     let mut app = ChatApp::new(
-        crate::identity::LocalIdentity::for_participant(&MemberId::person("person-1")),
+        crate::identity::LocalIdentity::for_member(&MemberId::person("person-1")),
         ChatRuntime::Unavailable,
         ContentStore::memory(),
     )
@@ -178,7 +178,7 @@ fn a_remote_saved_you_name_is_not_the_current_reader() {
     );
     assert!(
         shown.contains("2154"),
-        "ambiguous names must distinguish the actual participant"
+        "ambiguous names must distinguish the actual member"
     );
     assert_eq!(app.user_name(&app.me.id), crate::identity::DEMO_NAME);
     assert_eq!(
@@ -205,7 +205,7 @@ tilo_test_env::scenario! {
         assert_eq!(app.roster_label(), "People");
     }
 
-    phase an_unnamed_participant_is_not_shown_their_routing_token;
+    phase an_unnamed_member_is_not_shown_their_routing_token;
     {
         let app = ChatApp::new_ephemeral();
         let stranger = "peer@9007495404254172154";
@@ -250,14 +250,14 @@ tilo_test_env::scenario! {
         let mut app = ChatApp::new_ephemeral();
         let me = app.me.id.clone();
         let mut presence = PresenceCtx::default();
-        presence.set_self_participant(me.clone(), "Sam");
+        presence.set_self_member(me.clone(), "Sam");
         presence.set_display_name(MemberId::person("a-peer"), "sam");
         presence.set_display_name(MemberId::person("z-peer"), "Kim");
         app.adopt_workspace(&presence);
         assert_eq!(app.user_name(&MemberId::person("a-peer")), "sam (1)");
         assert_eq!(app.user_name(&me), "Sam (2)");
         assert_eq!(app.user_name(&MemberId::person("z-peer")), "Kim");
-        let offered: Vec<String> = app.participants().into_iter().map(|p| p.name).collect();
+        let offered: Vec<String> = app.members().into_iter().map(|p| p.name).collect();
         assert!(
             offered.contains(&"sam (1)".to_owned()),
             "the @ picker offers the numbered name, got {offered:?}"
@@ -292,7 +292,7 @@ fn a_call_names_each_person_once() {
         mentions: 0,
         archived: false,
         direct: false,
-        participants: Vec::new(),
+        members: Vec::new(),
     });
     let mut presence = PresenceCtx::default();
     presence.set_display_name(MemberId::person("crane"), "Clever Crane");
@@ -319,7 +319,7 @@ fn a_call_names_each_person_once() {
     assert_eq!(app.voice_people(&channel), vec![MemberId::person("crane")]);
     assert_eq!(app.user_name(&MemberId::person("crane")), "Clever Crane");
     let offered = app
-        .participants()
+        .members()
         .into_iter()
         .filter(|p| p.name == "Clever Crane")
         .count();
@@ -345,14 +345,16 @@ fn a_contact_goes_by_the_name_they_go_by_here_now() {
     presence.set_display_name(MemberId::person("ada-root"), "Ada");
     app.adopt_workspace(&presence);
     assert!(
-        app.display_name(&MemberId::person("ada-root")).contains("Ada"),
+        app.display_name(&MemberId::person("ada-root"))
+            .contains("Ada"),
         "the name they go by here now: {:?}",
         app.display_name(&MemberId::person("ada-root"))
     );
 
     app.adopt_workspace(&PresenceCtx::default());
     assert!(
-        app.display_name(&MemberId::person("ada-root")).contains("Swift Lynx"),
+        app.display_name(&MemberId::person("ada-root"))
+            .contains("Swift Lynx"),
         "gone: the workspace's name: {:?}",
         app.display_name(&MemberId::person("ada-root"))
     );
@@ -419,7 +421,7 @@ fn an_agents_answer_reads_by_the_workspaces_agent_record() {
     app.workspace_colors
         .insert(MemberId::agent("notes"), (255, 0, 0));
     assert_eq!(
-        app.participant_hue(&MemberId::agent("notes")),
+        app.member_hue(&MemberId::agent("notes")),
         ui::tokens::PresenceHue::from_slot(3)
     );
 
@@ -441,7 +443,10 @@ fn an_agents_answer_reads_by_the_workspaces_agent_record() {
         .expect("the row wears the agent's face");
     assert!(face.agent, "an agent's face, never a person's");
     assert_eq!(face.identity, "notes");
-    assert_eq!(face.colour, Some(app.identity_colour(&MemberId::agent("notes"))));
+    assert_eq!(
+        face.colour,
+        Some(app.identity_colour(&MemberId::agent("notes")))
+    );
 
     // Open, the conversation's bar leads with the same face.
     app.active_channel = conversation.to_string();

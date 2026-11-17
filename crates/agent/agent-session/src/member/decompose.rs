@@ -36,7 +36,7 @@ use tilo_peer_state::document_frame::DocumentRoute;
 
 use super::running::Running;
 use super::waits::{Arrival, added_lines, pending_brief, replan_for_news, short_app};
-use super::{AgentParticipant, MOST_NEWS_REPLANS, planning};
+use super::{AgentMember, MOST_NEWS_REPLANS, planning};
 use crate::model::ROLE_INTRO;
 use crate::planner::{
     MESSAGE_APPS, MOST_OBLIGATIONS, Obligations, PlanContext, PlanRole, Role, readable,
@@ -112,7 +112,7 @@ fn list_note() -> String {
     )
 }
 
-impl AgentParticipant {
+impl AgentMember {
     /// Coordinate tasks, each item of a task's checklist done by an agent
     /// of its own, or not ([`crate::profile::DECOMPOSE_ENV`]).
     pub fn decompose(&mut self, on: bool) {

@@ -137,7 +137,7 @@ impl Item {
 
 /// A coordinator's turn, while it is being planned.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(in crate::participant) enum Turn {
+pub(in crate::member) enum Turn {
     /// The first plan: the items.
     List,
     /// News arrived while the task ran.
@@ -162,15 +162,15 @@ pub(super) enum Next {
 }
 
 /// The coordinator of a running coordinated task.
-pub(in crate::participant) struct Coordinator {
-    pub(in crate::participant) task: String,
+pub(in crate::member) struct Coordinator {
+    pub(in crate::member) task: String,
     /// The task as it was given.
     pub(super) request: String,
     pub(super) items: Vec<Item>,
     /// The index of the item whose agent runs.
     pub(super) current: Option<usize>,
     /// The coordinator's turn being planned.
-    pub(in crate::participant) turn: Option<Turn>,
+    pub(in crate::member) turn: Option<Turn>,
     /// The check was taken.
     pub(super) checked: bool,
     /// The one round of fixes was taken.
@@ -189,7 +189,7 @@ pub(in crate::participant) struct Coordinator {
     pub(super) arrivals: Vec<Arrival>,
     /// What the message records others changed held before they did, since
     /// that was last taken in ([`Self::arrivals`]).
-    pub(in crate::participant) before: BTreeMap<DocumentRoute, Arc<str>>,
+    pub(in crate::member) before: BTreeMap<DocumentRoute, Arc<str>>,
     /// Nothing but its waits is left to do for now: it sleeps.
     pub(super) holding: bool,
     /// What the coordinator read while it listed the items.
@@ -199,21 +199,21 @@ pub(in crate::participant) struct Coordinator {
     /// output that produced content, with whether it only handed on what
     /// it was given: what each new item's agent starts with, so it acts on
     /// the records the items before it made.
-    pub(in crate::participant) made: Vec<DocumentRoute>,
-    pub(in crate::participant) touched: Vec<DocumentRoute>,
+    pub(in crate::member) made: Vec<DocumentRoute>,
+    pub(in crate::member) touched: Vec<DocumentRoute>,
     pub(super) produced: Vec<String>,
     pub(super) produced_by: Vec<String>,
     pub(super) last: Option<(ActionOutput, bool)>,
     pub(super) performed: usize,
     /// What the running item's agent last said in reply.
     pub(super) reply: Option<String>,
-    /// The running item's task, as [`super::super::AgentParticipant::end_running`]
+    /// The running item's task, as [`super::super::AgentMember::end_running`]
     /// took it, until what it did is taken in.
-    pub(in crate::participant) ended: Option<Running>,
+    pub(in crate::member) ended: Option<Running>,
 }
 
 impl Coordinator {
-    pub(in crate::participant) fn new(task: String, request: String) -> Self {
+    pub(in crate::member) fn new(task: String, request: String) -> Self {
         Self {
             task,
             request,
@@ -515,7 +515,7 @@ impl Coordinator {
     /// Who plans now, as the logs name it: the coordinator, on its turns;
     /// else the running item's agent, under the task id with the item's own
     /// suffix.
-    pub(in crate::participant) fn role(&self) -> PlanRole {
+    pub(in crate::member) fn role(&self) -> PlanRole {
         let coordinator = |item| PlanRole {
             role: "coordinator",
             item,
@@ -997,7 +997,7 @@ impl Coordinator {
 
     /// The items for the plan log: each with where it is, why, its apps,
     /// what it follows and waits for, and what it did.
-    pub(in crate::participant) fn logged(&self) -> serde_json::Value {
+    pub(in crate::member) fn logged(&self) -> serde_json::Value {
         self.items
             .iter()
             .enumerate()

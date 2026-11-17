@@ -1,6 +1,6 @@
-//! Who the participants are, by name: what a view or surface shows for an
+//! Who the members are, by name: what a view or surface shows for an
 //! id an action recorded ([`ActionCx::author`](tilo_resource::ActionCx::author))
-//! or the participant reading ([`RecordEnv::me`](super::RecordEnv::me)).
+//! or the member reading ([`RecordEnv::me`](super::RecordEnv::me)).
 //!
 //! The document records ids — the same on every replica, whatever anyone is
 //! called — and the host knows the names: the workspace's roster announces them
@@ -8,7 +8,7 @@
 //! so a renamed person, or one whose name arrived after their edit, reads
 //! correctly everywhere at once. Names are the workspace's labels: people who
 //! share a name carry the number presence tells them apart by
-//! ([`ui_core::presence::ParticipantLabels`]), and the participant reading
+//! ([`ui_core::presence::MemberLabels`]), and the member reading
 //! is shown their own name like anyone else's.
 
 use std::cell::RefCell;
@@ -26,13 +26,13 @@ use ui_core::widget::{Button, ButtonRole, Element, Stack, Tone};
 use super::ViewCx;
 use tilo_resource::MemberId;
 
-/// The names the host knows for the participants of the window's workspace.
+/// The names the host knows for the members of the window's workspace.
 /// Cloneable; clones read the same roster.
 #[derive(Clone)]
 pub struct People {
     roster: Rc<RefCell<Roster>>,
     revision: LocalState<u64>,
-    /// The participant this window is for, when someone edits it.
+    /// The member this window is for, when someone edits it.
     me: Option<MemberId>,
     /// The name this device knows its person by, for `me` until the workspace
     /// names them.
@@ -41,21 +41,21 @@ pub struct People {
 
 #[derive(Default, PartialEq)]
 struct Roster {
-    /// Each participant the workspace names, as presence labels them.
+    /// Each member the workspace names, as presence labels them.
     names: HashMap<MemberId, String>,
     /// The colour each of them wears, as presence paints them: the one they
     /// chose, or the one their identity derives.
     hues: HashMap<MemberId, PresenceHue>,
-    /// The label this session's participant goes by, when the workspace said.
+    /// The label this session's member goes by, when the workspace said.
     own: Option<String>,
     /// Everyone the workspace names, by name, as `@` offers them.
     members: Vec<MentionCandidate>,
-    /// The same participants as a history directory reads them: what a file
+    /// The same members as a history directory reads them: what a file
     /// version's person and device keys resolve through.
     registry: ui_core::history_source::AuthorDirectory,
 }
 
-/// A participant as a view shows them: what the workspace calls them, the id
+/// A member as a view shows them: what the workspace calls them, the id
 /// a face takes its photograph from, the colour it wears, and whether the
 /// workspace offers them as an agent.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -94,7 +94,7 @@ impl People {
     }
 
     /// The name to show for `member`: the roster's label; for the window's
-    /// own participant before the workspace names them, the name this device
+    /// own member before the workspace names them, the name this device
     /// knows its person by; else their id, which is what a capture's fixture
     /// people are called.
     pub fn name(&self, member: &MemberId) -> String {
@@ -122,7 +122,7 @@ impl People {
             .unwrap_or_else(|| ui_core::presence::member_hue(member, None))
     }
 
-    /// The workspace's people and agents, this window's own participant among
+    /// The workspace's people and agents, this window's own member among
     /// them, sorted by name: whom a picker of members offers
     /// ([`ViewCx::person_picker`]).
     pub fn members(&self) -> Vec<MentionCandidate> {
@@ -140,7 +140,7 @@ impl People {
             .cloned()
     }
 
-    /// The participants as a history directory reads them: what a file
+    /// The members as a history directory reads them: what a file
     /// version's person and device keys resolve through, and the hover that
     /// names the computer whose session vouched for the writer.
     pub fn registry(&self) -> ui_core::history_source::AuthorDirectory {
@@ -212,7 +212,7 @@ impl People {
             .any(|member| !member.is_self && member.id.is_person())
     }
 
-    /// Whether `id` is the participant this window is for.
+    /// Whether `id` is the member this window is for.
     pub fn is_me(&self, member: &MemberId) -> bool {
         self.me.as_ref() == Some(member)
     }
@@ -445,7 +445,7 @@ mod tests {
     use super::*;
 
     tilo_test_env::scenario! {
-        fn a_participant_reads_as_the_name_the_workspace_gives;
+        fn a_member_reads_as_the_name_the_workspace_gives;
 
         phase an_id_reads_as_the_rosters_name_or_itself;
         {
@@ -460,7 +460,7 @@ mod tests {
 
             let mut presence = PresenceCtx::default();
             presence.set_display_name(peer.clone(), "Bob");
-            presence.set_self_participant(me.clone(), "Ada");
+            presence.set_self_member(me.clone(), "Ada");
             assert!(people.follow(&presence));
             assert!(
                 !people.follow(&presence),

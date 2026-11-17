@@ -21,7 +21,7 @@ use ui_core::LocalState;
 use ui_core::automerge::ChangeHash;
 use ui_core::permissions::{ActionKind, LivePermissions, PermissionScope, TreePath, policy};
 
-/// What a view asks whether its participant may do.
+/// What a view asks whether its member may do.
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Asked {
     Need(ActionNeed),
@@ -108,7 +108,7 @@ impl<R: Resource> Submit<R> for Edit<R> {
 /// ([`Widget::settle`](ui_core::widget::Widget::settle)), for an editor that must
 /// see the result of its own edit before the next keystroke (the paragraph a
 /// split created, the cell a table insert made). Both check the
-/// participant's permission, apply through the replayable executor with
+/// member's permission, apply through the replayable executor with
 /// attribution, and are undone per author.
 ///
 /// # A drag as one undo step
@@ -241,7 +241,7 @@ pub(crate) struct DispatchState {
     /// Who edits through this dispatcher; `None` in a view of a past version.
     me: Option<MemberId>,
     /// A dispatcher lent to an admitted effect keeps its original custody.
-    /// Clones cannot turn later work into the host participant's invocation.
+    /// Clones cannot turn later work into the host member's invocation.
     /// Share the immutable scope rather than embedding its owner/lease in every
     /// view dispatcher: copying the full scope also inflates construction stacks.
     custody: Option<Rc<ui_core::invocation_scope::ResourceInvocationScope>>,
@@ -255,7 +255,7 @@ pub(crate) struct DispatchState {
     /// on their way through the session's action API.
     pub(crate) opener: super::reference::Opener,
     read_only: LocalState<bool>,
-    /// The participant's permissions as the host keeps them, for an action
+    /// The member's permissions as the host keeps them, for an action
     /// that needs less than writing (a reply a commenter may add) or more.
     /// Absent outside a host: a past version, which nobody edits, or a
     /// test's detached dispatcher, which may do what writing allows.
@@ -636,21 +636,21 @@ impl DispatchCore {
         }
     }
 
-    /// Whether the participant may react here: never in a past version,
+    /// Whether the member may react here: never in a past version,
     /// else as the workspace grants reactions, which the Commenter role does as
     /// it grants comments.
     pub(crate) fn may_react(&self) -> bool {
         !self.past && self.may(&reaction_need())
     }
 
-    /// Whether the participant may read what this window holds: one who may
+    /// Whether the member may read what this window holds: one who may
     /// not is found nothing of it.
     pub(crate) fn may_read(&self) -> bool {
         self.may(&ActionNeed::of(ActionKind::Read))
     }
 
     /// Whether the workspace this record is in has anyone besides this window's
-    /// participant, its owner or a member, here now or not: what it holds is
+    /// person: its owner or a member, here now or not: what it holds is
     /// shared with them.
     pub(crate) fn workspace_has_others(&self) -> bool {
         self.permissions
@@ -692,7 +692,7 @@ impl DispatchCore {
         ))
     }
 
-    /// Whether the participant may invite people to the workspace.
+    /// Whether the member may invite people to the workspace.
     pub(crate) fn may_invite(&self) -> bool {
         self.may_scope(&PermissionScope::governance(
             policy::roles::governance::INVITE,
@@ -1075,7 +1075,7 @@ impl<R: Resource> Dispatcher<R> {
             .collect()
     }
 
-    /// Who edits through this dispatcher: the participant this view is
+    /// Who edits through this dispatcher: the member this view is
     /// for, the same id an action they invoke reads as its author
     /// ([`ActionCx::author`](tilo_resource::ActionCx::author)). `None` in a
     /// view of a past version, which nobody edits.
@@ -1105,7 +1105,7 @@ impl<R: Resource> Dispatcher<R> {
         self.core.past
     }
 
-    /// Whether edits from this participant will be refused, as of now: it
+    /// Whether edits from this member will be refused, as of now: it
     /// follows role changes while the app runs. Surfaces use it to present
     /// themselves read-only instead of letting an edit bounce.
     pub fn read_only(&self) -> bool {
@@ -1113,7 +1113,7 @@ impl<R: Resource> Dispatcher<R> {
     }
 
     /// [`Self::read_only`] as observable state, for a widget that shows or
-    /// disables something while the participant may only view.
+    /// disables something while the member may only view.
     pub fn read_only_state(&self) -> LocalState<bool> {
         self.core.read_only.clone()
     }
@@ -1126,7 +1126,7 @@ impl<R: Resource> Dispatcher<R> {
         self.core.asked_state(Asked::Need(need))
     }
 
-    /// The participant's standing in the workspace as the host keeps it when
+    /// The member's standing in the workspace as the host keeps it when
     /// called: who they are, the workspace's policy and what bounds them. For a
     /// runtime that decides its own invocations (a tilolang program's) by
     /// the policy the API decides by. `None` outside a host.
@@ -1140,7 +1140,7 @@ impl<R: Resource> Dispatcher<R> {
         }
     }
 
-    /// Whether the participant may govern the workspace (invite, grant, change
+    /// Whether the member may govern the workspace (invite, grant, change
     /// its settings), as observable view state: for an owner's pane.
     pub fn govern_state(&self) -> LocalState<bool> {
         self.core.asked_state(Asked::Govern)
@@ -1157,7 +1157,7 @@ impl<R: Resource> Dispatcher<R> {
     }
 
     /// The same dispatcher deciding by `permissions`, for a test of a
-    /// surface whose participant may only comment, or only view.
+    /// surface whose member may only comment, or only view.
     #[cfg(any(test, feature = "test-support"))]
     #[must_use]
     pub fn with_permissions(self, permissions: LivePermissions) -> Self {
@@ -1166,13 +1166,13 @@ impl<R: Resource> Dispatcher<R> {
         self
     }
 
-    /// Whether the participant may, as of now, do what `need` is: an
+    /// Whether the member may, as of now, do what `need` is: an
     /// undoable change for most edits, one of the comments for a reply.
     pub fn may(&self, need: &ActionNeed) -> bool {
         self.core.may(need)
     }
 
-    /// Whether the participant may, as of now, change the workspace's settings.
+    /// Whether the member may, as of now, change the workspace's settings.
     pub fn may_govern(&self) -> bool {
         self.core.may_govern()
     }
@@ -1183,7 +1183,7 @@ impl<R: Resource> Dispatcher<R> {
         self.core.workspace_has_others() || people.others_here()
     }
 
-    /// Whether the participant may apply `action`
+    /// Whether the member may apply `action`
     /// ([`tilo_resource::need_of`]).
     pub fn may_apply(&self, action: &R::Action) -> bool {
         self.core.may(&(self.permission_of)(action))
@@ -1218,7 +1218,7 @@ impl<R: Resource> Dispatcher<R> {
         self.core.said.clone()
     }
 
-    /// Why `action` may not be applied by this participant.
+    /// Why `action` may not be applied by this member.
     fn not_allowed(&self, action: &R::Action) -> ActionError {
         ActionError::Refused(self.core.not_allowed(&(self.permission_of)(action)))
     }
@@ -1226,7 +1226,7 @@ impl<R: Resource> Dispatcher<R> {
     /// Invoke one of the app's effects (`dispatcher.effect(&Backups::BackUp)`)
     /// through the same API as a button bound to it: permission, the
     /// effect's availability and a destructive effect's confirmation are
-    /// checked, then its handler runs. A participant who may only view still
+    /// checked, then its handler runs. A member who may only view still
     /// invokes the effects declared `kind = "read"`.
     pub fn effect<E: Effect>(&self, effect: &E) {
         self.core.queue_invocation(
@@ -1247,7 +1247,7 @@ impl<R: Resource> Dispatcher<R> {
     /// dispatcher lent to one) this is `false`, and the surface submits
     /// the effect ([`Self::effect`]) for the host to check and confirm as
     /// for any caller. So it is in a past version, and when the
-    /// participant's role does not grant what the declaration needs.
+    /// member's role does not grant what the declaration needs.
     pub fn is_own_gesture<E: Effect>(&self, effect: &E) -> bool {
         if !self.gesture_is_own() {
             return false;
@@ -1341,12 +1341,12 @@ impl<R: Resource> Dispatcher<R> {
         );
     }
 
-    /// Whether the participant may take `invoke`: what its declaration, or
+    /// Whether the member may take `invoke`: what its declaration, or
     /// the typed value it applies, needs. One this resource does not declare
     /// (an edit bound to a surface's view state) is left to the host, which
     /// checks what its published action needs. A surface asks before work
     /// that only feeds a write (an index it would keep with a row), so a
-    /// participant who may not make the write is not sent it.
+    /// member who may not make the write is not sent it.
     pub fn may_invoke(&self, invoke: &Invoke<R>) -> bool {
         // A reaction is decided where the workspace places it, below the
         // reactions field, as the API decides it: someone who may only
@@ -1375,7 +1375,7 @@ impl<R: Resource> Dispatcher<R> {
 
     /// Open the platform search with `request`, narrowed to this app or one
     /// part of it (`SearchRequest::within`). Searching is a view, so a
-    /// participant who may only view can search too.
+    /// member who may only view can search too.
     pub fn open_search(&self, request: &ui_core::search::SearchRequest) {
         self.core.queue.borrow_mut().push_back((
             (
@@ -1390,7 +1390,7 @@ impl<R: Resource> Dispatcher<R> {
     /// such as an item) as a control bound to its `share-link` would: the
     /// framework copies it to the clipboard and reports it in
     /// [`Self::landed`], or why there is none in [`Self::refused`]. A link
-    /// grants nothing, so a participant who may only view asks too.
+    /// grants nothing, so a member who may only view asks too.
     pub fn share_link(&self, resource: &str) {
         self.core.queue_invocation(
             ActionAddress::new(resource, tilo_resource::share::SHARE_LINK),
@@ -1735,7 +1735,7 @@ impl<R: Resource> Dispatcher<R> {
     }
 
     /// Apply one typed action to the document `edits` lends — an event's,
-    /// or a settle pass's — now, attributed to the participant, with history
+    /// or a settle pass's — now, attributed to the member, with history
     /// recording what the action did.
     /// One event's actions are one undo step, and an action that continues
     /// the previous one ([`Resource::coalesces`], the next letter of a word)
@@ -1744,7 +1744,7 @@ impl<R: Resource> Dispatcher<R> {
     /// which asks the person first ([`Self::apply`]).
     ///
     /// # Errors
-    /// Returns [`ActionError::Refused`] for a participant who may only view,
+    /// Returns [`ActionError::Refused`] for a member who may only view,
     /// and the action's own refusal; nothing is written either way.
     pub fn apply_now(&self, edits: &mut Edits<'_>, action: &R::Action) -> Result<(), ActionError> {
         self.apply_now_as(edits, action, self.core.context(), false)
@@ -1874,7 +1874,7 @@ impl<R: Resource> Dispatcher<R> {
     /// The dispatcher of a record the app keeps beside its own in the workspace,
     /// published at `id` (the parts of a chain): its queued invocations are
     /// addressed to `id`, `apply` applies one now, and what an action needs
-    /// is its own declared need, checked against the participant's roles in
+    /// is its own declared need, checked against the member's roles in
     /// the workspace as this resource's actions are.
     pub(crate) fn for_workspace_record<C: Resource>(
         &self,
@@ -2024,7 +2024,7 @@ impl<R: Resource> Dispatcher<R> {
     }
 }
 
-/// Whether the participant `core` edits for may take the action `id` the
+/// Whether the member `core` edits for may take the action `id` the
 /// resource's `declarations` may declare: what its declaration needs; a
 /// group of edits what writing does; anything else what reading does.
 fn may_declared(

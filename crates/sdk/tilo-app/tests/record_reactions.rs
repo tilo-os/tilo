@@ -35,7 +35,7 @@ impl ResourceApp for PosterApp {
     }
 }
 
-/// The participant a test app edits as.
+/// The member a test app edits as.
 const ME: &str = "test-author";
 
 fn press(app: &mut TestApp<PosterApp>, emoji: &str) {

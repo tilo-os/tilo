@@ -471,7 +471,7 @@ pub(crate) struct Music {
     effect_replies: Vec<(tilo_actions::InvocationId, ui::framework::EffectReply)>,
     offline_errors: HashMap<String, String>,
 
-    /// Where library edits go: the dispatcher applies each as the participant's
+    /// Where library edits go: the dispatcher applies each as the member's
     /// attributed, undoable action; `None` until the surface is attached.
     dispatcher: Option<ui::framework::Dispatcher<crate::model::Library>>,
     actions: Option<ui::framework::Actions<Library>>,
@@ -967,7 +967,7 @@ impl Music {
         self.device_cache.get(id).copied().unwrap_or_default()
     }
 
-    /// The one api for a library edit: checked against the participant's permissions,
+    /// The one api for a library edit: checked against the member's permissions,
     /// attributed, undoable and replayed on peers. Callers reload afterwards.
     fn perform_action(
         &mut self,

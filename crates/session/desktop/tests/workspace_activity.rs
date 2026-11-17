@@ -233,7 +233,7 @@ tilo_test_env::scenario! {
     }
 
     phase workspace_activity_lists_content_and_filters_by_the_people_it_names;
-    // Listing a read marker, or offering a filter for a participant no row can be attributed to, must
+    // Listing a read marker, or offering a filter for a member no row can be attributed to, must
     // fail this regression.
     {
         use automerge::{ActorId, transaction::CommitOptions};

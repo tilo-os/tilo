@@ -30,7 +30,7 @@ tilo_test_env::scenario! {
                     address: tilo_actions::ActionAddress::new("fixture", "choose"),
                     argument: None,
                     actor: tilo_actions::Actor::Member(tilo_actions::MemberId::person("original-caller")),
-                    participant: None,
+                    presence: None,
                 },
                 fixture.owner.broker_route().unwrap(),
                 Arc::new(move || {
@@ -92,7 +92,7 @@ fn worker_case(expired: bool) {
             address: tilo_actions::ActionAddress::new("fixture", "open-uri"),
             argument: None,
             actor: tilo_actions::Actor::Member(tilo_actions::MemberId::person("original-caller")),
-            participant: None,
+            presence: None,
         },
         fixture.owner.broker_route().unwrap(),
         Arc::new(move || {

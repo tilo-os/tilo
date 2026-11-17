@@ -4,12 +4,12 @@
 //! the host takes part in the groups as this device's one peer and asks
 //! this service for their keys ([`DeviceGroupKeys`]), so its apps get
 //! their route keys without any network. In a workspace
-//! hosted elsewhere it is one participant among the workspace's member devices:
+//! hosted elsewhere it is one key holder among the workspace's member devices:
 //! it asks them for access over the workspace's relay session, follows and
 //! checks their commits against the workspace's governance, and commits itself
 //! when the group falls behind the membership. While nobody who can admit
 //! it is online, groups this device already reads keep their keys and a
-//! new request waits, sent again until a participant answers.
+//! new request waits, sent again until a key holder answers.
 use super::joined::Joined;
 use collab_types::Ed25519PublicKey;
 use key_group::VaultKey;

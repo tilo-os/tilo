@@ -309,7 +309,7 @@ impl Task {
     }
 
     /// Follow what `workspace_id`'s governance says now: who its members are,
-    /// and the channel commits that waited for a participant it now admits.
+    /// and the channel commits that waited for a member it now admits.
     pub(super) fn follow_governance(&mut self, workspace_id: WorkspaceId) {
         self.planes_due.insert(workspace_id);
         self.land_admitted(workspace_id);
@@ -348,7 +348,7 @@ impl Task {
         }
         self.pump_channels(true);
         // A record opened before the governance admitted it waits with its
-        // channel unopened: opening it here asks the participants for the keys
+        // channel unopened: opening it here asks the members for the keys
         // the writes it holds wait on.
         let unopened: Vec<DocumentRoute> =
             self.engine.held_writes().lock().keys().cloned().collect();

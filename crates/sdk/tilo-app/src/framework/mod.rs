@@ -47,7 +47,7 @@
 //! # Test the public workflow
 //!
 //! [`testing::TestApp`] mounts the real app on an isolated profile. Start with
-//! [`actions`](testing::HeadlessApp::actions) to discover the participant's
+//! [`actions`](testing::HeadlessApp::actions) to discover the member's
 //! complete action contracts, then [`call_on`](testing::HeadlessApp::call_on)
 //! using the discovered address and JSON arguments. Test a refusal before
 //! [`call_confirmed_on`](testing::HeadlessApp::call_confirmed_on) for a destructive
@@ -248,7 +248,7 @@
 //! * **Projections** — an outside consequence an action recorded in the
 //!   document (an outbox, a filesystem operation, a device's configuration)
 //!   — are drained with [`RecordEnv::outbox`]: the framework runs the drain in
-//!   the live app after every change, on every participant's device, and
+//!   the live app after every change, on every member's device, and
 //!   the drain acknowledges each entry with an action.
 //! * **Files of the mounted filesystem** an app shows (a file manager's
 //!   selected file) have a history of their own, kept by the filesystem's
@@ -292,7 +292,7 @@
 //!   resource's publication and nothing beside it that changes the document:
 //!   a document action a content widget publishes through its own
 //!   `PublishesResources` is dropped (a debug build stops at it).
-//! * **A participant without a window** — an agent, a service, a script —
+//! * **A member without a window** — an agent, a service, a script —
 //!   acts through the app's own view mounted over the record and never
 //!   drawn ([`AttachedView`]): the same API as a person, checked against
 //!   its permissions, attributed to it (an agent acting for its person) and

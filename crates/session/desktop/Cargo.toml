@@ -16,7 +16,7 @@ path = "tests/it.rs"
 [features]
 # This desktop presents another device's shared window, so the surface
 # decodes it into a tile. A screenless host that links this crate only for a
-# contract it holds (an agent's participant, with the receipt transport)
+# contract it holds (an agent's member, with the receipt transport)
 # turns it off and links no media stack.
 default = ["peer-view"]
 peer-view = ["tilo-desktop-surface/peer-view"]

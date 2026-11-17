@@ -33,7 +33,7 @@ use tilo_relay_protocol::Envelope;
 use tilo_relay_protocol::voice::{CallOperation, VoiceGrant};
 use tilo_test_env::SpawnUnderEnvLockAsync as _;
 
-/// One tick of the native participant: a page publishes its pictures as its
+/// One tick of the native member: a page publishes its pictures as its
 /// encoders make them, and the device at the other end of its call sends its
 /// own at the frames a camera makes.
 const TICK: Duration = Duration::from_millis(20);
@@ -64,7 +64,7 @@ fn grant_json(grant: &VoiceGrant) -> Value {
         "call": hex::encode(grant.call), "epoch": grant.epoch,
         "participation": hex::encode(grant.participation),
         "directions": grant.directions,
-        "participants": grant.participants.iter().map(|p| json!({
+        "members": grant.members.iter().map(|p| json!({
             "device": hex::encode(p.device_public_key),
             "user": hex::encode(p.user_public_key), "publishes": p.publishes,
         })).collect::<Vec<_>>(),
@@ -387,7 +387,7 @@ async fn a_page_and_a_native_device_exchange_pictures_in_a_governed_call() {
         if path == "/api/channel" {
             return text(channel_id.clone());
         }
-        // The page's own device, and the device of the native participant
+        // The page's own device, and the device of the native member
         // the page's picture comes from.
         if path == "/api/host" {
             return text(page_host.clone());

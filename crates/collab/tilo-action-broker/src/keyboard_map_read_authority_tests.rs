@@ -214,7 +214,7 @@ async fn keyboard_map_read_retains_certified_owner_and_rejects_stale_worker_witn
             let wire_id = facade.state().remote_job(&caller, &request.invocation).unwrap();
             let delivered = ui::invocation_scope::PublishedInvocationRequest {
                 wire_id, invocation: request.invocation, address: request.target.address.clone(), argument: None,
-                actor: tilo_actions::MemberId::person(actor.clone()).into(), participant: Some(tilo_actions::ParticipantId::for_execution(caller.execution_id().unwrap())),
+                actor: tilo_actions::MemberId::person(actor.clone()).into(), presence: Some(tilo_actions::PresenceId::for_execution(caller.execution_id().unwrap())),
             };
             let lease = authorize(&delivered).unwrap();
             assert_eq!(delivered.actor, tilo_actions::MemberId::person(actor).into());

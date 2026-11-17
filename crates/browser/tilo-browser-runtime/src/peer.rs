@@ -1325,13 +1325,13 @@ impl From<tilo_relay_protocol::voice::Directions> for JsDirections {
     }
 }
 
-/// One call participant: device and person as hex.
+/// One call member: device and person as hex.
 #[derive(Serialize)]
 #[allow(
     clippy::struct_excessive_bools,
     reason = "each bool is its own field the page reads: publishes, camera, screen, muted, deafened"
 )]
-struct JsVoiceParticipant {
+struct JsVoiceMember {
     device: String,
     user: String,
     publishes: bool,
@@ -1344,19 +1344,17 @@ struct JsVoiceParticipant {
     deafened: bool,
 }
 
-fn voice_participants(
-    participants: Vec<tilo_relay_protocol::voice::VoiceParticipant>,
-) -> Vec<JsVoiceParticipant> {
-    participants
+fn voice_members(members: Vec<tilo_relay_protocol::voice::VoiceMember>) -> Vec<JsVoiceMember> {
+    members
         .into_iter()
-        .map(|participant| JsVoiceParticipant {
-            device: hex::encode(participant.device_public_key),
-            user: hex::encode(participant.user_public_key),
-            publishes: participant.publishes,
-            camera: participant.showing.camera,
-            screen: participant.showing.screen,
-            muted: participant.showing.muted,
-            deafened: participant.showing.deafened,
+        .map(|member| JsVoiceMember {
+            device: hex::encode(member.device_public_key),
+            user: hex::encode(member.user_public_key),
+            publishes: member.publishes,
+            camera: member.showing.camera,
+            screen: member.showing.screen,
+            muted: member.showing.muted,
+            deafened: member.showing.deafened,
         })
         .collect()
 }
@@ -1368,7 +1366,7 @@ struct JsVoiceGrant {
     call: String,
     epoch: u64,
     directions: JsDirections,
-    participants: Vec<JsVoiceParticipant>,
+    members: Vec<JsVoiceMember>,
 }
 
 /// A call of the workspace as `web/voice.mjs` lists it.
@@ -1382,7 +1380,7 @@ struct JsCall {
     app: String,
     record: String,
     channel: String,
-    participants: Vec<JsVoiceParticipant>,
+    members: Vec<JsVoiceMember>,
 }
 
 fn call_state(state: &tilo_relay_protocol::voice::CallState) -> serde_json::Value {
@@ -1523,7 +1521,7 @@ fn voice_event(
                                 app: summary.app_id,
                                 record: summary.record_id,
                                 channel: summary.channel_id,
-                                participants: voice_participants(summary.participants),
+                                members: voice_members(summary.members),
                             })
                             .collect(),
                     ),
@@ -1564,7 +1562,7 @@ fn voice_event(
                     call: hex::encode(grant.call),
                     epoch: grant.epoch,
                     directions: grant.directions.into(),
-                    participants: voice_participants(grant.participants),
+                    members: voice_members(grant.members),
                 },
             }
         }
@@ -2175,7 +2173,7 @@ impl WasmPeer {
     }
 
     /// Say this page's `value` of itself in `workspace` (the live layer's
-    /// value, JSON: `{participant, place, layout, focus, selection, pointer,
+    /// value, JSON: `{member, place, layout, focus, selection, pointer,
     /// chat, reaction, wave, following}`): the board keeps what changed and
     /// publishes it on its own schedule, as every device's presence goes.
     /// Resolves to when it next has something to say, in `Date.now()` ms

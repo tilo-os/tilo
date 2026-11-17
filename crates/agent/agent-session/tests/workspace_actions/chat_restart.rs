@@ -84,7 +84,7 @@ async fn round(seed: u64) {
                             category: None,
                             kind: None,
                             topic: None,
-                            participants: None,
+                            members: None,
                         },
                     ),
                 )

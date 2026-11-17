@@ -140,7 +140,7 @@ impl AppBrokerState {
 /// very route its package declares. The launcher verified which app it
 /// released and for whom, the same durable admission a host-mounted worker's
 /// private descriptor carries, so a journaled broker admits it there. The
-/// participant's own admission is decided after, and separately: an agent still
+/// member's own admission is decided after, and separately: an agent still
 /// joins only through the workspace's record of its agents
 /// ([`super::admit_kept_agent`]), and a host-scope worker still delegates no
 /// agent (the join refuses that). This grants no authority by itself — it only

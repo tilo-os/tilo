@@ -10,7 +10,7 @@
     clippy::panic,
     clippy::too_many_lines,
     clippy::significant_drop_tightening,
-    reason = "in a test these are the assertion, not a hazard; each test is one transcript between a native participant and a browser"
+    reason = "in a test these are the assertion, not a hazard; each test is one transcript between a native member and a browser"
 )]
 
 use tilo_session_client::{Cmd, Outbox};

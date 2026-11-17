@@ -22,7 +22,7 @@ impl Workspaces {
     /// and to whoever catches up later, and handed to the workspace's direct
     /// link, which carries them to the member devices it holds. A member
     /// linked directly hears nothing the relay retains: without the link, the
-    /// host's access request never reaches the participants that could admit
+    /// host's access request never reaches the key holders that could admit
     /// it, nor its genesis or commits, so a host is never let into a channel
     /// a member opened while every member's request reaches the host. The
     /// link already carries what members send each other; this is the

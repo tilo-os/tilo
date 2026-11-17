@@ -2,7 +2,7 @@
 //! an action on the shared document, answered against the current state and
 //! mirrored into the local view.
 
-use super::participants::note_participant_outcome;
+use super::presences::note_presence_outcome;
 use crate::WpFormat;
 use crate::effects::WordProcessorEffect;
 use crate::i18n::t;
@@ -11,13 +11,13 @@ use crate::word_processor::Caret;
 use automerge::AutoCommit;
 use std::collections::HashMap;
 use tilo_doc::snapshot::{AttrVal, BlockView};
-use ui::ParticipantPresence;
+use ui::ViewPresence;
 use ui::tilo_resource::Effect as _;
 use ui::widget::toast::ToastKind;
 
 use super::{
     BoundRows, Editor, block_presence_key, inline_mark, local_version, open_request,
-    participant_presence_payload, save_request, to_spans,
+    presence_payload, save_request, to_spans,
 };
 
 impl Editor {
@@ -30,21 +30,18 @@ impl Editor {
             .wp_resource_ctx(doc)
             .map(|ctx| crate::actions::search_rows(&ctx, doc))
             .unwrap_or_default();
-        let mut participants = HashMap::new();
-        let known: Vec<_> = self.participants.participants().cloned().collect();
-        for participant in known {
+        let mut presences = HashMap::new();
+        let known: Vec<_> = self.presences.presences().cloned().collect();
+        for presence in known {
             let Some(ctx) = self
-                .participant_view_or_default(&participant, doc)
+                .presence_view_or_default(&presence, doc)
                 .and_then(|view| view.ctx(doc))
             else {
                 continue;
             };
-            participants.insert(participant, crate::actions::search_rows(&ctx, doc));
+            presences.insert(presence, crate::actions::search_rows(&ctx, doc));
         }
-        self.bound = BoundRows {
-            local,
-            participants,
-        };
+        self.bound = BoundRows { local, presences };
     }
 
     pub(super) fn adopt_local_outcome(&mut self, state: &AutoCommit) {
@@ -71,7 +68,7 @@ impl Editor {
             Some(doc) => doc.clone(),
             None => return Some(Err("the document is not at hand".into())),
         };
-        let participant = ui::invocation_scope::current_participant();
+        let presence = ui::invocation_scope::current_presence();
         // An image told the heading `after` goes at that paragraph's end, found by its text.
         let after = match effect {
             WordProcessorEffect::PlaceImage {
@@ -89,21 +86,19 @@ impl Editor {
             },
             _ => None,
         };
-        let view = match (after.as_ref().or_else(|| cx.place()), &participant) {
+        let view = match (after.as_ref().or_else(|| cx.place()), &presence) {
             (Some(place), _) => {
-                match crate::actions::participant::ParticipantView::at_place(&doc, place) {
+                match crate::actions::presence::PresenceView::at_place(&doc, place) {
                     Ok(view) => view,
                     Err(error) => return Some(Err(error)),
                 }
             }
-            (None, Some(participant)) => {
-                match self.participant_view_or_default(participant, &doc) {
-                    Some(view) => view,
-                    None => {
-                        return Some(Err("the document has no body to place a caret in".into()));
-                    }
+            (None, Some(presence)) => match self.presence_view_or_default(presence, &doc) {
+                Some(view) => view,
+                None => {
+                    return Some(Err("the document has no body to place a caret in".into()));
                 }
-            }
+            },
             (None, None) => self.local_edit_view(),
         };
         let dispatch = cx.dispatcher();
@@ -137,10 +132,10 @@ impl Editor {
                 dispatch.submit(crate::model::edit(op));
             }
         });
-        match participant {
-            Some(participant) => {
-                self.participants.note_resolution(&participant, &doc);
-                note_participant_outcome(&next);
+        match presence {
+            Some(presence) => {
+                self.presences.note_resolution(&presence, &doc);
+                note_presence_outcome(&next);
             }
             None => self.pending_local = Some((local_version(&doc), next)),
         }
@@ -338,10 +333,10 @@ impl Editor {
         );
     }
 
-    pub(super) fn local_edit_view(&self) -> crate::actions::participant::ParticipantView {
-        use crate::actions::participant::{ParticipantView, ViewPoint};
+    pub(super) fn local_edit_view(&self) -> crate::actions::presence::PresenceView {
+        use crate::actions::presence::{PresenceView, ViewPoint};
         let caret = self.inner.caret();
-        ParticipantView {
+        PresenceView {
             caret: ViewPoint::new(caret.block.clone(), caret.offset),
             anchor: self
                 .inner
@@ -349,7 +344,7 @@ impl Editor {
                 .as_ref()
                 .map(|anchor| ViewPoint::new(anchor.block.clone(), anchor.offset)),
             region: self.inner.region_kind(),
-            find: crate::actions::participant::FindState::default(),
+            find: crate::actions::presence::FindState::default(),
             pending: None,
         }
     }
@@ -359,7 +354,7 @@ impl Editor {
         &mut self,
         state: &mut ui::widget::Edits<'_>,
         primitive: impl FnOnce(
-            &crate::actions::participant::ParticipantView,
+            &crate::actions::presence::PresenceView,
             &AutoCommit,
         ) -> crate::actions::editing::EditResult,
     ) {
@@ -400,7 +395,7 @@ impl Editor {
 
     pub(super) fn adopt_local_view(
         &mut self,
-        next: &crate::actions::participant::ParticipantView,
+        next: &crate::actions::presence::PresenceView,
         state: &AutoCommit,
     ) {
         let next = next.settle(state);
@@ -445,16 +440,16 @@ impl Editor {
         Ok(())
     }
 
-    /// Move a participant's own view; nothing is written into the document.
-    pub(crate) fn move_participant_view(
+    /// Move a presence's own view; nothing is written into the document.
+    pub(crate) fn move_presence_view(
         &mut self,
-        participant: &tilo_actions::ParticipantId,
+        presence: &tilo_actions::PresenceId,
         movement: &crate::effects::ViewMove,
         doc: &AutoCommit,
     ) -> Result<(), String> {
-        let participant = participant.clone();
+        let presence = presence.clone();
         let view = self
-            .participant_view_or_default(&participant, doc)
+            .presence_view_or_default(&presence, doc)
             .ok_or("the document has no body to place a caret in")?;
         let outcome = match movement {
             crate::effects::ViewMove::Operation(operation) => {
@@ -465,7 +460,7 @@ impl Editor {
             }
         };
         let (_, next) = outcome.map_err(|error| error.to_string())?;
-        self.set_participant_view(&participant, &next, doc);
+        self.set_presence_view(&presence, &next, doc);
         Ok(())
     }
 
@@ -674,10 +669,10 @@ impl Editor {
     }
 
     /// This window's own view: the caret, the selection, the region and the Find bar's state.
-    pub fn local_participant_view(&self) -> crate::actions::participant::ParticipantView {
-        use crate::actions::participant::{FindState, ParticipantView, ViewPoint};
+    pub fn local_presence_view(&self) -> crate::actions::presence::PresenceView {
+        use crate::actions::presence::{FindState, PresenceView, ViewPoint};
         let caret = self.inner.caret();
-        ParticipantView {
+        PresenceView {
             caret: ViewPoint::new(caret.block.clone(), caret.offset),
             anchor: self
                 .inner
@@ -699,58 +694,53 @@ impl Editor {
         }
     }
 
-    pub fn participant_view(
+    pub fn presence_view(
         &self,
-        participant: &tilo_actions::ParticipantId,
+        presence: &tilo_actions::PresenceId,
         doc: &AutoCommit,
-    ) -> Option<crate::actions::participant::ParticipantView> {
-        self.participants.view(participant, doc)
+    ) -> Option<crate::actions::presence::PresenceView> {
+        self.presences.view(presence, doc)
     }
 
-    /// The view an invocation by `participant` resolves against: its own, else a caret at the end
+    /// The view an invocation by `presence` resolves against: its own, else a caret at the end
     /// of the body.
-    pub fn participant_view_or_default(
+    pub fn presence_view_or_default(
         &self,
-        participant: &tilo_actions::ParticipantId,
+        presence: &tilo_actions::PresenceId,
         doc: &AutoCommit,
-    ) -> Option<crate::actions::participant::ParticipantView> {
-        self.participants
-            .view(participant, doc)
-            .or_else(|| crate::actions::participant::ParticipantView::at_document_end(doc))
+    ) -> Option<crate::actions::presence::PresenceView> {
+        self.presences
+            .view(presence, doc)
+            .or_else(|| crate::actions::presence::PresenceView::at_document_end(doc))
     }
 
-    /// Store a participant's view; presentation only, bounded by LRU and idle TTL.
-    pub fn set_participant_view(
+    /// Store a presence's view; presentation only, bounded by LRU and idle TTL.
+    pub fn set_presence_view(
         &mut self,
-        participant: &tilo_actions::ParticipantId,
-        view: &crate::actions::participant::ParticipantView,
+        presence: &tilo_actions::PresenceId,
+        view: &crate::actions::presence::PresenceView,
         doc: &AutoCommit,
     ) {
-        self.participants
-            .set(participant, view, doc, ui::time::now());
+        self.presences.set(presence, view, doc, ui::time::now());
         self.resolve_bound_edits(doc);
         self.lifecycle.dirty = true;
     }
 
-    pub fn set_participant_label(
-        &mut self,
-        participant: &tilo_actions::ParticipantId,
-        label: &str,
-    ) {
-        self.participants.set_label(participant, label);
+    pub fn set_presence_label(&mut self, presence: &tilo_actions::PresenceId, label: &str) {
+        self.presences.set_label(presence, label);
     }
 
-    /// The Find results one participant sees; no other participant's hits.
+    /// The Find results one presence sees; no other presence's hits.
     #[cfg(test)]
-    pub(crate) fn participant_resources(
+    pub(crate) fn presence_resources(
         &self,
-        participant: Option<&tilo_actions::ParticipantId>,
+        presence: Option<&tilo_actions::PresenceId>,
         doc: &AutoCommit,
     ) -> Vec<tilo_actions::ResourceSpec> {
-        let ctx = match participant {
+        let ctx = match presence {
             None => self.wp_resource_ctx(doc),
-            Some(participant) => self
-                .participant_view_or_default(participant, doc)
+            Some(presence) => self
+                .presence_view_or_default(presence, doc)
                 .and_then(|view| view.ctx(doc)),
         };
         ctx.map(|ctx| {
@@ -762,21 +752,21 @@ impl Editor {
         .unwrap_or_default()
     }
 
-    /// Apply one participant's edit and store its view. Each envelope goes through the executor
+    /// Apply one presence's edit and store its view. Each envelope goes through the executor
     /// with the invoker in its context, on its own dispatcher, so it never joins the local undo
     /// group. A refusal leaves the view as it was, rebased.
     ///
     /// # Errors
-    /// Refuses an invoker without a participant.
+    /// Refuses an invoker without a presence.
     #[cfg(test)]
-    pub(crate) fn apply_participant_edit(
+    pub(crate) fn apply_presence_edit(
         &mut self,
         invoker: &tilo_actions::ActionInvoker,
         state: &mut ui::widget::Edits<'_>,
         outcome: crate::actions::editing::EditOutcome,
     ) -> Result<(), String> {
-        let Some(participant) = invoker.participant.clone() else {
-            return Err("a participant edit needs the invoking participant".into());
+        let Some(presence) = invoker.presence.clone() else {
+            return Err("a presence edit needs the invoking presence".into());
         };
         let (envelopes, view) = outcome;
         let Some(dispatch) = self.dispatch.clone() else {
@@ -788,29 +778,29 @@ impl Editor {
                 .apply_now(state, &crate::model::action(action))
                 .map_err(|error| error.to_string())?;
         }
-        self.set_participant_view(&participant, &view, state);
+        self.set_presence_view(&presence, &view, state);
         Ok(())
     }
 
-    /// Other participants' carets as presence, under the same key and byte offsets the local window
+    /// Other presences' carets as presence, under the same key and byte offsets the local window
     /// publishes.
-    pub fn participant_presence(&self, doc: &AutoCommit) -> Vec<ParticipantPresence> {
+    pub fn presences(&self, doc: &AutoCommit) -> Vec<ViewPresence> {
         let mut out = Vec::new();
-        for participant in self.participants.participants() {
-            let Some(view) = self.participants.view(participant, doc) else {
+        for presence in self.presences.presences() {
+            let Some(view) = self.presences.view(presence, doc) else {
                 continue;
             };
-            let Some(payload) = participant_presence_payload(&view, doc) else {
+            let Some(payload) = presence_payload(&view, doc) else {
                 continue;
             };
-            out.push(ParticipantPresence {
-                participant: participant.clone(),
-                label: self.participants.label(participant).map(str::to_string),
+            out.push(ViewPresence {
+                presence: presence.clone(),
+                label: self.presences.label(presence).map(str::to_string),
                 key: block_presence_key(&view.caret.block),
                 payload,
             });
         }
-        out.sort_by(|a, b| a.participant.as_str().cmp(b.participant.as_str()));
+        out.sort_by(|a, b| a.presence.as_str().cmp(b.presence.as_str()));
         out
     }
 
@@ -1124,8 +1114,8 @@ impl Editor {
         }
         if let Some(movement) = effect.view_operation()? {
             let doc = cx.document().ok_or("the document is not at hand")?.clone();
-            match ui::invocation_scope::current_participant() {
-                Some(participant) => self.move_participant_view(&participant, &movement, &doc)?,
+            match ui::invocation_scope::current_presence() {
+                Some(presence) => self.move_presence_view(&presence, &movement, &doc)?,
                 None => self.apply_local_view_operation(&doc, &movement)?,
             }
             self.lifecycle.dirty = true;

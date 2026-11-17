@@ -1,6 +1,6 @@
-//! What one participant said about where they are, in one frame.
+//! What one member said about where they are, in one frame.
 //!
-//! A participant says it on the workspace's presence track
+//! A member says it on the workspace's presence track
 //! ([`crate::scope::Scope::workspace`]): the session, a page and an agent say
 //! the same frame, and every reader takes it from there. The sender is the
 //! frame's sealed author, so nothing here names who said it.
@@ -14,7 +14,7 @@ use crate::presence::{Payload, PresenceKey};
 /// a workspace expects it.
 pub const DESKTOP_APP: &str = "tilo-shell";
 
-/// One thing a participant said: the app it is about, the workspace (or
+/// One thing a member said: the app it is about, the workspace (or
 /// record) that app acts in, the scope within it, and what they say there.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Presence {
@@ -149,7 +149,7 @@ mod tests {
     use super::*;
 
     tilo_test_env::scenario! {
-        /// What a participant said, as a presence frame.
+        /// What a member said, as a presence frame.
         fn a_said_frame_round_trips_with_the_tile_its_pointer_names;
 
         phase a_frame_round_trips;

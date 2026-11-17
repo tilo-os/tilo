@@ -4,7 +4,7 @@
     reason = "headless integration fixture asserts setup failures directly"
 )]
 
-//! End-to-end action test without a driving window. A participant with no
+//! End-to-end action test without a driving window. A member with no
 //! window — an agent, a script — holds the editor's view of the project,
 //! attached and never drawn, surveys what it may do, and edits it through the
 //! same api the editor's own window uses; the editor shows the result once

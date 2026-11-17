@@ -16,7 +16,7 @@ pub enum StatusSharing {
     /// No inferred status is produced or published. Manual status remains available so privacy never
     /// removes the useful explicit path.
     Off,
-    /// Only a status typed by the participant is visible.
+    /// Only a status typed by the member is visible.
     ManualOnly,
     /// A local model may summarize recent semantic actions.
     #[default]
@@ -50,7 +50,7 @@ impl StatusSharing {
 pub enum StatusOrigin {
     Manual,
     /// Name of the local generator, surfaced in details rather than disguised as something the
-    /// participant literally wrote.
+    /// member literally wrote.
     Inferred {
         generator: String,
     },

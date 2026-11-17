@@ -1,5 +1,5 @@
 //! Mentions as a workspace fact: who a record's rich text names, read from the record itself. A mention
-//! is a run of rich text marked `mention` with the participant's id, whichever app wrote it: a
+//! is a run of rich text marked `mention` with the member's id, whichever app wrote it: a
 //! paragraph of a note (an Automerge text mark, as `tilo-doc` keeps them) or a block of a chat message
 //! (a stored mark span, as `tilo_document::ClipBlock` keeps them).
 
@@ -7,7 +7,7 @@ use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, ScalarValue, Value};
 
 use crate::record::DocumentId;
 
-/// The mark a mention's run carries, valued with the participant's id.
+/// The mark a mention's run carries, valued with the member's id.
 pub const MARK: &str = "mention";
 
 /// Whether a `mention` mark's value names a resource rather than a person, in any form it was written
@@ -38,7 +38,7 @@ const EXCERPT_CHARS: usize = 160;
 /// One mention in a record: who is named, by whom, and where.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Mention {
-    /// The participant named.
+    /// The member named.
     pub person: String,
     /// Who wrote it, when the record says: the run's author mark, or the item's author.
     pub by: Option<String>,
@@ -288,10 +288,7 @@ impl Walk<'_> {
             .and_then(|(_, up)| self.object_at(up))
             .map(|marks| self.stored_references(&marks))
             .unwrap_or_default();
-        let by = cx
-            .item_obj
-            .as_ref()
-            .and_then(|item| self.author(item));
+        let by = cx.item_obj.as_ref().and_then(|item| self.author(item));
         let excerpt = self.read_around(&text, &references, start);
         self.push(person, by, None, excerpt, cx);
     }
@@ -324,10 +321,7 @@ impl Walk<'_> {
     ) {
         let item = cx.item_obj.as_ref();
         let by = by.or_else(|| {
-            item.and_then(|item| {
-                self.author(item)
-                    .or_else(|| self.string(item, "creator"))
-            })
+            item.and_then(|item| self.author(item).or_else(|| self.string(item, "creator")))
         });
         let title = item.and_then(|item| {
             self.string(item, "title")
@@ -346,7 +340,7 @@ impl Walk<'_> {
         });
     }
 
-    /// The participant a stored mark names: a plain string, or the string of the `Str` variant it is
+    /// The member a stored mark names: a plain string, or the string of the `Str` variant it is
     /// stored as.
     fn mark_value(&self, obj: &ObjId) -> Option<String> {
         if let Some(value) = self.string(obj, "value") {

@@ -851,7 +851,7 @@ impl ResourceApp for VideoEditor {
         let published = window.published();
         cx.window_effects(crate::VideoEditorApp::effect)
             .status(move || published.borrow().effect_statuses());
-        // Edits bound to this participant's playhead and measured mix,
+        // Edits bound to this member's playhead and measured mix,
         // published on the project beside its own actions.
         let published = window.published();
         cx.bind_declarations(move |project| published.borrow().declarations(project));

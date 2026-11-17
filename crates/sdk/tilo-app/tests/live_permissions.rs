@@ -215,7 +215,7 @@ tilo_test_env::scenario! {
         app.invoke(Memo::ADD_LINE.with("milk")).unwrap();
         assert!(app.harness().inspection_json().unwrap().contains("Editing"));
 
-        // The owner makes this participant a viewer while the app is open.
+        // The owner makes this member a viewer while the app is open.
         app.set_role(tilo_app::Role::Viewer);
         assert!(
             app.harness()
@@ -259,7 +259,7 @@ tilo_test_env::scenario! {
         assert_eq!(app.state().remarks.len(), 1);
         assert!(app.state().lines.is_empty());
 
-        // A surface asks the dispatcher what this participant may apply, and an
+        // A surface asks the dispatcher what this member may apply, and an
         // immediate edit follows the action's own level.
         let remark = Memo::REMARK.with("typed").build(0).unwrap();
         let line = Memo::ADD_LINE.with("typed").build(0).unwrap();

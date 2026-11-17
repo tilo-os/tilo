@@ -495,7 +495,7 @@ test('a member page joins its workspace as one device of it, and leaves it', asy
   const peer = await connect(options(runtime, memoryStore()));
   await until(() => peer.live.state === 'live', 'the live layer');
   assert.deepEqual(runtime.peer.said.map(word => word.workspace), [WORKSPACE], 'its word of itself once live');
-  assert.equal(runtime.peer.said[0].value.participant.kind, 'person', 'with who it is');
+  assert.equal(runtime.peer.said[0].value.member.kind, 'person', 'with who it is');
   assert.equal(peer.live.publisherId, SELF, 'the publisher the workspace knows this device by');
 
   peer.live.publishPresence({pointer: {tile: {tab: '7'}, at: [5, 6]}});
@@ -946,7 +946,7 @@ test("a person's presence colour is the runtime's for who they are, whatever the
   const peer = await connect(options(runtime, memoryStore()));
   // The page computes no colour of its own: the runtime's for the user
   // root, which a device key kept sealed (no public key here) cannot blank.
-  assert.equal(peer.participant.color, runtime.presenceColor('bb'.repeat(32)));
+  assert.equal(peer.member.color, runtime.presenceColor('bb'.repeat(32)));
   await peer.dispose();
 });
 
@@ -1242,7 +1242,7 @@ test('a person renamed since the page started says the new name with the next fr
   const runtime = fakeRuntime();
   const peer = await connect(options(runtime, memoryStore()));
   await until(() => peer.live.state === 'live', 'the live layer');
-  const labels = () => runtime.peer.published.map(value => value.participant?.label).filter(Boolean);
+  const labels = () => runtime.peer.published.map(value => value.member?.label).filter(Boolean);
   await until(() => labels().length, 'the first announcement');
   assert.deepEqual(labels().at(-1), 'Browser on Cloud');
   peer.setDisplayName('Bea');

@@ -858,7 +858,7 @@ tilo_test_env::scenario! {
     phase a_genesis_row_names_no_author_and_no_time;
     {
         use crate::a11y::Role;
-        let mut genesis = entry(EntryKind::Details, "Unknown participant", 0, 1);
+        let mut genesis = entry(EntryKind::Details, "Unknown member", 0, 1);
         genesis.summary = "Created".into();
         genesis.context = Some(tilo_actions::ActionContext {
             facets: vec![crate::widget::history::genesis_facet()],

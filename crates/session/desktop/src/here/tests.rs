@@ -571,7 +571,7 @@ tilo_test_env::scenario! {
     phase an_agent_steps_clear_of_its_persons_colour;
     // One agent wears one colour on every surface that draws it: the shell's faces and the cards in
     // its windows, the People list's row, the bar's face, and the colour its own apps paint its
-    // card, its text marks and its caret in — the one rule ([`ui::presence::participant_color`]),
+    // card, its text marks and its caret in — the one rule ([`ui::presence::member_color`]),
     // never a colour a surface picked for itself.
     // An agent that claims no colour wears the one rule's, clear of the person it is certified
     // for, as its record and every app paint it: never theirs, even where what it is would land

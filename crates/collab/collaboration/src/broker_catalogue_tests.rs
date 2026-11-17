@@ -292,7 +292,7 @@ fn initial_catalogue_and_watch_share_one_turn_for_a_busy_native_owner() {
         SdkConnectSource::Fd(fd),
         Some(SdkJoinIdentity {
             presentation: harness_presentation(),
-            participant_kind: "agent",
+            member_kind: "agent",
             signer: harness_document_signer(),
         }),
     )

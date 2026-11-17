@@ -9,7 +9,7 @@ use std::rc::Rc;
 
 use automerge::{AutoCommit, ObjId};
 use taffy::{NodeId, TaffyTree};
-use ui::collaboration::participants::Participants;
+use ui::collaboration::presences::Presences;
 use ui::framework::Live;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
@@ -93,7 +93,7 @@ impl Widget for WordProcessorWidget {
     }
 
     ui::provides!(
-        dyn ui::collaboration::participants::Participants,
+        dyn ui::collaboration::presences::Presences,
         dyn ui::undo::LocalUndo,
         dyn ui::resources::PublishesResources,
         dyn ui::presence::capability::PublishesPresence,
@@ -324,18 +324,18 @@ impl LocalUndo for WordProcessorWidget {
     }
 }
 
-impl Participants for WordProcessorWidget {
-    fn join_participant(&mut self, participant: &tilo_actions::ParticipantId) -> bool {
-        self.state().join_participant(participant)
+impl Presences for WordProcessorWidget {
+    fn join_presence(&mut self, presence: &tilo_actions::PresenceId) -> bool {
+        self.state().join_presence(presence)
     }
-    fn leave_participant(&mut self, participant: &tilo_actions::ParticipantId) {
-        self.state().leave_participant(participant);
+    fn leave_presence(&mut self, presence: &tilo_actions::PresenceId) {
+        self.state().leave_presence(presence);
     }
-    fn set_participant_label(&mut self, participant: &tilo_actions::ParticipantId, label: &str) {
-        self.state().set_participant_label(participant, label);
+    fn set_presence_label(&mut self, presence: &tilo_actions::PresenceId, label: &str) {
+        self.state().set_presence_label(presence, label);
     }
-    fn participant_presence(&self, doc: &AutoCommit) -> Vec<ui::ParticipantPresence> {
-        self.editor.borrow().participant_presence(doc)
+    fn presences(&self, doc: &AutoCommit) -> Vec<ui::ViewPresence> {
+        self.editor.borrow().presences(doc)
     }
 }
 

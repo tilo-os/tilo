@@ -160,7 +160,7 @@ impl Music {
         rows
     }
     /// A menu emits an inert typed intent; the host re-resolves the root's
-    /// effect declaration and participant authority before starting the job.
+    /// effect declaration and member authority before starting the job.
     pub(super) fn queue_spotify_effect_control(&mut self, effect: &MusicEffect) {
         use ui::tilo_resource::Effect as _;
         let Some(spec) = MusicEffect::specs()

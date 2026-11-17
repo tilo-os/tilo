@@ -1992,14 +1992,14 @@ impl SdkConnectSource {
 /// Build the certified device presentation used for a launcher-bound join.
 /// A launcher identity without a device certificate cannot enter the
 /// collaboration session.
-/// The participant kind of a headless service that holds no document of its
+/// The member kind of a headless service that holds no document of its
 /// own ([`CollaborationManager::for_service`]). It stays on this side: the
 /// broker admits the service as the person whose launch it is.
-const SERVICE_PARTICIPANT: &str = "service";
+const SERVICE_MEMBER: &str = "service";
 
-/// The kind the broker is asked to admit a participant of `kind` as.
-fn broker_participant_kind(kind: &str) -> &str {
-    if kind == SERVICE_PARTICIPANT {
+/// The kind the broker is asked to admit a member of `kind` as.
+fn broker_member_kind(kind: &str) -> &str {
+    if kind == SERVICE_MEMBER {
         "person"
     } else {
         kind
@@ -2011,7 +2011,7 @@ struct SdkJoinIdentity {
     /// Requested broker actor kind. The broker only accepts `agent`
     /// when the named agent is admitted and this certified user may operate
     /// it; ordinary applications always leave this as `person`.
-    participant_kind: &'static str,
+    member_kind: &'static str,
     /// Retained on the shovel thread so document signing stays off the UI
     /// thread and the workspace broker connection is not consumed at join.
     signer: SdkDocumentSigner,
@@ -2184,7 +2184,7 @@ enum SdkDocumentSigner {
 /// thread boundary; inherited Unix and harness identities remain Send.
 struct LocalSdkJoinIdentity {
     presentation: Vec<u8>,
-    participant_kind: &'static str,
+    member_kind: &'static str,
     signer: LocalSdkDocumentSigner,
 }
 
@@ -2197,7 +2197,7 @@ impl From<SdkJoinIdentity> for LocalSdkJoinIdentity {
     fn from(identity: SdkJoinIdentity) -> Self {
         Self {
             presentation: identity.presentation,
-            participant_kind: identity.participant_kind,
+            member_kind: identity.member_kind,
             signer: LocalSdkDocumentSigner::Inherited(identity.signer),
         }
     }
@@ -2277,7 +2277,7 @@ fn sdk_join_identity_from<I: SdkCertifiedIdentity + 'static>(
     let presentation = certified_presentation(workspace_id, device_certificate.to_vec(), &proof)?;
     Ok(SdkJoinIdentity {
         presentation,
-        participant_kind: "person",
+        member_kind: "person",
         signer: SdkDocumentSigner::Certified(std::sync::Arc::new(identity)),
     })
 }
@@ -2300,7 +2300,7 @@ async fn sdk_join_identity_from_host(
     let presentation = certified_presentation(workspace_id, device_certificate, &proof)?;
     Ok(LocalSdkJoinIdentity {
         presentation,
-        participant_kind: "person",
+        member_kind: "person",
         signer: LocalSdkDocumentSigner::Host(identity),
     })
 }
@@ -2461,7 +2461,7 @@ impl CollaborationManager {
             None,
             None,
             None,
-            SERVICE_PARTICIPANT,
+            SERVICE_MEMBER,
         )
     }
 
@@ -2515,7 +2515,7 @@ impl CollaborationManager {
             handle,
             Some(SdkJoinIdentity {
                 presentation: identity.presentation.clone(),
-                participant_kind: "person",
+                member_kind: "person",
                 signer: identity.document_signer(),
             }),
             "person",
@@ -2736,7 +2736,7 @@ impl CollaborationManager {
         record: Option<String>,
         handle: Option<String>,
         endpoint_identity: Option<SdkJoinIdentity>,
-        participant_kind: &'static str,
+        member_kind: &'static str,
     ) -> Result<Self, runtime_portal::NotAvailable> {
         Self::connect_route_from(
             source,
@@ -2745,7 +2745,7 @@ impl CollaborationManager {
             record,
             handle,
             endpoint_identity,
-            participant_kind,
+            member_kind,
         )
         .map(Self::from_connected)
     }
@@ -2770,7 +2770,7 @@ impl CollaborationManager {
         record: Option<String>,
         handle: Option<String>,
         endpoint_identity: Option<SdkJoinIdentity>,
-        participant_kind: &'static str,
+        member_kind: &'static str,
     ) -> Result<ConnectedBroker, runtime_portal::NotAvailable> {
         Self::connect_route_kind(
             source,
@@ -2782,7 +2782,7 @@ impl CollaborationManager {
             None,
             handle,
             endpoint_identity,
-            participant_kind,
+            member_kind,
         )
     }
 
@@ -2794,7 +2794,7 @@ impl CollaborationManager {
         record_kind: Option<String>,
         handle: Option<String>,
         endpoint_identity: Option<SdkJoinIdentity>,
-        participant_kind: &'static str,
+        member_kind: &'static str,
     ) -> Result<ConnectedBroker, runtime_portal::NotAvailable> {
         let RouteSpec {
             app_id,
@@ -2812,12 +2812,12 @@ impl CollaborationManager {
             }
             None => Some(SdkJoinIdentity {
                 presentation: harness_presentation(),
-                participant_kind: "person",
+                member_kind: "person",
                 signer: harness_document_signer(),
             }),
         };
         if let Some(identity) = &mut identity {
-            identity.participant_kind = participant_kind;
+            identity.member_kind = member_kind;
         }
         tilo_startup_metrics::startup_mark("collab-identity-ready");
         let mut transport = Self::spawn_sdk(source, identity)?;
@@ -2855,7 +2855,7 @@ impl CollaborationManager {
         await_primary_route_on(transport.as_mut(), &mut self.primary_route)
     }
 
-    /// Connect a headless participant as a first-class workspace agent.
+    /// Connect a headless member as a first-class workspace agent.
     /// Its friendly id is both the visible handle and the actor whose
     /// scoped capabilities the broker evaluates.
     ///
@@ -2929,7 +2929,7 @@ impl CollaborationManager {
             Some(agent_id.into()),
             Some(SdkJoinIdentity {
                 presentation: identity.presentation.clone(),
-                participant_kind: "agent",
+                member_kind: "agent",
                 signer: identity.document_signer(),
             }),
             "agent",
@@ -3174,7 +3174,7 @@ impl CollaborationManager {
             SdkConnectSource::Fd(fd),
             Some(SdkJoinIdentity {
                 presentation: identity_bytes,
-                participant_kind: "person",
+                member_kind: "person",
                 signer: harness_document_signer(),
             }),
         )
@@ -3320,7 +3320,7 @@ impl SessionServices {
                 // A surface joins no workspace: it presents no identity, and the
                 // broker admits it for the launch alone.
                 presentation: Vec::new(),
-                participant_kind: "person",
+                member_kind: "person",
                 signer: harness_document_signer(),
             }),
         )?;
@@ -3632,7 +3632,7 @@ async fn drive_shovel(
     let _private_person_snapshot_lifetime = PrivatePersonSnapshotLifetime;
     let LocalSdkJoinIdentity {
         presentation,
-        participant_kind,
+        member_kind,
         mut signer,
     } = identity;
     let person = personal_cluster_presentation(&presentation, &mut signer).await;
@@ -3659,7 +3659,7 @@ async fn drive_shovel(
     let lane = DocumentLane::start(signer.clone(), inbound_tx.clone());
     let mut routes = std::collections::HashMap::<String, SdkRoute>::new();
     let mut primary: Option<String> = None;
-    let mut participant_handle: Option<String> = None;
+    let mut member_handle: Option<String> = None;
     let mut primary_result = Err("primary collaboration route was not announced".to_string());
     // The app's settings over the primary route, when the shell keeps them.
     let mut settings_link: Option<SettingsLink> = None;
@@ -3702,8 +3702,8 @@ async fn drive_shovel(
                 client: client.clone(),
                 presentation: presentation.clone(),
                 person: person.clone(),
-                participant_handle: participant_handle.clone(),
-                participant_kind,
+                member_handle: member_handle.clone(),
+                member_kind,
                 inbound_tx: inbound_tx.clone(),
                 media_routes: media_routes.clone(),
             }
@@ -3720,8 +3720,8 @@ async fn drive_shovel(
                 client: &client,
                 presentation: &presentation,
                 person: person.as_ref(),
-                participant_handle: participant_handle.as_deref(),
-                participant_kind,
+                member_handle: member_handle.as_deref(),
+                member_kind,
                 inbound_tx: &inbound_tx,
                 media_routes: &media_routes,
             }
@@ -3965,7 +3965,7 @@ async fn drive_shovel(
                     record_kind,
                     handle,
                 } = hello;
-                participant_handle = handle;
+                member_handle = handle;
                 let key = spec.channel_id();
                 // The join ends when the broker answers it or it fails, with
                 // the broker's reason; a broker that goes away fails it. No
@@ -4445,8 +4445,8 @@ struct SdkJoinContext<'a> {
     /// identity service lends one: what a route of a record of theirs
     /// presents instead of the launch workspace's.
     person: Option<&'a (String, Vec<u8>)>,
-    participant_handle: Option<&'a str>,
-    participant_kind: &'a str,
+    member_handle: Option<&'a str>,
+    member_kind: &'a str,
     inbound_tx: &'a InboundBridge,
     media_routes: &'a native_media::Routes,
 }
@@ -7061,7 +7061,7 @@ pub mod test_support {
             SdkConnectSource::Fd(fd),
             Some(super::SdkJoinIdentity {
                 presentation: super::harness_presentation(),
-                participant_kind: "person",
+                member_kind: "person",
                 signer: super::harness_document_signer(),
             }),
         )

@@ -15,7 +15,7 @@ pub const FRAME_SAMPLES: usize = 960;
 pub const FRAME_DURATION: Duration = Duration::from_millis(20);
 pub const MAX_PACKET_BYTES: usize = 4064;
 /// Voices this device plays at once: its decode budget, not a limit on a
-/// call. A call has any number of participants; with DTX a silent one sends a
+/// call. A call has any number of members; with DTX a silent one sends a
 /// comfort-noise packet every 400 ms, so the voices that hold a slot are the
 /// ones speaking. A new voice takes the slot of the one quiet longest, and is
 /// not heard while every slot is speaking.

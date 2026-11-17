@@ -1,4 +1,4 @@
-//! What a participant says to the collaboration plane, and how a host carries it.
+//! What a member says to the collaboration plane, and how a host carries it.
 //!
 //! The client says these commands and never a transport: a peer actor, a page's endpoint or a
 //! program's session carries them. What only one host can do is that host's own vocabulary beside
@@ -383,12 +383,12 @@ pub enum Cmd {
     /// replay: its history lands, then [`Event::RecordOpened`], and it is opened again on every
     /// reconnect.
     OpenRecordAt(Topic, DocumentRoute),
-    /// Take part in a route's encrypted channel: ask its participants for access.
+    /// Take part in a route's encrypted channel: ask its members for access.
     OpenRoute(DocumentRoute),
     /// Commit the frames of one write to a route, in order ([`Outbox::write`]). A
     /// [`crate::Link`] holds them in its engine, readable at once, and says the route alone.
     Write(DocumentRoute, Vec<Vec<u8>>),
-    /// Hold these keys as a route's channel keys, as if a participant had admitted this session to
+    /// Hold these keys as a route's channel keys, as if a member had admitted this session to
     /// the channel: for an application endpoint of a device that takes part in it.
     InstallGroupKeys(DocumentRoute, key_group::ContentKeys),
     /// Publish one canonical live frame of the workspace on the topic, sealed with the keys of the

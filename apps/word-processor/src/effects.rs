@@ -1,12 +1,12 @@
 //! What the word processor does that is not an edit of its document: reading and
-//! writing files, what the window shows, and each participant's caret and selection.
+//! writing files, what the window shows, and each presence's caret and selection.
 
 use ui::tilo_resource::{self, Effect, Place};
 
 use crate::actions::editing::{
     self, DeleteDirection, EditResult, EditingError, InlineMark, ParagraphStyle, PasteContent,
 };
-use crate::actions::participant::ParticipantView;
+use crate::actions::presence::PresenceView;
 
 /// The word processor's effects. Block ids are the document's stable paragraph ids;
 #[derive(Clone, Debug, PartialEq, Eq, Effect)]
@@ -120,7 +120,7 @@ pub enum WordProcessorEffect {
     #[effect(view)]
     Outline,
     /// Move caret.
-    #[effect(view, participant, idempotent, audience = "agents")]
+    #[effect(view, presence, idempotent, audience = "agents")]
     MoveCaret {
         #[param(
             "point (default; needs block and offset), document-start, document-end or block-end",
@@ -133,7 +133,7 @@ pub enum WordProcessorEffect {
         offset: Option<usize>,
     },
     /// Select range.
-    #[effect(view, participant, idempotent, audience = "agents")]
+    #[effect(view, presence, idempotent, audience = "agents")]
     SelectRange {
         #[param("Block where the selection starts")]
         start_block: String,
@@ -145,24 +145,24 @@ pub enum WordProcessorEffect {
         end: usize,
     },
     /// Select paragraph.
-    #[effect(view, participant, idempotent, audience = "agents")]
+    #[effect(view, presence, idempotent, audience = "agents")]
     SelectBlock {
         #[param("Block id to select")]
         block: String,
     },
     /// Select all.
-    #[effect(view, participant, idempotent)]
+    #[effect(view, presence, idempotent)]
     #[effect(label = "menu-select-all")]
     SelectAll,
     /// Find text.
     /// Case-insensitive; the results appear as search-hit resources.
-    #[effect(view, participant, idempotent, audience = "agents")]
+    #[effect(view, presence, idempotent, audience = "agents")]
     FindText {
         #[param("Text to find (empty clears Find)")]
         query: String,
     },
     /// Type text.
-    #[effect(edit, participant, audience = "agents")]
+    #[effect(edit, presence, audience = "agents")]
     TypeText {
         #[param(
             "Text typed at the caret, replacing the selection (empty only erases a selection)"
@@ -175,10 +175,10 @@ pub enum WordProcessorEffect {
         at: Option<Place>,
     },
     /// New paragraph.
-    #[effect(edit, participant, audience = "agents")]
+    #[effect(edit, presence, audience = "agents")]
     NewParagraph,
     /// Erase text.
-    #[effect(edit, participant, audience = "agents")]
+    #[effect(edit, presence, audience = "agents")]
     EraseText {
         #[param(
             "backward (Backspace, default) or forward (Delete)",
@@ -190,7 +190,7 @@ pub enum WordProcessorEffect {
     },
     /// Toggle formatting.
     /// Off where the selection covers all of it (super and sub also the caret paragraph).
-    #[effect(edit, participant)]
+    #[effect(edit, presence)]
     ToggleMark {
         #[param("The inline mark to toggle", choices = TOGGLED_MARKS)]
         mark: String,
@@ -201,7 +201,7 @@ pub enum WordProcessorEffect {
         at: Option<Place>,
     },
     /// Set text format.
-    #[effect(edit, participant)]
+    #[effect(edit, presence)]
     SetFormat {
         #[param("The inline mark", choices = FORMATS)]
         name: String,
@@ -216,7 +216,7 @@ pub enum WordProcessorEffect {
         at: Option<Place>,
     },
     /// Clear text format.
-    #[effect(edit, participant)]
+    #[effect(edit, presence)]
     ClearFormat {
         #[param("The inline mark to remove", choices = FORMATS)]
         name: String,
@@ -227,7 +227,7 @@ pub enum WordProcessorEffect {
         at: Option<Place>,
     },
     /// Set paragraph style.
-    #[effect(edit, participant, job, returns)]
+    #[effect(edit, presence, job, returns)]
     SetParagraphStyle {
         #[param(
             "Paragraph kind; bullet and numbered are list items",
@@ -246,7 +246,7 @@ pub enum WordProcessorEffect {
     },
     /// Apply style.
     /// `body`, `heading1` to `heading3`, `quote`, `list`, or a custom style's name.
-    #[effect(edit, participant)]
+    #[effect(edit, presence)]
     ApplyNamedStyle {
         #[param("Named style id")]
         style: String,
@@ -258,7 +258,7 @@ pub enum WordProcessorEffect {
     },
     /// Paste.
     /// Text or Markdown (headings, lists, pipe tables).
-    #[effect(edit, participant, job, returns, audience = "agents")]
+    #[effect(edit, presence, job, returns, audience = "agents")]
     #[effect(label = "menu-paste")]
     Paste {
         #[param("Plain text; each line becomes a paragraph")]
@@ -272,7 +272,7 @@ pub enum WordProcessorEffect {
         at: Option<Place>,
     },
     /// Align paragraph.
-    #[effect(edit, participant)]
+    #[effect(edit, presence)]
     Align {
         #[param("How the caret paragraph lines up", choices = ["left", "center", "right", "justify"])]
         align: String,
@@ -283,7 +283,7 @@ pub enum WordProcessorEffect {
         at: Option<Place>,
     },
     /// Insert table here.
-    #[effect(edit, participant)]
+    #[effect(edit, presence)]
     InsertTableHere {
         #[param("Rows (default 2)")]
         rows: Option<usize>,
@@ -296,7 +296,7 @@ pub enum WordProcessorEffect {
         at: Option<Place>,
     },
     /// Insert page break.
-    #[effect(edit, participant)]
+    #[effect(edit, presence)]
     InsertPageBreak {
         #[param(
             "Where to act (a paragraph, a point or a range in it); your caret or selection when not given",
@@ -305,13 +305,13 @@ pub enum WordProcessorEffect {
         at: Option<Place>,
     },
     /// Add or change hyperlink.
-    #[effect(edit, participant)]
+    #[effect(edit, presence)]
     SetHyperlink {
         #[param("A web address (https://…), a mail address (mailto:…) or a #bookmark")]
         target: String,
     },
     /// Replace selection.
-    #[effect(edit, participant, audience = "agents")]
+    #[effect(edit, presence, audience = "agents")]
     ReplaceSelection {
         #[param("Text that replaces the current selection (empty deletes it)")]
         text: String,
@@ -322,7 +322,7 @@ pub enum WordProcessorEffect {
         at: Option<Place>,
     },
     /// Comment on selection.
-    #[effect(edit, participant)]
+    #[effect(edit, presence)]
     CommentSelection {
         #[param("The comment")]
         text: tilo_resource::NonBlank,
@@ -335,7 +335,7 @@ pub enum WordProcessorEffect {
     /// Place image.
     /// Places at your caret, at `at`, or after the heading `after` names, the content
     /// another action produced. Answers with the blocks it changed.
-    #[effect(edit, participant, job, returns, audience = "agents")]
+    #[effect(edit, presence, job, returns, audience = "agents")]
     PlaceImage {
         #[param(
             content,
@@ -353,7 +353,7 @@ pub enum WordProcessorEffect {
         after: Option<String>,
     },
     /// Go to.
-    #[effect(view, row, participant, idempotent)]
+    #[effect(view, row, presence, idempotent)]
     GoTo {
         #[param("Block id")]
         block: String,
@@ -363,7 +363,7 @@ pub enum WordProcessorEffect {
         end: usize,
     },
     /// Go to commented text.
-    #[effect(view, row, participant, idempotent)]
+    #[effect(view, row, presence, idempotent)]
     GoToAnchor {
         #[param("Block id")]
         block: String,
@@ -458,7 +458,7 @@ impl WordProcessorEffect {
     )]
     pub(crate) fn edit(
         &self,
-        view: &ParticipantView,
+        view: &PresenceView,
         doc: &automerge::AutoCommit,
         content: &tilo_content::ContentStore,
     ) -> Option<EditResult> {

@@ -79,7 +79,7 @@ pub enum CollabEvent<C: EndpointCustody = NoCustody> {
         route: RouteSpec,
     },
     /// Session chrome asked this app to bind its viewport/view mode to a
-    /// participant, or release that binding. This is local session control:
+    /// member, or release that binding. This is local session control:
     /// it is never published to collaboration peers.
     FollowChanged {
         peer_id: Option<tilo_actions::MemberId>,

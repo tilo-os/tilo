@@ -92,7 +92,7 @@ impl TimestampAnnotation {
 }
 
 /// Where playback of one video stands for everyone watching it together: the play state
-/// and the playhead at a wall-clock moment, which each participant projects to its own
+/// and the playhead at a wall-clock moment, which each member projects to its own
 /// now.
 #[derive(Model, Clone, Debug, Default, PartialEq)]
 pub struct SharedTransport {

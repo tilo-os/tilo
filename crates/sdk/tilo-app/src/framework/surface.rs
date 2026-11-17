@@ -144,7 +144,7 @@ impl SurfaceScope {
 ///   gesture that is several edits goes in one [`Dispatcher::group`] (or
 ///   holds a [`Dispatcher::begin_group`] guard for the input event), so one
 ///   Ctrl+Z takes all of it back.
-/// * **Permissions** — [`RecordEnv::read_only`](super::RecordEnv::read_only) says the participant may
+/// * **Permissions** — [`RecordEnv::read_only`](super::RecordEnv::read_only) says the presence may
 ///   only view; present accordingly. It follows role changes while the app
 ///   runs, and [`read_only_changed`](Self::read_only_changed) announces each
 ///   one. Refused actions change nothing.
@@ -223,19 +223,19 @@ pub trait ResourceSurface<R: Resource, E: Effect = NoEffect>: Widget {
         let _ = cx;
     }
 
-    /// A participant's action — an agent's verb, a member's edit
+    /// A presence's action — an agent's verb, a member's edit
     /// taken through the API — left them at `place`, as the resource says
     /// it lands ([`Resource::lands`](tilo_resource::Resource::lands)).
     /// Called after [`present`](Self::present) showed the state holding it.
     /// Presence draws them there already; a surface that acts at a
-    /// participant's place (typing at an agent's caret) reads it here, or
+    /// presence's place (typing at an agent's caret) reads it here, or
     /// any time through [`Live::place_of`](super::Live::place_of), instead
     /// of keeping its own copy.
-    fn landed(&mut self, participant: &tilo_actions::ParticipantId, place: &tilo_resource::Place) {
-        let _ = (participant, place);
+    fn landed(&mut self, presence: &tilo_actions::PresenceId, place: &tilo_resource::Place) {
+        let _ = (presence, place);
     }
 
-    /// The participant's permission to edit changed while the app runs: a
+    /// The presence's permission to edit changed while the app runs: a
     /// role granted or taken away. Present accordingly. The dispatcher already
     /// refuses or accepts edits under the new permissions.
     fn read_only_changed(&mut self, read_only: bool) {
@@ -500,7 +500,7 @@ impl<R: Resource> SurfaceCx<R> {
     }
 }
 
-/// Where a participant is inside a resource, in the resource's own terms, so
+/// Where a presence is inside a resource, in the resource's own terms, so
 /// it means the same thing on every member's screen.
 #[derive(Clone, Debug, PartialEq)]
 pub enum ResourceSelection {
@@ -727,8 +727,8 @@ impl<R: Resource, S: ResourceSurface<R, E> + 'static, E: Effect> SurfaceDriver
         }
         let (landed, next) = self.live.landings_since(self.landings);
         self.landings = next;
-        for (participant, place) in &landed {
-            self.surface.landed(participant, place);
+        for (presence, place) in &landed {
+            self.surface.landed(presence, place);
         }
         let staged = self.staging.borrow_mut().take();
         if let Some(scenario) = staged {
@@ -1096,10 +1096,10 @@ impl ui_core::resources::PublishesResources for HostedSurface {
 
     fn resources_for(
         &self,
-        participant: Option<&tilo_actions::ParticipantId>,
+        presence: Option<&tilo_actions::PresenceId>,
         doc: &AutoCommit,
     ) -> Vec<tilo_actions::ResourceSpec> {
-        ui_core::resources::resources_for(self.host.surface(), participant, doc)
+        ui_core::resources::resources_for(self.host.surface(), presence, doc)
             .into_iter()
             .map(outside_document)
             .collect()
@@ -1107,11 +1107,11 @@ impl ui_core::resources::PublishesResources for HostedSurface {
 
     fn resource_for(
         &self,
-        participant: Option<&tilo_actions::ParticipantId>,
+        presence: Option<&tilo_actions::PresenceId>,
         doc: &AutoCommit,
         id: &str,
     ) -> Option<tilo_actions::ResourceSpec> {
-        ui_core::resources::resource_for(self.host.surface(), participant, doc, id)
+        ui_core::resources::resource_for(self.host.surface(), presence, doc, id)
             .map(resolved_outside_document)
     }
 

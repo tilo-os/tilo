@@ -86,7 +86,7 @@ pub async fn plaintext_record(
 }
 
 /// A member device that holds one record's channel keys and writes the
-/// record sealed, as a page does once a participant admitted it.
+/// record sealed, as a page does once a key holder admitted it.
 pub struct SealingMember {
     key: SigningKey,
     keys: ContentKeys,

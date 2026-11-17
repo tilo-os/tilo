@@ -871,7 +871,7 @@ const WEB_ROUND_TRIPS: f64 = 3.25;
 /// What the host and the page may spend on a fresh guest's entry, from its
 /// first request until its desktop shows: the session and the entry (about
 /// 0.1 s), the workspace admitting the guest (about 60 ms for 300 members),
-/// the participants' commit that adds the guest to a channel group of 300 and
+/// the members' commit that adds the guest to a channel group of 300 and
 /// carries its Welcome (about 85 ms), the replay written, and the page taking
 /// in its Welcome, the commits after it, the governance and the 300 members'
 /// parts of the desktop. Every member's page holds the keys, as in the Lounge,

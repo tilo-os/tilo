@@ -5,11 +5,11 @@
 use tilo_actions::api::{ActionAddress, ActionDescriptor};
 use tilo_peer_state::document_frame::DocumentRoute;
 
-use super::AgentParticipant;
+use super::AgentMember;
 use crate::planner::{Step, StepAction};
 use crate::values::{self, ViewRef};
 
-impl AgentParticipant {
+impl AgentMember {
     /// `arguments` of `step`, about to run at `address` on the record at
     /// `route`, with every value they quote or compute filled in: a value
     /// nothing types that is only arithmetic, `{{…}}`, then arithmetic
@@ -40,7 +40,7 @@ impl AgentParticipant {
         values::fill_untyped(&mut arguments, &params);
         if quoting {
             let mut reads = StepReads {
-                participant: self,
+                member: self,
                 app: &step.app,
                 route,
             };
@@ -111,7 +111,7 @@ fn quotes(value: &serde_json::Value) -> bool {
 /// The reads one step's references name, run as a planning model's reads
 /// are: on records the agent may open, operations that only read.
 struct StepReads<'a> {
-    participant: &'a mut AgentParticipant,
+    member: &'a mut AgentMember,
     /// The step's app and record: a reference to the same app naming no
     /// record reads the record the step acts on.
     app: &'a str,
@@ -120,9 +120,9 @@ struct StepReads<'a> {
 
 impl values::Reads for StepReads<'_> {
     fn read(&mut self, view: &ViewRef) -> Result<serde_json::Value, String> {
-        let app = self.participant.named_app(&view.app)?;
+        let app = self.member.named_app(&view.app)?;
         let route = match &view.record {
-            Some(record) => self.participant.open(&app, Some(record))?,
+            Some(record) => self.member.open(&app, Some(record))?,
             None if app == self.app => self.route.clone(),
             None => {
                 let finding = Step {
@@ -132,19 +132,19 @@ impl values::Reads for StepReads<'_> {
                     carries: None,
                     serves: None,
                 };
-                self.participant
+                self.member
                     .existing_record(&finding)?
                     .ok_or_else(|| format!("no {app} document is open to read"))?
             }
         };
-        let offered = self.participant.survey(&route);
+        let offered = self.member.survey(&route);
         let address = operation(&offered, &view.operation)?;
         let arguments = view
             .arguments
             .iter()
             .map(|(name, value)| (name.clone(), serde_json::Value::String(value.clone())))
             .collect();
-        let output = self.participant.read_now(&route, &address, &arguments)?;
+        let output = self.member.read_now(&route, &address, &arguments)?;
         Ok(output.value.unwrap_or(serde_json::Value::Null))
     }
 }

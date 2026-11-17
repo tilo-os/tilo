@@ -45,9 +45,9 @@ fn actor_hex(handle: &str) -> String {
 struct Report {
     doc: AutoCommit,
     c: tilo_doc::Containers,
-    /// One id generator per participant, held for the participant's whole
+    /// One id generator per member, held for the member's whole
     /// session — as the app holds one. A fresh generator per edit would restart
-    /// the counter and mint block ids that collide with that participant's own
+    /// the counter and mint block ids that collide with that member's own
     /// earlier blocks, silently overwriting them.
     ids: std::collections::HashMap<String, tilo_doc::IdGen>,
 }

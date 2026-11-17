@@ -502,7 +502,7 @@ pub struct NotesApp {
     /// The notes the notebook holds, and the notes a search hit or an agent's
     /// `open` asked to show, shared with the framework's opener.
     opened: Rc<std::cell::RefCell<Opened>>,
-    /// Who the participants are, by name, once hosted: whom the header's
+    /// Who the members are, by name, once hosted: whom the header's
     /// reactions name, and whether anyone else shares the notebook.
     people: Option<ui::framework::People>,
     /// The framework's live notebook the window shows, and what of it the
@@ -1593,7 +1593,7 @@ impl NotesApp {
 
     /// Apply one notebook action through the framework's dispatcher, which
     /// every affordance, the palette and agents share: checked against
-    /// the participant's permissions, applied by the replayable executor,
+    /// the member's permissions, applied by the replayable executor,
     /// attributed, one undo step and named in history.
     fn dispatch(
         &self,
@@ -1831,7 +1831,7 @@ impl NotesApp {
             .is_none_or(|(live, seen)| *seen == Some((live.revision(), live.loads())))
     }
 
-    /// Name the participants through `people` from now on.
+    /// Name the members through `people` from now on.
     pub(crate) fn attach_people(&mut self, people: ui::framework::People) {
         self.people = Some(people);
     }

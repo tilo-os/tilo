@@ -464,9 +464,9 @@ impl ActionPlane {
     /// The devices of `workspace` that may be offered work, other than this
     /// one: certified, unrevoked and unexpired, its person a member, its
     /// delegation live ([`StatePeer::permissions`](crate::StatePeer::permissions)).
-    pub async fn participants(&self, workspace: &str) -> Vec<[u8; 32]> {
+    pub async fn key_holders(&self, workspace: &str) -> Vec<[u8; 32]> {
         let device = self.device();
-        let mut participants = self
+        let mut key_holders = self
             .read_workspace(workspace, |peer| {
                 let now = tilo_clock::wall();
                 peer.certificates()
@@ -477,10 +477,10 @@ impl ActionPlane {
             })
             .await
             .unwrap_or_default();
-        participants.retain(|source| *source != device);
-        participants.sort_unstable();
-        participants.dedup();
-        participants
+        key_holders.retain(|source| *source != device);
+        key_holders.sort_unstable();
+        key_holders.dedup();
+        key_holders
     }
 
     /// Ask each of `targets` whether it would run `route` in `workspace` on

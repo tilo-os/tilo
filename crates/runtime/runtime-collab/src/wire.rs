@@ -392,7 +392,7 @@ pub enum Read {
 /// What a subscription delivers.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Topic {
-    /// The workspace's other participants' presence.
+    /// The workspace's other members' presence.
     Presence,
     /// Every signed change to the channel's document from now on.
     Ops,
@@ -486,7 +486,7 @@ pub enum Receipt {
 /// One event a subscription delivers.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum Event {
-    /// Another participant's presence, attributed by the host.
+    /// Another member's presence, attributed by the host.
     Presence {
         member: collab_types::MemberId,
         presence: PeerPresence,

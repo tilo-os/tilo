@@ -11,7 +11,7 @@
 //! record is the resource's actions
 //! ([`ResourceApp::launch`](super::ResourceApp::launch)), submitted through
 //! the same API as every control, so they are checked, attributed to the
-//! participant, undoable and in history.
+//! member, undoable and in history.
 //!
 //! An app's own command-line options
 //! ([`ResourceApp::OPTIONS`](super::ResourceApp::OPTIONS),

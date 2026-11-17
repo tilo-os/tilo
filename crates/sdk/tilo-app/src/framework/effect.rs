@@ -699,7 +699,7 @@ impl<R: Resource, H: 'static> EffectCx<R, H> {
 
     /// Where the invoker asked this effect to act (its `#[param(place)]`
     /// argument): act there instead of at their caret. Once it succeeds
-    /// for a participant, they land there ([`Live::place_of`]).
+    /// for a presence, they land there ([`Live::place_of`]).
     pub fn place(&self) -> Option<&tilo_resource::Place> {
         self.inv.place.as_ref()
     }
@@ -747,7 +747,7 @@ impl<R: Resource, H: 'static> EffectCx<R, H> {
     }
 
     /// The person this invocation runs for: its invoker, when a host
-    /// delivered it for someone, else the participant the view is for.
+    /// delivered it for someone, else the presence the view is for.
     /// `None` for a bot, an agent or an app acting, and in a past version.
     /// An effect that answers or changes what is someone's own ("my link")
     /// reads whose it is here, never from the view.
@@ -1723,7 +1723,7 @@ impl<R: Resource, H: 'static, E: Effect> EffectRunner<R, H, E> {
                 owner: std::any::TypeId::of::<Then<R, H>>(),
             },
             place.as_ref(),
-            &|participant, place| live.land(participant, place),
+            &|presence, place| live.land(presence, place),
         )
     }
 
@@ -1801,13 +1801,13 @@ struct Answered<'a> {
 
 /// Start what an effect's handler answered: its output at once, or the job
 /// it started in `jobs`. `reply` tracks a job for an output a job's caller
-/// learns as the job's; `land` moves the participant where the effect was
+/// learns as the job's; `land` moves the presence where the effect was
 /// told to act once it succeeded.
 fn settle_start(
     jobs: &mut Running,
     answered: Answered<'_>,
     reply: &mut dyn FnMut() -> Progress,
-    land: &mut dyn FnMut(tilo_actions::ParticipantId),
+    land: &mut dyn FnMut(tilo_actions::PresenceId),
 ) -> Result<ResourceOperationStart, String> {
     let Answered {
         id,
@@ -1825,9 +1825,9 @@ fn settle_start(
             return Err(error);
         }
     };
-    // A participant told where to act is there now.
-    if let Some(participant) = ui_core::invocation_scope::current_participant() {
-        land(participant);
+    // A presence told where to act is there now.
+    if let Some(presence) = ui_core::invocation_scope::current_presence() {
+        land(presence);
     }
     match (answer, started, job) {
         (Effected::Done(output), started, false) => {
@@ -1923,7 +1923,7 @@ fn custody_parts(
 }
 
 /// Start in `jobs` what an effect's handler answered ([`settle_start`]),
-/// and move the participant to `place` through `land` once it succeeded.
+/// and move the presence to `place` through `land` once it succeeded.
 ///
 /// # Errors
 /// As [`settle_start`].
@@ -1933,7 +1933,7 @@ fn finish_start(
     answered: Answered<'_>,
     tracking: Tracking<'_>,
     place: Option<&tilo_resource::Place>,
-    land: &dyn Fn(tilo_actions::ParticipantId, tilo_resource::Place),
+    land: &dyn Fn(tilo_actions::PresenceId, tilo_resource::Place),
 ) -> Result<Option<ResourceOperationStart>, String> {
     let invocation = answered.invocation;
     let Tracking {
@@ -1962,9 +1962,9 @@ fn finish_start(
                 None,
             )
         },
-        &mut |participant| {
+        &mut |presence| {
             if let Some(place) = place {
-                land(participant, place.clone());
+                land(presence, place.clone());
             }
         },
     );

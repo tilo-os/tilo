@@ -306,7 +306,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
         )
     }
 
-    /// The app as a participant with `role` opens it on a fresh profile.
+    /// The app as a member with `role` opens it on a fresh profile.
     pub fn with_role(role: Role) -> Result<Self, LaunchError> {
         Self::fresh(TEST_WORKSPACE, role, AUTHOR)
     }
@@ -856,7 +856,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
             .in_document(self.profile.settings())
     }
 
-    /// Change the participant's role while the app runs, as the record's
+    /// Change the member's role while the app runs, as the record's
     /// owner changing their access does. Takes effect on the next frame,
     /// which this runs.
     pub fn set_role(&mut self, role: Role) {
@@ -868,13 +868,13 @@ impl<A: ResourceApp> HeadlessApp<A> {
         self.harness().relayout();
     }
 
-    /// The participant's permissions in force now.
+    /// The member's permissions in force now.
     #[must_use]
     pub fn permissions(&self) -> PermissionContext {
         self.permissions.borrow().clone()
     }
 
-    /// Change the participant's permissions while the app runs, as the host
+    /// Change the member's permissions while the app runs, as the host
     /// does when the workspace's grants change. Takes effect on the next frame,
     /// which this runs.
     pub fn set_permissions(&mut self, permissions: PermissionContext) {
@@ -882,7 +882,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
         self.harness().relayout();
     }
 
-    /// Take the participant out of the workspace while the app runs: no role and
+    /// Take the member out of the workspace while the app runs: no role and
     /// no grant left, as when the owner removes them.
     pub fn leave_workspace(&mut self) {
         self.permissions.set(PermissionContext::stranger(
@@ -1218,7 +1218,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
         self.invoke_as(invoke, true)
     }
 
-    /// Discover the actions this participant may invoke on the running app,
+    /// Discover the actions this member may invoke on the running app,
     /// including item and child resources. Descriptors include the complete
     /// parameter, permission, confirmation and result contracts; discovery
     /// never invokes an action. Addresses stay stable across relayouts.
@@ -1329,7 +1329,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
 
     /// Any published action of `resource`, by id with JSON arguments,
     /// delivered for `invoker` as the host delivers an admitted execution's
-    /// invocation: what it builds is bound to the invoker's own participant
+    /// invocation: what it builds is bound to the invoker's own member
     /// view, and what it submits is applied as theirs.
     ///
     /// # Errors
@@ -1944,7 +1944,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
             .expect("record is open")
     }
 
-    /// A copy of the stored document written by another participant: a
+    /// A copy of the stored document written by another member: a
     /// member's replica, for a test to edit and [`Self::merge_peer`]
     /// back.
     pub fn peer_document(&self) -> tilo_resource::Doc {
@@ -2047,7 +2047,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
 
     /// A member's edit arriving: `edit` writes on their own replica of
     /// the record as it stands now, under their own actor, and the change is
-    /// merged in as sync merges a peer's. It is not the local participant's
+    /// merged in as sync merges a peer's. It is not the local member's
     /// action, so it never lands on their undo stack.
     #[allow(
         clippy::expect_used,
@@ -2082,7 +2082,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
             .flatten()
     }
 
-    /// Undo the local participant's last action, as Ctrl+Z does.
+    /// Undo the local member's last action, as Ctrl+Z does.
     pub fn undo(&mut self) -> bool {
         let harness = self.harness();
         let undone = harness.perform_undo();

@@ -99,7 +99,7 @@ action pin(m: Message, pinned: Bool = not m.pinned) (icon: .pin, on: m.pinned) {
 
 /// Joins a voice channel: the system's call, with this channel as its place.
 action join(v: VoiceChannel) uses call (icon: .phone) {
-    if let max = v.limit { require call.participants(v).count < max else "{v.name} is full" }
+    if let max = v.limit { require call.members(v).count < max else "{v.name} is full" }
     call.join(v)
 }
 
@@ -119,7 +119,7 @@ view channel_row(ch: Channel) {
         t: TextChannel => row(t.name, icon: .hash),
         v: VoiceChannel => stack {
             row(v.name, icon: .volume)
-            for p in call.participants(v) { row(p, indent: 1, speaking: call.speaking(p)) }
+            for p in call.members(v) { row(p, indent: 1, speaking: call.speaking(p)) }
         },
     }
 }
@@ -236,7 +236,7 @@ once, and everything below happens in the window as each key is typed.
   back online".
 - **Presence:** "typing" comes from others' view state (never their text); read position is
   view state, which gives the unread divider, "jump to unread", badges and read receipts; voice
-  participants and who's speaking come from call presence.
+  members and who's speaking come from call presence.
 - **Who and when:** author, time, "edited" and edit history come from the log.
 - **Scrolling:** the list is virtual and pages from the index; following new messages at the
   bottom, never jumping while reading history, a "new messages" pill.
@@ -276,4 +276,4 @@ once, and everything below happens in the window as each key is typed.
 | `rich_input` with its completion drawers (`@` this conversation's speakers (`speakers(items)`) then `members(r)`, and `:` emoji built; `#` index and `/` action sources to wire) | in progress |
 | Transitions, emoji picker, reactions, quote, reply banner, thread chip | to build |
 | Others' view state (typing, read position) and delivery facts readable by `std` | to build |
-| `uses call`, `call.participants`, `std.call` over the native call stack | to build |
+| `uses call`, `call.members`, `std.call` over the native call stack | to build |

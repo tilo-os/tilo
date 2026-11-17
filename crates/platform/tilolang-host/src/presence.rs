@@ -4,7 +4,7 @@
 //!
 //! The broker hands every connection the workspace's member list (`CollabEvent::Context`): what
 //! the instance's views call each person, its own person among them, as a native app's window
-//! calls them. It relays every participant's presence frame on the record's route to the other
+//! calls them. It relays every member's presence frame on the record's route to the other
 //! connections on it. The instance's views read what this device heard as lenses
 //! (`lenses(c)`): who else is at each resource, and who is composing a message in the one the
 //! detail view shows, so a conversation says "… is typing" without reading a draft. What the
@@ -20,7 +20,7 @@ use tilolang_tilo::runtime::value::ResourceRef;
 use ui::permissions::MemberId;
 use ui::presence::{DraftSaid, PresenceCtx, PresenceKey};
 
-/// What an instance heard of the record's participants, and what it last said of its own.
+/// What an instance heard of the record's members, and what it last said of its own.
 pub struct Presence {
     app: String,
     me: MemberId,
@@ -40,7 +40,7 @@ impl Presence {
         let mut heard = PresenceCtx::default();
         // Frames of the person's own other windows are theirs, never someone else here. Their
         // name is the member list's to say.
-        heard.set_self_participant(MemberId::person(me), "");
+        heard.set_self_member(MemberId::person(me), "");
         Self {
             app: app.to_owned(),
             me: MemberId::person(me),
@@ -69,7 +69,7 @@ impl Presence {
                 self.heard.apply_members(members.clone());
                 if self.heard.self_id().is_none() {
                     // A list without the person: their own frames are still theirs.
-                    self.heard.set_self_participant(self.me.clone(), "");
+                    self.heard.set_self_member(self.me.clone(), "");
                 }
                 self.renamed = true;
                 false
@@ -144,7 +144,7 @@ impl Presence {
         }
     }
 
-    /// The key a resource of the app is present under: the same for every participant.
+    /// The key a resource of the app is present under: the same for every member.
     fn key(&self, target: &ResourceRef) -> PresenceKey {
         PresenceKey::Resource {
             app: self.app.clone(),

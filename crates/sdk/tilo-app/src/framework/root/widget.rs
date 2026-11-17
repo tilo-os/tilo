@@ -107,12 +107,12 @@ pub(crate) trait RootPublishes {
     fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::ResourceSpec>;
     fn shared_resources_for(
         &self,
-        participant: Option<&tilo_actions::ParticipantId>,
+        presence: Option<&tilo_actions::PresenceId>,
         doc: &AutoCommit,
     ) -> Option<Vec<ui_core::published::SharedResource>>;
     fn resources_for(
         &self,
-        participant: Option<&tilo_actions::ParticipantId>,
+        presence: Option<&tilo_actions::PresenceId>,
         doc: &AutoCommit,
     ) -> Vec<tilo_actions::ResourceSpec>;
     fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::ResourceSpec>;
@@ -149,7 +149,7 @@ pub(crate) trait RootPublishes {
     fn resource_pending(&self, id: &str) -> bool;
     fn resource_for(
         &self,
-        participant: Option<&tilo_actions::ParticipantId>,
+        presence: Option<&tilo_actions::PresenceId>,
         doc: &AutoCommit,
         id: &str,
     ) -> Option<tilo_actions::ResourceSpec>;
@@ -497,18 +497,18 @@ impl PublishesResources for RootWidget {
 
     fn shared_resources_for(
         &self,
-        participant: Option<&tilo_actions::ParticipantId>,
+        presence: Option<&tilo_actions::PresenceId>,
         doc: &AutoCommit,
     ) -> Option<Vec<ui_core::published::SharedResource>> {
-        self.0.shared_resources_for(participant, doc)
+        self.0.shared_resources_for(presence, doc)
     }
 
     fn resources_for(
         &self,
-        participant: Option<&tilo_actions::ParticipantId>,
+        presence: Option<&tilo_actions::PresenceId>,
         doc: &AutoCommit,
     ) -> Vec<tilo_actions::ResourceSpec> {
-        self.0.resources_for(participant, doc)
+        self.0.resources_for(presence, doc)
     }
 
     fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::ResourceSpec> {
@@ -542,11 +542,11 @@ impl PublishesResources for RootWidget {
 
     fn resource_for(
         &self,
-        participant: Option<&tilo_actions::ParticipantId>,
+        presence: Option<&tilo_actions::PresenceId>,
         doc: &AutoCommit,
         id: &str,
     ) -> Option<tilo_actions::ResourceSpec> {
-        self.0.resource_for(participant, doc, id)
+        self.0.resource_for(presence, doc, id)
     }
 
     fn document_action_result(

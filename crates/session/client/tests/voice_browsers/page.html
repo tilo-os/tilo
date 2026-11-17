@@ -1,7 +1,7 @@
 <!doctype html>
 <meta charset="utf-8">
-<title>Tilo call participant</title>
-<!-- One participant of voice_browsers.rs: the page's call client
+<title>Tilo call member</title>
+<!-- One member of voice_browsers.rs: the page's call client
      (web/voice.mjs) over the fixture's session, which joins and beats as the
      page's own peer session does. -->
 <script type="module">
@@ -87,7 +87,7 @@ const act = command => controls.execute({app: 'so.tilo.chat', workspace, record:
 })();
 const heardSpeaking = new Set();
 voice.subscribe(state => {
-  for (const participant of state.participants) if (participant.speaking) heardSpeaking.add(participant.self ? 'self' : participant.device);
+  for (const member of state.members) if (member.speaking) heardSpeaking.add(member.self ? 'self' : member.device);
 });
 Object.assign(window, {voice, act, played, reports, levels, heardSpeaking, speechCounts, resources, reconnect: () => api('reconnect', 'POST'), ready: true});
 </script>

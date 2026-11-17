@@ -8,7 +8,7 @@
 use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_session_client::Outbox;
 
-use super::AgentParticipant;
+use super::AgentMember;
 
 /// The app whose record an agent introduces itself in.
 use ui::apps::CHAT;
@@ -16,7 +16,7 @@ use ui::apps::CHAT;
 /// Chat's action that names its author in the workspace's roster.
 const INTRODUCE: &str = "introduce";
 
-impl AgentParticipant {
+impl AgentMember {
     /// Introduce the agent in the chat record just opened at `route`; any
     /// other record is left as it is. A refusal is logged, not raised: the
     /// agent's messages still go out, under the name the workspace gives them.

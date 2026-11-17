@@ -5,7 +5,7 @@
 # Device ↔ device: the certified handshake, the relay session's frames and
 # the peer-sync messages they carry between two devices and their hosts.
 name = "peer"
-version = 50
+version = 51
 version_const = "crates/collab/neighbour-wire/src/lib.rs:PEER_PROTOCOL_VERSION"
 encoding = "postcard"
 served_to_apps = false
@@ -103,7 +103,7 @@ RemoteActionMessage = "tilo_actions::remote::RemoteActionMessage: the action-hos
 "CallSummary" = "struct"
 "CallSummary.app_id" = "#1 String"
 "CallSummary.channel_id" = "#3 String"
-"CallSummary.participants" = "#4 Vec<VoiceParticipant>"
+"CallSummary.members" = "#4 Vec<VoiceMember>"
 "CallSummary.record_id" = "#2 String"
 "CallSummary.state" = "#0 CallState"
 "ChangeClaim" = "struct deny_unknown_fields"
@@ -871,13 +871,13 @@ RemoteActionMessage = "tilo_actions::remote::RemoteActionMessage: the action-hos
 "VoiceGrant.call" = "#0 [u8; 32]"
 "VoiceGrant.directions" = "#3 Directions"
 "VoiceGrant.epoch" = "#1 u64"
-"VoiceGrant.participants" = "#4 Vec<VoiceParticipant>"
+"VoiceGrant.members" = "#4 Vec<VoiceMember>"
 "VoiceGrant.participation" = "#2 [u8; 32]"
-"VoiceParticipant" = "struct"
-"VoiceParticipant.device_public_key" = "#0 [u8; 32]"
-"VoiceParticipant.publishes" = "#2 bool"
-"VoiceParticipant.showing" = "#3 Showing"
-"VoiceParticipant.user_public_key" = "#1 [u8; 32]"
+"VoiceMember" = "struct"
+"VoiceMember.device_public_key" = "#0 [u8; 32]"
+"VoiceMember.publishes" = "#2 bool"
+"VoiceMember.showing" = "#3 Showing"
+"VoiceMember.user_public_key" = "#1 [u8; 32]"
 "Work" = "struct"
 "Work.input_bytes" = "#1 u64"
 "Work.inputs" = "#0 Vec<([u8; 32], u64)>"

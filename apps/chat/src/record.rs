@@ -149,7 +149,7 @@ pub struct Chat {
     /// reason as [`Self::categories`]. The field keeps the name records have
     /// always kept them by: a channel is a conversation the whole workspace
     /// has, named and listed; a direct conversation is one a set of
-    /// participants has, named by them and never stored
+    /// members has, named by them and never stored
     /// ([`Chat::direct_id`]).
     #[model(readonly)]
     pub channels: Collection<Conversation>,
@@ -221,15 +221,15 @@ pub struct Conversation {
     /// reads every conversation; it decides where the conversation is
     /// listed and whose unread count moves.
     #[model(readonly)]
-    pub participants: Vec<MemberId>,
+    pub members: Vec<MemberId>,
 }
 
 impl Conversation {
     /// Whether this is one of the workspace's channels: a conversation of
-    /// all its members, which has no participants of its own.
+    /// all its members, which has no members of its own.
     #[must_use]
     pub fn is_channel(&self) -> bool {
-        self.participants.is_empty()
+        self.members.is_empty()
     }
 }
 
@@ -897,26 +897,26 @@ pub(crate) struct Posting {
 }
 
 impl Chat {
-    /// The id of the one conversation with exactly `participants`: derived
+    /// The id of the one conversation with exactly `members`: derived
     /// from the set, so two devices that open the same conversation at once
     /// make one, and neither has to create it first.
     #[must_use]
-    pub fn direct_id(participants: impl IntoIterator<Item = MemberId>) -> Id {
-        let mut members: Vec<MemberId> = participants.into_iter().collect();
+    pub fn direct_id(members: impl IntoIterator<Item = MemberId>) -> Id {
+        let mut members: Vec<MemberId> = members.into_iter().collect();
         members.sort();
         members.dedup();
         let members = serde_json::to_string(&members).unwrap_or_default();
         Id::from_raw(format!("{DIRECT_CONVERSATION_PREFIX}{members}"))
     }
 
-    /// The participants the direct conversation `id` names, or none when
+    /// The members the direct conversation `id` names, or none when
     /// `id` names no direct conversation.
     #[must_use]
-    pub fn direct_participants(id: &Id) -> Option<Vec<MemberId>> {
+    pub fn direct_members(id: &Id) -> Option<Vec<MemberId>> {
         let members = id.as_str().strip_prefix(DIRECT_CONVERSATION_PREFIX)?;
         serde_json::from_str::<Vec<MemberId>>(members)
             .ok()
-            .filter(|participants| !participants.is_empty())
+            .filter(|members| !members.is_empty())
     }
 
     /// Whether `id` names a direct conversation.
@@ -926,28 +926,28 @@ impl Chat {
     }
 
     /// The conversation `id` names: a channel the record keeps, or the
-    /// direct conversation with the participants its id names. `None` for an
+    /// direct conversation with the members its id names. `None` for an
     /// id that names neither.
     #[must_use]
     pub fn conversation(&self, id: &Id) -> Option<Conversation> {
         if let Some(channel) = self.channels.get(id) {
             return Some(channel.clone());
         }
-        let participants = Self::direct_participants(id)?;
+        let members = Self::direct_members(id)?;
         Some(Conversation {
-            participants,
+            members,
             ..Conversation::default()
         })
     }
 
     /// Who the conversation `id` is with: a channel of the whole workspace
-    /// has no participants.
+    /// has no members.
     #[must_use]
-    pub fn conversation_participants(&self, id: &Id) -> Vec<MemberId> {
+    pub fn conversation_members(&self, id: &Id) -> Vec<MemberId> {
         if let Some(channel) = self.channels.get(id) {
-            return channel.participants.clone();
+            return channel.members.clone();
         }
-        Self::direct_participants(id).unwrap_or_default()
+        Self::direct_members(id).unwrap_or_default()
     }
 
     /// Whether the conversation `id` takes messages now: a text channel of
@@ -962,17 +962,17 @@ impl Chat {
         if let Some(channel) = self.channels.get(id) {
             return channel.kind != ChannelKind::Voice;
         }
-        let Some(participants) = Self::direct_participants(id) else {
+        let Some(members) = Self::direct_members(id) else {
             return false;
         };
-        participants.iter().all(|participant| {
-            !participant.is_person() || self.people.find(&member_slot(participant)).is_some()
-        })
+        members
+            .iter()
+            .all(|member| !member.is_person() || self.people.find(&member_slot(member)).is_some())
     }
 
     /// Everyone who can be mentioned: the workspace's people and agents.
     #[must_use]
-    pub fn participants(&self) -> Vec<Person> {
+    pub fn members(&self) -> Vec<Person> {
         self.people.iter().cloned().collect()
     }
 
@@ -980,10 +980,10 @@ impl Chat {
     /// written, or for plain text each `@Name` of a member.
     pub(crate) fn mentions(&self, text: &str, body: &[ClipBlock]) -> Vec<crate::mention::Mention> {
         if body.is_empty() {
-            return crate::mention::resolve(text, &self.participants());
+            return crate::mention::resolve(text, &self.members());
         }
         let blocks: Vec<_> = body.iter().map(tilo_rich_text::content_of_clip).collect();
-        crate::body::mentions(&blocks, &self.participants())
+        crate::body::mentions(&blocks, &self.members())
     }
 
     /// Add `channel` as `id`.
@@ -992,7 +992,7 @@ impl Chat {
     }
 
     /// Make channel `id` named `name`, refusing a category that is not
-    /// here and a name that is only `#`. `participants` is who the
+    /// here and a name that is only `#`. `members` is who the
     /// conversation is with, empty for a channel of the whole workspace.
     fn make_channel(
         &mut self,
@@ -1001,7 +1001,7 @@ impl Chat {
         category: Option<Id>,
         kind: Option<ChannelKind>,
         topic: Option<String>,
-        participants: Vec<MemberId>,
+        members: Vec<MemberId>,
     ) -> Result<(), Refusal> {
         if let Some(category) = &category
             && !self.categories.contains(category)
@@ -1018,7 +1018,7 @@ impl Chat {
                     .map(|topic| topic.trim().to_owned())
                     .unwrap_or_default(),
                 kind: kind.unwrap_or_default(),
-                participants,
+                members,
                 ..Conversation::default()
             },
         );
@@ -1147,7 +1147,7 @@ impl Chat {
     /// before it exists (`chat.workspace/channels/<id>`). Naming a channel
     /// that exists leaves it as it is.
     ///
-    /// `participants` says who the conversation is with: a conversation an
+    /// `members` says who the conversation is with: a conversation an
     /// agent takes part in is one whose agents answer the person's messages in
     /// it. None is a channel of the whole workspace.
     #[action(moderation, audience = "agents")]
@@ -1160,8 +1160,9 @@ impl Chat {
             ChannelKind,
         >,
         #[param("What the channel is about")] topic: Option<String>,
-        #[param("Who the conversation is with; none for the whole workspace")]
-        participants: Option<Vec<MemberId>>,
+        #[param("Who the conversation is with; none for the whole workspace")] members: Option<
+            Vec<MemberId>,
+        >,
     ) -> Result<(), Refusal> {
         let id = given_channel_id(&id)?;
         // A step run again, or two seeds naming one channel, meet on the
@@ -1169,8 +1170,8 @@ impl Chat {
         if self.channels.contains(&id) {
             return Ok(());
         }
-        let participants = participants.unwrap_or_default();
-        self.make_channel(id, &name, category, kind, topic, participants)
+        let members = members.unwrap_or_default();
+        self.make_channel(id, &name, category, kind, topic, members)
     }
 
     /// Delete category.
@@ -1441,8 +1442,7 @@ impl Chat {
             return Err(Refusal::new("there is no such person"));
         };
         let person = person.id.key();
-        self.moderation
-            .report(cx, person, None, None, None, reason)
+        self.moderation.report(cx, person, None, None, None, reason)
     }
 
     /// Decide on a report.

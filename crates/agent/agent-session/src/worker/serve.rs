@@ -250,11 +250,11 @@ impl Worker {
             Request::Open {
                 app_id,
                 workspace,
-                participant,
+                member,
                 actor,
                 seed,
             } => match decode(&actor) {
-                Ok(actor) => self.open(&app_id, &workspace, &participant, actor, seed),
+                Ok(actor) => self.open(&app_id, &workspace, &member, actor, seed),
                 Err(reason) => Reply::Failed(reason),
             },
             Request::ViewsLoad { app_id, doc } => self.load_views(app_id, &doc),
@@ -407,7 +407,7 @@ impl Worker {
         &mut self,
         app_id: &str,
         workspace: &str,
-        participant: &str,
+        member: &str,
         actor: ReplicaActor,
         seed: Option<(String, Vec<Vec<u8>>)>,
     ) -> Reply {
@@ -426,7 +426,7 @@ impl Worker {
             &self.catalogue,
             app_id,
             workspace,
-            participant,
+            member,
             actor,
             seed,
             Some(self.content.store.clone()),

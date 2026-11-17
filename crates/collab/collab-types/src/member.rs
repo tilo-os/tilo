@@ -122,7 +122,7 @@ impl Member {
     }
 
     /// An agent's or bot's row: its colour is assigned here, once, stepped clear
-    /// of the person it acts for ([`PresenceHue::of_participant`]).
+    /// of the person it acts for ([`PresenceHue::of_member`]).
     #[must_use]
     pub fn of_software(
         id: MemberId,

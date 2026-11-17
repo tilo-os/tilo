@@ -1147,7 +1147,7 @@ mod tests {
                     (Some(action), _) => reached.push((row.resource.clone(), action.clone())),
                     (None, Some(visibility)) => {
                         let private_view = visibility.governing_kind == Some(OperationKind::View)
-                            && !visibility.contract.is_participant_view()
+                            && !visibility.contract.is_presence_view()
                             && !visibility.contract.reads_document();
                         if !private_view {
                             levels.push(row.resource.clone());
@@ -1177,7 +1177,7 @@ mod tests {
                 (Some(action), _) => reached.push((row.resource.clone(), action.clone())),
                 (None, Some(visibility)) => {
                     let private_view = visibility.governing_kind == Some(OperationKind::View)
-                        && !visibility.contract.is_participant_view()
+                        && !visibility.contract.is_presence_view()
                         && !visibility.contract.reads_document();
                     if at_top {
                         use std::fmt::Write as _;

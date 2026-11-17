@@ -2,14 +2,14 @@ use std::path::Path;
 
 use tilo_doc::DocSnapshot;
 use ui::framework::testing::TestApp;
-use ui::tilo_actions::{ActionInvoker, ParticipantId};
+use ui::tilo_actions::{ActionInvoker, PresenceId};
 use word_processor::framework::WordProcessorApp;
 
 type App = TestApp<WordProcessorApp>;
 
 const AGENT: &str = "agent:writer-benchmark";
 const PERSON: &str = "owner";
-const PARTICIPANT: &str = "writer-benchmark";
+const PRESENCE: &str = "writer-benchmark";
 const DOCUMENT: &str = "word-processor.document";
 
 struct Expected {
@@ -214,7 +214,7 @@ fn matches_reference(snapshot: &DocSnapshot) -> Result<String, String> {
 fn agent() -> ActionInvoker {
     ActionInvoker::admitted(&ui::tilo_actions::Acting::of_key(AGENT))
         .acting_for(PERSON)
-        .with_participant(ParticipantId::new(PARTICIPANT).unwrap())
+        .with_presence(PresenceId::new(PRESENCE).unwrap())
 }
 
 fn plan() -> Vec<(&'static str, serde_json::Value)> {

@@ -1,7 +1,7 @@
-//! A participant as a client of the collaboration plane: the workspaces it takes part in, this
+//! A member as a client of the collaboration plane: the workspaces it takes part in, this
 //! person's presence in them, and everyone else's.
 //!
-//! The client says what a participant says and never how a host carries it. A host brings a
+//! The client says what a member says and never how a host carries it. A host brings a
 //! [`Transport`] and, where it keeps more of its own, a [`Host`] that takes what the plane heard
 //! beside the boards and opens what only it can open.
 
@@ -56,7 +56,7 @@ pub trait Host: 'static {
     fn pass(&self, _client: &Client) {}
 }
 
-/// The client of the collaboration plane: the workspaces this participant shows and this person's
+/// The client of the collaboration plane: the workspaces this member shows and this person's
 /// presence in them — [`Presence`], which any host's own thread can hold — beside what this host
 /// keeps of the plane and of the person's other devices.
 pub struct Client {

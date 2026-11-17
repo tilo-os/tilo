@@ -30,7 +30,7 @@ let owner_tools = cx.switch(&admin, |_, allowed| {
 ```
 
 `cx.permission_state(ActionNeed::of(ActionKind::Outside))` observes whether
-the participant may reach outside the document here in the same way.
+the member may reach outside the document here in the same way.
 
 Put `owner_tools` into the view and declare `app-owner-tools` in your Fluent
 locale. The pane follows revocation and restoration without reopening the app

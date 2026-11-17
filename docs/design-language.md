@@ -102,7 +102,7 @@ person's colour too.
 
 **Presence palette.** Twelve hues at equal OKLCH lightness and chroma (dark
 L 0.74 C 0.14; light L 0.58 C 0.15) that differ in hue only, so no
-participant looks more important than another.
+member looks more important than another.
 
 **Status.** Danger, warning and success exist only for status. Danger red
 means an error or a failure, never unread, new or live.
@@ -289,7 +289,7 @@ distribution, user, workspace and accessibility layers. A theme can set:
   colour; a theme may choose one hue (*tinted*) or none (*inverted*, the
   monochrome look). The on state is green whatever the emphasis.
 - **Presence:** lightness and chroma of the presence palette (hues stay evenly
-  spaced so participants remain equal).
+  spaced so members remain equal).
 - **Shape:** the window radius; every other radius derives concentrically.
 - **Density, type and motion:** spacing scale, UI face, reading face,
   base size and whether similar letters are always distinguished, and spring

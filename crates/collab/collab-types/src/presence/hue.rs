@@ -221,12 +221,12 @@ pub fn agent_client(name: &str) -> &str {
         .trim()
 }
 
-/// The agent `participant`'s identity, with the run instance its admission gave it taken off:
+/// The agent `member`'s identity, with the run instance its admission gave it taken off:
 /// `agent:helper@host#2` is `helper@host`. One agent the person admits again wears the colour of
 /// what it is, not of the run that carried it; its name still numbers the runs apart.
 #[must_use]
-pub fn agent_identity(participant: &str) -> &str {
-    let bare = participant.strip_prefix("agent:").unwrap_or(participant);
+pub fn agent_identity(member: &str) -> &str {
+    let bare = member.strip_prefix("agent:").unwrap_or(member);
     bare.rsplit_once('#')
         .filter(|(stem, instance)| {
             !stem.is_empty() && !instance.is_empty() && instance.bytes().all(|b| b.is_ascii_digit())
@@ -310,7 +310,7 @@ pub fn identity_rgb(hue: PresenceHue) -> (u8, u8, u8) {
 /// Every colour a peer can be drawn in:the design language's twelve
 /// presence hues ([`PRESENCE_HUES`], 30° apart) at the dark
 /// material's presence lightness and chroma (OKLCH L 0.74, C 0.14, gamut
-/// mapped), as sRGB. Equal lightness and chroma, so no participant looks
+/// mapped), as sRGB. Equal lightness and chroma, so no member looks
 /// more important than another; a closed ring rather than a hash over all
 /// 360 hues, so two people never land a few degrees apart.
 pub const PEER_PALETTE: [(u8, u8, u8); 12] = [

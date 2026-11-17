@@ -176,9 +176,9 @@ tilo_test_env::scenario! {
         // The editor learns who the workspace offers at `@` as it is drawn.
         render_frame(&mut app, 1280.0, 720.0);
         let who = app
-            .participants()
+            .members()
             .into_iter()
-            .find(|participant| !app.is_me(&participant.id) && participant.name.len() > 2)
+            .find(|member| !app.is_me(&member.id) && member.name.len() > 2)
             .expect("the demo workspace has someone to mention");
         let prefix: String = who.name.chars().take(2).collect();
         type_str(&mut app, &mut doc, &format!("ping @{prefix}"));

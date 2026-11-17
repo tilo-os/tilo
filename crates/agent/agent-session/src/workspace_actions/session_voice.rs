@@ -285,7 +285,7 @@ impl Sessions {
 
 /// The record `provider` names in `cluster`, as a run's presence names it.
 fn live(provider: &str, cluster: &str) -> Option<LiveRecord> {
-    crate::participant::actions::record_of(provider, cluster).map(|route| LiveRecord {
+    crate::member::actions::record_of(provider, cluster).map(|route| LiveRecord {
         app: route.app_id,
         record: route.record,
     })

@@ -307,7 +307,7 @@ async fn lounge_with_chat() -> (Hosted, Device, String, tempfile::TempDir) {
                             category: None,
                             kind: None,
                             topic: None,
-                            participants: None,
+                            members: None,
                         },
                     ),
                 )

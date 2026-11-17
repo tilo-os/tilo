@@ -10,7 +10,7 @@ use tilo_app::prelude::*;
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct Talk {
     pub said: Collection<Said>,
-    /// Each person's read mark, by their participant id.
+    /// Each person's read mark, by their member id.
     pub read: std::collections::BTreeMap<String, i64>,
 }
 

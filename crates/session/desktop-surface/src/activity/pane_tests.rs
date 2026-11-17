@@ -1478,7 +1478,7 @@ mod tests {
             pane.entries()
                 .iter()
                 .all(|e| e.author.name != ui::history_source::UNKNOWN_AUTHOR_NAME),
-            "local changes resolved to an unknown participant: {:?}",
+            "local changes resolved to an unknown member: {:?}",
             pane.contributors
         );
         assert_eq!(

@@ -85,17 +85,14 @@ impl ExecutionScope {
         self.lifetime.clone()
     }
 
-    pub(super) fn participant(
-        &self,
-        actor: &BrokerActor,
-    ) -> Result<tilo_actions::ParticipantId, String> {
+    pub(super) fn presence(&self, actor: &BrokerActor) -> Result<tilo_actions::PresenceId, String> {
         if !self.lifetime.is_live() {
             return Err("execution session ended".into());
         }
         if *actor.member() != self.actor {
             return Err("execution actor mismatch".into());
         }
-        Ok(tilo_actions::ParticipantId::for_execution(self.execution))
+        Ok(tilo_actions::PresenceId::for_execution(self.execution))
     }
 }
 

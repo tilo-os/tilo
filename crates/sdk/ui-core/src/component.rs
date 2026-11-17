@@ -349,7 +349,7 @@ impl PropType for Icon {
     }
 }
 
-/// A participant, as a component shows one: their identity, what the workspace calls them, and the
+/// A member, as a component shows one: their identity, what the workspace calls them, and the
 /// presence hue they wear.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Person {

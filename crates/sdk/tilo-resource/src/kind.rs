@@ -444,7 +444,7 @@ impl ResourceKind {
     }
 
     /// Where `action` of this kind, just applied to `doc`, leaves the
-    /// participant who took it ([`Resource::lands`]); `None` for an action
+    /// member who took it ([`Resource::lands`]); `None` for an action
     /// of another type or one that lands nowhere in particular. A group
     /// lands where its last member does.
     pub fn lands(&self, doc: &Doc, action: &EncodedAction) -> Option<Place> {

@@ -55,12 +55,12 @@ pub mod relay;
 #[cfg(feature = "relay")]
 mod authority;
 
-/// One participant's sealed session in one scope, sealed under the scope's
+/// One device's sealed session in one scope, sealed under the scope's
 /// channel keys.
 #[cfg(feature = "plane")]
 pub mod plane;
 
-/// The presence track: what a participant says, and the board a reader keeps
+/// The presence track: what a device says, and the board a reader keeps
 /// of everyone's last word.
 #[cfg(feature = "plane")]
 pub mod presence;

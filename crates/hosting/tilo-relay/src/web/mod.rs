@@ -140,7 +140,7 @@ impl WebHandle {
     #[must_use]
     pub fn online_users(&self) -> std::collections::BTreeMap<[u8; 32], usize> {
         self.presence
-            .participants()
+            .devices()
             .into_iter()
             .map(|(user, devices)| (user, devices.len()))
             .collect()
@@ -1204,7 +1204,7 @@ async fn route(
                 .workspaces
                 .as_ref()
                 .ok_or_else(|| status(StatusCode::NOT_FOUND, "this relay governs no workspaces"))?;
-            let online = web.presence.participants().into_keys().collect();
+            let online = web.presence.devices().into_keys().collect();
             Ok(json(&tilo_relay_protocol::directory::DirectoryPage {
                 workspaces: workspaces.directory(&online).await,
             }))

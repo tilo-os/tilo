@@ -198,7 +198,7 @@ struct Inner {
     signatures: Mutex<HashMap<ChannelKey, Signatures>>,
     /// The record channels this host takes part in, whose sealed history it
     /// folds itself.
-    participant: std::sync::OnceLock<Arc<dyn ParticipantKeys>>,
+    group_keys: std::sync::OnceLock<Arc<dyn GroupKeys>>,
     /// The route of each channel found keyed here: only ever folded sealed
     /// once `resealing`.
     keyed: Mutex<HashMap<ChannelKey, Route>>,
@@ -213,7 +213,7 @@ pub(crate) type Opener<'a> = dyn Fn(&collab_types::SignedOp) -> Option<Vec<u8>> 
 /// The content keys of the record channels a host takes part in (the workspaces
 /// it governs as a node that may own workspaces). It is a member of each
 /// channel's group, so it reads and seals a sealed record like any member.
-pub(crate) trait ParticipantKeys: Send + Sync {
+pub(crate) trait GroupKeys: Send + Sync {
     /// The keys of `route`'s channel, when this host takes part in it.
     fn keys<'a>(
         &'a self,
@@ -290,17 +290,17 @@ impl Compactor {
             hold: Mutex::new(Duration::ZERO),
             forced: Mutex::default(),
             signatures: Mutex::default(),
-            participant: std::sync::OnceLock::new(),
+            group_keys: std::sync::OnceLock::new(),
             keyed: Mutex::default(),
             resealing: std::sync::atomic::AtomicBool::new(false),
         }))
     }
 
     /// Fold the sealed history of the channels `keys` names, as one of their
-    /// participants, instead of asking a member to.
+    /// key holders, instead of asking a member to.
     #[cfg(any(feature = "agents", feature = "web"))]
-    pub(crate) fn with_participant_keys(&self, keys: Arc<dyn ParticipantKeys>) {
-        let _ = self.0.participant.set(keys);
+    pub(crate) fn with_group_keys(&self, keys: Arc<dyn GroupKeys>) {
+        let _ = self.0.group_keys.set(keys);
     }
 
     /// Seal what the channels this host takes part in retain in the clear, from
@@ -539,7 +539,7 @@ impl Compactor {
         Ok(())
     }
 
-    /// Fold `channel`'s sealed history as a participant of `route`'s channel,
+    /// Fold `channel`'s sealed history as a key holder of `route`'s channel,
     /// when this host is one: open every sealed entry with the channel's keys,
     /// fold them as a cleartext channel is folded, and retain the snapshot
     /// sealed under the channel's current key, signed as this host. A
@@ -559,15 +559,15 @@ impl Compactor {
         route: &Route,
         (min_tail, repair): (usize, bool),
     ) -> Result<bool, String> {
-        let Some(participant) = self.0.participant.get() else {
+        let Some(group_keys) = self.0.group_keys.get() else {
             return Ok(false);
         };
-        let Some(keys) = participant.keys(route).await else {
+        let Some(keys) = group_keys.keys(route).await else {
             return Ok(false);
         };
         lock(&self.0.keyed).insert((workspace_id, channel), route.clone());
         let mut unsent = if repair {
-            participant.unsent(route).await
+            group_keys.unsent(route).await
         } else {
             Vec::new()
         };
@@ -579,7 +579,7 @@ impl Compactor {
             .plan_keyed(workspace, (workspace_id, channel), &keys, min_tail, &unsent)
             .await?;
         if !repair && planned.as_ref().is_some_and(|(folded, _)| folded.stuck) {
-            unsent = participant.unsent(route).await;
+            unsent = group_keys.unsent(route).await;
             if !unsent.is_empty() {
                 planned = self
                     .plan_keyed(workspace, (workspace_id, channel), &keys, min_tail, &unsent)
@@ -750,7 +750,7 @@ impl Compactor {
 
     /// Fold `channel` of `workspace_id`, the channel of `route` this host takes part in, without
     /// the writes its governor finds stuck behind a change their own writer never sent
-    /// ([`ParticipantKeys::unsent`]), whatever its tail: a store that already holds such writes
+    /// ([`GroupKeys::unsent`]), whatever its tail: a store that already holds such writes
     /// (written before a page's writes waited for their record) is repaired when its host starts,
     /// rather than at the next fold its writes bring.
     #[cfg(any(feature = "agents", feature = "web"))]
@@ -1080,7 +1080,7 @@ fn plan_leaving_out(
         .collect();
     signatures.end_round();
     let sealed = sealed_tail(&checked, known);
-    // A channel a participant folds holds nothing in the clear: what was
+    // A channel a key holder folds holds nothing in the clear: what was
     // written before its channel was opened is sealed into its snapshot,
     // history and authors whole, however short.
     let reseal = reseal && open.is_some() && checked.iter().any(Checked::is_cleartext);
@@ -1590,7 +1590,7 @@ fn sealed_document_frames(
     )
 }
 
-/// `folded`, a fold of a sealed channel's `entries` as one of its participants, as one sealed
+/// `folded`, a fold of a sealed channel's `entries` as one of its key holders, as one sealed
 /// compaction write ([`collab_types::SealedCompaction`]): the snapshot sealed under the channel's
 /// key, naming exactly the writes it removes, each author's up to the highest. A device that
 /// opens the record is sent it and the writes since, and takes it as the record whole: what it

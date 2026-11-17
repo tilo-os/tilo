@@ -188,9 +188,9 @@ tilo_test_env::scenario! {
 }
 
 tilo_test_env::scenario! {
-    fn the_attached_view_refuses_what_its_participant_may_not_do;
+    fn the_attached_view_refuses_what_its_member_may_not_do;
 
-    phase the_view_refuses_what_the_participant_may_not_do;
+    phase the_view_refuses_what_the_member_may_not_do;
     {
         let app = TestApp::<TallyApp>::new().unwrap();
         let reader =
@@ -246,7 +246,7 @@ tilo_test_env::scenario! {
 
     phase a_view_that_writes_as_it_opens_a_joined_record_is_refused;
     // Only a record's creator writes its initial content: a view that writes
-    // as it opens a record its participant joined is refused, naming the app,
+    // as it opens a record its member joined is refused, naming the app,
     // instead of keeping a change no peer would ever be sent.
     {
         let app = TestApp::<BenchApp>::new().unwrap();
@@ -298,7 +298,7 @@ tilo_test_env::scenario! {
     }
 
     phase a_peers_change_is_refused_while_own_changes_cannot_be_set_aside;
-    // A peer's change that arrives while this participant's own cannot be set
+    // A peer's change that arrives while this member's own cannot be set
     // aside is refused, leaving the record as it was: its own change still goes
     // out, the peer's merges once asked again.
     {
@@ -319,7 +319,7 @@ tilo_test_env::scenario! {
         assert_eq!(
             app.state().name,
             "ours",
-            "the participant's own change still goes"
+            "the member's own change still goes"
         );
     }
 
@@ -597,7 +597,7 @@ fn count(view: &AttachedView) -> i64 {
 }
 
 /// A bench whose view sits whoever opens it down: the mistake the attached
-/// view refuses in a record its participant joined.
+/// view refuses in a record its member joined.
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct Bench {
     pub seated: i64,

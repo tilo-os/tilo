@@ -1,6 +1,6 @@
 # tilo-agent — Tilo application manifest.
 #
-# A participant, not a window: the agent carries out broker-leased tasks
+# A member, not a window: the agent carries out broker-leased tasks
 # through the actions the session's apps publish to it. Nothing is ever
 # drawn, so
 # `kind = "service"` keeps it out of the command palette and the

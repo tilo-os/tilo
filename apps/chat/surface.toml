@@ -15,7 +15,7 @@ fields = [
   { path = "channels.*.topic", type = "text", readonly = true },
   { path = "channels.*.kind", type = { named = "ChannelKind" }, readonly = true },
   { path = "channels.*.archived", type = "bool", readonly = true },
-  { path = "channels.*.participants", type = { list = "text" }, readonly = true },
+  { path = "channels.*.members", type = { list = "text" }, readonly = true },
   { path = "people", type = { collection = { named = "Person" } }, stored = "keyed" },
   { path = "people.*.id", type = "text", readonly = true },
   { path = "people.*.name", type = "text", label = true },
@@ -135,7 +135,7 @@ params = [
   { name = "category", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
   { name = "kind", type = { option = { named = "ChannelKind" } }, required = false, schema = { oneOf = [{ type = "null" }, { type = "string", enum = ["text", "voice"] }] } },
   { name = "topic", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
-  { name = "participants", type = { option = { list = "any" } }, required = false, schema = { type = ["array", "null"], items = { oneOf = [{ type = "object", additionalProperties = false, properties = { person = { type = "string" } }, required = ["person"] }, { type = "object", additionalProperties = false, properties = { agent = { type = "string" } }, required = ["agent"] }, { type = "object", additionalProperties = false, properties = { bot = { type = "string" } }, required = ["bot"] }] } } },
+  { name = "members", type = { option = { list = "any" } }, required = false, schema = { type = ["array", "null"], items = { oneOf = [{ type = "object", additionalProperties = false, properties = { person = { type = "string" } }, required = ["person"] }, { type = "object", additionalProperties = false, properties = { agent = { type = "string" } }, required = ["agent"] }, { type = "object", additionalProperties = false, properties = { bot = { type = "string" } }, required = ["bot"] }] } } },
 ]
 
 [[resources.verbs]]
@@ -346,7 +346,7 @@ fields = [
   { name = "topic", type = "text" },
   { name = "kind", type = { named = "ChannelKind" } },
   { name = "archived", type = "bool" },
-  { name = "participants", type = { list = "text" } },
+  { name = "members", type = { list = "text" } },
 ]
 
 [[resources.types]]

@@ -222,7 +222,7 @@ pub trait ResourceApp: 'static {
     /// `created` when this launch created the record, so actions that fill
     /// a new record (the source of a new project) are taken only then. They
     /// go through the same API as every control: checked against the
-    /// participant's permissions, attributed, undoable and in history. A
+    /// member's permissions, attributed, undoable and in history. A
     /// launch that shows something rather than changing the resource (a
     /// link to one item, a file to look at before acting on it) invokes one
     /// of the app's effects ([`Invoke::effect`]) through the same API. A
@@ -460,7 +460,7 @@ pub struct FileHistory {
 
 /// What [`ResourceApp::seed`] may read: who is creating the record, and the
 /// app's host — its settings, files and secrets on this device — when the
-/// record is created in a window. A participant without one (an agent, a
+/// record is created in a window. A member without one (an agent, a
 /// workspace service: [`seed_record`](super::seed_record)) creates it with no
 /// host: what a seed imports from the device is the device's own to seed.
 pub struct SeedCx<'a> {
@@ -481,7 +481,7 @@ impl SeedCx<'_> {
         self.device
     }
 
-    /// The app's host on this device; `None` for a participant without a
+    /// The app's host on this device; `None` for a member without a
     /// window.
     pub fn host(&self) -> Option<&HostContext> {
         self.host
@@ -751,7 +751,7 @@ fn declarations_of<R: Resource>() -> Rc<[tilo_resource::Declaration]> {
 
 /// Who may edit the resource a root shows, and what it is built for.
 pub(crate) enum Editing {
-    /// The participant (`me`) and their permissions, followed while the app
+    /// The member (`me`) and their permissions, followed while the app
     /// runs, in a window someone uses or a capture.
     Live {
         permissions: LivePermissions,
@@ -819,7 +819,7 @@ impl RootShell {
             || permissions
                 .as_ref()
                 .is_some_and(|permissions| !permissions.check(&scope));
-        let run = run.for_participant(me.as_ref());
+        let run = run.for_member(me.as_ref());
         let storage =
             super::settings::ViewStorage::new(storage, hosted.attach(app.id(), app.title()));
         Self {
@@ -1591,7 +1591,7 @@ fn prepare_capture<A: ResourceApp>(
 }
 
 /// Merge into the record `context` opened what `write` writes into a fork
-/// of it, as another participant's changes arrive.
+/// of it, as another member's changes arrive.
 fn merge_peer(
     context: &HostContext,
     write: &mut dyn FnMut(&mut tilo_resource::Doc) -> Result<(), String>,
@@ -2130,7 +2130,7 @@ pub fn launch_spec<A: ResourceApp>() -> LaunchSpec {
     let spec = if !A::ATTACHES_RUNTIME {
         spec.runtime_attachment(|_| false)
     } else if A::PRIVATE_WINDOWS {
-        // A private window is nobody's runtime participant: it neither syncs
+        // A private window is nobody's runtime member: it neither syncs
         // nor shares what it shows.
         spec.runtime_attachment(|args| !args.has(PRIVATE_FLAG))
     } else {

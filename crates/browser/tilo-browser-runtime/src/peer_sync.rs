@@ -235,8 +235,8 @@ pub(crate) fn say(peer: u32, workspace: &str, value: &JsPresence) -> Result<f64,
         );
         let mut own = page.client.own();
         own.following.clone_from(&value.following);
-        if let Some(participant) = &value.participant {
-            own.profile_ms = own.profile_ms.max(participant.profile_ms);
+        if let Some(member) = &value.member {
+            own.profile_ms = own.profile_ms.max(member.profile_ms);
         }
         page.client.set_own(own);
         page.client.follow();

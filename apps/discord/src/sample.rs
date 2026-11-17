@@ -42,7 +42,7 @@ fn link(discord_user: &str, person: &str, user_name: &str, display_name: &str) -
 }
 
 /// The bridged server a scenario shows. `person` is the capture's own
-/// participant, who has linked `MINE`.
+/// member, who has linked `MINE`.
 pub(crate) fn guild(scenario: Option<&str>, person: &str) -> Guild {
     let mut guild = Guild {
         guild_id: "1140209000000000001".into(),

@@ -97,7 +97,7 @@ tilo_test_env::scenario! {
         assert_eq!(rich.embeds[0].view, topic("release notes"));
     }
 
-    phase a_person_from_the_workspace_goes_in_as_a_mention_of_their_participant_id;
+    phase a_person_from_the_workspace_goes_in_as_a_mention_of_their_member_id;
     {
         let _settled = crate::motion::testing::settled();
         let edits = crate::Intents::default();

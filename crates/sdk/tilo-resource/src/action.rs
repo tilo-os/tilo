@@ -212,7 +212,7 @@ impl ActionCx {
     }
 
     /// Who the action is by: the person or agent that invoked it, the same
-    /// id that participant's own views read as `me`. Pinned with the action
+    /// id that member's own views read as `me`. Pinned with the action
     /// like its time, so every replica reads the same author; the payload
     /// need not carry it. `None` for an action applied with no invoker
     /// (an edit written straight into a document outside the host).

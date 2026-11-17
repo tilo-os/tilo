@@ -251,7 +251,7 @@ impl Core {
     }
 
     /// Submit a field edit or a verb through the resource's dispatcher: the host checks the
-    /// participant's permission, applies it as one undo step, records it in history, and
+    /// member's permission, applies it as one undo step, records it in history, and
     /// presents the changed library.
     fn submit(&self, submit: impl Submit<Snippets>) {
         if let Some(dispatch) = &self.dispatch {

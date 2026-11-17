@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.chat@f1c068c67958c1ec";
+export const SURFACE = "so.tilo.chat@a73427efdc5aa25a";
 
 export interface Category {
   name: string;
@@ -47,7 +47,7 @@ export interface Conversation {
   topic: string;
   kind: ChannelKind;
   archived: boolean;
-  participants: string[];
+  members: string[];
 }
 
 export interface CropRef {
@@ -479,7 +479,7 @@ export interface CreateChannelWithIdArgs {
   category?: string;
   kind?: ChannelKind;
   topic?: string;
-  participants?: unknown[];
+  members?: unknown[];
 }
 
 /** The arguments of `delete-category`. */
@@ -816,7 +816,7 @@ export interface Workspace extends tilo.Resource {
     category?: string;
     kind?: ChannelKind;
     topic?: string;
-    participants?: unknown[];
+    members?: unknown[];
   }): Promise<tilo.Run | void>;
   /** Runs `create-channel-with-id` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
   createChannelWithIdMany(items: CreateChannelWithIdArgs[]): Promise<tilo.ActionAnswer[]>;

@@ -12,7 +12,7 @@
 //!
 //! Each record held keeps a copy of its whole document, as the workspace
 //! has it with what the bot's runs changed since: what the bot's record reads
-//! answer ([`ApiParticipant::record`]), for any record the bot follows,
+//! answer ([`ApiMember::record`]), for any record the bot follows,
 //! whether or not it acts on it.
 
 use std::collections::BTreeMap;
@@ -24,7 +24,7 @@ use tilo_actions::remote::CatalogueRow;
 use tilo_actions::{ActionContext, ActionInvoker, ActionOutput};
 use tilo_peer_state::document_frame::DocumentRoute;
 
-use super::api::{ApiParticipant, RunStep};
+use super::api::{ApiMember, RunStep};
 use super::item_json::{OutboxRow, outbox_entries};
 use crate::apps::{AppCatalogue, ReplicaActor, Seed};
 use crate::worker::ConfinedReplica;
@@ -96,8 +96,8 @@ impl HeldRecords {
         standing.answer(&node, ActionKind::Read, &Context::at(now)) == Answer::Allow
     }
 
-    /// Who the replicas name as participant: `bot:<id>` for a bot.
-    fn participant(&self) -> String {
+    /// Who the replicas name as member: `bot:<id>` for a bot.
+    fn member(&self) -> String {
         match &self.actor {
             ReplicaActor::Bot { installation, .. } => format!("bot:{installation}"),
             ReplicaActor::Owner | ReplicaActor::Agent | ReplicaActor::Member { .. } => {
@@ -135,7 +135,7 @@ impl HeldRecords {
             &self.catalogue,
             &route.app_id,
             &self.workspace,
-            &self.participant(),
+            &self.member(),
             &self.actor,
             Seed::Existing {
                 record,
@@ -241,7 +241,7 @@ impl HeldRecords {
     }
 }
 
-impl ApiParticipant for HeldRecords {
+impl ApiMember for HeldRecords {
     fn workspace(&self) -> &str {
         &self.workspace
     }

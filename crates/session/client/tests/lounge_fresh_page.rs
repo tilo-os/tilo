@@ -536,7 +536,7 @@ async fn a_fresh_page_joins_the_lounge_and_reads_chat() {
     page.send(Cmd::OpenRoute(chat.clone())).unwrap();
     page.send(Cmd::OpenRoute(desktop.clone())).unwrap();
     // 1. The records' keys: each record's channel is the page's, ready.
-    // Their admission is the workspace's participants' (the host's own device
+    // Their admission is the workspace's members' (the host's own device
     // among them), not a note's, so this waits on the two routes themselves.
     let deadline = tokio::time::Instant::now() + Duration::from_secs(180);
     let channels = loop {

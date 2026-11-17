@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # The Lounge image's programs: tilo-relay with the feature `agents` (the host's
-# agent participant links every web app, since the host mounts the apps' own
+# agent session crate links every web app, since the host mounts the apps' own
 # components) and the Discord connector's outside worker, which the bridge
 # starts beside the relay. usage: lounge-binaries.sh OUT [PROFILE]
 #

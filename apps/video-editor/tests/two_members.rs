@@ -36,21 +36,21 @@ use video_editor::{VideoEditor, shot};
 const W: u32 = 1280;
 const H: u32 = 800;
 
-struct Participant {
+struct Member {
     app: TestApp<VideoEditor>,
 }
 
-impl Participant {
-    /// The participant who opens the project: the demo project, as the
+impl Member {
+    /// The member who opens the project: the demo project, as the
     /// plain capture stages it.
     fn opening() -> Self {
         ui::host::install_default(ui::host::HostServices::recording().0);
         Self::focused(TestApp::<VideoEditor>::capture(None).expect("the project opens"))
     }
 
-    /// A participant who joins and is handed the project, the way a late
+    /// A member who joins and is handed the project, the way a late
     /// joiner is answered with the document.
-    fn joining(from: &Participant) -> Self {
+    fn joining(from: &Member) -> Self {
         ui::host::install_default(ui::host::HostServices::recording().0);
         let mut app = TestApp::<VideoEditor>::new().expect("the editor opens");
         app.merge_peer(&mut from.app.peer_document())
@@ -67,7 +67,7 @@ impl Participant {
         app.harness()
             .click_named("video_editor_root")
             .expect("the editor is on screen");
-        Participant { app }
+        Member { app }
     }
 
     fn project(&self) -> Project {
@@ -116,17 +116,17 @@ impl Participant {
 
 /// Read from the document rather than from the editor, because that is what the two actually
 /// share.
-fn clip_ids(p: &Participant) -> Vec<ClipId> {
+fn clip_ids(p: &Member) -> Vec<ClipId> {
     let mut ids: Vec<ClipId> = p.project().clips.iter().map(|c| c.id).collect();
     ids.sort();
     ids
 }
 
-fn duration(p: &Participant) -> f64 {
+fn duration(p: &Member) -> f64 {
     p.project().duration()
 }
 
-/// The colour a participant is drawn in: their identity colour, on the
+/// The colour a member is drawn in: their identity colour, on the
 /// theme's presence palette (what every peer overlay paints with).
 fn drawn_colour(ctx: &PresenceCtx, who: &str) -> (u8, u8, u8) {
     let colour = Theme::dark()
@@ -149,19 +149,19 @@ fn pixels_of_colour(rgba: &[u8], rgb: (u8, u8, u8)) -> usize {
     clippy::too_many_lines,
     reason = "merged scenario: each former test is a labelled case block with its own fixture"
 )]
-fn participants_locate_and_track_each_other() {
+fn members_locate_and_track_each_other() {
     // The driver's playhead is moved with `End` and its selection widened with Ctrl+A, real keys
-    // through the real handler, and the other participant is then asked where that person is.
+    // through the real handler, and the other member is then asked where that person is.
     {
-        let mut ada = Participant::opening();
-        let bo = Participant::joining(&ada);
+        let mut ada = Member::opening();
+        let bo = Member::joining(&ada);
 
         let shared = clip_ids(&bo);
-        assert!(!shared.is_empty(), "the joining participant received clips");
+        assert!(!shared.is_empty(), "the joining member received clips");
         assert_eq!(
             shared,
             clip_ids(&ada),
-            "both participants hold the same clips, by the same ids",
+            "both members hold the same clips, by the same ids",
         );
 
         // Ada jumps to the end of the project — a real key press.
@@ -176,7 +176,7 @@ fn participants_locate_and_track_each_other() {
         );
 
         let heads = vp::peer_playheads(&ctx);
-        assert_eq!(heads.len(), 1, "exactly one other participant: {heads:?}");
+        assert_eq!(heads.len(), 1, "exactly one other member: {heads:?}");
         assert_eq!(heads[0].user, MemberId::person("ada"));
         let end = duration(&ada);
         assert!(
@@ -200,7 +200,7 @@ fn participants_locate_and_track_each_other() {
     // Ada steps her playhead repeatedly and Bo tracks it each time, with no trail of the instants
     // she passed through.
     {
-        let mut ada = Participant::opening();
+        let mut ada = Member::opening();
         let mut ctx = PresenceCtx::empty();
 
         // Arrows nudge a selected clip and step the playhead only when nothing is
@@ -223,7 +223,7 @@ fn participants_locate_and_track_each_other() {
             ada.frame(&PresenceCtx::empty());
             ada.relay(&mut ctx, "ada");
             let now = vp::peer_playheads(&ctx);
-            assert_eq!(now.len(), 1, "one participant keeps one playhead: {now:?}");
+            assert_eq!(now.len(), 1, "one member keeps one playhead: {now:?}");
             seen.push(now[0].at);
         }
         assert!(
@@ -233,7 +233,7 @@ fn participants_locate_and_track_each_other() {
     }
     // They must not be merged into one, and not drawn in one colour.
     {
-        let mut ada = Participant::opening();
+        let mut ada = Member::opening();
         let mut ctx = PresenceCtx::empty();
 
         ada.press("Home");
@@ -245,7 +245,7 @@ fn participants_locate_and_track_each_other() {
         ada.relay(&mut ctx, "cass");
 
         let heads = vp::peer_playheads(&ctx);
-        assert_eq!(heads.len(), 2, "two participants, two playheads: {heads:?}");
+        assert_eq!(heads.len(), 2, "two members, two playheads: {heads:?}");
         assert!(
             (heads[0].at - heads[1].at).abs() > 0.5,
             "they are in different places: {heads:?}",
@@ -258,7 +258,7 @@ fn participants_locate_and_track_each_other() {
     }
     // A field caret keyed to a local-only handle would publish perfectly and land nowhere.
     {
-        let mut ada = Participant::opening();
+        let mut ada = Member::opening();
 
         let mut ctx = PresenceCtx::empty();
         ada.relay(&mut ctx, "ada");
@@ -274,7 +274,7 @@ fn participants_locate_and_track_each_other() {
         ada.relay(&mut ctx, "ada");
 
         // The title she just made, as the *document* holds it — which is what a
-        // second participant would receive.
+        // second member would receive.
         let title = ada
             .project()
             .media
@@ -298,21 +298,21 @@ fn participants_locate_and_track_each_other() {
         );
 
         // A joiner receives the very object that key names, so it resolves.
-        let bo = Participant::joining(&ada);
+        let bo = Member::joining(&ada);
         assert!(
             bo.project().media.iter().any(|m| m.id == title),
-            "the title Ada's caret is keyed to reached the other participant",
+            "the title Ada's caret is keyed to reached the other member",
         );
     }
 }
 
 #[test]
-fn participants_presence_reaches_the_other_screen() {
+fn members_presence_reaches_the_other_screen() {
     // Bo draws the same frame twice, once with Ada in the ctx, so a difference in the pixels is
     // Ada, and her colour in the first and not the second is her rather than a stray relayout.
     {
-        let mut ada = Participant::opening();
-        let mut bo = Participant::joining(&ada);
+        let mut ada = Member::opening();
+        let mut bo = Member::joining(&ada);
 
         ada.press("Home");
         ada.frame(&PresenceCtx::empty());
@@ -350,8 +350,8 @@ fn participants_presence_reaches_the_other_screen() {
         );
     }
     {
-        let mut ada = Participant::opening();
-        let mut bo = Participant::joining(&ada);
+        let mut ada = Member::opening();
+        let mut bo = Member::joining(&ada);
 
         // Nothing selected, so the only thing Ada has to show is her playhead.
         ada.press("Escape");
@@ -371,14 +371,14 @@ fn participants_presence_reaches_the_other_screen() {
             with.saturating_sub(without),
         );
     }
-    // A participant holding a clip has to be on it, whatever their playhead is doing.
+    // A member holding a clip has to be on it, whatever their playhead is doing.
     //
     // Ada is only read here: Bo joins from a copy of her document and nothing presses a key or
     // draws a frame of hers. The case after this one therefore takes her over exactly as she
     // opened, instead of opening the project a second time.
-    let ada = Participant::opening();
+    let ada = Member::opening();
     {
-        let mut bo = Participant::joining(&ada);
+        let mut bo = Member::joining(&ada);
 
         // A clip near the start of the timeline, so it is on screen at the
         // default zoom -- an outline on a clip nobody can see proves nothing.
@@ -431,7 +431,7 @@ fn participants_presence_reaches_the_other_screen() {
 /// With a selection on screen a peer's colour is plentiful whether or not their playhead is
 /// drawn, so each render is proved on its own, by a workspace in which the peer has only that
 /// one thing.
-fn colour_on_screen(bo: &mut Participant, ctx: &PresenceCtx, who: &str) -> (usize, usize) {
+fn colour_on_screen(bo: &mut Member, ctx: &PresenceCtx, who: &str) -> (usize, usize) {
     let with = bo.frame(ctx);
     let without = bo.frame(&PresenceCtx::empty());
     let mut r = OffscreenRenderer::new(W, H);

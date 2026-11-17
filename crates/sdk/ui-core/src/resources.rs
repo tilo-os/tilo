@@ -96,15 +96,15 @@ pub trait PublishesResources: Widget {
         false
     }
 
-    /// The tree as one participant (an agent task) sees it, built from that participant's own view
-    /// state. Multi-participant widgets override this and [`Self::resource_for`], and never put one
-    /// participant's selection into another's tree.
+    /// The tree as one presence (an agent task) sees it, built from that presence's own view
+    /// state. Multi-presence widgets override this and [`Self::resource_for`], and never put one
+    /// presence's selection into another's tree.
     fn resources_for(
         &self,
-        participant: Option<&tilo_actions::ParticipantId>,
+        presence: Option<&tilo_actions::PresenceId>,
         doc: &AutoCommit,
     ) -> Vec<tilo_actions::ResourceSpec> {
-        let _ = participant;
+        let _ = presence;
         self.resources(doc)
     }
 
@@ -113,21 +113,21 @@ pub trait PublishesResources: Widget {
     /// once materialised ([`SharedResource::to_resource`]).
     fn shared_resources_for(
         &self,
-        participant: Option<&tilo_actions::ParticipantId>,
+        presence: Option<&tilo_actions::PresenceId>,
         doc: &AutoCommit,
     ) -> Option<Vec<SharedResource>> {
-        let _ = (participant, doc);
+        let _ = (presence, doc);
         None
     }
 
-    /// [`Self::resource`] in `participant`'s tree.
+    /// [`Self::resource`] in `presence`'s tree.
     fn resource_for(
         &self,
-        participant: Option<&tilo_actions::ParticipantId>,
+        presence: Option<&tilo_actions::PresenceId>,
         doc: &AutoCommit,
         id: &str,
     ) -> Option<tilo_actions::ResourceSpec> {
-        let _ = participant;
+        let _ = presence;
         self.resource(doc, id)
     }
 
@@ -340,24 +340,24 @@ pub fn past_page_range(
         .map_or_else(Vec::new, |w| w.past_page_range(doc, offset, take))
 }
 
-/// `widget`'s resources as `participant` sees them.
+/// `widget`'s resources as `presence` sees them.
 pub fn resources_for(
     widget: &(impl Widget + ?Sized),
-    participant: Option<&tilo_actions::ParticipantId>,
+    presence: Option<&tilo_actions::PresenceId>,
     doc: &AutoCommit,
 ) -> Vec<tilo_actions::ResourceSpec> {
     capability::<dyn PublishesResources>(widget)
-        .map_or_else(Vec::new, |w| w.resources_for(participant, doc))
+        .map_or_else(Vec::new, |w| w.resources_for(presence, doc))
 }
 
-/// Resolve resource `id` in `participant`'s tree of `widget`.
+/// Resolve resource `id` in `presence`'s tree of `widget`.
 pub fn resource_for(
     widget: &(impl Widget + ?Sized),
-    participant: Option<&tilo_actions::ParticipantId>,
+    presence: Option<&tilo_actions::PresenceId>,
     doc: &AutoCommit,
     id: &str,
 ) -> Option<tilo_actions::ResourceSpec> {
-    capability::<dyn PublishesResources>(widget)?.resource_for(participant, doc, id)
+    capability::<dyn PublishesResources>(widget)?.resource_for(presence, doc, id)
 }
 
 /// Whether resource `id` of `widget` may resolve once what it reads lands

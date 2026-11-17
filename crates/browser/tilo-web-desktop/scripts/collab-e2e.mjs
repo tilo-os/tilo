@@ -347,7 +347,7 @@ async function movePointer(page, ms = 2500) {
 }
 // The members' pointers the desktop's frame draws.
 const cursorLabels = page => page.tab.evaluate("(globalThis.tiloMount?.pointers?.() ?? []).map(p => ({label: p.label, kind: p.agent ? 'agent' : 'person'}))");
-const remoteState = page => page.tab.evaluate('(globalThis.peer?.live?.remoteState() ?? []).map(r => ({label: r.participant?.label, kind: r.participant?.kind, pointer: !!r.pointer, focus: r.focus ?? null, selection: r.selection ?? null}))');
+const remoteState = page => page.tab.evaluate('(globalThis.peer?.live?.remoteState() ?? []).map(r => ({label: r.member?.label, kind: r.member?.kind, pointer: !!r.pointer, focus: r.focus ?? null, selection: r.selection ?? null}))');
 // The records the page's peer names for `appId`, from its snapshot.
 async function pageRecords(page, appId) {
   const snapshot = await page.tab.evaluate('globalThis.peer?.getSnapshot() ?? null');

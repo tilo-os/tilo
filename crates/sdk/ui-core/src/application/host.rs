@@ -833,7 +833,7 @@ impl ApplicationHost {
         &self.author
     }
 
-    /// The participant's permissions, as the host follows them.
+    /// The member's permissions, as the host follows them.
     #[must_use]
     pub fn permissions(&self) -> &crate::permissions::SharedPermissions {
         &self.permissions

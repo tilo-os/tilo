@@ -131,7 +131,7 @@ pub fn run(args: &[String]) {
     // identity on disk plus whatever the collaboration layer knows about the
     // peers; here both are named explicitly so the example is self-contained.
     // An actor with no registration would still get an honest row — see
-    // `AuthorDirectory`'s unknown-participant path.
+    // `AuthorDirectory`'s unknown-member path.
     let mut authors = AuthorDirectory::new();
     authors.register(
         &ActorId::from("alice".as_bytes()).to_hex_string(),

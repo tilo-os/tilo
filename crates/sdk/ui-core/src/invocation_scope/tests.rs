@@ -32,7 +32,7 @@ fn scope(
         address: tilo_actions::ActionAddress::new("fixture", "write"),
         argument: None,
         actor: tilo_actions::Actor::Member(tilo_actions::MemberId::person(actor)),
-        participant: None,
+        presence: None,
     };
     let lease = PublishedInvocationLease::new(
         request,
@@ -426,7 +426,7 @@ fn scope_with_original_callback_gate(
         actor: tilo_actions::Actor::Member(tilo_actions::MemberId::person(
             "original-blocked-caller",
         )),
-        participant: None,
+        presence: None,
     };
     let lease = PublishedInvocationLease::new(
         request,
@@ -471,44 +471,44 @@ tilo_test_env::scenario! {
 
     phase invoker_scope_nests_and_gates_remote_view_operations;
     {
-        use tilo_actions::{ActionContract, ActionInvoker, ParticipantId};
-        let participant = ParticipantId::new("agent-a-view").unwrap();
+        use tilo_actions::{ActionContract, ActionInvoker, PresenceId};
+        let presence = PresenceId::new("agent-a-view").unwrap();
         let own_view = ActionContract::view();
-        let mut participant_view = ActionContract::view();
-        participant_view
+        let mut presence_view = ActionContract::view();
+        presence_view
             .tags
-            .push(tilo_actions::PARTICIPANT_VIEW_TAG.to_owned());
+            .push(tilo_actions::PRESENCE_VIEW_TAG.to_owned());
         assert_eq!(super::current_invoker(), None);
         // The local person may always change its own view.
         assert!(super::view_operation_permitted(&tilo_actions::Actor::Member(tilo_actions::MemberId::person("me")), &tilo_actions::MemberId::person("me"), &own_view));
         // A remote actor outside any delivered invocation may not.
         assert!(!super::view_operation_permitted(&tilo_actions::Actor::Member(tilo_actions::MemberId::agent("a")), &tilo_actions::MemberId::person("me"),
-            &participant_view
+            &presence_view
         ));
         {
             let _outer = super::InvokerScope::enter(
-                ActionInvoker::agent("a").with_participant(participant.clone()),
+                ActionInvoker::agent("a").with_presence(presence.clone()),
             );
-            assert_eq!(super::current_participant(), Some(participant.clone()));
+            assert_eq!(super::current_presence(), Some(presence.clone()));
             assert!(super::view_operation_permitted(&tilo_actions::Actor::Member(tilo_actions::MemberId::agent("a")), &tilo_actions::MemberId::person("me"),
-                &participant_view
+                &presence_view
             ));
             assert!(
                 !super::view_operation_permitted(&tilo_actions::Actor::Member(tilo_actions::MemberId::agent("a")), &tilo_actions::MemberId::person("me"), &own_view),
                 "an untagged View op would move somebody else's view"
             );
             assert!(
-                !super::view_operation_permitted(&tilo_actions::Actor::Member(tilo_actions::MemberId::agent("b")), &tilo_actions::MemberId::person("me"), &participant_view),
+                !super::view_operation_permitted(&tilo_actions::Actor::Member(tilo_actions::MemberId::agent("b")), &tilo_actions::MemberId::person("me"), &presence_view),
                 "only the current invoker's own view"
             );
             {
                 let _inner = super::InvokerScope::enter(ActionInvoker::agent("a"));
-                assert_eq!(super::current_participant(), None);
+                assert_eq!(super::current_presence(), None);
                 assert!(!super::view_operation_permitted(&tilo_actions::Actor::Member(tilo_actions::MemberId::agent("a")), &tilo_actions::MemberId::person("me"),
-                    &participant_view
+                    &presence_view
                 ));
             }
-            assert_eq!(super::current_participant(), Some(participant));
+            assert_eq!(super::current_presence(), Some(presence));
         }
         assert_eq!(super::current_invoker(), None);
     }

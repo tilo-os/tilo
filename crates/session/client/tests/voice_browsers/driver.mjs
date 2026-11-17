@@ -1,7 +1,7 @@
-// One browser participant of one governed call (voice_browsers.rs serves the
+// One browser member of one governed call (voice_browsers.rs serves the
 // page and carries what it makes to the call's plane): the page joins with a
 // fake microphone, publishes its frames as its plane's voice, sees the native
-// participant's picture, sends its own camera to it, mutes, and leaves.
+// member's picture, sends its own camera to it, mutes, and leaves.
 //
 // usage: node driver.mjs FIXTURE_URL
 //   FIXTURE_URL  the fixture's page origin (http://127.0.0.1:PORT)
@@ -49,7 +49,7 @@ try {
   console.error('voice fixture', result.stage);
   await gesture(`window.act({op: "join", channel_id: ${JSON.stringify(channel)}})`);
   // The page and the native device are the whole call.
-  await waitFor('window.voice.state.phase === "live" && window.voice.state.participants.length === 2');
+  await waitFor('window.voice.state.phase === "live" && window.voice.state.members.length === 2');
   assert.equal(await evaluate('window.voice.state.call'), call, 'shared controls joined the governed channel call');
   // Joining is listening, muted: the microphone is asked for on unmute.
   assert.equal(await evaluate('window.voice.state.muted'), true, 'shared join starts muted');
@@ -64,14 +64,14 @@ try {
   // device's camera: each sees the other's picture.
   await gesture('window.act({op: "set_camera", on: true})');
   await waitFor('window.voice.state.camera === true', 15_000);
-  const alice = await evaluate(`window.voice.state.participants.find(participant => participant.device === ${JSON.stringify(native)})?.user ?? null`);
-  assert.ok(alice, 'the native participant is named in the page\'s call');
+  const alice = await evaluate(`window.voice.state.members.find(member => member.device === ${JSON.stringify(native)})?.user ?? null`);
+  assert.ok(alice, 'the native member is named in the page\'s call');
   await evaluate(`window.voice.showPictures([{person: ${JSON.stringify(alice)}, source: "camera", layer: "low"}])`);
   await waitFor('window.voice.stats().counters.pictures > 5');
   const seen = await evaluate('window.voice.takePictures(0, 10000000)');
   result.seen = seen.pictures.map(picture => ({person: picture.person, stream: picture.stream, source: picture.source, bytes: picture.object.length}));
   assert.ok(seen.pictures.some(picture => picture.stream.startsWith(native)), 'the native picture reached the page');
-  assert.ok(seen.pictures.every(picture => picture.person === alice), 'the picture names the native participant');
+  assert.ok(seen.pictures.every(picture => picture.person === alice), 'the picture names the native member');
 
   // The page's own pictures went out too: the native device shows its camera
   // in the call, so the page's camera encodes and publishes as it makes them.

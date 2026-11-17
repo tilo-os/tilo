@@ -191,9 +191,9 @@ pub trait Resource: Sized + 'static {
         true
     }
 
-    /// Where `action`, just applied, leaves the participant who took it, read
+    /// Where `action`, just applied, leaves the member who took it, read
     /// off the state after it: the paragraph an append wrote and the caret
-    /// at its end. Every member's view draws that participant there,
+    /// at its end. Every member's view draws that member there,
     /// so one with no pointer or caret of its own (an agent) shows where it
     /// works. The default places it nowhere in particular.
     fn lands(state: &Self::State, action: &Self::Action) -> Option<Place> {
@@ -1247,7 +1247,7 @@ impl tilo_actions::Action for NoAction {
     }
 }
 
-/// Where a participant is inside a resource, in the resource's own terms:
+/// Where a member is inside a resource, in the resource's own terms:
 /// the same on every member's screen whatever its layout.
 ///
 /// Also what an action is told to act at (`#[param(place)] at:

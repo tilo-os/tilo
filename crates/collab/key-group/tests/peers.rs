@@ -1,4 +1,4 @@
-//! Every participant runs the same [`GroupPeer`]: any of them commits, every
+//! Every key holder runs the same [`GroupPeer`]: any of them commits, every
 //! one checks what it receives against the membership, and the group
 //! converges whatever order frames arrive in.
 
@@ -178,7 +178,7 @@ fn genesis_closes_the_plaintext_gate_for_everyone() {
 }
 
 #[test]
-fn any_participant_admits_and_late_joiners_read_all_past_content() {
+fn any_key_holder_admits_and_late_joiners_read_all_past_content() {
     let workspace = WorkspaceId::new();
     let mut alice = Device::creating(1, workspace);
     let mut bob = Device::waiting(2, workspace);
@@ -402,7 +402,7 @@ fn concurrent_commits_on_one_epoch_converge_on_the_lower_digest() {
     }
 }
 
-/// Two participants each commit twice on the epoch they share, neither
+/// Two key holders each commit twice on the epoch they share, neither
 /// hearing the other, so their commits for epoch 3 follow different frames
 /// and neither can be applied on the other. Neither decides on those: the
 /// branches compete where they diverged, at their commits for epoch 2. Each
@@ -538,7 +538,7 @@ fn settle(devices: &mut [&mut Device], allowed: &BTreeSet<Ed25519PublicKey>) {
     assert!(settled, "the workspace never settled");
 }
 
-/// Two participants create a workspace's group at once and each seals content
+/// Two key holders create a workspace's group at once and each seals content
 /// before hearing of the other: one group remains, and everything written
 /// under either genesis opens for every member, a later joiner included.
 #[test]
@@ -680,7 +680,7 @@ fn a_member_that_fell_behind_or_lost_its_state_is_admitted_again() {
     );
     assert_eq!(bob.peer.access(), Access::Waiting);
 
-    // Carol, any participant, admits Bob again with a fresh key: history
+    // Carol, any key holder, admits Bob again with a fresh key: history
     // included.
     carol.peer.learn_request(bob.ask(false)).unwrap();
     let outcome = carol.peer.reconcile_now(&members, &vault()).unwrap();
@@ -965,10 +965,10 @@ fn a_signer_that_answers_later_signs_every_frame() {
     assert_eq!(bob.epoch(), Some(1));
 }
 
-/// Two participants admit a device on one epoch at once, and the one whose
+/// Two key holders admit a device on one epoch at once, and the one whose
 /// commit loses commits again on top of its own before the winner reaches
 /// it. When the winner arrives, a whole epoch below its head, it starts over
-/// rather than staying on a branch no other participant follows; the winner's
+/// rather than staying on a branch no other key holder follows; the winner's
 /// writer, hearing a commit that went on from the loser, publishes its own
 /// again. Everything the loser sealed on its branch stays readable.
 #[test]
@@ -1040,7 +1040,7 @@ fn a_device_that_went_on_from_a_commit_that_lost_starts_over() {
 
 /// A device that asked to join while it waited, and then founded the group
 /// because no genesis came, is in the group with the key it asked with: a
-/// participant that holds its request admits no one again, so founding sets
+/// key holder that holds its request admits no one again, so founding sets
 /// off no commits.
 #[test]
 fn the_founder_is_in_the_group_with_the_key_it_asked_with() {
@@ -1062,7 +1062,7 @@ fn the_founder_is_in_the_group_with_the_key_it_asked_with() {
     assert!(bob.take().is_empty());
 }
 
-/// Two participants admit a device on one epoch at once, and the one whose
+/// Two key holders admit a device on one epoch at once, and the one whose
 /// commit loses goes on by `depth` more commits on top of its own, sealing
 /// content at each, before anything of the winner reaches it. Every frame of
 /// the loser reaches the winner, which stays where it is and publishes its

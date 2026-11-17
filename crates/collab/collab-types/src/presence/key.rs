@@ -28,7 +28,7 @@ pub enum PresenceKey {
         app: AppKind,
         sub: String,
     },
-    /// A participant's broadcast [`ViewSubset`],
+    /// A member's broadcast [`ViewSubset`],
     /// carried as its postcard encoding. `PresencePayload` has no View
     /// variant of its own, so it rides the existing presence frame inside
     /// the routing key instead. Bytes rather than a live struct because the
@@ -292,7 +292,7 @@ pub struct ViewRect {
 }
 
 /// The broadcastable subset of an app's view (`ui::view::View`) — the region and resource a
-/// participant is looking at, minus the caret/selection.
+/// member is looking at, minus the caret/selection.
 ///
 /// Deliberately small and self-describing so it can travel inside the
 /// existing presence frame; it's what an **attach/follow** binds the local
@@ -302,13 +302,13 @@ pub struct ViewRect {
 /// re-key it away from the widget scopes those renderers read.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct ViewSubset {
-    /// Scroll offset(s) of the participant's scrollable content.
+    /// Scroll offset(s) of the member's scrollable content.
     pub scroll: Vec<f64>,
-    /// The resource the participant currently has open, if any.
+    /// The resource the member currently has open, if any.
     pub open_resource: Option<String>,
-    /// The participant's viewport rect in physical pixels.
+    /// The member's viewport rect in physical pixels.
     pub viewport: ViewRect,
-    /// The participant's current view mode, if the app has one.
+    /// The member's current view mode, if the app has one.
     pub view_mode: Option<String>,
 }
 

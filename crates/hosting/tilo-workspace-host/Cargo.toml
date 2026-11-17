@@ -18,7 +18,7 @@ test-support = ["tilo-relay-store/test-support"]
 # records' channel keys to pages.
 agents = ["web", "dep:tilo-agent-session", "dep:tilo-secrets", "dep:ui", "dep:chat"]
 # Pages reach the host: it follows the records its members write sealed and
-# opens them with the channels' keys it holds as a participant.
+# opens them with the channels' keys it holds as a key holder.
 web = []
 
 [dependencies]

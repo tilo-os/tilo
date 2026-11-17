@@ -547,7 +547,7 @@ pub use history_source::{
     ActivityBrief, ActivityBriefAction, ActivityDigest, ActivityNarrator, AuthorDirectory,
     CompareError, GroundedNarrative, HistoryComparison, HistoryFacetIndex, HistoryResourceTarget,
     HistorySelectionDetail, HistorySource, NarrativeRequest, NarrativeSource, compare_entries,
-    deterministic_narrative, heads_for_entry, human_label, participant_display_label,
+    deterministic_narrative, heads_for_entry, human_label, member_display_label,
     validate_narrative, version_index_for_entry,
 };
 pub use live_collaboration::{
@@ -605,7 +605,7 @@ pub use permissions::{
 };
 pub use presence::{PathSegment, PresenceCtx, PresenceKey, SelectionRange};
 pub use wake::{WakeBindError, WakeEvent, WakeHandle, WakeScope, WakeScopeGuard};
-pub use widget::ParticipantPresence;
+pub use widget::ViewPresence;
 
 pub mod application;
 pub mod application_view;

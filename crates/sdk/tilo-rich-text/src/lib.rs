@@ -74,7 +74,7 @@ pub fn compact_editor() -> ui::widget::BlockEditor {
 
 /// Rich text in a view: `cx.rich_text()`.
 pub trait RichTextViews {
-    /// The document, editable where the participant may edit it.
+    /// The document, editable where the member may edit it.
     fn rich_text(&self) -> Element;
 
     /// The document in `surface`, configured by the caller.

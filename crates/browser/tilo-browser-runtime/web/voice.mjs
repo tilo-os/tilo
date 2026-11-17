@@ -1,5 +1,5 @@
 /**
- * A browser participant in a call: its voice and its pictures on the
+ * A browser member in a call: its voice and its pictures on the
  * workspace's live plane (`tilo-session-client` `session/plane.rs`).
  *
  * The page is a member of the call's channel and holds its content keys, so
@@ -41,7 +41,7 @@ import {audioInputs, createBrowserAudio} from './voice-audio.mjs';
 import {createPictureEncoder, createPictureInbox, openSource, pictureObject} from './voice-video.mjs';
 import {callIdOf} from './voice-controls.mjs';
 
-/** RMS above which a participant counts as speaking, and how long it stays so. */
+/** RMS above which a member counts as speaking, and how long it stays so. */
 const SPEAKING_LEVEL = 0.015;
 const SPEAKING_HOLD_MS = 400;
 /** How long a join waits for the host's grant before it gives up: a host
@@ -69,13 +69,13 @@ export function microphoneIssue(error) {
 }
 
 /**
- * `state` is `{phase, call, app, record, muted, canPublish, participants,
+ * `state` is `{phase, call, app, record, muted, canPublish, members,
  * inputId, reason, micIssue, unsupported}` where `micIssue` is why the
  * microphone could not start (`permission_denied`, `source_lost`,
  * `capture_failed`) or null, and `phase` is `idle`, `joining`,
  * `connecting`, `live`, `reconnecting` or `ended`; `admitted` says whether the
  * host granted the call (an ended call that never was is a refusal), and each
- * participant is `{device, user, publishes, camera, screen, muted, deafened,
+ * member is `{device, user, publishes, camera, screen, muted, deafened,
  * speaking, self}`.
  */
 export function createVoiceCall({
@@ -118,7 +118,7 @@ export function createVoiceCall({
    * undeafening puts back. */
   let mutedBeforeDeafen = true;
   const speaking = new Map();
-  /** How loud each participant plays here, by id (`callIdOf`). */
+  /** How loud each member plays here, by id (`callIdOf`). */
   const volumes = new Map();
   /** The newest frame played from each device, by hex: a plane that is joined
    * again announces its stream's first object again, which plays once. */
@@ -145,7 +145,7 @@ export function createVoiceCall({
   const counters = {frames: 0, heard: 0, sent: 0, pictures: 0, showing: 0};
 
   function idle() {
-    return {phase: 'idle', call: null, app: '', record: '', admitted: false, muted: wantMuted, canPublish: false, participants: [], inputId: inputId ?? null, reason: null, camera: false, screen: false, deafened: false, videoIssue: null, micIssue: null, unsupported: false, audioFailed: false};
+    return {phase: 'idle', call: null, app: '', record: '', admitted: false, muted: wantMuted, canPublish: false, members: [], inputId: inputId ?? null, reason: null, camera: false, screen: false, deafened: false, videoIssue: null, micIssue: null, unsupported: false, audioFailed: false};
   }
   const emit = () => { for (const listener of [...listeners]) { try { listener(state); } catch (error) { report({type: 'voice-listener-error', error}); } } };
   const update = change => {
@@ -157,19 +157,19 @@ export function createVoiceCall({
   };
   const inCall = () => state.phase !== 'idle' && state.phase !== 'ended';
 
-  function participants() {
+  function members() {
     if (!grant) return [];
     const at = now();
-    return grant.participants.map(participant => ({
-      device: participant.device,
-      user: participant.user,
-      publishes: participant.publishes,
-      camera: participant.camera === true,
-      screen: participant.screen === true,
-      muted: participant.muted === true,
-      deafened: participant.deafened === true,
-      self: participant.device === device,
-      speaking: (speaking.get(participant.device) ?? -Infinity) > at - SPEAKING_HOLD_MS,
+    return grant.members.map(member => ({
+      device: member.device,
+      user: member.user,
+      publishes: member.publishes,
+      camera: member.camera === true,
+      screen: member.screen === true,
+      muted: member.muted === true,
+      deafened: member.deafened === true,
+      self: member.device === device,
+      speaking: (speaking.get(member.device) ?? -Infinity) > at - SPEAKING_HOLD_MS,
     }));
   }
 
@@ -186,19 +186,19 @@ export function createVoiceCall({
     if (!state.muted) {
       // This page's frames go out as the host's device: its participation
       // in the call is this person speaking.
-      for (const participant of grant.participants) {
-        if (participant.device && participant.device === device) hear(participant.device, capture);
+      for (const member of grant.members) {
+        if (member.device && member.device === device) hear(member.device, capture);
       }
     }
     for (const [id, level] of publishers) hear(id, level);
-    const next = participants();
-    changed ||= next.some((participant, index) => participant.speaking !== state.participants[index]?.speaking);
-    if (changed) update({participants: next});
+    const next = members();
+    changed ||= next.some((member, index) => member.speaking !== state.members[index]?.speaking);
+    if (changed) update({members: next});
   }
 
   /** How loud `sender` plays here: its person's volume, or the call's. */
   function gainOf(sender) {
-    const person = grant?.participants.find(participant => participant.device === sender)?.user;
+    const person = grant?.members.find(member => member.device === sender)?.user;
     return (person && volumes.get(person)) ?? 1;
   }
 
@@ -347,7 +347,7 @@ export function createVoiceCall({
     }
     // This person's own tile draws what their camera makes at its layer.
     if (picture.source === 'camera' && ownLayer === picture.layer) {
-      const self = participants().find(participant => participant.self);
+      const self = members().find(member => member.self);
       if (self) inbox.admit({person: self.user, stream: 'own/camera', source: picture.source, object: pictureObject(picture)}, picture.keyframe);
     }
   }
@@ -362,11 +362,11 @@ export function createVoiceCall({
   function showsOfPage() {
     const byDevice = new Map();
     const add = (source, person, layer) => {
-      for (const participant of grant?.participants ?? []) {
-        if (participant.self || participant.user !== person || !participant.device) continue;
-        const entry = byDevice.get(participant.device) ?? {device: participant.device, camera: [], screen: []};
+      for (const member of grant?.members ?? []) {
+        if (member.self || member.user !== person || !member.device) continue;
+        const entry = byDevice.get(member.device) ?? {device: member.device, camera: [], screen: []};
         if (!entry[source].includes(layer)) entry[source].push(layer);
-        byDevice.set(participant.device, entry);
+        byDevice.set(member.device, entry);
       }
     };
     for (const item of shown) add(item.source, item.person, item.layer);
@@ -433,7 +433,7 @@ export function createVoiceCall({
   /** One picture the plane delivered for a device: admitted to the inbox as
    * it comes, for the app to draw. */
   function heardPicture(picture) {
-    const person = grant?.participants.find(participant => participant.device === picture.from)?.user;
+    const person = grant?.members.find(member => member.device === picture.from)?.user;
     const source = picture.source;
     if (!person || (source !== 'camera' && source !== 'screen')) return;
     counters.pictures += 1;
@@ -464,7 +464,7 @@ export function createVoiceCall({
     if (!audioSession && !audioStarting) void startAudio();
     const canPublish = next.directions.publish;
     if (!canPublish && !state.muted) void audioSession?.setMuted(true);
-    update({phase: 'live', admitted: true, canPublish, muted: canPublish ? state.muted : true, participants: participants()});
+    update({phase: 'live', admitted: true, canPublish, muted: canPublish ? state.muted : true, members: members()});
     encodeVideo();
     sendShowing();
     if (capturePaused) { capturePaused = false; synchronizeCapture(state.muted); }
@@ -633,7 +633,7 @@ export function createVoiceCall({
     },
     /** Turn the camera or a shared screen on or off in the call. */
     setVideo,
-    /** Play participant `id` (a person or `<service>:<account>`) at `gain`
+    /** Play member `id` (a person or `<service>:<account>`) at `gain`
      * (0 silences, 1 as they arrive, at most 2) on this device only. */
     setVolume(id, gain) {
       if (typeof id !== 'string' || !Number.isFinite(gain) || gain < 0 || gain > 2) return;
@@ -641,20 +641,20 @@ export function createVoiceCall({
     },
     /** The pictures the app shows: `[{person, source, layer}]`. */
     showPictures(items) {
-      const self = participants().find(participant => participant.self);
+      const self = members().find(member => member.self);
       shown = items.filter(item => !(self && item.person === self.user));
       ownLayer = items.find(item => item.source === 'camera' && item.person === self?.user)?.layer ?? null;
       // A device that starts showing a source is asked for a keyframe until
       // one arrives: nothing before it decodes.
       const keys = new Set();
       for (const item of shown) {
-        for (const participant of grant?.participants ?? []) {
-          if (participant.self || participant.user !== item.person || !participant.device) continue;
-          const key = `${participant.device}|${item.source}`;
+        for (const member of grant?.members ?? []) {
+          if (member.self || member.user !== item.person || !member.device) continue;
+          const key = `${member.device}|${item.source}`;
           keys.add(key);
           if (asking.has(key) || ready.has(key)) continue;
           asking.add(key);
-          try { signalling.keyframe?.(participant.device, item.source); } catch (error) { report({type: 'voice-signalling-error', error}); }
+          try { signalling.keyframe?.(member.device, item.source); } catch (error) { report({type: 'voice-signalling-error', error}); }
         }
       }
       for (const key of [...asking, ...ready]) if (!keys.has(key)) { asking.delete(key); ready.delete(key); }

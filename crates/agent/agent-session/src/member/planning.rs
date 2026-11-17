@@ -83,7 +83,7 @@ pub(super) struct LookAsk {
 
 /// The planner's thread, and the plan it is making.
 pub(super) struct Planning {
-    /// Dropped with the participant, which ends the thread after the plan
+    /// Dropped with the member, which ends the thread after the plan
     /// it is making.
     jobs: mpsc::Sender<Job>,
     plans: mpsc::Receiver<Planned>,

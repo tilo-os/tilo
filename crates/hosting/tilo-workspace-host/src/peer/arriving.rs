@@ -5,7 +5,7 @@
 //! these first, so the keys are the first thing a newcomer downloads.
 //!
 //! The entry answers the entry without waiting for the Welcome: the
-//! participants commit it while the answer travels and the device subscribes.
+//! key holders commit it while the answer travels and the device subscribes.
 //! A device that subscribes before its Welcome is committed has its replay
 //! hold the first batch until the Welcome arrives ([`KEYS_WAIT`] at most), and
 //! the Welcome goes to that replay as it is committed.
@@ -29,7 +29,7 @@ const MAX_FRAMES: usize = 8;
 const WAITS: Duration = ENTERING_DEADLINE;
 
 /// How long after its admission a device's first replay batch waits for the
-/// Welcome its entry asked for: the participants commit it within tens of
+/// Welcome its entry asked for: the key holders commit it within tens of
 /// milliseconds, and a device whose Welcome is later asks again as a member,
 /// as every member does.
 pub(crate) const KEYS_WAIT: Duration = Duration::from_secs(2);

@@ -104,7 +104,7 @@ impl ActivityDigest {
     }
 
     fn from_recent(recent: &[HistoryEntry], limit: usize, named_ranges: &[NamedRange]) -> Self {
-        // People are the participants history could name.
+        // People are the members history could name.
         let people = recent
             .iter()
             .filter(|entry| entry.author.name != super::UNKNOWN_AUTHOR_NAME)
@@ -339,7 +339,7 @@ mod tests {
             );
         }
 
-        phase a_participant_history_cannot_name_is_not_counted_as_a_person;
+        phase a_member_history_cannot_name_is_not_counted_as_a_person;
         {
             let entries = vec![
                 entry(1, "Ada", 100),

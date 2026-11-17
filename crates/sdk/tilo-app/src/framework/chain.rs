@@ -22,7 +22,7 @@
 //!   items with theirs, each carried out on the part [`Chained::part_for`]
 //!   names when it is invoked. The palette, agents, scripts and the app's
 //!   own surface reach the parts through it, checked against the
-//!   participant's roles in the workspace like the app's own actions (the parts
+//!   member's roles in the workspace like the app's own actions (the parts
 //!   carry the app record's grants), attributed to whoever invokes them and
 //!   written into the part's history.
 //! - **Held where the app is.** The parts are records of the app's own
@@ -1325,7 +1325,7 @@ impl<P: Chained> ChainState<P> {
 
     /// The chain as it is published: the head's actions and every held
     /// part's items, each carried out through [`CHAIN_ACTION_TYPE`] on the
-    /// part it changes; checked against the participant's roles in the workspace
+    /// part it changes; checked against the member's roles in the workspace
     /// as the app's own actions are.
     pub(crate) fn publish(&self) -> tilo_actions::ResourceSpec {
         let revision = (self.revision(), ui_core::i18n::I18nManager::revision());

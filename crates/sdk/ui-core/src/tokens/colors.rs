@@ -296,8 +296,8 @@ pub const IDLE_CHROMA: f32 = 0.35;
 /// ([`PresencePalette::idle_on`]), as a share of the way.
 pub const IDLE_FADE: f32 = 0.45;
 
-/// One colour per participant: [`PRESENCE_HUES`] at one OKLCH lightness and chroma, so
-/// they differ in hue only and no participant looks more important than another. Where
+/// One colour per member: [`PRESENCE_HUES`] at one OKLCH lightness and chroma, so
+/// they differ in hue only and no member looks more important than another. Where
 /// sRGB cannot carry the full chroma at a hue (a light cyan) only that hue's chroma
 /// drops; lightness never does.
 #[derive(Clone, Copy, Debug, PartialEq)]

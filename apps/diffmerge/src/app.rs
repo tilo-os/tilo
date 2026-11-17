@@ -131,7 +131,7 @@ pub struct DiffMergeApp {
     invalidation: ViewInvalidation,
     dispatcher: Option<Dispatcher<Session>>,
     store: effects::Shared,
-    /// Whether this participant may only view, as it follows role changes;
+    /// Whether this member may only view, as it follows role changes;
     /// `None` until the framework attaches the window.
     read_only: Option<ui::LocalState<bool>>,
     followed: Option<(u64, u64)>,

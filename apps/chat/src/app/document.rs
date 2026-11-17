@@ -33,14 +33,14 @@ impl ChatApp {
                 let id = ui::tilo_resource::Id::from_raw(row.id.clone());
                 // Who is in it, as its id names them: a box lists a direct
                 // conversation as the one other person or agent in it.
-                let people = crate::record::Chat::direct_participants(&id)
+                let people = crate::record::Chat::direct_members(&id)
                     .unwrap_or_default()
                     .iter()
-                    .map(|participant| ui::tilo_resource::search_index::IndexPerson {
+                    .map(|member| ui::tilo_resource::search_index::IndexPerson {
                         name: String::new(),
                         anchor: String::new(),
-                        identity: participant.id().to_owned(),
-                        agent: !participant.is_person(),
+                        identity: member.id().to_owned(),
+                        agent: !member.is_person(),
                     })
                     .collect();
                 crate::resource::conversation_entry(&id, &row.name, &row.topic).showing(people)
@@ -274,12 +274,14 @@ impl ChatApp {
         self.composer_main.set_key(&self.active_channel);
         self.composer_main
             .set_placeholder(&self.conversation_placeholder(&self.active_channel));
-        self.composer_main.set_local_author(Some(self.me.id.clone()));
+        self.composer_main
+            .set_local_author(Some(self.me.id.clone()));
         let thread_key = self.thread_draft_key().unwrap_or_default();
         self.composer_thread.set_key(&thread_key);
         self.composer_thread
             .set_placeholder(&crate::i18n::t("chat-thread-reply-placeholder"));
-        self.composer_thread.set_local_author(Some(self.me.id.clone()));
+        self.composer_thread
+            .set_local_author(Some(self.me.id.clone()));
         self.composer_main
             .set_read_only(!self.main_composer_can_edit());
         self.composer_thread.set_read_only(!self.can_participate());

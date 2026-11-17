@@ -61,7 +61,7 @@ fn create_archive(window: &mut Window) {
                 category: None,
                 kind: None,
                 topic: None,
-                participants: None,
+                members: None,
             }),
         )
         .unwrap();
@@ -444,7 +444,7 @@ fn a_channel_with_nothing_earlier_reads_nothing_back(ada: &mut Window) {
             category: None,
             kind: None,
             topic: None,
-            participants: None,
+            members: None,
         }),
     )
     .unwrap();

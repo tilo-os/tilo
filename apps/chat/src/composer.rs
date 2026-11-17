@@ -388,7 +388,7 @@ impl DraftComposer {
             .collect()
     }
 
-    /// Whether the participant may only view.
+    /// Whether the member may only view.
     pub fn set_read_only(&mut self, read_only: bool) {
         self.host.widget_mut().source_mut().read_only = read_only;
     }
@@ -488,7 +488,7 @@ impl<S: RichTextSource + 'static> Composer<S> {
         }
     }
 
-    /// Paint mentions in each participant's colours, built from what
+    /// Paint mentions in each member's colours, built from what
     /// `fingerprint` names; unchanged colours are not applied again.
     pub fn set_mention_paint(
         &mut self,

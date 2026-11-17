@@ -1,4 +1,4 @@
-//! `tilo-agent` — a participant without a window.
+//! `tilo-agent` — a member without a window.
 //!
 //! The agent connects to the compositor's collaboration broker and answers
 //! the turns a person's messages in its conversations start, under its own

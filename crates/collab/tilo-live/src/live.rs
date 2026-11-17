@@ -1,8 +1,8 @@
 //! The live plane's namespace, its tracks and how each track is delivered.
 //!
 //! One namespace per device per scope: `workspace/<workspace>/scope/<scope
-//! id>/participant/<device hex>`. Every track of a participant is published in
-//! that namespace, so a subscriber needs one subscription per participant and
+//! id>/device/<device hex>`. Every track of a device is published in
+//! that namespace, so a subscriber needs one subscription per device and
 //! a relay needs one authority decision per namespace
 //! ([`crate::relay::SessionAuthorization`]).
 
@@ -16,8 +16,8 @@ use crate::video::{self, Layer, Source};
 const WORKSPACE: &str = "workspace";
 /// The segment that introduces a scope within a workspace.
 const SCOPE: &str = "scope";
-/// The segment that introduces a participant's own namespace.
-const PARTICIPANT: &str = "participant";
+/// The segment that introduces a device's own namespace.
+const DEVICE: &str = "device";
 
 /// The namespace one device publishes one scope on.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -48,24 +48,24 @@ impl Namespace {
         }
     }
 
-    /// `workspace/<workspace>/scope/<scope id>/participant/<device hex>`.
+    /// `workspace/<workspace>/scope/<scope id>/device/<device hex>`.
     #[must_use]
     pub fn path(&self) -> String {
         format!(
-            "{}/{PARTICIPANT}/{}",
+            "{}/{DEVICE}/{}",
             self.scope_path(),
             hex::encode(self.device)
         )
     }
 
-    /// `workspace/<workspace>/scope/<scope id>`: the subtree every participant
+    /// `workspace/<workspace>/scope/<scope id>`: the subtree every device
     /// of this scope publishes in, this device included.
     #[must_use]
     pub fn scope_path(&self) -> String {
         format!("{WORKSPACE}/{}/{SCOPE}/{}", self.workspace, self.scope)
     }
 
-    /// The subtree of everything this participant publishes.
+    /// The subtree of everything this device publishes.
     #[must_use]
     pub fn prefix(&self) -> Option<Pattern> {
         Pattern::subtree(&self.path()).ok()
@@ -95,7 +95,7 @@ impl Namespace {
         let rest = name.strip_prefix(WORKSPACE)?.strip_prefix('/')?;
         let (workspace, rest) = rest.split_once('/')?;
         let rest = rest.strip_prefix(SCOPE)?.strip_prefix('/')?;
-        let (scope, device) = rest.rsplit_once("/participant/")?;
+        let (scope, device) = rest.rsplit_once("/device/")?;
         if workspace.is_empty() || scope.is_empty() || device.len() != 64 {
             return None;
         }
@@ -117,11 +117,11 @@ pub(crate) fn exact(names: &[&str]) -> Option<moq_net::Patterns> {
         .collect()
 }
 
-/// The subtree under which every participant of `scope` publishes.
+/// The subtree under which every device of `scope` publishes.
 #[must_use]
-pub fn participants(scope: &crate::scope::Scope) -> String {
+pub fn devices(scope: &crate::scope::Scope) -> String {
     format!(
-        "{WORKSPACE}/{}/{SCOPE}/{}/{PARTICIPANT}",
+        "{WORKSPACE}/{}/{SCOPE}/{}/{DEVICE}",
         scope.workspace_id(),
         scope.id()
     )
@@ -323,16 +323,16 @@ mod tests {
     const DEVICE: [u8; 32] = [0xAB; 32];
 
     tilo_test_env::scenario! {
-        fn a_namespace_is_one_participant_of_one_scope_of_a_workspace;
+        fn a_namespace_is_one_device_of_one_scope_of_a_workspace;
 
-        phase a_namespace_names_the_scope_and_the_participant;
+        phase a_namespace_names_the_scope_and_the_device;
         {
             let scope = Scope::workspace("w1");
             let namespace = Namespace::new(&scope, DEVICE);
             assert_eq!(
                 namespace.path(),
                 format!(
-                    "workspace/w1/scope/workspace/participant/{}",
+                    "workspace/w1/scope/workspace/device/{}",
                     "ab".repeat(32)
                 )
             );
@@ -356,12 +356,12 @@ mod tests {
             assert_eq!(workspace_bytes("workspace"), None);
         }
 
-        phase participants_names_the_subtree_of_one_scope;
+        phase devices_names_the_subtree_of_one_scope;
         {
             let scope = Scope::workspace("0f8fad5b-d9cb-469f-a165-70867728950e");
             assert_eq!(
-                participants(&scope),
-                "workspace/0f8fad5b-d9cb-469f-a165-70867728950e/scope/workspace/participant"
+                devices(&scope),
+                "workspace/0f8fad5b-d9cb-469f-a165-70867728950e/scope/workspace/device"
             );
         }
     }

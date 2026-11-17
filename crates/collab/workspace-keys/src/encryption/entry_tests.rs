@@ -81,7 +81,7 @@ fn a_device_entering_opens_the_desktop_before_the_workspace_governance_arrives()
     page.pump(&page_link, now, 1_000);
     assert!(host_link.take_inbound().is_empty());
 
-    // The host hands it to the group's participants, which admit the page.
+    // The host hands it to the group's key holders, which admit the page.
     workspace
         .queues
         .lock()

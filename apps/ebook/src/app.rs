@@ -1607,7 +1607,7 @@ impl BooksApp {
             fraction,
             opened: false,
         });
-        // A participant the workspace does not let change the library (a guest
+        // A member the workspace does not let change the library (a guest
         // who may only view) reads on without their place being sent: the
         // workspace would refuse it on every page turn.
         self.dispatch.may_invoke(&progress).then_some(progress)

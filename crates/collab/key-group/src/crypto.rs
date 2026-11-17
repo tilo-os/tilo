@@ -78,7 +78,7 @@ impl MemberKey {
 
     /// Fresh key material for one device's membership of one workspace. The
     /// credential names the device's certified Ed25519 key, so every
-    /// participant can map each leaf back to the device it admits; the MLS signer is a
+    /// key holder can map each leaf back to the device it admits; the MLS signer is a
     /// separate key minted here and never leaves the device's member state.
     ///
     /// # Errors

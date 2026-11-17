@@ -1457,7 +1457,7 @@ fn inherited_broker_identity_delegates_join_keys_and_signing_refusals() {
     });
     let identity = runtime_identity::inherited::connect_service(app.as_fd()).unwrap();
     let joined = sdk_join_identity_from(identity, cluster_id).unwrap();
-    assert_eq!(joined.participant_kind, "person");
+    assert_eq!(joined.member_kind, "person");
     let presentation = runtime_collab::CertifiedJoinIdentity::decode(&joined.presentation)
         .unwrap()
         .unwrap();
@@ -2080,7 +2080,7 @@ fn committed_route_over_fake_broker(
         crate::local_identity::own_name(),
         Some(SdkJoinIdentity {
             presentation: harness_presentation(),
-            participant_kind: "person",
+            member_kind: "person",
             signer: harness_document_signer(),
         }),
         "person",
@@ -2820,7 +2820,7 @@ fn asks_while_waiting(access: Option<runtime_identity::wire::KeyAccess>, on_time
         SdkConnectSource::Fd(fd),
         Some(SdkJoinIdentity {
             presentation: harness_presentation(),
-            participant_kind: "person",
+            member_kind: "person",
             signer: SdkDocumentSigner::Certified(Arc::new(AnsweringIdentity {
                 asked: Arc::clone(&asked),
                 access,
@@ -2902,7 +2902,7 @@ fn a_member_waiting_for_keys_shows_the_cleartext_the_broker_admitted() {
         SdkConnectSource::Fd(fd),
         Some(SdkJoinIdentity {
             presentation: harness_presentation(),
-            participant_kind: "person",
+            member_kind: "person",
             signer: SdkDocumentSigner::Certified(Arc::new(AnsweringIdentity {
                 asked: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
                 access: Some(runtime_identity::wire::KeyAccess::Waiting),
@@ -2978,7 +2978,7 @@ fn channel_key_requests_on_route(committed: bool) -> usize {
         SdkConnectSource::Fd(fd),
         Some(SdkJoinIdentity {
             presentation: harness_presentation(),
-            participant_kind: "person",
+            member_kind: "person",
             signer: SdkDocumentSigner::Certified(Arc::new(KeyedIdentity {
                 asked: Arc::clone(&asked),
             })),
@@ -3132,7 +3132,7 @@ fn a_slow_identity_service_never_holds_up_incoming_ops() {
         SdkConnectSource::Fd(fd),
         Some(SdkJoinIdentity {
             presentation: harness_presentation(),
-            participant_kind: "person",
+            member_kind: "person",
             signer: SdkDocumentSigner::Certified(Arc::new(SlowIdentity {
                 keys: group.content_keys().unwrap().to_bytes().unwrap().to_vec(),
                 asked: std::sync::atomic::AtomicUsize::new(0),
@@ -3260,7 +3260,7 @@ fn a_cluster_route_asks_for_no_channel_keys_and_polls_nothing() {
         SdkConnectSource::Fd(fd),
         Some(SdkJoinIdentity {
             presentation: harness_presentation(),
-            participant_kind: "person",
+            member_kind: "person",
             signer: SdkDocumentSigner::Certified(Arc::new(ClusterRefusingIdentity {
                 asked: Arc::clone(&asked),
             })),
@@ -3331,7 +3331,7 @@ fn keyed_endpoint(
         SdkConnectSource::Fd(fd),
         Some(SdkJoinIdentity {
             presentation: harness_presentation(),
-            participant_kind: "person",
+            member_kind: "person",
             signer: SdkDocumentSigner::Certified(Arc::new(KeyedIdentity {
                 asked: Arc::clone(&asked),
             })),
@@ -3415,7 +3415,7 @@ fn document_publication_certified_signing_refusal_never_reports_success() {
         SdkConnectSource::Fd(fd),
         Some(SdkJoinIdentity {
             presentation: harness_presentation(),
-            participant_kind: "person",
+            member_kind: "person",
             signer: SdkDocumentSigner::Certified(Arc::new(RefusedDocumentIdentity)),
         }),
     )
@@ -4944,7 +4944,7 @@ fn background_manager(fd: RawFd, route: RouteSpec) -> CollaborationManager {
         SdkConnectSource::Fd(fd),
         SdkIdentitySource::Ready(Some(SdkJoinIdentity {
             presentation: harness_presentation(),
-            participant_kind: "person",
+            member_kind: "person",
             signer: harness_document_signer(),
         })),
         route,

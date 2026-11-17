@@ -346,7 +346,7 @@ impl ChatApp {
             self.hit_at(self.last_mouse).filter(|hit| {
                 matches!(
                     hit,
-                    Hit::CallParticipantsToggle
+                    Hit::CallMembersToggle
                         | Hit::CallMute
                         | Hit::CallDeafen
                         | Hit::CallCamera
@@ -736,8 +736,8 @@ impl ChatApp {
     /// shell ([`crate::sidebar`]).
     fn on_right_click(&mut self, hit: Hit) {
         let menu = match hit {
-            Hit::CallParticipant(id) => {
-                self.open_participant_menu(id);
+            Hit::CallMember(id) => {
+                self.open_member_menu(id);
                 return;
             }
             // A message, its bar or the chip of what it shares: the message's whole menu.
@@ -760,11 +760,11 @@ impl ChatApp {
 
     /// How loud someone else in the call plays here: silenced, or at one of
     /// a few levels, on this device only.
-    pub(crate) fn open_participant_menu(&mut self, id: ui::tilo_resource::MemberId) {
+    pub(crate) fn open_member_menu(&mut self, id: ui::tilo_resource::MemberId) {
         self.menu = Some(self.context_menu(
-            MenuTarget::CallParticipant(id),
+            MenuTarget::CallMember(id),
             self.last_mouse,
-            MenuAction::for_call_participant().to_vec(),
+            MenuAction::for_call_member().to_vec(),
         ));
     }
 
@@ -934,10 +934,10 @@ impl ChatApp {
             Hit::CloseThread => {
                 self.close_thread();
             }
-            Hit::CallParticipantsToggle => {
-                self.call.participants_expanded = !self.call.participants_expanded;
+            Hit::CallMembersToggle => {
+                self.call.members_expanded = !self.call.members_expanded;
             }
-            Hit::CallParticipant(id) => self.open_participant_menu(id),
+            Hit::CallMember(id) => self.open_member_menu(id),
             Hit::CallMute => {
                 let channel = self
                     .native_voice
@@ -1336,7 +1336,7 @@ impl ChatApp {
         doc: &mut ui::widget::Edits<'_>,
     ) {
         match target {
-            MenuTarget::CallParticipant(id) => {
+            MenuTarget::CallMember(id) => {
                 let mut listening = self.call_listening(id.id());
                 match action {
                     MenuAction::Silence => listening.silenced = !listening.silenced,
@@ -1534,7 +1534,7 @@ impl ChatApp {
         self.sidebar_rename = match target {
             MenuTarget::Channel(id) => Some(crate::sidebar::channel_place(&id)),
             MenuTarget::Category(id) => Some(crate::sidebar::category_place(&id)),
-            MenuTarget::Message(_) | MenuTarget::Workspace | MenuTarget::CallParticipant(_) => None,
+            MenuTarget::Message(_) | MenuTarget::Workspace | MenuTarget::CallMember(_) => None,
         };
     }
 
@@ -1567,7 +1567,7 @@ impl ChatApp {
                     }),
                 );
             }
-            MenuTarget::Message(_) | MenuTarget::Workspace | MenuTarget::CallParticipant(_) => {}
+            MenuTarget::Message(_) | MenuTarget::Workspace | MenuTarget::CallMember(_) => {}
         }
         self.reload(doc);
     }
@@ -1807,7 +1807,7 @@ impl ChatApp {
         // The press sends what the draft holds to the conversation shown, as
         // Chat's `send` does: the action an agent's send and the shell's
         // send-to box run, answered here in the press that asked for it. The
-        // post binds `@name` to participants once, so no reader re-parses the
+        // post binds `@name` to members once, so no reader re-parses the
         // body to work out who it was addressed to. The draft is the writer's
         // own and is emptied in their own record once the send is taken; a
         // refused send keeps it, to send again, and says so beside the

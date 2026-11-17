@@ -272,7 +272,7 @@ pub enum RetiredAgentPreset {
 pub enum WorkspaceMembershipCommand {
     /// Retired with admission by preset: an agent works in a workspace because
     /// the workspace's `chat.agent` record names it and its keeper is a
-    /// participant. It keeps the commands after it at their encoded positions,
+    /// key holder. It keeps the commands after it at their encoded positions,
     /// still reads where workspaces hold it, and is refused.
     #[serde(rename = "AddAgent")]
     RetiredAddAgent {

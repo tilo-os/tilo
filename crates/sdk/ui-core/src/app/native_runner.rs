@@ -2039,7 +2039,7 @@ impl AppHandler {
             {
                 if presentation.window_rect.size() != surface.shell_rect.size() {
                     // App-owned activities can change silhouette while detached (a call gains
-                    // participant rows, navigation reveals another instruction, accessibility text
+                    // member rows, navigation reveals another instruction, accessibility text
                     // grows), so resize the buffer with the shared presentation rect.
                     resize_native_floating_window(&surface.window, presentation.window_rect);
                 }

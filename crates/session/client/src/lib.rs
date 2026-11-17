@@ -1,7 +1,7 @@
-//! A participant's client of the collaboration plane: the workspaces it takes part in, who is here
+//! A member's client of the collaboration plane: the workspaces it takes part in, who is here
 //! in each of them, and this device's own word on them.
 //!
-//! A host brings the transport; the client says what a participant says on it. What only one host
+//! A host brings the transport; the client says what a member says on it. What only one host
 //! can do — a desktop's workspaces, channels, fabric and transfers — stays that host's.
 //!
 //! A page, an agent or a program is a device of its person through the relay transport the client
@@ -41,7 +41,7 @@ pub mod plane;
 pub mod presence;
 pub mod remote;
 mod replica;
-/// This session's presence tracks, as a participant's client says on them.
+/// This session's presence tracks, as a member's client says on them.
 pub mod saying;
 pub mod session;
 pub mod states;

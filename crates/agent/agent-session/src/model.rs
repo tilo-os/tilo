@@ -8,7 +8,7 @@
 //! more through read-only tools when it needs to, and finishes with a `plan`
 //! naming only operations it was shown. Its answer is
 //! untrusted: every step is mapped back to an offered address here, and then
-//! checked against the delegation and the app's API by the participant like
+//! checked against the delegation and the app's API by the member like
 //! any other step.
 //!
 //! [`GatewayModel`] asks through `tilo-model-gateway`, which holds the

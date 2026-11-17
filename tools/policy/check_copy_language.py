@@ -177,7 +177,7 @@ person hears: the tuple the projecting function returns, and the arms of the
 `match` its own `let` picks the tuple from, are checked there — a literal and a
 `format!` sentence alike.
 
-A headless participant has no window of its own: it says what it does to the
+A headless member has no window of its own: it says what it does to the
 person through a task run's update, which the task's own surface shows as it
 is. A crate that ships a translation and hands that update an English literal
 — or an English `format!` sentence, or a local holding one — ships the source
@@ -702,7 +702,7 @@ COPY_FIELDS = (
 
 
 # What an agent reports of a turn to the person who asked it, in a message the
-# conversation shows as it is: the words a headless participant has instead of
+# conversation shows as it is: the words a headless member has instead of
 # a window. Its message is the first field of each.
 WIRE_MESSAGE_BUILDERS = (
     "TurnUpdate::Progress {",

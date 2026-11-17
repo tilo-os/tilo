@@ -126,7 +126,7 @@ command.
   Browser record the open made (`tilo_workspace_host::environment`), decided where
   the relay certifies the device. In the state plane it is replayed and
   handed only that record's channel and may write no other; on the live
-  plane it publishes its own participant namespace (its presence, its
+  plane it publishes its own device namespace (its presence, its
   windows and its pages) and is offered no one else's track; a remote action
   it sends is refused unless it answers the page action the relay handed it
   or asks the relay about itself (below). It still receives the workspace's

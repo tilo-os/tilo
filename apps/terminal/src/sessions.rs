@@ -13,7 +13,7 @@ pub enum OpenState {
     Unopened,
     Opening,
     Open,
-    /// Another device's process, or another participant's, runs the
+    /// Another device's process, or another member's, runs the
     /// session: the tab shows it and starts a shell of its own only when
     /// the person asks (Restart shell).
     Joined,

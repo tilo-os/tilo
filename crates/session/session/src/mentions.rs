@@ -1,6 +1,6 @@
 //! Telling the person when someone mentions them, wherever in the workspace.
 //!
-//! A mention is a run of a record's rich text marked with a participant's id, whichever app wrote
+//! A mention is a run of a record's rich text marked with a member's id, whichever app wrote
 //! it ([`ui::mentions::in_record_for`]). Every record a change reaches is looked at as the change
 //! arrives, and each new mention of the person here is one [`Notice`]. A mention is never told
 //! twice, is taken back when it is edited away, and one that was already there when this device
@@ -252,7 +252,7 @@ pub struct Given {
     pub records: Option<Rc<dyn Records>>,
     /// The person's notifications, as the host shows them.
     pub notices: Option<Rc<dyn Notices>>,
-    /// What this host calls a participant.
+    /// What this host calls a member.
     pub name: Rc<dyn Fn(&str) -> String>,
     /// What draws a frame when a notice told the person something.
     pub wake: Option<tilo_service::Wake>,

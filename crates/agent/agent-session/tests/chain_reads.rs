@@ -37,7 +37,7 @@ fn founded() -> Replica {
     page.invoke(
         &ActionAddress::new("chat.workspace", "create-channel-with-id"),
         serde_json::json!({"id": "c_chat", "name": "chat", "category": null,
-            "kind": null, "topic": null, "participants": null})
+            "kind": null, "topic": null, "members": null})
         .as_object()
         .unwrap(),
         false,

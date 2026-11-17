@@ -1,5 +1,5 @@
 //! Painting the laid-out document: the frame, page sheets, text, images,
-//! change and note decorations, footnotes and other participants' overlays.
+//! change and note decorations, footnotes and other presences' overlays.
 
 use super::block_layout::list_marker_x;
 use super::image_layout::{

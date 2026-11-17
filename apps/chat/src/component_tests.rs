@@ -277,7 +277,7 @@ fn component_local_view_restores_presentation_without_reverting_document() {
     doc.commit();
     let mut app = projection(&doc, identity.clone());
     app.scroll = 125.;
-    app.call.participants_expanded = true;
+    app.call.members_expanded = true;
     let saved = app
         .capture_application_view()
         .unwrap()
@@ -288,7 +288,7 @@ fn component_local_view_restores_presentation_without_reverting_document() {
     let mut restored = projection(&doc, identity);
     restored.restore_application_view(&saved, &doc).unwrap();
     assert_eq!(restored.scroll, 125.);
-    assert!(restored.call.participants_expanded);
+    assert!(restored.call.members_expanded);
     assert_eq!(doc.base_heads(), before);
 }
 #[test]
@@ -362,7 +362,7 @@ fn idle_chat_asks_no_frame_to_solve_its_layout() {
     app.call.expanded = true;
     assert!(
         app.layout_needs_measure(),
-        "the expanded call's tile follows the participant grid"
+        "the expanded call's tile follows the member grid"
     );
 }
 

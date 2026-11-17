@@ -309,7 +309,7 @@ impl TestGovernor {
     }
 
     /// Let `person` exercise the governance `action` of this workspace, as an
-    /// administrator may: a participant a test needs to govern something
+    /// administrator may: a key holder a test needs to govern something
     /// without giving it the workspace's owner role.
     pub fn allow_governance(&mut self, person: &str, action: &str) -> Result<(), String> {
         let now = self.now();

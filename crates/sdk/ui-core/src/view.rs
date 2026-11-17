@@ -31,7 +31,7 @@ pub struct ViewContribution {
     pub view_mode: Option<String>,
 }
 
-/// A participant's View: everything about *where they are looking* that is never merged
+/// A member's View: everything about *where they are looking* that is never merged
 /// into anyone else's.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct View {

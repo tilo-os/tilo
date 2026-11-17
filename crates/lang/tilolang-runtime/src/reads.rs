@@ -45,7 +45,7 @@ pub enum ReadRequest {
         /// A time as a filter writes it: only resources last changed then.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         changed: Option<String>,
-        /// A person, by participant id: only resources whose text mentions them.
+        /// A person, by member id: only resources whose text mentions them.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         mentions: Option<String>,
     },

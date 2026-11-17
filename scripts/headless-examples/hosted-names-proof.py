@@ -5,7 +5,7 @@ Ada's session hosts the workspace and Bo's joins it ([`two_people.joined`]); bot
 tilolang Chat this tree builds, installed as a signed package. Ada makes a channel and writes in
 it. Bo's window, read as a screen reader reads it (AT-SPI, on his session's own bus), says
 "Ada is typing…" while she types, names her as the author of what she sent ("Ada", never
-"Unknown participant"), and says no one is typing once she sent. Ada's own window names her
+"Unknown member"), and says no one is typing once she sent. Ada's own window names her
 as the author too, never as a guest.
 
     python3 scripts/headless-examples/hosted-names-proof.py --out DIR [--build]
@@ -36,7 +36,7 @@ CHAT = "so.tilo.lang.chat"
 CHANNEL = "new-channel"
 MESSAGE = "hello Bo"
 TYPING = "Ada is typing…"
-UNNAMED = "Unknown participant"
+UNNAMED = "Unknown member"
 GUEST = "Guest"
 
 

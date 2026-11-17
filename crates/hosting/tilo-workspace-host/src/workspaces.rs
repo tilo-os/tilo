@@ -287,7 +287,7 @@ struct GovernedWorkspace {
     unkept: bool,
     /// Whether writing them through is due already ([`Workspaces::keep_soon`]).
     keeping: bool,
-    /// The channels of this workspace's records whose participants this host
+    /// The channels of this workspace's records whose key holders this host
     /// is asking to admit it, by app and record: a burst of writes to a
     /// record the host holds no keys of yet asks once
     /// ([`Workspaces::join_soon`]).
@@ -2089,7 +2089,7 @@ impl Workspaces {
         }
     }
 
-    /// Ask the participants of `app`'s `record`'s channel in `workspace` to
+    /// Ask the key holders of `app`'s `record`'s channel in `workspace` to
     /// admit this host's device ([`Self::join_channel`]), apart from whatever
     /// asked for it: the group's answer arrives as another write of the
     /// workspace, which waits for the writes ahead of it, a notice in this
@@ -2125,7 +2125,7 @@ impl Workspaces {
     /// `workspace`, when this host takes part in the workspace's channels:
     /// what a host that reads a record its members write sealed asks for once
     /// it finds the record shut, since its keys arrive only after the
-    /// channel's participants admit it ([`Self::join_soon`]). Nothing when
+    /// channel's key holders admit it ([`Self::join_soon`]). Nothing when
     /// the workspace is not governed here; the keys arrive on the channel
     /// service's own time, and the record reads once they have.
     pub async fn ask_to_open(&self, workspace: &str, app: &str, record: &str) {
@@ -2249,7 +2249,7 @@ impl Workspaces {
         // are taken in like any member's.
         // A host told of its device's channel service retains its own
         // device's channel governance like any member's, for the other
-        // participants: the host keeps no channels to have it already.
+        // key holders: the host keeps no channels to have it already.
         if author == host.cert.device_public_key
             && message.governance_workspace().is_none()
             && !matches!(
@@ -2739,7 +2739,7 @@ impl Workspaces {
 
     /// Bring the relay in line with the workspace's committed state: admit exactly
     /// its governed members, then retain every governance change not yet
-    /// published, then re-derive its calls' participants. Runs after each
+    /// published, then re-derive its calls' key holders. Runs after each
     /// decision, before the decision is answered.
     ///
     /// The changes are handed to the workspace's [`publisher::WorkspacePublisher`]

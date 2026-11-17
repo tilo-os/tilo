@@ -696,7 +696,7 @@ impl HistorySource for Activity {
         // Who this host's own mounts write as: a record's changes by the person who made them.
         (self.0.writers.register)(authors);
         // A change of a workspace's layout is the person's: the record is written as them, so it
-        // reads as presence shows them here and never as another participant.
+        // reads as presence shows them here and never as another member.
         authors.register_local_identity(
             &automerge::ActorId::from(self.0.person.as_bytes()).to_hex_string(),
         );

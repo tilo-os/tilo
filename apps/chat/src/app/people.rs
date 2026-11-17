@@ -80,7 +80,7 @@ impl ChatApp {
             .filter(|name| !name.is_empty())
     }
 
-    /// What to call `id` on screen: this session's own participant by their
+    /// What to call `id` on screen: this session's own member by their
     /// name like anyone else, and an honest placeholder for someone the workspace
     /// has not named yet — nobody is ever shown their raw routing id.
     pub(crate) fn user_name(&self, id: &MemberId) -> String {
@@ -171,9 +171,9 @@ impl ChatApp {
 
     /// The presence hue `id` wears: an agent's is the one its own record gives it (its keeper's
     /// choice, else the one rule's), a person's the one the workspace announced for them, else
-    /// the one rule every surface draws a participant by ([`ui::presence::member_hue`]) —
+    /// the one rule every surface draws a member by ([`ui::presence::member_hue`]) —
     /// so a face, a chip and a byline are one colour, here as in every app of the workspace.
-    pub(crate) fn participant_hue(&self, id: &MemberId) -> ui::tokens::PresenceHue {
+    pub(crate) fn member_hue(&self, id: &MemberId) -> ui::tokens::PresenceHue {
         Some(id)
             .filter(|member| !member.is_person())
             .and_then(|member| self.workspace_agent_colours.get(member.id()))
@@ -188,10 +188,10 @@ impl ChatApp {
             .unwrap_or_else(|| ui::presence::member_hue(id, None))
     }
 
-    /// The participant's own colour, in the shared presence vocabulary: the workspace's assignment
-    /// when it made one for a person, otherwise [`Self::participant_hue`] as the colour that hue
+    /// The member's own colour, in the shared presence vocabulary: the workspace's assignment
+    /// when it made one for a person, otherwise [`Self::member_hue`] as the colour that hue
     /// wears.
-    pub fn participant_color(&self, id: &MemberId) -> (u8, u8, u8) {
+    pub fn member_color(&self, id: &MemberId) -> (u8, u8, u8) {
         let agent = Some(id)
             .filter(|member| !member.is_person())
             .is_some_and(|member| self.workspace_agent_colours.contains_key(member.id()));
@@ -199,7 +199,7 @@ impl ChatApp {
             .get(id)
             .filter(|_| !agent)
             .copied()
-            .unwrap_or_else(|| ui::presence::identity_rgb(self.participant_hue(id)))
+            .unwrap_or_else(|| ui::presence::identity_rgb(self.member_hue(id)))
     }
 
     /// The chat's people as the composers' `@` lists offer them beside the
@@ -211,7 +211,7 @@ impl ChatApp {
             .map(|user| ui::widget::MentionCandidate {
                 id: user.id.clone(),
                 name: self.display_name(&user.id),
-                hue: self.participant_hue(&user.id),
+                hue: self.member_hue(&user.id),
                 is_self: self.is_me(&user.id),
             })
             .collect()
@@ -220,9 +220,9 @@ impl ChatApp {
     /// Everyone a message's `@name`s bind to when it is sent: the
     /// document's own users, plus anyone the workspace is talking about who has
     /// not yet written themselves into it.
-    pub fn participants(&self) -> Vec<crate::record::Person> {
+    pub fn members(&self) -> Vec<crate::record::Person> {
         let mut out: Vec<crate::record::Person> = self
-            .participant_ids()
+            .member_ids()
             .into_iter()
             .map(|(id, _)| crate::record::Person {
                 name: self.display_name(id),
@@ -233,10 +233,10 @@ impl ChatApp {
         out
     }
 
-    /// [`Self::participants`] without their names: who can be mentioned, each
+    /// [`Self::members`] without their names: who can be mentioned, each
     /// once. A frame that only needs their colours reads this, so it neither
-    /// names every participant nor allocates one string each.
-    pub(crate) fn participant_ids(&self) -> Vec<(&MemberId, bool)> {
+    /// names every member nor allocates one string each.
+    pub(crate) fn member_ids(&self) -> Vec<(&MemberId, bool)> {
         let mut out: Vec<(&MemberId, bool)> =
             self.users.iter().map(|u| (&u.id, u.is_agent)).collect();
         for id in self.workspace_names.keys() {
@@ -323,7 +323,7 @@ impl ChatApp {
         }
     }
 
-    /// Whether this workspace has somebody besides the local participant. An
+    /// Whether this workspace has somebody besides the local member. An
     /// agent is still a member (and should surface collaboration
     /// controls), but it is never counted or labelled as a person.
     pub(crate) fn has_other_member(&self) -> bool {

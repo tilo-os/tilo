@@ -307,7 +307,7 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
         &self.live
     }
 
-    /// Observe what this participant may do, without storing their role in
+    /// Observe what this member may do, without storing their role in
     /// the shared resource. Use this with [`Self::switch`] for an owner-only
     /// pane, or with a bound widget for a permission-specific label. Changes
     /// follow the host even when the document and write access stay unchanged.
@@ -316,7 +316,7 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
         self.dispatch.permission_state(need)
     }
 
-    /// This participant's standing in the workspace as the host keeps it when
+    /// This member's standing in the workspace as the host keeps it when
     /// called (who they are, the workspace's policy, what bounds them), for a
     /// runtime that decides its own invocations by the policy the API
     /// decides by. `None` outside a host.
@@ -324,7 +324,7 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
         self.dispatch.standing_source()
     }
 
-    /// Whether this participant may govern the workspace, observed: for an
+    /// Whether this member may govern the workspace, observed: for an
     /// owner-only pane with [`Self::switch`].
     pub fn govern_state(&self) -> LocalState<bool> {
         self.dispatch.govern_state()
@@ -341,7 +341,7 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
         self.dispatch.arrived_state()
     }
 
-    /// Whether this participant may only view, as state that follows role
+    /// Whether this member may only view, as state that follows role
     /// changes while the app runs.
     pub fn read_only_state(&self) -> LocalState<bool> {
         self.dispatch.read_only_state()

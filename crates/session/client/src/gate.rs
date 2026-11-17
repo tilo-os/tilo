@@ -80,7 +80,7 @@ pub fn required_workspace_action(msg: &NeighbourMsg) -> Option<WorkspaceAction> 
         | NeighbourMsg::IdentityAnnouncementV2 { .. }
         // Each remote action is authorized per call against its own declared permission.
         | NeighbourMsg::RemoteAction { .. }
-        // Channel governance is signed by a participant and checked against the membership; access
+        // Channel governance is signed by a member and checked against the membership; access
         // requests are how a reader obtains keys.
         | NeighbourMsg::MlsGovernance { .. }
         | NeighbourMsg::MlsAccessRequest { .. } => {

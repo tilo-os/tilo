@@ -121,7 +121,7 @@ async fn a_guest_opens_a_voice_channels_call_and_twelve_devices_take_part() {
         .unwrap();
     assert_eq!((again.call, again.epoch), (opened.call, opened.epoch));
 
-    // Twelve devices in one call: no participant limit.
+    // Twelve devices in one call: no member limit.
     let mut links = vec![owner, bob_link];
     for index in 0..10 {
         let device = enrol(
@@ -143,11 +143,11 @@ async fn a_guest_opens_a_voice_channels_call_and_twelve_devices_take_part() {
         joined.push(native(link, granted).await.participation);
     }
     let full = native(&links[0], |envelope| {
-        granted(envelope).filter(|grant| grant.participants.len() == 12)
+        granted(envelope).filter(|grant| grant.members.len() == 12)
     })
     .await;
     assert_eq!(
-        full.participants.len(),
+        full.members.len(),
         12,
         "everyone is in the call with the eleven others"
     );
@@ -166,7 +166,7 @@ async fn a_guest_opens_a_voice_channels_call_and_twelve_devices_take_part() {
         granted(envelope).filter(|grant| grant.participation != joined[1])
     })
     .await;
-    assert_eq!(rejoined.participants.len(), 12);
+    assert_eq!(rejoined.members.len(), 12);
 
     drop(web);
     relay.shutdown().await;

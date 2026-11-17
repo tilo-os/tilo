@@ -251,7 +251,7 @@ export function httpsPost(origin, fetcher = (...args) => globalThis.fetch(...arg
  * draws them, through the same path a native desktop does.
  */
 export function createLiveLayer(peer, runtime, workspace, {
-  participant, ready = Promise.resolve(),
+  member, ready = Promise.resolve(),
   setTimer = (callback, delay) => globalThis.setTimeout(callback, delay),
   clearTimer = handle => globalThis.clearTimeout(handle),
 } = {}) {
@@ -309,7 +309,7 @@ export function createLiveLayer(peer, runtime, workspace, {
   function start() {
     if (stopped) return;
     publisherId = peer.deviceKey?.() ?? publisherId;
-    if (participant) value.participant = {kind: 'person', profile_ms: 0, ...participant};
+    if (member) value.member = {kind: 'person', profile_ms: 0, ...member};
     say();
     setState('live');
   }
@@ -521,13 +521,13 @@ async function connect({
   // When the person last changed their profile, as this page knows it: their
   // presence says it, so everyone here fetches it again when it moves.
   let profileMs = 0;
-  const publishParticipant = () => live?.publishPresence({participant: {kind: 'person',
+  const publishMember = () => live?.publishPresence({member: {kind: 'person',
     label: (displayName || label).slice(0, 32), color: ownColor(), profile_ms: profileMs}});
   // The person's name, as history and presence show it from now on.
   const rename = name => {
     displayName = fitDisplayName(name);
     peer?.setDisplayName?.(displayName);
-    publishParticipant();
+    publishMember();
   };
   let snapshot = {phase: 'authenticating', records: []};
   /** The workspace's name as its host answered admission with it
@@ -802,7 +802,7 @@ async function connect({
       // there under the workspace's name.
       peer.joinWorkspace(workspace, workspaceName);
       if (liveEnabled) {
-        live = createLiveLayer(peer, runtime, workspace, {ready, participant: {
+        live = createLiveLayer(peer, runtime, workspace, {ready, member: {
           kind: 'person', label: (displayName || label).slice(0, 32), color: ownColor(), profile_ms: profileMs,
         }});
       }
@@ -1152,7 +1152,7 @@ async function connect({
      * (or did): a plane that could not be reached. */
     liveNote: () => { try { return peer?.liveNote?.() ?? null; } catch { return null; } },
     /** This person as their presence names them: `{label, color}`. */
-    get participant() {
+    get member() {
       return {label: (displayName || label).slice(0, 32), color: ownColor()};
     },
     /** The person's profile was kept (or read) as of `at` (Unix ms): their
@@ -1161,7 +1161,7 @@ async function connect({
       const stamp = Number(at) || 0;
       if (stamp <= profileMs) return;
       profileMs = stamp;
-      publishParticipant();
+      publishMember();
     },
     /** The people here as their live presence names them (`[{user,
      * label}]`): someone else already going by this person's drawn name

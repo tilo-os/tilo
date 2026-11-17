@@ -207,7 +207,7 @@ pub struct HistoryController {
     /// ([`crate::history_source::set_workspace_agents`]) the source names; a newer list is named on the
     /// next refresh.
     workspace_agents: Option<u64>,
-    /// The workspace's participants by id and name, as presence last named them: the authors the source
+    /// The workspace's members by id and name, as presence last named them: the authors the source
     /// resolves besides registered identities.
     roster: Vec<(MemberId, String)>,
 }

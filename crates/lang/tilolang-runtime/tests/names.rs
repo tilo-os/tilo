@@ -1,4 +1,4 @@
-//! What a view shows of what only the window knows — a participant's name, how the person writes
+//! What a view shows of what only the window knows — a member's name, how the person writes
 //! a day or a time of day, a word in the language their window speaks — is a read like any
 //! other: the boundary that showed it runs again when the person's environment changes, and no
 //! other boundary does.
@@ -71,15 +71,15 @@ view when(m: Meeting) {
 }
 "#;
 
-    /// What a window calls each participant, by id: the names it told the runtime.
+    /// What a window calls each member, by id: the names it told the runtime.
     type Said = Rc<RefCell<HashMap<String, String>>>;
 
     fn ada() -> Actor {
         person("ada")
     }
 
-    /// What the window calls the workspace's participants: the names it told the runtime, and
-    /// each participant's own id until it says otherwise.
+    /// What the window calls the workspace's members: the names it told the runtime, and
+    /// each member's own id until it says otherwise.
     struct Window(Said);
 
     impl NameHost for Window {

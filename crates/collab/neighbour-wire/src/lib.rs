@@ -17,7 +17,7 @@
 pub mod actions;
 pub mod colorimetry;
 /// Content a record references, asked of a workspace by hash and answered in
-/// pieces: what every participant of a workspace speaks, host or page.
+/// pieces: what every key holder of a workspace speaks, host or page.
 pub mod content;
 pub mod hdr_metadata;
 pub mod input;
@@ -44,7 +44,7 @@ use serde::{Deserialize, Serialize};
 /// [`NeighbourMsg::IdentityHello`] carries it first, at a variant index that
 /// never changes ([`IDENTITY_HELLO_INDEX`]), so every version reads another
 /// device's number before anything else it says.
-pub const PEER_PROTOCOL_VERSION: u32 = 50;
+pub const PEER_PROTOCOL_VERSION: u32 = 51;
 
 /// [`NeighbourMsg::IdentityHello`]'s postcard variant index, frozen: the one
 /// message every version decodes far enough to learn the sender's
@@ -629,9 +629,9 @@ pub enum NeighbourMsg {
         software_encode: Vec<String>,
     },
     /// One governance frame of a channel in `workspace`, published by the
-    /// participant that wrote its commit. Its Welcome, commit and key-history
+    /// key holder that wrote its commit. Its Welcome, commit and key-history
     /// bytes are opaque MLS material: sealed to their recipients, never
-    /// content. Receivers apply it only when its signer is a participant and
+    /// content. Receivers apply it only when its signer is a key holder and
     /// its changes match the membership, so replaying or reordering it is
     /// harmless. Appended
     /// to preserve every existing Postcard discriminant.
@@ -644,7 +644,7 @@ pub enum NeighbourMsg {
         /// ignore it.
         delivery: u64,
     },
-    /// A device asking a channel's participants for membership, with a key
+    /// A device asking a channel's key holders for membership, with a key
     /// package signed by the device's certified key. Appended to preserve
     /// every existing Postcard discriminant.
     MlsAccessRequest {

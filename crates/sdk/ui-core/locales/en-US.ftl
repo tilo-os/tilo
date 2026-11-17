@@ -585,14 +585,14 @@ relative-compact-weeks = { $count }w
 relative-compact-months = { $count }mo
 relative-compact-years = { $count }y
 
-# A software participant in history, presence and activity rows.
+# A software member in history, presence and activity rows.
 history-run-step-separator = {", "}
-participant-agent = { $name } · Agent
-participant-shortcut = { $name } · Shortcut
-participant-bot = { $name } · Bot
+member-agent = { $name } · Agent
+member-shortcut = { $name } · Shortcut
+member-bot = { $name } · Bot
 # Two or more people in a workspace go by the same name: each is numbered, the
 # same numbers for everyone in it.
-participant-numbered = { $name } ({ $number })
+member-numbered = { $name } ({ $number })
 interaction-agent = Agent
 interaction-member = Member
 # What an actor is doing: its name, then the action in the present tense.
@@ -648,7 +648,7 @@ step-searching = Searching for { $what }
 # to a reader. A selection says that instead.
 presence-writing-here = { $name } is writing here
 presence-selecting-here = { $name } is selecting here
-participant-unknown-agent = Unknown agent
+member-unknown-agent = Unknown agent
 
 
 # Command palette chrome: footer key hints, result count and empty states.

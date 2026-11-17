@@ -48,7 +48,7 @@ pub struct Looked {
     /// Who authored the message.
     pub author: String,
     /// Whether the agent takes part in the conversation.
-    pub participant: bool,
+    pub player: bool,
     /// Whether the turn ended: its work is done, or a person stopped it.
     pub ended: bool,
     /// What the agent's record bounds it to; empty follows the record's
@@ -62,7 +62,7 @@ impl Looked {
     pub fn by(person: impl Into<String>) -> Self {
         Self {
             author: person.into(),
-            participant: true,
+            player: true,
             ended: false,
             bound: Vec::new(),
         }
@@ -85,7 +85,7 @@ impl Looked {
     /// The same cause, in a conversation the agent does not take part in.
     #[must_use]
     pub fn apart(mut self) -> Self {
-        self.participant = false;
+        self.player = false;
         self
     }
 }
@@ -102,7 +102,7 @@ pub enum Held {
     /// only for the person whose message caused the turn.
     AnotherAuthor,
     /// The agent is not in the cause's conversation.
-    NotAParticipant,
+    NotAPlayer,
     /// The turn ended: its work is done, or a person stopped it.
     Ended,
 }
@@ -127,7 +127,7 @@ impl Held {
                 "an agent acts for the person whose message caused its turn, and this one is not theirs"
                     .to_owned()
             }
-            Self::NotAParticipant => {
+            Self::NotAPlayer => {
                 "the agent does not take part in the conversation this turn answers".to_owned()
             }
             Self::Ended => "the turn ended: its agent takes no further action".to_owned(),
@@ -167,8 +167,8 @@ pub fn authority(
     if looked.author != person {
         return Err(Held::AnotherAuthor);
     }
-    if !looked.participant {
-        return Err(Held::NotAParticipant);
+    if !looked.player {
+        return Err(Held::NotAPlayer);
     }
     if looked.ended {
         return Err(Held::Ended);
@@ -277,7 +277,7 @@ mod tests {
                 authority(WORKSPACE, "scribe", BOB, Some(&turn), |_| {
                     Some(looked.clone().apart())
                 }),
-                Err(Held::NotAParticipant)
+                Err(Held::NotAPlayer)
             );
             assert_eq!(
                 authority(WORKSPACE, "scribe", ADA, Some(&turn), |_| Some(
@@ -371,7 +371,7 @@ mod tests {
                 Held::NoCause,
                 Held::Waiting,
                 Held::AnotherAuthor,
-                Held::NotAParticipant,
+                Held::NotAPlayer,
                 Held::Ended,
             ] {
                 assert!(!held.reason().is_empty(), "{held:?} has a reason");

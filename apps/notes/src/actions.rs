@@ -390,7 +390,7 @@ pub enum InlineMark {
     ExternalLink {
         url: String,
     },
-    /// A reference to a participant, by id.
+    /// A reference to a member, by id.
     Mention {
         id: String,
     },

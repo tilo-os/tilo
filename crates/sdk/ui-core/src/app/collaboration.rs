@@ -248,7 +248,7 @@ impl App {
     /// Publish the collaboration rail's current status through the real workspace
     /// presence path. `None` is an explicit clear. Only workspace keys are
     /// accepted, preventing an intention from being accidentally scoped to a
-    /// single widget and disappearing as the participant navigates.
+    /// single widget and disappearing as the member navigates.
     pub fn broadcast_status(
         &mut self,
         workspace: crate::presence::PresenceKey,
@@ -1242,7 +1242,7 @@ impl App {
             });
     }
 
-    /// The self row carries the address others use for this participant (so
+    /// The self row carries the address others use for this member (so
     /// a locally-derived id is recognised in a workspace-keyed roster) and the
     /// host-assigned name; it never enters the roster itself.
     fn apply_collab_context(&mut self, members: Vec<crate::collaboration::Member>) {

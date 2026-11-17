@@ -5,14 +5,14 @@ use super::{BrokerActor, ExecutionScope};
 /// set by the host. A caller cannot make an action look as though it came
 /// from someone else by naming them in the envelope: whatever invoker the
 /// caller put in `context` is discarded, the actor is the admitted `actor`,
-/// and the participant is derived from what the host admitted:
+/// and the presence is derived from what the host admitted:
 /// - a host-minted execution: its private view, subordinate to its actor;
-/// - anyone else: no participant (the actor's default view).
+/// - anyone else: no presence (the actor's default view).
 ///
 /// The invoker names the actor's kind and, for an agent or an app acting
 /// for a person, that person, as the admitted `caller` says.
 ///
-/// The application worker keeps the participant only for this exact actor
+/// The application worker keeps the presence only for this exact actor
 /// (`tilo_actions::ActionInvoker::delivered`), and the captured original
 /// request binds it, so the worker's view of the invoker is exactly this.
 pub(super) fn host_set_invoker(
@@ -21,8 +21,8 @@ pub(super) fn host_set_invoker(
     caller: Option<&tilo_actions::remote::Caller>,
     execution: Option<&ExecutionScope>,
 ) -> Result<Option<tilo_actions::ActionContext>, String> {
-    let participant = execution
-        .map(|execution| execution.participant(actor))
+    let presence = execution
+        .map(|execution| execution.presence(actor))
         .transpose()?;
     // A Shortcut's step is admitted as its person: the invoker stays them.
     let admitting = caller.filter(|caller| caller.acting().by.member_id() == Some(actor.member()));
@@ -31,12 +31,12 @@ pub(super) fn host_set_invoker(
 
     // A person acting for themselves needs no context to say so; anyone else is named with
     // their kind and the person they act for, so what they write is theirs, not that person's.
-    if context.is_none() && participant.is_none() && admitted.direct() {
+    if context.is_none() && presence.is_none() && admitted.direct() {
         return Ok(None);
     }
     let mut context = context
         .unwrap_or_default()
-        .with_host_actor(&admitted, participant);
+        .with_host_actor(&admitted, presence);
     // The name the admitting host knows an agent by, never one the request carries.
     if let Some(invoker) = context.invoker.as_mut() {
         invoker.name = admitting
@@ -64,11 +64,11 @@ pub(super) fn working_from(
     context
 }
 
-/// The participant a host-set context routes to (see [`host_set_invoker`]).
-pub(super) fn invoker_participant(
+/// The presence a host-set context routes to (see [`host_set_invoker`]).
+pub(super) fn invoker_presence(
     context: Option<&tilo_actions::ActionContext>,
-) -> Option<tilo_actions::ParticipantId> {
-    context?.invoker.as_ref()?.participant.clone()
+) -> Option<tilo_actions::PresenceId> {
+    context?.invoker.as_ref()?.presence.clone()
 }
 
 #[cfg(test)]
@@ -80,14 +80,14 @@ mod tests {
             .with_group("issue:42", "Prepare launch", "issue")
             .with_invoker(
                 tilo_actions::ActionInvoker::person("owner")
-                    .with_participant(tilo_actions::ParticipantId::new("owner-window").unwrap()),
+                    .with_presence(tilo_actions::PresenceId::new("owner-window").unwrap()),
             )
     }
 
     tilo_test_env::scenario! {
         fn an_invoker_is_recorded_as_who_acts;
 
-        phase a_person_never_gets_a_participant_from_the_envelope;
+        phase a_person_never_gets_a_presence_from_the_envelope;
         {
             let actor = BrokerActor::person("guest");
             let context = host_set_invoker(Some(forged()), &actor, None, None)
@@ -97,7 +97,7 @@ mod tests {
                 context.invoker,
                 Some(tilo_actions::ActionInvoker::person("guest"))
             );
-            assert_eq!(invoker_participant(Some(&context)), None);
+            assert_eq!(invoker_presence(Some(&context)), None);
             assert_eq!(
                 tilo_actions::ActionInvoker::delivered(&actor.actor(), Some(&context)),
                 context.invoker.clone().unwrap(),
@@ -107,7 +107,7 @@ mod tests {
             assert_eq!(host_set_invoker(None, &actor, None, None).unwrap(), None);
         }
 
-        phase an_agent_gets_no_participant_from_the_envelope;
+        phase an_agent_gets_no_presence_from_the_envelope;
         {
             let actor = BrokerActor::agent("alpha");
             let context = host_set_invoker(Some(forged()), &actor, None, None)
@@ -117,7 +117,7 @@ mod tests {
                 context.invoker,
                 Some(tilo_actions::ActionInvoker::agent("alpha"))
             );
-            assert_eq!(invoker_participant(Some(&context)), None);
+            assert_eq!(invoker_presence(Some(&context)), None);
             // An agent acting for a person names them, with no caller to say so.
             let started = BrokerActor::agent("alpha").for_person("owner");
             let context = host_set_invoker(Some(forged()), &started, None, None).unwrap();
@@ -127,7 +127,7 @@ mod tests {
             let context = host_set_invoker(Some(untasked), &actor, None, None)
                 .unwrap()
                 .unwrap();
-            assert_eq!(invoker_participant(Some(&context)), None);
+            assert_eq!(invoker_presence(Some(&context)), None);
         }
 
         phase an_agent_acting_for_a_person_is_recorded_as_such;
@@ -197,8 +197,8 @@ mod tests {
                 .unwrap()
                 .unwrap();
             assert_eq!(
-                invoker_participant(Some(&context)),
-                Some(tilo_actions::ParticipantId::for_execution(
+                invoker_presence(Some(&context)),
+                Some(tilo_actions::PresenceId::for_execution(
                     caller.execution_id().unwrap()
                 ))
             );

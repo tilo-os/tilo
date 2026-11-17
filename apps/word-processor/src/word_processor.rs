@@ -105,7 +105,7 @@ pub struct WordProcessor {
     edit_core: EditCore,
     /// The document's images, by content address; in memory until the app hands over its store.
     content: tilo_content::ContentStore,
-    /// Where every edit goes: checks the participant's permission, attributes the edit and
+    /// Where every edit goes: checks the presence's permission, attributes the edit and
     /// groups typing into undo steps. A view that was never attached writes nothing.
     dispatch: Option<ui::framework::Dispatcher<crate::framework::Document>>,
     /// The body order while a motion runs, so a block's neighbours cost `O(log n)`, not a listing.

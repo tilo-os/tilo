@@ -92,7 +92,7 @@ async fn a_browser_session_lists_joins_keeps_and_leaves_a_governed_call() {
     assert_eq!(calls[0].app_id, crate::call::CHAT);
     assert_eq!(calls[0].record_id, "");
     assert_eq!(calls[0].channel_id, workspace.channel);
-    assert!(calls[0].participants.is_empty());
+    assert!(calls[0].members.is_empty());
 
     // Alice joins from her laptop, Bob through his page's session.
     workspace
@@ -111,10 +111,10 @@ async fn a_browser_session_lists_joins_keeps_and_leaves_a_governed_call() {
     peer.send(Cmd::VoiceJoin(workspace_id, workspace.call.call))
         .unwrap();
     let bob = voice(&events, &mut pending, "Bob's grant", granted).await;
-    assert_eq!(bob.participants.len(), 2);
-    assert_eq!(alice_alone.participants.len(), 1);
+    assert_eq!(bob.members.len(), 2);
+    assert_eq!(alice_alone.members.len(), 1);
     let alice = native(&workspace.owner, |envelope| match envelope {
-        Envelope::VoiceGranted { grant, .. } if grant.participants.len() == 2 => Some(*grant),
+        Envelope::VoiceGranted { grant, .. } if grant.members.len() == 2 => Some(*grant),
         _ => None,
     })
     .await;
@@ -129,24 +129,24 @@ async fn a_browser_session_lists_joins_keeps_and_leaves_a_governed_call() {
         |event| match event {
             VoiceEvent::Calls {
                 result: Ok(calls), ..
-            } if calls[0].participants.len() == 2 => Some(calls.clone()),
+            } if calls[0].members.len() == 2 => Some(calls.clone()),
             _ => None,
         },
     )
     .await;
-    assert_eq!(listed[0].participants.len(), 2);
+    assert_eq!(listed[0].members.len(), 2);
 
     // A dropped session resumes the same participation: the host keeps Bob
     // in the call and answers the resumed join with his grant.
     peer.send(Cmd::Reconnect).unwrap();
     let resumed = voice(&events, &mut pending, "Bob's resumed grant", granted).await;
     assert_eq!(resumed.participation, bob.participation);
-    assert_eq!(resumed.participants.len(), 2);
+    assert_eq!(resumed.members.len(), 2);
 
     // Bob leaves: Alice's roster shrinks.
     peer.send(Cmd::VoiceLeave(workspace_id)).unwrap();
     let alone_again = native(&workspace.owner, |envelope| match envelope {
-        Envelope::VoiceGranted { grant, .. } if grant.participants.len() == 1 => Some(*grant),
+        Envelope::VoiceGranted { grant, .. } if grant.members.len() == 1 => Some(*grant),
         _ => None,
     })
     .await;
@@ -192,7 +192,7 @@ async fn a_browser_session_lists_joins_keeps_and_leaves_a_governed_call() {
     )
     .await;
     assert!(!ended[0].state.active);
-    assert!(ended[0].participants.is_empty());
+    assert!(ended[0].members.is_empty());
     peer.close();
     workspace.shutdown().await;
 }

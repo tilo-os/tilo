@@ -48,7 +48,7 @@ pub fn executing_host_person() -> Option<MemberId> {
 }
 
 /// Whether this callback is acting for its trusted local person. A delivered
-/// invocation must name that actual person's actor; participant identity and
+/// invocation must name that actual person's actor; member identity and
 /// action attribution cannot confer access. Outside a callback access is denied.
 #[must_use]
 pub fn host_person_invocation_permitted() -> bool {

@@ -101,8 +101,8 @@ class BuilderCandidates(unittest.TestCase):
         # filter's reach may not leave the gate green.
         self.assertEqual(script.count('--no-tests=fail'), 2)
         calls = nextest_invocations(script)
-        self.assertEqual(len(calls), 2, 'the canary runs the session client and the agent participant')
-        peer, participant = calls
+        self.assertEqual(len(calls), 2, 'the canary runs the session client and the agent session')
+        peer, agent = calls
         # The session client's browser regressions are modules of its one test binary (`it`,
         # whose `#[path]` keeps each in its own file), so the canary names the modules there.
         # Whole modules, never single tests: a regression added to one runs without the canary
@@ -116,13 +116,13 @@ class BuilderCandidates(unittest.TestCase):
                 self.assertIn(f'#[path = "{module}.rs"]\nmod {module};', binary)
                 tests = (ROOT / f'crates/session/client/tests/{module}.rs').read_text()
                 self.assertRegex(tests, r'#\[tokio::test|#\[test\]')
-        # The agent participant's browser regressions are single tests of the `host_agents`
+        # The agent session's browser regressions are single tests of the `host_agents`
         # module of its one test binary (`it`), so those are named.
-        self.assertEqual(participant[:2], ('tilo-agent-session', 'it'))
+        self.assertEqual(agent[:2], ('tilo-agent-session', 'it'))
         names = ('the_host_runs_agents_a_browser_spawns_and_they_survive_a_restart',
                  'a_browser_sees_every_task_of_an_agent_live_and_after_a_reload',
                  'the_creator_and_a_joined_page_both_see_every_task_live')
-        self.assertEqual(filterset_terms(participant[2]),
+        self.assertEqual(filterset_terms(agent[2]),
                          {('test', f'=host_agents::{name}') for name in names})
         binary = (ROOT / 'crates/agent/agent-session/tests/it.rs').read_text()
         self.assertIn('#[path = "host_agents.rs"]\nmod host_agents;', binary)
@@ -130,7 +130,7 @@ class BuilderCandidates(unittest.TestCase):
         for name in names:
             self.assertIn(f'async fn {name}()', source)
         # Execute the canary's own shell, intercepting only the browser itself, node and the
-        # expensive wrapper. Neither a peer failure nor a participant failure may pass.
+        # expensive wrapper. Neither a peer failure nor an agent failure may pass.
         stubs = textwrap.dedent(f'''\
             set -euo pipefail
             die() {{ echo "$*" >&2; exit 1; }}

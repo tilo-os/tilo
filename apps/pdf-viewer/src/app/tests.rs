@@ -2430,7 +2430,7 @@ fn signatures_stamp_real_dates_and_store_typed_drawn_and_edited_signers() {
         );
     }
 
-    eprintln!("phase an_unnamed_participant_never_reads_as_a_hex_id");
+    eprintln!("phase an_unnamed_member_never_reads_as_a_hex_id");
     {
         let (mut app, mut st) = app_with_state();
         let me = "94381abe81de6c0a94381abe81de6c0a";

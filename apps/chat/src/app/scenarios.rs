@@ -93,10 +93,7 @@ impl ChatApp {
                 // Two people in the workspace go by one name: everyone sees them
                 // numbered alike, in the timeline and the people list.
                 let mut presence = PresenceCtx::empty();
-                presence.set_self_participant(
-                    self.me.id.clone(),
-                    self.me.name.clone(),
-                );
+                presence.set_self_member(self.me.id.clone(), self.me.name.clone());
                 for (id, name) in [
                     ("u_aria", "Aria Chen"),
                     ("u_sora", "aria chen"),
@@ -286,7 +283,7 @@ impl ChatApp {
             }
             "share" => {
                 // The expanded call while screen-sharing: the featured screen
-                // tile fills the stage above the participant filmstrip, and the
+                // tile fills the stage above the member filmstrip, and the
                 // controls bar shows the active "Stop share". Local share is
                 // staged directly (the same `call.sharing` flag the real toggle
                 // sets on a portal grant) so the presentation layout renders
@@ -490,7 +487,7 @@ impl ChatApp {
             .strip_prefix("floating-call-collapse-")
             .and_then(|value| value.parse::<u16>().ok())
         {
-            self.call.participants_expanded = false;
+            self.call.members_expanded = false;
             self.call_chrome_motion
                 .pin_for_visual_review(1.0 - f32::from(permille.min(1_000)) / 1_000.0);
         }

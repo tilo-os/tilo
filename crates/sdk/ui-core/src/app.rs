@@ -52,7 +52,7 @@ mod report_point_tests;
 mod window_box;
 
 mod model_lifecycle;
-mod participants;
+mod presences;
 mod published_invocations;
 mod retirement_assembly;
 #[cfg(test)]
@@ -2744,40 +2744,31 @@ fn humanize_ident(ident: &str) -> String {
 }
 
 #[cfg(test)]
-#[path = "app/window_targets_tests.rs"]
 mod window_targets_tests;
 
 #[cfg(test)]
-#[path = "app/sideways_wheel_tests.rs"]
 mod sideways_wheel_tests;
 
 #[cfg(test)]
-#[path = "app/motion_source_tests.rs"]
 mod motion_source_tests;
 
 #[cfg(test)]
-#[path = "app/manual_composition_tests.rs"]
 mod manual_composition_tests;
 
 #[cfg(test)]
-#[path = "app/number_input_layout_tests.rs"]
 mod number_input_layout_tests;
 
 #[cfg(test)]
-#[path = "app/committed_document_tests.rs"]
 mod committed_document_tests;
 #[cfg(test)]
-#[path = "app/context_menu_input_tests.rs"]
 mod context_menu_input_tests;
 #[cfg(test)]
 #[path = "app/history_tests.rs"]
 pub(crate) mod framework_history_tests;
 #[cfg(test)]
-#[path = "app/tree_record_tests.rs"]
 mod tree_record_tests;
 
 #[cfg(test)]
-#[path = "app/person_record_tests.rs"]
 mod person_record_tests;
 
 #[path = "app/history.rs"]
@@ -2785,23 +2776,18 @@ mod framework_history;
 
 mod committed_document;
 
-#[path = "app/document_routes.rs"]
 mod document_routes;
 
 #[cfg(test)]
-#[path = "app/focus_selection_tests.rs"]
 mod focus_selection_tests;
 
 #[cfg(test)]
-#[path = "app/participant_invocation_tests.rs"]
-mod participant_invocation_tests;
+mod presence_invocation_tests;
 
 #[cfg(test)]
-#[path = "app/large_document_tests.rs"]
 mod large_document_tests;
 
 #[cfg(all(test, feature = "native"))]
-#[path = "app/scroll_cost_tests.rs"]
 mod scroll_cost_tests;
 
 #[cfg(test)]

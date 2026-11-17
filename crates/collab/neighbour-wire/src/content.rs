@@ -4,7 +4,7 @@
 //! content the device asked for are kept, and the assembled bytes are handed
 //! on only when they hash to what was asked for.
 //!
-//! Every participant answers such requests ([`answer`]), host or page, from
+//! Every key holder answers such requests ([`answer`]), host or page, from
 //! what it keeps: a file a visitor posted from a page is only there until the
 //! workspace's host has asked for its own copy, and an app surface is one
 //! device's until the workspace has it too.

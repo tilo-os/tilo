@@ -717,17 +717,17 @@ impl App {
                 });
             return;
         }
-        // The invoker is the delivered actor plus the participant and the
+        // The invoker is the delivered actor plus the presence and the
         // person it acts for that the host set for it in the delivery context
-        // (never trusted from anywhere else). Resolution below rebuilds that participant's own tree, and
+        // (never trusted from anywhere else). Resolution below rebuilds that presence's own tree, and
         // durable attribution carries the same invoker.
         let invoker = tilo_actions::ActionInvoker::delivered(actor, ambient_context);
-        let participant = invoker.participant.clone();
+        let presence = invoker.presence.clone();
         let attributed =
             ambient_context.map(|context| context.clone().with_invoker(invoker.clone()));
         let ambient_context = attributed.as_ref();
-        if let Some(participant) = &participant {
-            self.join_participant(participant);
+        if let Some(presence) = &presence {
+            self.join_presence(presence);
         }
         let admitted = self.admitted_kind(&address, argument);
         self.actions.acting_for.insert(
@@ -749,7 +749,7 @@ impl App {
                 address: address.clone(),
                 argument: argument.map(str::to_owned),
                 actor: actor.clone(),
-                participant,
+                presence,
             },
         );
         let authorization = authorization.and_then(|lease| {
@@ -1514,39 +1514,38 @@ impl App {
         }
         // Ordinary local requests use the permission-projected, cached
         // resource surface (including retained bound rows).
-        let mut resources =
-            if let Some(participant) = crate::invocation_scope::current_participant() {
-                // A participant's tree is rebuilt for it now, never read from the
-                // cache of this window's own view.
-                let mut resources = Vec::new();
-                crate::bound_dispatch::collect_participant_resources(
-                    self.root_widget.as_ref(),
-                    &self.state.doc,
-                    &participant,
-                    &mut resources,
-                );
+        let mut resources = if let Some(presence) = crate::invocation_scope::current_presence() {
+            // A presence's tree is rebuilt for it now, never read from the
+            // cache of this window's own view.
+            let mut resources = Vec::new();
+            crate::bound_dispatch::collect_presence_resources(
+                self.root_widget.as_ref(),
+                &self.state.doc,
+                &presence,
+                &mut resources,
+            );
+            resources
+        } else if actor.member_id() == Some(&self.collaboration.local_author) {
+            self.collect_local_resources()
+        } else {
+            let key = self.ensure_resource_cache();
+            let resources = self
+                .actions
+                .resource_cache
+                .borrow()
+                .as_ref()
+                .filter(|cache| cache.key == key)
+                .and_then(|cache| cache.complete.clone())
+                .unwrap_or_default();
+            if actor.member_id() == Some(&self.collaboration.local_author) {
                 resources
-            } else if actor.member_id() == Some(&self.collaboration.local_author) {
-                self.collect_local_resources()
+                    .into_iter()
+                    .filter_map(|resource| self.filter_resource_for_local_actor(resource))
+                    .collect()
             } else {
-                let key = self.ensure_resource_cache();
-                let resources = self
-                    .actions
-                    .resource_cache
-                    .borrow()
-                    .as_ref()
-                    .filter(|cache| cache.key == key)
-                    .and_then(|cache| cache.complete.clone())
-                    .unwrap_or_default();
-                if actor.member_id() == Some(&self.collaboration.local_author) {
-                    resources
-                        .into_iter()
-                        .filter_map(|resource| self.filter_resource_for_local_actor(resource))
-                        .collect()
-                } else {
-                    resources
-                }
-            };
+                resources
+            }
+        };
         if tilo_actions::api::resolve(&resources, address).is_none() {
             let fallback = crate::bound_dispatch::resolve_unbound_resource(
                 self.root_widget.as_ref(),
@@ -1582,7 +1581,7 @@ impl App {
             resolved,
             resolved.need_for(typed_arguments.as_ref(), argument).kind,
         )?;
-        // The local participant's tree offers an action under the least it
+        // The local presence's tree offers an action under the least it
         // needs; this invocation needs what its value asks.
         if actor.member_id() == Some(&self.collaboration.local_author) {
             crate::bound_dispatch::admit_local_action(
@@ -1613,7 +1612,7 @@ impl App {
         {
             return Err(tilo_actions::ApiError::Unavailable {
                 code: "private_view".into(),
-                reason: "A member cannot move this participant's private focus or viewport; use Follow or Reveal explicitly".into(),
+                reason: "A member cannot move this presence's private focus or viewport; use Follow or Reveal explicitly".into(),
             });
         }
         // Every locally initiated external effect or asynchronous document job

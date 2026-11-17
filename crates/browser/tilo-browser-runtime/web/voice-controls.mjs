@@ -43,10 +43,10 @@ const PERSON = /^[0-9a-f]{64}$/;
 /** The people the call hears talking now, as the status names them: each
  * person once by id (`callIdOf`), sorted, this person among them while
  * their microphone is heard. What the app's speaking rings follow. */
-export function speakingOf(participants) {
+export function speakingOf(members) {
   const people = new Set();
-  for (const participant of participants ?? []) {
-    const id = participant.speaking ? callIdOf(participant) : null;
+  for (const member of members ?? []) {
+    const id = member.speaking ? callIdOf(member) : null;
     if (id && PERSON.test(id)) people.add(id);
   }
   return [...people].sort();
@@ -64,9 +64,9 @@ export function revisionOf(status) {
   return hash || 1;
 }
 
-/** Who a call participant is to the app: its person (hex). */
-export function callIdOf(participant) {
-  return participant?.user || null;
+/** Who a call member is to the app: its person (hex). */
+export function callIdOf(member) {
+  return member?.user || null;
 }
 
 /** Who is in each active call of `app`'s `record`, one roster per voice
@@ -78,14 +78,14 @@ export function rostersOf(calls, app, record) {
   for (const call of calls ?? []) {
     if (!call.active || call.app !== app || call.record !== record) continue;
     const roster = channels.get(call.channel) ?? {people: new Set(), cameras: new Set(), screens: new Set(), unmuted: new Set(), hearing: new Set()};
-    for (const participant of call.participants ?? []) {
-      if (!participant.user) continue;
-      roster.people.add(participant.user);
-      if (participant.camera) roster.cameras.add(participant.user);
-      if (participant.screen) roster.screens.add(participant.user);
+    for (const member of call.members ?? []) {
+      if (!member.user) continue;
+      roster.people.add(member.user);
+      if (member.camera) roster.cameras.add(member.user);
+      if (member.screen) roster.screens.add(member.user);
       // Heard on any of their devices: not muted.
-      if (!participant.muted) roster.unmuted.add(participant.user);
-      if (!participant.deafened) roster.hearing.add(participant.user);
+      if (!member.muted) roster.unmuted.add(member.user);
+      if (!member.deafened) roster.hearing.add(member.user);
     }
     channels.set(call.channel, roster);
   }
@@ -128,8 +128,8 @@ export function createVoiceControls({voice, workspace, gesture = () => globalThi
     const live = state.phase === 'live';
     // Whose pictures this device publishes and receives, by person: the
     // people whose tiles carry a stream now.
-    const publishers = live ? [...new Set(state.participants.filter(p => !p.self && p.publishes).map(p => p.user))].sort() : [];
-    const publication = live && state.canPublish ? state.participants.find(p => p.self)?.user ?? null : null;
+    const publishers = live ? [...new Set(state.members.filter(p => !p.self && p.publishes).map(p => p.user))].sort() : [];
+    const publication = live && state.canPublish ? state.members.find(p => p.self)?.user ?? null : null;
     const next = JSON.stringify([publication, publishers]);
     if (next !== inventory) {inventory = next; revision++;}
     const input = state.inputId || 'default';
@@ -137,7 +137,7 @@ export function createVoiceControls({voice, workspace, gesture = () => globalThi
       muted: state.muted || !live, capture_active: live && !state.muted && voice.call.stats().captureActive === true,
       input_id: live ? input : null, inputs,
       issue: state.phase === 'ended' ? endedIssue(state) : null,
-      inventory_revision: live ? revision : null, publication, publishers, rosters: [], speaking: live ? speakingOf(state.participants) : [], revision: 0};
+      inventory_revision: live ? revision : null, publication, publishers, rosters: [], speaking: live ? speakingOf(state.members) : [], revision: 0};
     if (live && state.camera) status.camera = true;
     if (live && state.screen) status.screen = true;
     if (live && state.deafened) status.deafened = true;
@@ -239,7 +239,7 @@ export function createVoiceControls({voice, workspace, gesture = () => globalThi
         if (!voice.call.setVideo) throw new Error('this browser cannot show pictures');
         await voice.call.setVideo(command.op === 'set_camera' ? 'camera' : 'screen', command.on);
       } else if (command.op === 'set_volume') {
-        voice.call.setVolume?.(command.participant, command.percent / 100);
+        voice.call.setVolume?.(command.member, command.percent / 100);
         return stamped({...snapshot(), rosters: rosters()});
       } else if (command.op === 'show') {
         voice.call.showPictures?.(command.pictures ?? []);

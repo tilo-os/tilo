@@ -76,7 +76,7 @@ fn an_edit_held_for_channel_keys_goes_out_when_the_keys_arrive() {
         SdkConnectSource::Fd(fd),
         Some(SdkJoinIdentity {
             presentation: Vec::new(),
-            participant_kind: "person",
+            member_kind: "person",
             signer: SdkDocumentSigner::Certified(Arc::clone(&identity) as _),
         }),
     )

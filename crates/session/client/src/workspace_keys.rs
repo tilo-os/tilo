@@ -96,7 +96,7 @@ impl KeyService {
         broker: Arc<Mutex<BrokerChannels>>,
         mut settled: impl FnMut() + Send + 'static,
     ) -> std::io::Result<Self> {
-        let directory = Box::new(OwnerDirectory::participant(engine.owner().clone()));
+        let directory = Box::new(OwnerDirectory::member(engine.owner().clone()));
         let gates: Arc<dyn GateRegistry> = Arc::new(BrokerGates(broker));
         let service = match MlsVault::open_for_session() {
             Ok(vault) => WorkspaceKeys::open(
@@ -687,7 +687,7 @@ pub struct OwnerDirectory {
 impl OwnerDirectory {
     /// The directory of a device that settles its groups.
     #[must_use]
-    pub const fn participant(owner: NativeWorkspaceOwner) -> Self {
+    pub const fn member(owner: NativeWorkspaceOwner) -> Self {
         Self {
             owner,
             reader: false,

@@ -1,7 +1,7 @@
-//! Any participant admits: an invitation's redemption is written by any
+//! Any key holder admits: an invitation's redemption is written by any
 //! member who may invite and checked by every receiver from the invitation
 //! itself, and a device certified by a member's root is written in by any
-//! participant.
+//! key holder.
 use super::*;
 use crate::join::WorkspaceId;
 use crate::join::{
@@ -124,7 +124,7 @@ tilo_test_env::scenario! {
         );
         assert_eq!(editor.user_public_key, user);
 
-        // Spent: no participant admits another device with it.
+        // Spent: no key holder admits another device with it.
         let other = device(73, 74);
         let replay = redemption(&peer, &owner, &owner_key, &other, Role::Viewer, 72, now);
         assert_eq!(replay.join().invite_id(), invited.join().invite_id());
@@ -153,7 +153,7 @@ tilo_test_env::scenario! {
         assert!(peer.permissions(guest.1.device_public_key, now).is_err());
     }
 
-    phase any_participant_admits_a_members_further_device;
+    phase any_key_holder_admits_a_members_further_device;
     {
         let (mut peer, owner_key, _, _, now) = crate::admission_tests::seeded();
         let (_, user) = crate::admission_tests::add_editor(&mut peer, &owner_key, now);

@@ -52,7 +52,7 @@ pub struct Channel {
     /// Whether it is a call rather than a conversation to read.
     #[serde(default)]
     pub voice: bool,
-    /// The people its messages name, by the participant id each is written under.
+    /// The people its messages name, by the member id each is written under.
     #[serde(default)]
     pub people: Vec<Person>,
     /// Its messages, oldest first, each with its body, reactions and what it answers.
@@ -1463,7 +1463,13 @@ mod tests {
     }
 
     /// A message of `channel` written by `author` at `ts`, as the record's projection reads one.
-    fn row(channel: &str, id: &str, author: MemberId, ts: i64, text: &str) -> crate::model::Message {
+    fn row(
+        channel: &str,
+        id: &str,
+        author: MemberId,
+        ts: i64,
+        text: &str,
+    ) -> crate::model::Message {
         crate::model::Message {
             id: id.to_owned(),
             channel: channel.to_owned(),
@@ -1498,15 +1504,18 @@ mod tests {
             Id::from_raw("c_ask"),
             crate::record::Conversation {
                 name: "Assistant".to_owned(),
-                participants: vec![
-                    MemberId::person(me),
-                    MemberId::agent(agent),
-                ],
+                members: vec![MemberId::person(me), MemberId::agent(agent)],
                 ..crate::record::Conversation::default()
             },
         );
         let rows = vec![
-            row("c_ask", "m_ask", MemberId::person(me), 1_782_470_400, "hello"),
+            row(
+                "c_ask",
+                "m_ask",
+                MemberId::person(me),
+                1_782_470_400,
+                "hello",
+            ),
             row(
                 "c_ask",
                 "m_reply",
@@ -1989,7 +1998,7 @@ mod tests {
                 Id::from_raw("c_ask"),
                 crate::record::Conversation {
                     name: "Assistant".to_owned(),
-                    participants: vec![
+                    members: vec![
                         MemberId::person(ME),
                         MemberId::agent("assistant"),
                     ],
@@ -2164,7 +2173,8 @@ mod tests {
             ..Message::by(MemberId::person(crate::model::ME))
         });
         channel.messages.push(Message {
-            id: crate::record::reply_id(&Id::from_raw("m_asked"), &MemberId::agent("tide")).to_string(),
+            id: crate::record::reply_id(&Id::from_raw("m_asked"), &MemberId::agent("tide"))
+                .to_string(),
             ts: 1_782_470_400,
             text: partial.to_owned(),
             reply_to: Some(Quote {
@@ -2628,7 +2638,7 @@ mod tests {
                 Id::from_raw("c_ask"),
                 crate::record::Conversation {
                     name: "Assistant".to_owned(),
-                    participants: vec![
+                    members: vec![
                         MemberId::person(ME),
                         MemberId::agent("assistant"),
                     ],

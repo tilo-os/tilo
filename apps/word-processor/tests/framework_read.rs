@@ -349,7 +349,7 @@ fn an_edit_told_which_paragraph_acts_there_and_leaves_the_agent_there() {
     );
 
     let agent = tilo_actions::ActionInvoker::person("scribe")
-        .with_participant(tilo_actions::ParticipantId::new("scribe-1").unwrap());
+        .with_presence(tilo_actions::PresenceId::new("scribe-1").unwrap());
     app.call_by(
         agent.clone(),
         &root,

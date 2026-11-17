@@ -1,7 +1,7 @@
 //! What a workspace's host lists: its records' actions, the app rows it offers
 //! to open, and where each opens.
 
-use crate::participant::actions::{open_row, open_row_needing};
+use crate::member::actions::{open_row, open_row_needing};
 use tilo_actions::remote::{CatalogueProvider, workspace_provider};
 
 use super::{

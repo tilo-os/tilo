@@ -1,18 +1,18 @@
-use super::participants::{
-    MAX_FIND_QUERY_BYTES, MAX_PARTICIPANT_VIEWS, PARTICIPANT_VIEW_TTL, ParticipantViews,
+use super::presences::{
+    MAX_FIND_QUERY_BYTES, MAX_PRESENCE_VIEWS, PRESENCE_VIEW_TTL, PresenceViews,
 };
 use super::tests::Lent;
 use super::*;
-use crate::actions::participant::{FindState, ParticipantView, ViewPoint};
+use crate::actions::presence::{FindState, PresenceView, ViewPoint};
 use crate::actions::{RegionKind, SearchTarget};
-use tilo_actions::{ActionInvoker, ParticipantId, ResourceSpec};
+use tilo_actions::{ActionInvoker, PresenceId, ResourceSpec};
 use tilo_automerge::ApplyIncoming as _;
 use ui::widget::Edits;
 use winit::event::ElementState;
 use winit::keyboard::{Key, NamedKey};
 
-fn pid(name: &str) -> ParticipantId {
-    ParticipantId::new(name).unwrap()
+fn pid(name: &str) -> PresenceId {
+    PresenceId::new(name).unwrap()
 }
 
 fn widget_with(texts: &[&str]) -> (Editor, ui::State, Vec<String>) {
@@ -37,12 +37,12 @@ fn body_ids(doc: &AutoCommit) -> Vec<String> {
     tilo_doc::model::region_blocks_in_order(doc, &containers, Region::Body)
 }
 
-fn caret(block: &str, offset: usize) -> ParticipantView {
-    ParticipantView::at(ViewPoint::new(block, offset), RegionKind::Body)
+fn caret(block: &str, offset: usize) -> PresenceView {
+    PresenceView::at(ViewPoint::new(block, offset), RegionKind::Body)
 }
 
-fn selecting(block: &str, from: usize, to: usize) -> ParticipantView {
-    ParticipantView {
+fn selecting(block: &str, from: usize, to: usize) -> PresenceView {
+    PresenceView {
         anchor: Some(ViewPoint::new(block, from)),
         ..caret(block, to)
     }
@@ -57,31 +57,29 @@ fn has_resource_prefix(resources: &[ResourceSpec], prefix: &str) -> bool {
 }
 
 #[test]
-fn two_participants_keep_independent_views_and_trees() {
+fn two_presences_keep_independent_views_and_trees() {
     let (mut wp, state, ids) = widget_with(&["hello world", "second"]);
-    let local_before = wp.local_participant_view();
+    let local_before = wp.local_presence_view();
     let doc_before = state.doc.clone().save();
 
     let (agent, other) = (pid("agent-a"), pid("agent-b"));
-    wp.set_participant_view(&agent, &selecting(&ids[0], 0, 5), &state.doc);
-    wp.set_participant_view(&other, &caret(&ids[1], 3), &state.doc);
+    wp.set_presence_view(&agent, &selecting(&ids[0], 0, 5), &state.doc);
+    wp.set_presence_view(&other, &caret(&ids[1], 3), &state.doc);
 
     assert_eq!(
-        wp.participant_view(&agent, &state.doc),
+        wp.presence_view(&agent, &state.doc),
         Some(selecting(&ids[0], 0, 5))
     );
     assert_eq!(
-        wp.participant_view(&other, &state.doc),
+        wp.presence_view(&other, &state.doc),
         Some(caret(&ids[1], 3))
     );
-    assert_eq!(wp.local_participant_view(), local_before);
+    assert_eq!(wp.local_presence_view(), local_before);
     assert!(!wp.model().has_selection());
 
-    let replaces = |participant: Option<&tilo_actions::ParticipantId>| -> bool {
-        let view = match participant {
-            Some(participant) => wp
-                .participant_view_or_default(participant, &state.doc)
-                .unwrap(),
+    let replaces = |presence: Option<&tilo_actions::PresenceId>| -> bool {
+        let view = match presence {
+            Some(presence) => wp.presence_view_or_default(presence, &state.doc).unwrap(),
             None => wp.local_edit_view(),
         };
         crate::effects::WordProcessorEffect::ReplaceSelection {
@@ -100,28 +98,28 @@ fn two_participants_keep_independent_views_and_trees() {
 }
 
 #[test]
-fn unknown_participant_resolves_at_the_document_end() {
+fn unknown_presence_resolves_at_the_document_end() {
     let (wp, state, ids) = widget_with(&["one", "two"]);
     let stranger = pid("never-seen");
-    assert_eq!(wp.participant_view(&stranger, &state.doc), None);
+    assert_eq!(wp.presence_view(&stranger, &state.doc), None);
     assert_eq!(
-        wp.participant_view_or_default(&stranger, &state.doc),
+        wp.presence_view_or_default(&stranger, &state.doc),
         Some(caret(&ids[1], 3))
     );
     assert!(
-        wp.participant_resources(Some(&stranger), &state.doc)
+        wp.presence_resources(Some(&stranger), &state.doc)
             .is_empty(),
         "a stranger has found nothing"
     );
 }
 
 #[test]
-fn participant_edits_match_the_pure_projection_of_its_view() {
+fn presence_edits_match_the_pure_projection_of_its_view() {
     let (mut wp, state, ids) = widget_with(&["alpha beta", "gamma"]);
     let agent = pid("agent");
     let view = selecting(&ids[1], 1, 4);
-    wp.set_participant_view(&agent, &view, &state.doc);
-    let resolved = wp.participant_view_or_default(&agent, &state.doc).unwrap();
+    wp.set_presence_view(&agent, &view, &state.doc);
+    let resolved = wp.presence_view_or_default(&agent, &state.doc).unwrap();
     let effect = crate::effects::WordProcessorEffect::ReplaceSelection {
         text: "X".into(),
         at: None,
@@ -147,7 +145,7 @@ fn local_view_projects_to_the_published_resource_context() {
         offset: 4,
     });
     wp.sync(&state.doc, &state.root);
-    let view = wp.local_participant_view();
+    let view = wp.local_presence_view();
     let projected = view.ctx(&state.doc).expect("a bound caret projects");
     assert!(projected.selection.is_some());
     assert_eq!(
@@ -160,8 +158,8 @@ fn local_view_projects_to_the_published_resource_context() {
 fn views_rebase_under_concurrent_edits() {
     let (mut wp, mut state, ids) = widget_with(&["hello world", "tail"]);
     let (writer, reader) = (pid("writer"), pid("reader"));
-    wp.set_participant_view(&writer, &caret(&ids[0], 5), &state.doc);
-    wp.set_participant_view(&reader, &selecting(&ids[0], 6, 11), &state.doc);
+    wp.set_presence_view(&writer, &caret(&ids[0], 5), &state.doc);
+    wp.set_presence_view(&reader, &selecting(&ids[0], 6, 11), &state.doc);
 
     let mut remote = state.doc.fork();
     {
@@ -178,17 +176,17 @@ fn views_rebase_under_concurrent_edits() {
     wp.sync(&state.doc, &state.root);
 
     assert_eq!(
-        wp.participant_view(&writer, &state.doc),
+        wp.presence_view(&writer, &state.doc),
         Some(caret(&ids[0], 9)),
         "an insert before the caret shifts it with its characters"
     );
     assert_eq!(
-        wp.participant_view(&reader, &state.doc),
+        wp.presence_view(&reader, &state.doc),
         Some(selecting(&ids[0], 10, 15)),
         "a selection keeps covering the same word"
     );
     let reader_ctx = wp
-        .participant_view(&reader, &state.doc)
+        .presence_view(&reader, &state.doc)
         .unwrap()
         .ctx(&state.doc)
         .unwrap();
@@ -215,33 +213,33 @@ fn views_rebase_under_concurrent_edits() {
     }
     state.doc.merge_incoming(&mut remote).unwrap();
     assert_eq!(
-        wp.participant_view(&writer, &state.doc),
+        wp.presence_view(&writer, &state.doc),
         Some(caret(&ids[0], 4))
     );
 
-    wp.set_participant_view(&reader, &selecting(&ids[1], 0, 2), &state.doc);
+    wp.set_presence_view(&reader, &selecting(&ids[1], 0, 2), &state.doc);
     let mut remote = state.doc.fork();
     let containers = crate::model::open(&remote).unwrap();
     remote.delete(&containers.blocks, ids[1].as_str()).unwrap();
     state.doc.merge_incoming(&mut remote).unwrap();
     wp.sync(&state.doc, &state.root);
-    let parked = wp.participant_view(&reader, &state.doc).unwrap();
+    let parked = wp.presence_view(&reader, &state.doc).unwrap();
     assert_eq!(parked.anchor, None);
     assert_eq!(parked.caret, ViewPoint::new(&ids[0], 9));
 }
 
 #[test]
-fn a_participant_edit_advances_its_own_caret_but_not_the_windows_undo() {
+fn a_presence_edit_advances_its_own_caret_but_not_the_windows_undo() {
     let (wp, mut state, ids) = widget_with(&["hello", "other"]);
     let mut window = WordProcessorWidget::over(wp);
     let _ = ui::undo::take_committed_action(&mut window);
     let wp = window.editor_mut();
     let (agent, human) = (pid("agent"), pid("human-2"));
-    wp.set_participant_view(&agent, &caret(&ids[0], 5), &state.doc);
-    wp.set_participant_view(&human, &caret(&ids[0], 5), &state.doc);
-    let local_before = wp.local_participant_view();
+    wp.set_presence_view(&agent, &caret(&ids[0], 5), &state.doc);
+    wp.set_presence_view(&human, &caret(&ids[0], 5), &state.doc);
+    let local_before = wp.local_presence_view();
 
-    let invoker = ActionInvoker::person("agent-actor").with_participant(agent.clone());
+    let invoker = ActionInvoker::person("agent-actor").with_presence(agent.clone());
     let outcome = (
         vec![crate::actions::splice_text_action(
             RegionKind::Body,
@@ -252,31 +250,31 @@ fn a_participant_edit_advances_its_own_caret_but_not_the_windows_undo() {
         )],
         caret(&ids[0], 11),
     );
-    wp.apply_participant_edit(&invoker, &mut Edits::lend(&mut state.doc), outcome)
+    wp.apply_presence_edit(&invoker, &mut Edits::lend(&mut state.doc), outcome)
         .unwrap();
 
     assert_eq!(wp.model().block_texts(&state.doc)[0], "hello world");
     assert_eq!(
-        wp.participant_view(&agent, &state.doc),
+        wp.presence_view(&agent, &state.doc),
         Some(caret(&ids[0], 11))
     );
     assert_eq!(
-        wp.participant_view(&human, &state.doc),
+        wp.presence_view(&human, &state.doc),
         Some(caret(&ids[0], 11))
     );
-    assert_eq!(wp.local_participant_view(), local_before);
+    assert_eq!(wp.local_presence_view(), local_before);
     assert_eq!(
         ui::undo::take_committed_action(&mut window),
         None,
-        "a participant's edit never opens the local window's undo group"
+        "a presence's edit never opens the local window's undo group"
     );
 
-    let no_participant = ActionInvoker::person("agent-actor");
+    let no_presence = ActionInvoker::person("agent-actor");
     assert!(
         window
             .editor_mut()
-            .apply_participant_edit(
-                &no_participant,
+            .apply_presence_edit(
+                &no_presence,
                 &mut Edits::lend(&mut state.doc),
                 (Vec::new(), caret(&ids[0], 0))
             )
@@ -285,17 +283,17 @@ fn a_participant_edit_advances_its_own_caret_but_not_the_windows_undo() {
 }
 
 #[test]
-fn participant_presence_uses_the_block_key_and_byte_offsets() {
+fn presence_uses_the_block_key_and_byte_offsets() {
     let (mut wp, state, ids) = widget_with(&["héllo wörld", "two"]);
     let (typist, selector) = (pid("typist"), pid("selector"));
-    wp.set_participant_view(&typist, &caret(&ids[0], 2), &state.doc);
-    wp.set_participant_label(&typist, "Agent for Ada");
-    wp.set_participant_view(&selector, &selecting(&ids[0], 6, 11), &state.doc);
+    wp.set_presence_view(&typist, &caret(&ids[0], 2), &state.doc);
+    wp.set_presence_label(&typist, "Agent for Ada");
+    wp.set_presence_view(&selector, &selecting(&ids[0], 6, 11), &state.doc);
 
-    let presence = wp.participant_presence(&state.doc);
+    let presence = wp.presences(&state.doc);
     assert_eq!(presence.len(), 2);
-    let selector_p = presence.iter().find(|p| p.participant == selector).unwrap();
-    let typist_p = presence.iter().find(|p| p.participant == typist).unwrap();
+    let selector_p = presence.iter().find(|p| p.presence == selector).unwrap();
+    let typist_p = presence.iter().find(|p| p.presence == typist).unwrap();
     assert_eq!(typist_p.key, block_presence_key(&ids[0]));
     assert_eq!(typist_p.label.as_deref(), Some("Agent for Ada"));
     assert_eq!(typist_p.payload, ui::PresencePayload::Caret { pos: 3 });
@@ -304,28 +302,28 @@ fn participant_presence_uses_the_block_key_and_byte_offsets() {
         ui::PresencePayload::Selection { start: 7, end: 13 }
     );
 
-    ui::collaboration::participants::Participants::leave_participant(&mut wp, &typist);
-    assert_eq!(wp.participant_presence(&state.doc).len(), 1);
+    ui::collaboration::presences::Presences::leave_presence(&mut wp, &typist);
+    assert_eq!(wp.presences(&state.doc).len(), 1);
 }
 
 #[test]
 fn the_view_map_is_bounded_expires_and_caps_find() {
     let (_wp, state, ids) = widget_with(&["abc"]);
     let doc = &state.doc;
-    let mut views = ParticipantViews::default();
+    let mut views = PresenceViews::default();
     let start = ui::time::Instant::now();
-    for i in 0..=MAX_PARTICIPANT_VIEWS {
+    for i in 0..=MAX_PRESENCE_VIEWS {
         let at = start + ui::time::Duration::from_millis(u64::try_from(i).unwrap());
         views.set(&pid(&format!("p{i}")), &caret(&ids[0], 1), doc, at);
     }
-    assert_eq!(views.len(), MAX_PARTICIPANT_VIEWS);
+    assert_eq!(views.len(), MAX_PRESENCE_VIEWS);
     assert!(
         !views.contains(&pid("p0")),
         "least recently used goes first"
     );
-    assert!(views.contains(&pid(&format!("p{MAX_PARTICIPANT_VIEWS}"))));
+    assert!(views.contains(&pid(&format!("p{MAX_PRESENCE_VIEWS}"))));
 
-    let later = start + PARTICIPANT_VIEW_TTL + ui::time::Duration::from_secs(1);
+    let later = start + PRESENCE_VIEW_TTL + ui::time::Duration::from_secs(1);
     views.touch(&pid("p5"), later);
     views.expire(later);
     assert_eq!(views.len(), 1);
@@ -336,7 +334,7 @@ fn the_view_map_is_bounded_expires_and_caps_find() {
         start: i % 3,
         end: i % 3 + 1,
     });
-    let finder = ParticipantView {
+    let finder = PresenceView {
         find: FindState::new("q".repeat(4 * MAX_FIND_QUERY_BYTES), hits),
         ..caret(&ids[0], 0)
     };
@@ -391,7 +389,7 @@ fn press(wp: &mut Editor, state: &mut ui::State, input: &Input) {
         .send(&mut Lent(wp), &ui::synthetic_input::keyboard_input(ev));
 }
 
-type Step = Box<dyn Fn(&ParticipantView, &AutoCommit) -> crate::actions::editing::EditResult>;
+type Step = Box<dyn Fn(&PresenceView, &AutoCommit) -> crate::actions::editing::EditResult>;
 
 fn assert_keyboard_action_parity(
     case: &str,
@@ -411,12 +409,12 @@ fn assert_keyboard_action_parity(
     let mut agent_widget = Editor::detached();
     agent_widget.sync(&agent_state.doc, &agent_state.root);
     let agent = pid("parity-agent");
-    let invoker = ActionInvoker::person("agent-actor").with_participant(agent.clone());
-    agent_widget.set_participant_view(&agent, &keyboard.local_participant_view(), &agent_state.doc);
+    let invoker = ActionInvoker::person("agent-actor").with_presence(agent.clone());
+    agent_widget.set_presence_view(&agent, &keyboard.local_presence_view(), &agent_state.doc);
 
     for (input, step) in inputs.iter().zip(steps) {
         let view = agent_widget
-            .participant_view(&agent, &agent_state.doc)
+            .presence_view(&agent, &agent_state.doc)
             .unwrap();
         let (envelopes, next) = step(&view, &agent_state.doc).expect("the primitive applies");
         press(&mut keyboard, &mut state, input);
@@ -428,7 +426,7 @@ fn assert_keyboard_action_parity(
             );
         }
         agent_widget
-            .apply_participant_edit(
+            .apply_presence_edit(
                 &invoker,
                 &mut Edits::lend(&mut agent_state.doc),
                 (envelopes, next),
@@ -440,9 +438,9 @@ fn assert_keyboard_action_parity(
         agent_widget.model().block_texts(&agent_state.doc),
         "{case}"
     );
-    let local = keyboard.local_participant_view();
+    let local = keyboard.local_presence_view();
     let remote = agent_widget
-        .participant_view(&agent, &agent_state.doc)
+        .presence_view(&agent, &agent_state.doc)
         .unwrap();
     assert_eq!(local.caret, remote.caret, "{case}");
     assert_eq!(
@@ -566,10 +564,10 @@ fn view_operations_move_only_the_invokers_view() {
     use crate::effects::ViewMove;
     let (mut wp, state, ids) = widget_with(&["find the needle", "and more"]);
     let doc_before = state.doc.clone().save();
-    let local_before = wp.local_participant_view();
+    let local_before = wp.local_presence_view();
     let agent = pid("agent");
 
-    wp.move_participant_view(
+    wp.move_presence_view(
         &agent,
         &ViewMove::Operation(ViewOperation::SelectBlock {
             block: ids[1].clone(),
@@ -578,14 +576,14 @@ fn view_operations_move_only_the_invokers_view() {
     )
     .unwrap();
     assert_eq!(
-        wp.participant_view(&agent, &state.doc)
+        wp.presence_view(&agent, &state.doc)
             .unwrap()
             .selection(&state.doc)
             .map(|s| (s.start_block, s.start, s.end_block, s.end)),
         Some((ids[1].clone(), 0, ids[1].clone(), 8))
     );
 
-    wp.move_participant_view(
+    wp.move_presence_view(
         &agent,
         &ViewMove::Operation(ViewOperation::FindText {
             query: "needle".into(),
@@ -593,18 +591,18 @@ fn view_operations_move_only_the_invokers_view() {
         &state.doc,
     )
     .unwrap();
-    let found = wp.participant_view(&agent, &state.doc).unwrap();
+    let found = wp.presence_view(&agent, &state.doc).unwrap();
     assert_eq!(found.find.query, "needle");
     assert_eq!(found.find.hits.len(), 1);
-    let tree = wp.participant_resources(Some(&agent), &state.doc);
+    let tree = wp.presence_resources(Some(&agent), &state.doc);
     assert!(has_resource_prefix(&tree, "word-processor.search-hit:"));
     assert!(!has_resource_prefix(
-        &wp.participant_resources(None, &state.doc),
+        &wp.presence_resources(None, &state.doc),
         "word-processor.search-hit:"
     ));
 
     let hit = &found.find.hits[0];
-    wp.move_participant_view(
+    wp.move_presence_view(
         &agent,
         &ViewMove::NavigateTo {
             block: hit.block.clone(),
@@ -615,20 +613,20 @@ fn view_operations_move_only_the_invokers_view() {
     )
     .unwrap();
     assert_eq!(
-        wp.participant_view(&agent, &state.doc).unwrap().caret,
+        wp.presence_view(&agent, &state.doc).unwrap().caret,
         ViewPoint::new(&ids[0], 15)
     );
 
     let end = ViewMove::Operation(ViewOperation::MoveCaret {
         to: CaretTarget::DocumentEnd,
     });
-    wp.move_participant_view(&agent, &end, &state.doc).unwrap();
+    wp.move_presence_view(&agent, &end, &state.doc).unwrap();
     assert_eq!(
-        wp.participant_view(&agent, &state.doc).unwrap().caret,
+        wp.presence_view(&agent, &state.doc).unwrap().caret,
         ViewPoint::new(&ids[1], 8)
     );
 
-    assert_eq!(wp.local_participant_view(), local_before);
+    assert_eq!(wp.local_presence_view(), local_before);
     assert_eq!(state.doc.clone().save(), doc_before);
 
     wp.apply_local_view_operation(
@@ -646,12 +644,12 @@ fn view_operations_move_only_the_invokers_view() {
 fn a_delivered_invocation_builds_at_the_invokers_view() {
     let (mut wp, state, ids) = widget_with(&["first paragraph", "tail"]);
     let agent = pid("agent-task:5");
-    wp.set_participant_view(&agent, &caret(&ids[1], 4), &state.doc);
+    wp.set_presence_view(&agent, &caret(&ids[1], 4), &state.doc);
     wp.sync(&state.doc, &state.root);
     let mut window = WordProcessorWidget::over(wp);
     let tree = {
         let _scope = ui::invocation_scope::InvokerScope::enter(
-            ActionInvoker::person("agent-actor").with_participant(agent.clone()),
+            ActionInvoker::person("agent-actor").with_presence(agent.clone()),
         );
         ui::resources::resources(&window, &state.doc)
     };
@@ -663,13 +661,13 @@ fn a_delivered_invocation_builds_at_the_invokers_view() {
         ),
         format!(
             "{:?}",
-            wp.participant_resources(Some(&agent), &state.doc)
+            wp.presence_resources(Some(&agent), &state.doc)
                 .iter()
                 .map(|r| r.id.as_str())
                 .collect::<Vec<_>>()
         )
     );
-    let view = wp.participant_view_or_default(&agent, &state.doc).unwrap();
+    let view = wp.presence_view_or_default(&agent, &state.doc).unwrap();
     let store = wp.model().content_store().clone();
     let edit = |effect: crate::effects::WordProcessorEffect| {
         effect.edit(&view, &state.doc, &store).unwrap()
@@ -680,7 +678,7 @@ fn a_delivered_invocation_builds_at_the_invokers_view() {
             at: None,
         })
         .is_err(),
-        "a collapsed participant has no selection to replace"
+        "a collapsed presence has no selection to replace"
     );
     assert_eq!(
         edit(crate::effects::WordProcessorEffect::TypeText {
@@ -700,7 +698,7 @@ fn a_delivered_invocation_builds_at_the_invokers_view() {
 }
 
 #[test]
-fn a_participantless_invocation_builds_at_the_windows_own_view() {
+fn a_presenceless_invocation_builds_at_the_windows_own_view() {
     let (mut wp, state, ids) = widget_with(&["first paragraph"]);
     wp.sync(&state.doc, &state.root);
     let view = wp.local_edit_view();
@@ -720,7 +718,7 @@ fn a_participantless_invocation_builds_at_the_windows_own_view() {
 
 fn invoke_opening_action(
     app: &mut ui::framework::testing::TestApp<crate::framework::WordProcessorApp>,
-    participant: &ParticipantId,
+    presence: &PresenceId,
     action: &str,
     arguments: serde_json::Value,
 ) {
@@ -731,9 +729,9 @@ fn invoke_opening_action(
             descriptor.address.resource.as_str() == resource && descriptor.address.action == action
         });
     assert!(published, "Writer publishes the opening action `{action}`");
-    let invoker = ActionInvoker::person("opening-rehearsal").with_participant(participant.clone());
+    let invoker = ActionInvoker::person("opening-rehearsal").with_presence(presence.clone());
     app.call_by(invoker, resource, action, arguments)
-        .unwrap_or_else(|error| panic!("`{action}` for {participant:?}: {error}"));
+        .unwrap_or_else(|error| panic!("`{action}` for {presence:?}: {error}"));
     app.settle();
 }
 
@@ -787,9 +785,8 @@ fn two_person_executions_type_the_opening_and_place_real_png_independently() {
     ];
     assert_eq!(callers[0].acting(), callers[1].acting());
     assert_ne!(callers[0].execution_id(), callers[1].execution_id());
-    let participants =
-        callers.map(|caller| ParticipantId::for_execution(caller.execution_id().unwrap()));
-    assert_ne!(participants[0], participants[1]);
+    let presences = callers.map(|caller| PresenceId::for_execution(caller.execution_id().unwrap()));
+    assert_ne!(presences[0], presences[1]);
     let mut app =
         ui::framework::testing::TestApp::<crate::framework::WordProcessorApp>::new().unwrap();
     let resource = <crate::framework::Document as ui::tilo_resource::Resource>::KIND;
@@ -807,26 +804,26 @@ fn two_person_executions_type_the_opening_and_place_real_png_independently() {
             .iter()
             .all(|block| block.text.is_empty())
     }));
-    let local_before = writer_view(&mut app, |wp, _| wp.local_participant_view());
-    for (participant, block) in participants.iter().zip(&ids) {
+    let local_before = writer_view(&mut app, |wp, _| wp.local_presence_view());
+    for (presence, block) in presences.iter().zip(&ids) {
         invoke_opening_action(
             &mut app,
-            participant,
+            presence,
             "move-caret",
             serde_json::json!({"to": "point", "block": block, "offset": 0}),
         );
         assert_eq!(
-            writer_view(&mut app, |wp, doc| wp.participant_view(participant, doc)),
+            writer_view(&mut app, |wp, doc| wp.presence_view(presence, doc)),
             Some(caret(block, 0))
         );
     }
     assert_eq!(
-        writer_view(&mut app, |wp, _| wp.local_participant_view()),
+        writer_view(&mut app, |wp, _| wp.local_presence_view()),
         local_before
     );
     invoke_opening_action(
         &mut app,
-        &participants[0],
+        &presences[0],
         "type-text",
         serde_json::json!({"text": "Hello to Tilo"}),
     );
@@ -834,18 +831,14 @@ fn two_person_executions_type_the_opening_and_place_real_png_independently() {
         writer_view(&mut app, |wp, doc| wp.model().block_texts(doc)),
         ["Hello to Tilo", "", ""]
     );
-    let typed_view = writer_view(&mut app, |wp, doc| {
-        wp.participant_view(&participants[0], doc)
-    })
-    .unwrap();
+    let typed_view = writer_view(&mut app, |wp, doc| wp.presence_view(&presences[0], doc)).unwrap();
     assert_eq!(typed_view, caret(&ids[0], "Hello to Tilo".len()));
     assert_eq!(
-        writer_view(&mut app, |wp, doc| wp
-            .participant_view(&participants[1], doc)),
+        writer_view(&mut app, |wp, doc| wp.presence_view(&presences[1], doc)),
         Some(caret(&ids[1], 0))
     );
     assert_eq!(
-        writer_view(&mut app, |wp, _| wp.local_participant_view()),
+        writer_view(&mut app, |wp, _| wp.local_presence_view()),
         local_before
     );
 
@@ -860,7 +853,7 @@ fn two_person_executions_type_the_opening_and_place_real_png_independently() {
     );
     invoke_opening_action(
         &mut app,
-        &participants[1],
+        &presences[1],
         "place-image",
         serde_json::json!({"content": hash}),
     );
@@ -868,17 +861,15 @@ fn two_person_executions_type_the_opening_and_place_real_png_independently() {
     assert_png_placed_after(&doc, &ids, &hash, &png);
     assert_eq!(content.read(&hash).unwrap(), png);
     assert_eq!(
-        writer_view(&mut app, |wp, doc| wp
-            .participant_view(&participants[0], doc)),
+        writer_view(&mut app, |wp, doc| wp.presence_view(&presences[0], doc)),
         Some(typed_view)
     );
     assert_eq!(
-        writer_view(&mut app, |wp, doc| wp
-            .participant_view(&participants[1], doc)),
+        writer_view(&mut app, |wp, doc| wp.presence_view(&presences[1], doc)),
         Some(caret(&ids[1], 0))
     );
     assert_eq!(
-        writer_view(&mut app, |wp, _| wp.local_participant_view()),
+        writer_view(&mut app, |wp, _| wp.local_presence_view()),
         local_before
     );
 }

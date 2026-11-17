@@ -213,7 +213,7 @@ impl<R: Resource> RecordEnv<R> {
         documents
     }
 
-    /// The names of the participants, for showing the ids actions record
+    /// The names of the members, for showing the ids actions record
     /// ([`People::name`](super::People::name)).
     pub fn people(&self) -> super::People {
         self.run.people.clone()
@@ -286,7 +286,7 @@ impl<R: Resource> RecordEnv<R> {
         Some(super::Children::new(state, me).dispatching(&self.dispatch))
     }
 
-    /// Who this view is for: the participant reading and editing through
+    /// Who this view is for: the member reading and editing through
     /// it, the same id an action they invoke reads as its author
     /// ([`ActionCx::author`](tilo_resource::ActionCx::author)). Compare the
     /// authors the resource records with it ("your message", "you reacted")
@@ -304,9 +304,9 @@ impl<R: Resource> RecordEnv<R> {
         self.dispatch.is_past()
     }
 
-    /// Whether this participant may only view, when the view is built.
+    /// Whether this member may only view, when the view is built.
     /// Bound controls already follow permission changes on their own; to show
-    /// or disable something else while the participant may only view, bind to
+    /// or disable something else while the member may only view, bind to
     /// [`ViewCx::read_only_state`](super::ViewCx::read_only_state), which follows role changes while the app
     /// runs.
     pub fn read_only(&self) -> bool {

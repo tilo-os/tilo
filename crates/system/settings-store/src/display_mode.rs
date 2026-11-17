@@ -85,7 +85,7 @@ pub fn plan_layout(
     }
     let builtin = outputs.iter().find(|output| output.builtin);
     let mut next = base.clone();
-    let mirrored: Vec<String> = mirror_participants(outputs, base);
+    let mirrored: Vec<String> = mirror_members(outputs, base);
     for output in outputs {
         let config = next
             .outputs
@@ -214,8 +214,8 @@ fn desktop_extent(output: &DisplayOutputSnapshot, config: &OutputConfig) -> (i32
     )
 }
 
-fn mirror_participants(outputs: &[DisplayOutputSnapshot], base: &DisplayConfig) -> Vec<String> {
-    let mut participants = Vec::new();
+fn mirror_members(outputs: &[DisplayOutputSnapshot], base: &DisplayConfig) -> Vec<String> {
+    let mut members = Vec::new();
     for output in outputs {
         let connector = &output.descriptor.connector;
         if let Some(target) = base
@@ -223,11 +223,11 @@ fn mirror_participants(outputs: &[DisplayOutputSnapshot], base: &DisplayConfig) 
             .get(connector)
             .and_then(|config| config.mirror_of.as_ref())
         {
-            participants.push(connector.clone());
-            participants.push(target.clone());
+            members.push(connector.clone());
+            members.push(target.clone());
         }
     }
-    participants
+    members
 }
 
 fn set_enabled(

@@ -146,7 +146,7 @@ impl VideoEditorApp {
         let label_top = r.ruler.y0 + (r.ruler.height() - label_h) / 2.0;
         let chip_x0 = self.zoom_chip_rect(r).x0;
         // The ruler's one row, in order of who owns it: the playhead's time tag, other
-        // participants' names, the named markers, then the tick times. A reading that
+        // members' names, the named markers, then the tick times. A reading that
         // would run into one before it is left out rather than printed through it.
         let (tag, tag_rect) = self.playhead_tag(r, tr, theme);
         let mut claimed: Vec<(f64, f64)> = vec![(tag_rect.x0, tag_rect.x1)];

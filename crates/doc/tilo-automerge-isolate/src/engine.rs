@@ -69,7 +69,7 @@ pub(crate) fn verified_hashes(bytes: &[u8]) -> Result<Vec<ChangeHash>, Rejected>
 }
 
 /// The hash of every change `incoming` carries, in the order it carries them,
-/// when it is exactly a run of change chunks: what a participant publishes as
+/// when it is exactly a run of change chunks: what a member publishes as
 /// its own changes since the last take. `None` when it carries anything else —
 /// a document, a bundle, or a tail no chunk frames — so the caller cannot say
 /// which changes are its own.

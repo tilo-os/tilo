@@ -565,7 +565,7 @@ impl Relay {
                 alpn.as_slice() == tilo_delivery_protocol::workspace_join::WORKSPACE_JOIN_ALPN
             });
         // A relay whose device may own workspaces takes part in every channel of
-        // the workspaces it governs, as one participant beside their members; a
+        // the workspaces it governs, as one key holder beside their members; a
         // relay whose device may not keeps no channel keys at all.
         let workspace_keys = (governs_workspaces
             && identity.device_cert.capabilities.holds_workspace_keys())
@@ -612,7 +612,7 @@ impl Relay {
         let metrics = sessions.metrics.clone();
         let live = sessions.identity.clone();
         let handler = sessions.handler.clone();
-        // The live plane belongs to the relay: every participant, a page
+        // The live plane belongs to the relay: every key holder, a page
         // included, reaches it over the relay's own iroh endpoint, and all
         // land in one origin whether or not browsers are served.
         #[cfg(feature = "web")]
@@ -720,7 +720,7 @@ impl Relay {
             );
         }
         // The host is a member of every workspace it holds: its own device is on
-        // those rosters, so it reads and serves them as any participant does.
+        // those rosters, so it reads and serves them as any key holder does.
         for workspace in workspaces.lock().await.values() {
             workspace
                 .lock()

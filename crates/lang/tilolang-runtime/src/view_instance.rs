@@ -192,7 +192,7 @@ impl ViewInstance {
         self.live.shows(reads);
     }
 
-    /// Run again the boundaries that show something only the window knows — a participant's
+    /// Run again the boundaries that show something only the window knows — a member's
     /// name, a day or a time of day in the person's formats, a word in the language their window
     /// speaks — and no others: the person reads another language, chose another clock, or the
     /// window calls someone something else than it did.

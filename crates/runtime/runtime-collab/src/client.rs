@@ -287,7 +287,7 @@ impl CollabClient {
         self.join_channel_as(channel_id, identity, "").await
     }
 
-    /// Join a channel while announcing the participant's display handle.
+    /// Join a channel while announcing the member's display handle.
     ///
     /// # Errors
     ///
@@ -296,9 +296,9 @@ impl CollabClient {
         &self,
         channel_id: &str,
         identity: &[u8],
-        participant_handle: &str,
+        member_handle: &str,
     ) -> Result<ChannelHandle, NotAvailable> {
-        self.join_channel_as_kind(channel_id, identity, participant_handle, "person", "")
+        self.join_channel_as_kind(channel_id, identity, member_handle, "person", "")
             .await
     }
 
@@ -313,12 +313,12 @@ impl CollabClient {
         &self,
         channel_id: &str,
         identity: &[u8],
-        participant_handle: &str,
-        participant_kind: &str,
+        member_handle: &str,
+        member_kind: &str,
         record_kind: &str,
     ) -> Result<ChannelHandle, NotAvailable> {
-        let handler = participant_handle.to_owned();
-        let member = match participant_kind {
+        let handler = member_handle.to_owned();
+        let member = match member_kind {
             "" | "person" => None,
             "agent" => Some(MemberId::Agent(handler.clone())),
             other => {
@@ -1677,7 +1677,7 @@ impl PresenceHandle {
         .await
     }
 
-    /// Whether the local participant is composing a message under `key_bytes` (a channel, a
+    /// Whether the local member is composing a message under `key_bytes` (a channel, a
     /// direct conversation): a draft is being typed, never what it says. `false` says they
     /// stopped, so no reader is left "typing" after the window closes.
     pub async fn publish_composing(

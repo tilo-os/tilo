@@ -8,8 +8,7 @@ use tilo_sort::CompactSort as _;
 #[cfg(feature = "broker-transport")]
 pub use ::collaboration::invocation_scope::ExternalModerationReply;
 pub use ::collaboration::invocation_scope::{
-    InvokerScope, WriteAttributionReceipt, current_invoker, current_participant,
-    delivered_invocation,
+    InvokerScope, WriteAttributionReceipt, current_invoker, current_presence, delivered_invocation,
 };
 
 /// A host moderation receipt, suitable for an existing action worker.
@@ -87,30 +86,30 @@ pub struct PublishedInvocationRequest {
     /// Whose view this invocation resolves against. Set only by the host that admitted `actor` (for an
     /// agent task, derived from the admitted task), never taken from a caller's envelope. It routes to
     /// view state and is never authority.
-    pub participant: Option<tilo_actions::ParticipantId>,
+    pub presence: Option<tilo_actions::PresenceId>,
 }
 impl PublishedInvocationRequest {
-    /// The invoker this request resolves for: the admitted actor plus the host-set participant.
+    /// The invoker this request resolves for: the admitted actor plus the host-set presence.
     pub fn invoker(&self) -> tilo_actions::ActionInvoker {
         let invoker = tilo_actions::ActionInvoker::admitted(&self.actor.clone().into());
-        match &self.participant {
-            Some(participant) => invoker.with_participant(participant.clone()),
+        match &self.presence {
+            Some(presence) => invoker.with_presence(presence.clone()),
             None => invoker,
         }
     }
 }
 
 thread_local! {
-    static VIEWERS: std::cell::RefCell<Vec<tilo_actions::ParticipantId>> =
+    static VIEWERS: std::cell::RefCell<Vec<tilo_actions::PresenceId>> =
         const { std::cell::RefCell::new(Vec::new()) };
 }
 
-/// The participant a published tree is being built for while it lives: what a surface offers bound to
-/// where someone is (their caret, their Find hits) is that participant's, not the window's.
+/// The presence a published tree is being built for while it lives: what a surface offers bound to
+/// where someone is (their caret, their Find hits) is that presence's, not the window's.
 pub struct ViewerScope(());
 impl ViewerScope {
-    pub fn enter(participant: tilo_actions::ParticipantId) -> Self {
-        VIEWERS.with_borrow_mut(|viewers| viewers.push(participant));
+    pub fn enter(presence: tilo_actions::PresenceId) -> Self {
+        VIEWERS.with_borrow_mut(|viewers| viewers.push(presence));
         Self(())
     }
 }
@@ -122,10 +121,10 @@ impl Drop for ViewerScope {
     }
 }
 
-/// Whose view what is being built or resolved now is: the participant of the delivered invocation, else
-/// the participant a tree is published for.
-pub fn current_viewer() -> Option<tilo_actions::ParticipantId> {
-    current_participant().or_else(|| VIEWERS.with_borrow(|viewers| viewers.last().cloned()))
+/// Whose view what is being built or resolved now is: the presence of the delivered invocation, else
+/// the presence a tree is published for.
+pub fn current_viewer() -> Option<tilo_actions::PresenceId> {
+    current_presence().or_else(|| VIEWERS.with_borrow(|viewers| viewers.last().cloned()))
 }
 
 /// Who an effect invocation runs for, kept while it runs: what its handler and completion submit is
@@ -238,10 +237,9 @@ pub fn view_operation_permitted(
 ) -> bool {
     actor.member_id() == Some(local_author)
         || contract.reads_record()
-        || (contract.is_participant_view()
-            && current_invoker().is_some_and(|invoker| {
-                invoker.acting.by == *actor && invoker.participant.is_some()
-            }))
+        || (contract.is_presence_view()
+            && current_invoker()
+                .is_some_and(|invoker| invoker.acting.by == *actor && invoker.presence.is_some()))
 }
 
 /// Inert declaration retained by the actual host at original admission. This is not authority, and is
@@ -364,7 +362,7 @@ use std::{
 pub struct InvocationLocusBasis {
     invocation: tilo_actions::InvocationId,
     actor: tilo_actions::Actor,
-    participant: Option<tilo_actions::ParticipantId>,
+    presence: Option<tilo_actions::PresenceId>,
     publication: tilo_actions::ActionAddress,
     target: crate::bound_dispatch::BoundActionAddress,
     owner_lifetime: uuid::Uuid,
@@ -380,8 +378,8 @@ impl InvocationLocusBasis {
     pub fn actor(&self) -> &tilo_actions::Actor {
         &self.actor
     }
-    pub fn participant(&self) -> Option<&tilo_actions::ParticipantId> {
-        self.participant.as_ref()
+    pub fn presence(&self) -> Option<&tilo_actions::PresenceId> {
+        self.presence.as_ref()
     }
     /// Original host-admitted address; it may be a publication alias.
     pub fn publication(&self) -> &tilo_actions::ActionAddress {
@@ -535,9 +533,9 @@ impl ResourceInvocationScope {
         let fields = [
             request.actor.id(),
             request
-                .participant
+                .presence
                 .as_ref()
-                .map_or("", tilo_actions::ParticipantId::as_str),
+                .map_or("", tilo_actions::PresenceId::as_str),
             request.address.resource.as_str(),
             request.address.action.as_str(),
             target.address.address.resource.as_str(),
@@ -562,7 +560,7 @@ impl ResourceInvocationScope {
             InvocationLocusState::Captured(Box::new(InvocationLocusBasis {
                 invocation,
                 actor: request.actor.clone(),
-                participant: request.participant.clone(),
+                presence: request.presence.clone(),
                 publication: request.address.clone(),
                 target: target.address.clone(),
                 owner_lifetime: target.binding.lifetime_id,
@@ -1235,9 +1233,9 @@ impl DocumentAuthorization {
                 request.actor.id().len(),
                 request.argument.as_ref().map_or(0, String::capacity),
                 request
-                    .participant
+                    .presence
                     .as_ref()
-                    .map_or(0, |participant| participant.as_str().len()),
+                    .map_or(0, |presence| presence.as_str().len()),
             ] {
                 bytes = bytes.checked_add(len)?;
             }

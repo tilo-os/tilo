@@ -1601,7 +1601,7 @@ tilo_test_env::scenario! {
     }
 
     phase concurrent_receipts_for_one_invite_keep_the_redemption_that_reached_it_first;
-    // Two participants may redeem one invitation at once, each before it holds
+    // Two key holders may redeem one invitation at once, each before it holds
     // the other's receipt. An invitation admits one person: every receiver keeps
     // the redemption that reached it first and refuses the other, whichever of
     // the two arrives first.

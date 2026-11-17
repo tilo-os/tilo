@@ -232,7 +232,7 @@ macro_rules! dev_reload_entry {
 
 /// The definition of the [`framework::ResourceApp`] `$app` for a host that
 /// runs it in its own process (the shell's built-in apps, the web desktop, an
-/// agent's participant host), naming the app crate's committed `surface.toml`
+/// agent's member host), naming the app crate's committed `surface.toml`
 /// as its surface: such a host runs no package whose payload names one. An
 /// app's library defines its `definition()` with it; the app's own binary
 /// uses [`framework::definition`], so it does not carry the file.

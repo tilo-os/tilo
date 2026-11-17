@@ -6,12 +6,12 @@
  * the page's own origin): it learns each person's name and answers the
  * workspace's entry, which the page enters through on its session with the
  * host, as an Editor. Each page creates a person, so two tabs are two
- * participants with their own `me`, name and history. Everyone opens the
+ * members with their own `me`, name and history. Everyone opens the
  * workspace's one record of the app: the first page to arrive creates it, every
  * later page waits until it has reached it and opens that one, so two pages
  * never start the same record twice. The entry also knows everyone's name,
  * which the page hands the app (`mount.setPeople`) so `cx.people()` names
- * each participant.
+ * each member.
  */
 
 import {joinWorkspace} from './peer.mjs';

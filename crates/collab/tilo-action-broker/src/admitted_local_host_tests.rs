@@ -77,7 +77,7 @@ async fn local_host_lease(
         address: tilo_actions::ActionAddress::new(delivered.resource, delivered.action),
         argument: delivered.argument,
         actor: delivered.actor,
-        participant: Some(tilo_actions::ParticipantId::for_execution(
+        presence: Some(tilo_actions::PresenceId::for_execution(
             caller.execution_id().unwrap(),
         )),
     };

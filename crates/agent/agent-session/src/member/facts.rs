@@ -7,7 +7,7 @@ use tilo_actions::ActionOutput;
 use tilo_actions::api::ActionDescriptor;
 use tilo_peer_state::document_frame::DocumentRoute;
 
-use super::AgentParticipant;
+use super::AgentMember;
 use super::running::FollowUp;
 use crate::facts::{FACTS, changes_text, facts_read};
 use crate::planner::Step;
@@ -35,7 +35,7 @@ pub(super) struct Exported {
     pub(super) facts: serde_json::Value,
 }
 
-impl AgentParticipant {
+impl AgentMember {
     /// Keep the facts `output` states of what `step` of task `task`
     /// exported: an answer naming the content it made beside `facts`.
     pub(super) fn note_export(&mut self, task: &str, step: &Step, output: &ActionOutput) {

@@ -116,7 +116,7 @@ pub trait WorkspaceRecordsLink: Send + Sync {
     /// a record the service is about to write for the first time.
     ///
     /// `None` when the host does not take part in the workspace's channels: the
-    /// service waits for a participant to admit it over the channel, like
+    /// service waits for a member to admit it over the channel, like
     /// any member.
     /// `Some(Err)` when the host refused the hand-off or holds no such
     /// channel. Called only on behalf of a caller the service serves.

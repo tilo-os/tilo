@@ -12,10 +12,10 @@
 //! opening a record before it arrived founded one of its own, and the first
 //! change it published forked the workspace's document.
 
-use super::{AgentParticipant, DocumentRoute, Step, parts};
+use super::{AgentMember, DocumentRoute, Step, parts};
 use tilo_session_client::{Cmd, Outbox};
 
-impl AgentParticipant {
+impl AgentMember {
     /// Take the workspace's answer about a record this agent asked for: the
     /// host sent `frames` of it, and none means the workspace holds none of
     /// it, so it is the agent's to make ([`Self::record_on_its_way`]).

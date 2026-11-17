@@ -173,7 +173,7 @@ pub struct MergeView {
     model: MergeModel,
     inputs: Option<MergeInputs>,
     composed: bool,
-    /// The participant may only view.
+    /// The member may only view.
     read_only: bool,
     base_label: String,
     ours_label: String,
@@ -242,7 +242,7 @@ impl MergeView {
         self.merged_editor.attach(dispatcher);
     }
 
-    /// The participant may only view: no side can be taken.
+    /// The member may only view: no side can be taken.
     pub(crate) fn set_read_only(&mut self, read_only: bool) {
         if self.read_only != read_only {
             self.read_only = read_only;

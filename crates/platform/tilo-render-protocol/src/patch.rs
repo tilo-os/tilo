@@ -142,7 +142,7 @@ impl ResourceRef {
     }
 }
 
-/// A participant: their identity, and what the room calls them.
+/// A member: their identity, and what the room calls them.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Actor {
     pub id: String,

@@ -61,8 +61,8 @@ fn owned_resources_at<W: Widget + ?Sized>(
     address: Option<&ActionAddress>,
     resources: &mut Vec<ResourceSpec>,
 ) {
-    let participant = crate::invocation_scope::current_participant();
-    let mut local = crate::resources::resources_for(widget, participant.as_ref(), doc);
+    let presence = crate::invocation_scope::current_presence();
+    let mut local = crate::resources::resources_for(widget, presence.as_ref(), doc);
     if owner == Some(false) {
         local = local
             .into_iter()
@@ -74,7 +74,7 @@ fn owned_resources_at<W: Widget + ?Sized>(
     if let Some(address) = address
         && !eager_claim
         && let Some(resource) =
-            crate::resources::resource_for(widget, participant.as_ref(), doc, &address.resource)
+            crate::resources::resource_for(widget, presence.as_ref(), doc, &address.resource)
     {
         resources.push(if owner == Some(false) {
             crate::resources::resolved_outside_document(resource)

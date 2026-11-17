@@ -28,25 +28,25 @@ pub(crate) struct LocalVoice {
     unmute_requested: bool,
     /// The call's pictures.
     pub(crate) video: CallVideo,
-    /// How loud each participant plays on this device.
+    /// How loud each member plays on this device.
     pub(crate) volumes: CallVolumes,
 }
 
-/// How loud this person hears each participant, by person:
+/// How loud this person hears each member, by person:
 /// kept for as long as the window, and told to the service whenever a call
 /// is live, so a new call plays everyone as they were last set.
 #[derive(Default)]
 pub(crate) struct CallVolumes {
-    /// What the person set: each participant's level, and whether they
+    /// What the person set: each member's level, and whether they
     /// silenced them, which keeps the level for when they hear them again.
     pub(crate) set: BTreeMap<String, Listening>,
     /// What the service was last told, in percent.
     told: BTreeMap<String, u16>,
-    /// The one change in flight: its request, participant and percent.
+    /// The one change in flight: its request, member and percent.
     telling: Option<(u64, String, u16)>,
 }
 
-/// How loud one participant plays here.
+/// How loud one member plays here.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct Listening {
     /// In percent of as they arrive.
@@ -295,7 +295,7 @@ impl LocalVoice {
         std::mem::take(&mut self.queued)
     }
 
-    /// Tell the service, one at a time, how loud each participant whose
+    /// Tell the service, one at a time, how loud each member whose
     /// level differs from what it was told plays, while the call is live.
     fn volume_requests(&mut self) {
         let volumes = &mut self.volumes;
@@ -308,14 +308,12 @@ impl LocalVoice {
         if volumes.telling.is_some() {
             return;
         }
-        let Some((participant, percent)) = volumes
+        let Some((member, percent)) = volumes
             .set
             .iter()
-            .map(|(participant, listening)| (participant, listening.played()))
-            .find(|(participant, percent)| {
-                volumes.told.get(*participant).copied().unwrap_or(100) != *percent
-            })
-            .map(|(participant, percent)| (participant.clone(), percent))
+            .map(|(member, listening)| (member, listening.played()))
+            .find(|(member, percent)| volumes.told.get(*member).copied().unwrap_or(100) != *percent)
+            .map(|(member, percent)| (member.clone(), percent))
         else {
             return;
         };
@@ -323,13 +321,10 @@ impl LocalVoice {
             return;
         };
         self.next_request = id;
-        volumes.telling = Some((id, participant.clone(), percent));
+        volumes.telling = Some((id, member.clone(), percent));
         self.queued.push(CollabRequest::NativeMediaCommand {
             request_id: id,
-            command: Request::new(Command::SetVolume {
-                participant,
-                percent,
-            }),
+            command: Request::new(Command::SetVolume { member, percent }),
         });
     }
 
@@ -337,13 +332,13 @@ impl LocalVoice {
     /// one is not asked again: the call plays them as it can.
     fn complete_volume(&mut self, request_id: u64) -> bool {
         let volumes = &mut self.volumes;
-        let Some((_, participant, percent)) = volumes
+        let Some((_, member, percent)) = volumes
             .telling
             .take_if(|(telling, ..)| *telling == request_id)
         else {
             return false;
         };
-        volumes.told.insert(participant, percent);
+        volumes.told.insert(member, percent);
         true
     }
 
@@ -1010,8 +1005,8 @@ pub(crate) fn layer_for(width: f64, height: f64, source: PictureSource) -> Pictu
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ui::tilo_resource::MemberId;
     use ui::native_media::{REPLY_TIMEOUT, State};
+    use ui::tilo_resource::MemberId;
 
     fn live() -> Snapshot {
         let mut snapshot = Snapshot::unavailable();
@@ -1901,7 +1896,7 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        /// Picture layers, the pictures asked for and collected, and a participant's volume.
+        /// Picture layers, the pictures asked for and collected, and a member's volume.
         /// Each case was a test of its own, on a fixture of its own; a failure
         /// names the cases that failed.
         fn the_service_is_told_which_pictures_show_and_how_loud_each_person_is;
@@ -2057,7 +2052,7 @@ mod tests {
             );
         }
 
-        phase a_participants_volume_is_told_once_the_call_is_live_and_again_in_the_next;
+        phase a_members_volume_is_told_once_the_call_is_live_and_again_in_the_next;
         {
             let now = ui::time::now();
             let mut app = standup();
@@ -2076,13 +2071,13 @@ mod tests {
                             Request {
                                 command:
                                     Command::SetVolume {
-                                        participant,
+                                        member,
                                         percent,
                                     },
                                 intent,
                                 ..
                             },
-                    } => Some((*request_id, participant.clone(), *percent, *intent)),
+                    } => Some((*request_id, member.clone(), *percent, *intent)),
                     _ => None,
                 })
             };
@@ -2098,9 +2093,9 @@ mod tests {
                 .unwrap();
             let join = app.native_voice.take_requests(now);
             app.native_voice.complete(request_id(&join[0]), &Ok(live()));
-            let (id, participant, percent, intent) =
+            let (id, member, percent, intent) =
                 volume(&app.native_voice.take_requests(now)).expect("told once live");
-            assert_eq!((participant.as_str(), percent, intent), ("u_aria", 0, 0));
+            assert_eq!((member.as_str(), percent, intent), ("u_aria", 0, 0));
             assert_eq!(
                 volume(&app.native_voice.take_requests(now)),
                 None,

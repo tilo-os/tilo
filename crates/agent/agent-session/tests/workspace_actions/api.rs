@@ -978,7 +978,7 @@ async fn a_members_key_posts_a_long_history_into_the_lounges_chat() {
                             category: None,
                             kind: None,
                             topic: None,
-                            participants: None,
+                            members: None,
                         },
                     ),
                 )

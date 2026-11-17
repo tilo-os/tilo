@@ -198,7 +198,7 @@ impl ResourceApp for ShelfApp {
             let viewer = ui_core::invocation_scope::current_viewer();
             let viewer = viewer
                 .as_ref()
-                .map_or("nobody", tilo_actions::ParticipantId::as_str);
+                .map_or("nobody", tilo_actions::PresenceId::as_str);
             vec![add("wave", &format!("Wave at {viewer}"), 1)]
         });
         Box::new(
@@ -252,7 +252,7 @@ tilo_test_env::scenario! {
             .with_widget_mut(|root: &mut ResourceRoot| {
                 let nobody = outline(&root.publication());
                 let _viewer = ui_core::invocation_scope::ViewerScope::enter(
-                    tilo_actions::ParticipantId::new("ada").expect("a participant id"),
+                    tilo_actions::PresenceId::new("ada").expect("a presence id"),
                 );
                 (nobody, outline(&root.publication()))
             })

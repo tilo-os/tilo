@@ -485,7 +485,7 @@ fn a_row_out_of_view_shows_its_item_as_it_is_when_it_mounts() {
     let total = usize::try_from(TASKS).unwrap();
     let far = task_id(&app, total.saturating_sub(3));
     assert!(!mounted(&mut app, &far), "the row starts out unmounted");
-    // Another participant (here an agent) completes the task while its row
+    // Another member (here an agent) completes the task while its row
     // is out of view.
     // Past the published page, the item is addressed by its id.
     let item = tilo_resource::items::item_resource_id::<Checklist>("tasks", &far);

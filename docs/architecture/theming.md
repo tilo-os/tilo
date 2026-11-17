@@ -259,7 +259,7 @@ rise to AAA on a high-contrast palette:
 - `contrast::repair` runs on every theme the runtime builds
   (`Colors::of_palette`): a foreground that misses a floor is stepped in
   OKLCH lightness, at its own hue, until it holds; grounds never move, and
-  the presence palette moves as one so every participant stays equally
+  the presence palette moves as one so every member stays equally
   loud. A hand-edited file therefore still renders legibly.
 - Tests sweep every preset at every temperature for every presence hue,
   and every preset with every tinted emphasis hue (5° steps), and require
@@ -488,7 +488,7 @@ each app window, and a standalone app that may read the person's settings
 starts from the stored choice (a private app with an ephemeral identity
 does not). Members see the same colour: a shell's presence frame says
 its face's colour (`ShellPresence::colour`), a live frame carries
-`LiveParticipant::color`, and a remote cursor the toolkit draws takes its hue
+`LiveMember::color`, and a remote cursor the toolkit draws takes its hue
 from the publisher's identity (`PresenceHue`); each receiving shell paints
 that peer in it and announces it to its apps in the roster
 (`Member::colour`). It is their focus ring, text caret, text-selection tint and unread
@@ -696,7 +696,7 @@ theme should supply.
 | `video-editor/src/**` | 8 | 8 | 0 | title colours rendered into the video, stored swatches, blend helpers, test |
 | `themes/src/**` | 5 | 4 | 1 | spec conversion and tests are content; the customizer's seed colour should be the active accent |
 | `mail/src/draw.rs` | 2 | 0 | 2 | avatar palette entries outside the theme (`Colors::categorical`) |
-| `chat/src/**` | 3 | 3 | 0 | participant colour (made legible downstream), blend helper, scrim derivation over video |
+| `chat/src/**` | 3 | 3 | 0 | member colour (made legible downstream), blend helper, scrim derivation over video |
 | `slides/src/model.rs` | 1 | 1 | 0 | the authored "Deep" slide treatment |
 | `music/src/art.rs` | 1 | 1 | 0 | generated cover art |
 | `db-client`, `remote`, `osk` | 3 | 3 | 0 | blend helper; test fixtures |

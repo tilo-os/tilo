@@ -280,7 +280,7 @@ tilo_test_env::scenario! {
             Some("Cursor loses access to Build box and stops now")
         );
         // A client this build does not know keeps the hue its own name gives it, face and dot alike:
-        // the one its face wears everywhere ([`ui::presence::participant_hue`]), never its grant's id.
+        // the one its face wears everywhere ([`ui::presence::member_hue`]), never its grant's id.
         let hue = PresenceHue::of_identity("Cursor");
         assert_eq!(
             agent.mark,

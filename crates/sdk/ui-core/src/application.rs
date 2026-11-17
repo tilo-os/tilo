@@ -779,11 +779,11 @@ impl HostContext {
     pub fn host_person(&self) -> &MemberId {
         &self.host_person
     }
-    /// A snapshot of the participant's permissions at this moment.
+    /// A snapshot of the member's permissions at this moment.
     pub fn permissions(&self) -> PermissionContext {
         self.permissions.borrow().clone()
     }
-    /// The participant's permissions as they change while the component runs (a role change, a revoked
+    /// The member's permissions as they change while the component runs (a role change, a revoked
     /// share).
     pub fn restrict_to_reading(&mut self) {
         let reading = self.permissions.borrow().read_only();
@@ -907,9 +907,9 @@ impl HostContext {
             .read(&self.record.id, read)
             .ok_or(RecordOpenError::MissingRecord)
     }
-    /// Merge another participant's copy of the record, as their changes
+    /// Merge another member's copy of the record, as their changes
     /// arriving over sync are merged: validated first, attributed to them in
-    /// history, and never on this participant's undo stack. Returns whether
+    /// history, and never on this member's undo stack. Returns whether
     /// anything changed.
     pub fn merge_peer_document(&self, document: Vec<u8>) -> Result<bool, String> {
         self.records.merge_peer_document(&self.record, document)

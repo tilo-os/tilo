@@ -134,7 +134,7 @@ pub fn authors_of(doc: &mut AutoCommit) -> BTreeMap<String, String> {
     authors
 }
 
-/// Name `authors` ' actors in `directory` , as one participant per author. An author `person` knows
+/// Name `authors` ' actors in `directory` , as one member per author. An author `person` knows
 /// reads as presence shows them, by the same name and in the same colour as their avatar; a change
 /// names its author by their actor (a key, in a workspace), never something to show.
 pub fn register_authors(

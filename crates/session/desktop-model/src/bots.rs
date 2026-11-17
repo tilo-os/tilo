@@ -3,7 +3,7 @@
 use serde::{Deserialize, Serialize};
 
 /// One bot of a workspace: one it runs, or one a member asked the workspace's host to
-/// run that does not run yet. Bots are participants like people and agents,
+/// run that does not run yet. Bots are members like people and agents,
 /// so every surface that lists who is in a workspace lists them, tagged as bots.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkspaceBot {
@@ -34,11 +34,10 @@ pub struct WorkspaceBot {
 }
 
 impl WorkspaceBot {
-    /// Whether `participant` (a presence id: a device or person key, hex, or
+    /// Whether `member` (a presence id: a device or person key, hex, or
     /// a name) is this bot.
     #[must_use]
-    pub fn is(&self, participant: &str) -> bool {
-        self.device.as_deref() == Some(participant)
-            || self.installation.as_deref() == Some(participant)
+    pub fn is(&self, member: &str) -> bool {
+        self.device.as_deref() == Some(member) || self.installation.as_deref() == Some(member)
     }
 }

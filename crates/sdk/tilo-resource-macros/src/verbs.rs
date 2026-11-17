@@ -1834,7 +1834,7 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
             }
         },
     );
-    // A resource placing participants itself reads the state for every action.
+    // A resource placing presences itself reads the state for every action.
     let lands_on_state = options.lands.is_some();
     let read_content = options.read_content.as_ref().map_or_else(
         || quote!(),

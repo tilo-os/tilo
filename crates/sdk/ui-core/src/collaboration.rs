@@ -7,7 +7,7 @@
 
 pub use ::collaboration::*;
 pub mod owner_view;
-pub mod participants;
+pub mod presences;
 pub mod record_content;
 
 #[cfg(test)]

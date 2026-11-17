@@ -1,8 +1,8 @@
-//! Steering agents from any participant: spawn, message, pause, resume,
+//! Steering agents from any member: spawn, message, pause, resume,
 //! stop and status, as `tilo_actions` remote actions the host answers.
 //!
 //! [`AgentControl`] is one agent's shared state: its task queue, its
-//! conversation, and the pause and stop switches its participant obeys
+//! conversation, and the pause and stop switches its member obeys
 //! before every step. [`AgentSupervisor`] holds every approved delegation
 //! (Cloud's grant offers) and every running agent, and answers the
 //! vocabulary in `tilo_relay_protocol::agents` through [`ActionHost`], so a
@@ -170,7 +170,7 @@ impl SnapshotChanges {
     }
 }
 
-/// One agent's steering state, shared by its participant and the
+/// One agent's steering state, shared by its member and the
 /// supervisor.
 pub struct AgentControl {
     delegation: Delegation,
@@ -360,7 +360,7 @@ impl AgentControl {
         if matches!(state.status, AgentStatus::Stopped | AgentStatus::Failed) {
             return Err(ControlError::Stopped);
         }
-        // A grant may spawn a replacement participant. Task addresses must
+        // A grant may spawn a replacement member. Task addresses must
         // never refer to a new task when a delayed cancellation arrives.
         let id = InvocationId::new().0.to_string();
         push_bounded(
@@ -455,7 +455,7 @@ impl AgentControl {
 
     /// Cancel task `id` while it is queued or running; the agent goes on
     /// with the next queued one. Cancelling a cancelled task changes
-    /// nothing. Running tasks stop at the participant's next task-state
+    /// nothing. Running tasks stop at the member's next task-state
     /// check. A step already past that check may complete and publish;
     /// planning and accepted app operations are not interrupted. This
     /// acknowledges cancellation state, not execution quiescence.
@@ -495,7 +495,7 @@ impl AgentControl {
         self.state().status
     }
 
-    /// Whether the participant may take its next step now.
+    /// Whether the member may take its next step now.
     #[must_use]
     pub fn may_act(&self) -> bool {
         let state = self.state();
@@ -511,7 +511,7 @@ impl AgentControl {
             .any(|task| task.id == id && task.state == TaskState::Running)
     }
 
-    /// The participant joined (`Waiting`) or its session failed.
+    /// The member joined (`Waiting`) or its session failed.
     pub fn set_status(&self, status: AgentStatus) {
         let mut state = self.state();
         if state.status != AgentStatus::Stopped && !state.paused && state.status != status {
@@ -690,7 +690,7 @@ fn push_bounded<T>(list: &mut Vec<T>, item: T, max: usize) {
     list.push(item);
 }
 
-/// Starts an agent's participant for an identity and its control state:
+/// Starts an agent's member for an identity and its control state:
 /// on its own thread in a host, on the test's thread in a test.
 pub type Spawner =
     Arc<dyn Fn(AgentIdentity, Arc<AgentControl>) -> Result<(), String> + Send + Sync>;
@@ -1781,7 +1781,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn a_delayed_cancel_cannot_address_a_replacement_participant() {
+    fn a_delayed_cancel_cannot_address_a_replacement_member() {
         let root = SigningKey::from_bytes(&[1; 32]);
         let previous = AgentControl::new(identity(&root).delegation);
         let old_task = previous.message("old task").unwrap();

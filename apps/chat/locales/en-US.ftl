@@ -11,7 +11,7 @@ chat-send-empty = Write a message, or attach something to send.
 chat-send-needs-recipient = Choose who the message goes to.
 chat-send-one-conversation = A conversation goes on its own: choose it, or the people to send to.
 
-# Marker beside a participant in the `@` picker that is an agent rather than a
+# Marker beside a member in the `@` picker that is an agent rather than a
 # person, so somebody can tell at a glance that they are addressing software.
 chat-mention-agent-tag = agent
 
@@ -68,7 +68,7 @@ chat-call-status = Call status
 
 # The call window's connection line under its video.
 chat-call-connected = Connected
-chat-call-participant = { $name }: volume and mute for you
+chat-call-member = { $name }: volume and mute for you
 chat-call-silence = Mute for me
 chat-call-volume = Volume { $percent }%
 chat-call-reconnecting = Reconnecting
@@ -362,7 +362,7 @@ chat-call-untitled = Call
 chat-call-open-window = Open the call in Chat
 chat-call-expand = Expand
 chat-call-expand-restore = Expand or restore call
-chat-call-participants-show = Show call participants
+chat-call-members-show = Show call members
 chat-call-camera-off-caption = Camera off
 chat-call-camera-starting = Your camera is starting
 chat-call-no-video = No video

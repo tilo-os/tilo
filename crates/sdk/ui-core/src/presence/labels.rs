@@ -1,12 +1,12 @@
 //! Telling people apart by name: the one rule every surface that names a
-//! participant — chat lines, cursor pills, people lists, the top bar,
+//! member — chat lines, cursor pills, people lists, the top bar,
 //! mentions — follows.
 //!
 //! Two people in a workspace may go by the same name. Each is then shown with a
 //! number, "Ada (1)" and "Ada (2)", and everyone in the workspace must see the
 //! same numbers, so they come from an order every replica shares: when each
 //! joined the workspace, as its membership records it, so a newcomer never takes
-//! an earlier member's number; then the participants' ids, which the workspace
+//! an earlier member's number; then the members' ids, which the workspace
 //! names identically on every machine — never the order this machine
 //! happened to hear of them. A
 //! name compares case- and whitespace-insensitively ("ada  lovelace" and
@@ -34,17 +34,17 @@ pub fn shown_name(name: &str) -> Option<&str> {
     (!name.is_empty() && !key).then_some(name)
 }
 
-/// The numbers a workspace's participants are told apart by, resolved once from
+/// The numbers a workspace's members are told apart by, resolved once from
 /// its roster and read for each label shown. Cheap to rebuild whenever the
 /// roster changes.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct ParticipantLabels {
-    /// Each participant whose name collides: the name's comparison key and
+pub struct MemberLabels {
+    /// Each member whose name collides: the name's comparison key and
     /// their 1-based number among those sharing it.
     numbered: HashMap<String, (String, usize)>,
 }
 
-impl ParticipantLabels {
+impl MemberLabels {
     /// Resolve the numbers for `people` as `(id, name, joined)`, `joined` being
     /// when the workspace admitted them (any unit every replica shares, such as
     /// the admission's Unix time). Order does not matter, and a repeated id
@@ -100,7 +100,7 @@ impl ParticipantLabels {
     pub fn label(&self, id: &str, name: &str) -> String {
         match self.numbered.get(id) {
             Some((key, number)) if *key == name_key(name) => crate::i18n::widget_format(
-                "participant-numbered",
+                "member-numbered",
                 &[
                     ("name", name.trim().into()),
                     ("number", number.to_string().into()),
@@ -110,7 +110,7 @@ impl ParticipantLabels {
         }
     }
 
-    /// Whether any participant needs a number.
+    /// Whether any member needs a number.
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.numbered.is_empty()
@@ -132,12 +132,12 @@ mod tests {
     use super::*;
 
     /// The numbers for `people`, none of them with a time the workspace admitted them.
-    fn labels_of<'a>(people: impl IntoIterator<Item = (&'a str, &'a str)>) -> ParticipantLabels {
-        ParticipantLabels::by_joining(people.into_iter().map(|(id, name)| (id, name, None)))
+    fn labels_of<'a>(people: impl IntoIterator<Item = (&'a str, &'a str)>) -> MemberLabels {
+        MemberLabels::by_joining(people.into_iter().map(|(id, name)| (id, name, None)))
     }
 
     tilo_test_env::scenario! {
-        fn participant_labels_number_only_the_names_that_collide;
+        fn member_labels_number_only_the_names_that_collide;
 
         phase unique_names_are_shown_as_they_are;
         {
@@ -177,10 +177,10 @@ mod tests {
         phase whoever_joined_first_keeps_their_number_when_a_namesake_arrives;
         {
             let before =
-                ParticipantLabels::by_joining([("zz", "Alex", Some(10)), ("mm", "Alex", Some(20))]);
+                MemberLabels::by_joining([("zz", "Alex", Some(10)), ("mm", "Alex", Some(20))]);
             assert_eq!(before.number("zz"), Some(1));
             assert_eq!(before.number("mm"), Some(2));
-            let after = ParticipantLabels::by_joining([
+            let after = MemberLabels::by_joining([
                 ("zz", "Alex", Some(10)),
                 ("mm", "Alex", Some(20)),
                 ("aa", "Alex", Some(30)),

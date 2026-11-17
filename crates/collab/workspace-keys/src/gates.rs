@@ -17,7 +17,7 @@ pub trait GateRegistry: collab_types::signer::MaybeSendSync {
 }
 
 /// The gates of a host that keeps none of its own: a service that registers into it refuses nothing
-/// there, and only the encryption its participants agree keeps a group sealed.
+/// there, and only the encryption its key holders agree keeps a group sealed.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct NoGates;
 

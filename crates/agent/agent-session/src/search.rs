@@ -11,7 +11,7 @@
 //!
 //! The text is read app-agnostically from the record's Automerge document
 //! ([`plain_text`]): its text objects and the strings that read as words,
-//! never the app's code, at most [`MOST_TEXT_BYTES`] of it. The participant
+//! never the app's code, at most [`MOST_TEXT_BYTES`] of it. The member
 //! reads it once per change of the record ([`crate::PlanContext::searchable`]).
 
 use std::collections::{BTreeMap, BTreeSet};

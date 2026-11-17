@@ -35,7 +35,7 @@ use crate::voice;
 /// nothing of it read, which is no answer about its grant, and is judged when
 /// it asks again. An admitted session is bounded by the authority that
 /// admitted it (one per participation of a member device), never by a count
-/// here, so a call has no participant limit.
+/// here, so a call has no device limit.
 ///
 /// These places are for endpoints a roster names, and for every endpoint of
 /// an authority that cannot tell ([`RelayAuthority::stranger`]). Anyone who
@@ -223,7 +223,7 @@ struct Counters {
 }
 
 /// Content-free lifecycle counters. These are not packet or audio-quality
-/// measurements, and never expose the proof or participant namespace.
+/// measurements, and never expose the proof or device namespace.
 /// `rejected` counts sessions that were judged and not admitted, or that sent
 /// no usable preface; `busy` counts the ones closed unread because the places
 /// of their kind in admission were taken, or their endpoint held as many as
@@ -1076,7 +1076,7 @@ fn scopes_well_formed(authorization: &dyn SessionAuthorization) -> bool {
         // A whole path whose every segment is checked, so the scope is exact
         // rather than a partial segment; the publication lies beneath it,
         // where the scheme's own naming puts it (a call's `call/device`, the
-        // live plane's `scope/participant/device`).
+        // live plane's `scope/device/device`).
         return subscriptions.is_empty()
             && valid_namespace(prefix)
             && publication.is_none_or(|name| {

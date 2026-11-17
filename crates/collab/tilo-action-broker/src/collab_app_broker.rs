@@ -1696,7 +1696,7 @@ impl AppBrokerState {
 #[derive(Clone)]
 struct RegisteredActionDirectory {
     pagination: directory_pagination::DirectoryPagination,
-    /// Certified publishing person, never a participant label or workspace role.
+    /// Certified publishing person, never a presence label or workspace role.
     publishing_person: Option<String>,
     app_id: String,
     route: CrdtRoute,
@@ -5496,7 +5496,7 @@ impl AppBrokerState {
                     },
                     argument: argument.map(str::to_string),
                     actor: actor.actor(),
-                    participant: invoker::invoker_participant(context.as_ref()),
+                    presence: invoker::invoker_presence(context.as_ref()),
                 },
                 offered.0.route.clone(),
                 &offered.1,
@@ -8095,7 +8095,7 @@ impl<'a> DirectoryQuestion<'a> {
             // same way.
             private_view: (operation == Some(tilo_actions::OperationKind::View)
                 || operation.is_none())
-                && !contract.is_participant_view()
+                && !contract.is_presence_view()
                 && !(operation == Some(tilo_actions::OperationKind::View)
                     && contract.reads_record()),
         }
@@ -11295,12 +11295,10 @@ pub mod tests {
     impl TestActionDirectory {
         fn contract(&self) -> tilo_actions::ActionContract {
             let mut contract = tilo_actions::ActionContract::for_operation(self.operation);
-            // Opening Atlas changes the invoking participant's view, not the
-            // publishing participant's private UI.
+            // Opening Atlas changes the invoking presence's view, not the
+            // publishing presence's private UI.
             if self.operation == tilo_actions::OperationKind::View {
-                contract
-                    .tags
-                    .push(tilo_actions::PARTICIPANT_VIEW_TAG.into());
+                contract.tags.push(tilo_actions::PRESENCE_VIEW_TAG.into());
             }
             contract.result = self.result.clone();
             if self.confirmation_required {
@@ -12396,7 +12394,7 @@ pub mod tests {
     }
 
     #[cfg(test)]
-    mod participant_join;
+    mod member_join;
 
     #[test]
     fn workspace_control_requires_editor_authority() {

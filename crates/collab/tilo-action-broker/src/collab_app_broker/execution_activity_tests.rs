@@ -1244,16 +1244,16 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase same_actor_runs_receive_distinct_host_owned_participant_views;
+    phase same_actor_runs_receive_distinct_host_owned_presence_views;
     {
         let (state, first, mut app) = fixture();
         let second = first.clone().in_new_execution();
-        let forged = tilo_actions::ParticipantId::new("person-window-forged").unwrap();
-        let mut participants = Vec::new();
+        let forged = tilo_actions::PresenceId::new("person-window-forged").unwrap();
+        let mut presences = Vec::new();
         for caller in [&first, &second, &first] {
             let mut request = request();
             request.context = Some(tilo_actions::ActionContext::default().with_invoker(
-                tilo_actions::ActionInvoker::person("a1".repeat(32)).with_participant(forged.clone()),
+                tilo_actions::ActionInvoker::person("a1".repeat(32)).with_presence(forged.clone()),
             ));
             assert!(matches!(
                 state
@@ -1268,12 +1268,12 @@ tilo_test_env::scenario! {
                 invoker.acting.by,
                 tilo_actions::Actor::member(tilo_actions::MemberId::person("a1".repeat(32)))
             );
-            let participant = invoker.participant.expect("a run owns a participant view");
-            assert_ne!(participant, forged);
-            participants.push(participant);
+            let presence = invoker.presence.expect("a run owns a presence view");
+            assert_ne!(presence, forged);
+            presences.push(presence);
         }
-        assert_ne!(participants[0], participants[1]);
-        assert_eq!(participants[0], participants[2]);
+        assert_ne!(presences[0], presences[1]);
+        assert_eq!(presences[0], presences[2]);
         first.retire_execution();
         assert!(matches!(
             state

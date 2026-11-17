@@ -72,7 +72,7 @@ impl ResourceApp for ActivitiesApp {
     // Nothing is kept: there is nothing to look back on.
     const DOCUMENT_HISTORY: bool = false;
     // The cards show this device's activities: they are nobody's workspace
-    // participant.
+    // member.
     const ATTACHES_RUNTIME: bool = false;
 
     fn view(cx: &mut ViewCx<Activities>) -> Element {

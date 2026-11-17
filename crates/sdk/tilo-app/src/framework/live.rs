@@ -29,13 +29,13 @@ pub struct Live<R: Resource> {
     held: Cell<(u64, u64)>,
 }
 
-/// Where each participant's last action left them ([`Resource::lands`]):
+/// Where each presence's last action left them ([`Resource::lands`]):
 /// the framework's record of where an agent or a member works, which
 /// presence draws and a surface reads instead of keeping its own copy.
 struct Places<R: Resource> {
-    /// Applied for a participant, not yet placed: placed once the state
+    /// Applied for a presence, not yet placed: placed once the state
     /// holds what they did.
-    applied: Vec<(tilo_actions::ParticipantId, R::Action)>,
+    applied: Vec<(tilo_actions::PresenceId, R::Action)>,
     landed: Landings,
 }
 
@@ -48,14 +48,14 @@ impl<R: Resource> Default for Places<R> {
     }
 }
 
-/// Where each participant was placed, and the latest placings in order.
+/// Where each presence was placed, and the latest placings in order.
 /// Apart from [`Places`] because it does not name the resource type, so its
 /// bookkeeping is compiled once rather than for every resource.
 #[derive(Default)]
 struct Landings {
-    at: std::collections::HashMap<tilo_actions::ParticipantId, Place>,
+    at: std::collections::HashMap<tilo_actions::PresenceId, Place>,
     /// The latest landings in order, numbered, for surfaces to follow.
-    log: std::collections::VecDeque<(u64, tilo_actions::ParticipantId, Place)>,
+    log: std::collections::VecDeque<(u64, tilo_actions::PresenceId, Place)>,
     next: u64,
 }
 
@@ -68,23 +68,23 @@ impl Landings {
     }
 
     #[inline(never)]
-    fn land(&mut self, participant: tilo_actions::ParticipantId, place: Place) {
+    fn land(&mut self, presence: tilo_actions::PresenceId, place: Place) {
         let number = self.next;
         self.next = number.saturating_add(1);
-        self.at.insert(participant.clone(), place.clone());
-        self.log.push_back((number, participant, place));
+        self.at.insert(presence.clone(), place.clone());
+        self.log.push_back((number, presence, place));
         if self.log.len() > LANDINGS_KEPT {
             self.log.pop_front();
         }
     }
 
     #[inline(never)]
-    fn since(&self, from: u64) -> (Vec<(tilo_actions::ParticipantId, Place)>, u64) {
+    fn since(&self, from: u64) -> (Vec<(tilo_actions::PresenceId, Place)>, u64) {
         let landed = self
             .log
             .iter()
             .filter(|(number, _, _)| *number >= from)
-            .map(|(_, participant, place)| (participant.clone(), place.clone()))
+            .map(|(_, presence, place)| (presence.clone(), place.clone()))
             .collect();
         (landed, self.next)
     }
@@ -167,13 +167,13 @@ impl<R: Resource> Live<R> {
         let _ = self.generation.read();
     }
 
-    /// Note that `action` was applied for `participant`; where it left them
+    /// Note that `action` was applied for `presence`; where it left them
     /// is read once the state follows it ([`Self::place_landings`]).
-    pub(crate) fn note_applied(&self, participant: tilo_actions::ParticipantId, action: R::Action) {
-        self.places.borrow_mut().applied.push((participant, action));
+    pub(crate) fn note_applied(&self, presence: tilo_actions::PresenceId, action: R::Action) {
+        self.places.borrow_mut().applied.push((presence, action));
     }
 
-    /// Place every participant whose action the state now holds, where
+    /// Place every presence whose action the state now holds, where
     /// [`Resource::lands`] says it left them.
     #[inline(never)]
     pub(crate) fn place_landings(&self) {
@@ -182,31 +182,31 @@ impl<R: Resource> Live<R> {
             return;
         }
         let state = self.get();
-        for (participant, action) in applied {
+        for (presence, action) in applied {
             if let Some(place) = R::lands(&state, &action) {
-                self.land(participant, place);
+                self.land(presence, place);
             }
         }
     }
 
-    /// Place `participant` at `place`: where an effect they told where to
+    /// Place `presence` at `place`: where an effect they told where to
     /// act acted ([`EffectCx::place`](super::EffectCx::place)).
-    pub(crate) fn land(&self, participant: tilo_actions::ParticipantId, place: Place) {
-        self.places.borrow_mut().landed.land(participant, place);
+    pub(crate) fn land(&self, presence: tilo_actions::PresenceId, place: Place) {
+        self.places.borrow_mut().landed.land(presence, place);
     }
 
-    /// Where `participant`'s last action left them, as the resource places
+    /// Where `presence`'s last action left them, as the resource places
     /// it ([`Resource::lands`]): the paragraph an agent appended, the table
     /// it inserted. `None` before they did anything that lands somewhere.
-    pub fn place_of(&self, participant: &tilo_actions::ParticipantId) -> Option<Place> {
-        self.places.borrow().landed.at.get(participant).cloned()
+    pub fn place_of(&self, presence: &tilo_actions::PresenceId) -> Option<Place> {
+        self.places.borrow().landed.at.get(presence).cloned()
     }
 
     /// The landings numbered `from` on, and the number to ask from next.
     pub(crate) fn landings_since(
         &self,
         from: u64,
-    ) -> (Vec<(tilo_actions::ParticipantId, Place)>, u64) {
+    ) -> (Vec<(tilo_actions::PresenceId, Place)>, u64) {
         self.places.borrow().landed.since(from)
     }
 

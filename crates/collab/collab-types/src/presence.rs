@@ -27,7 +27,7 @@ pub use payload::{Availability, IDLE_AFTER, PresencePayload};
 pub use said::{DESKTOP_APP, Presence, stand_in};
 pub use tilo_action_policy::PersonId;
 
-/// What a participant says in one presence frame: the semantics every
+/// What a member says in one presence frame: the semantics every
 /// publisher and reader of a workspace's presence shares. One enum, so a
 /// frame is read the same wherever it is taken from.
 pub use crate::peer::PeerPresencePayload as Payload;

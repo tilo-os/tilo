@@ -56,7 +56,7 @@ impl KeyRound {
 /// endpoint whose routes all hold keys therefore never wakes for them.
 ///
 /// Every channel change the identity service would answer differently is a
-/// commit a participant of the channel makes within its reconcile interval (about a
+/// commit a key holder of the channel makes within its reconcile interval (about a
 /// second) of the policy change: a key rotation, an invite, a removal, a
 /// role change that ends reading, a device's enrolment or revocation. The
 /// endpoint asks the moment that commit reaches this device, so a removed or
@@ -68,7 +68,7 @@ impl KeyRound {
 ///
 /// A route the channel service answered as waiting or unavailable is told
 /// as well when that answer may change: the service follows a member's
-/// access request to a participant's welcome, re-checks a workspace whose
+/// access request to a key holder's welcome, re-checks a workspace whose
 /// governance is unknown whenever the workspace tree announces a change of its authority
 /// or governance, and retries a channel it failed to open on its own
 /// backoff, resolving the route's `groupKeysChanged` each time. So it is

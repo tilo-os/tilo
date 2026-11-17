@@ -626,7 +626,7 @@ tilo_test_env::scenario! {
         app.invoke(Board::RENAME.with("Filled")).unwrap();
         let reviewer = || {
             tilo_actions::ActionInvoker::person("person:reviewer")
-                .with_participant(tilo_actions::ParticipantId::new("reviewer").unwrap())
+                .with_presence(tilo_actions::PresenceId::new("reviewer").unwrap())
         };
         let before = history(&mut app)["now"].clone();
         app.invoke(Board::RENAME.with("Reviewed")).unwrap();

@@ -404,7 +404,7 @@ impl HostSessions {
 /// write next brings each record's fold.
 #[cfg(any(feature = "agents", feature = "web"))]
 fn take_part(compactor: &crate::compaction::Compactor, workspaces: &crate::workspaces::Workspaces) {
-    compactor.with_participant_keys(Arc::new(workspaces.clone()));
+    compactor.with_group_keys(Arc::new(workspaces.clone()));
     let (repairing, compactor) = (workspaces.clone(), compactor.clone());
     tokio::spawn(async move { repairing.fold_away_unsent(&compactor).await });
 }

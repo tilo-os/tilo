@@ -334,7 +334,7 @@ async fn an_agents_durable_invocation_is_its_own_and_follows_current_policy() {
                 address: tilo_actions::ActionAddress::new(delivered.resource, delivered.action),
                 argument: delivered.argument,
                 actor: delivered.actor,
-                participant: None,
+                presence: None,
             };
             let lease = (rig.authorize)(&request).unwrap();
             lease.check().unwrap();
@@ -779,7 +779,7 @@ async fn an_agent_on_another_device_neither_sees_the_persons_invocation_nor_outl
                 address: tilo_actions::ActionAddress::new(delivered.resource, delivered.action),
                 argument: delivered.argument,
                 actor: delivered.actor,
-                participant: None,
+                presence: None,
             };
             let lease = (rig.authorize)(&request).unwrap();
             lease.check().unwrap();
@@ -853,7 +853,7 @@ async fn host_execution_retirement_refuses_actual_retained_worker_custody() {
                 address: tilo_actions::ActionAddress::new(delivered.resource, delivered.action),
                 argument: delivered.argument,
                 actor: delivered.actor,
-                participant: Some(tilo_actions::ParticipantId::for_execution(
+                presence: Some(tilo_actions::PresenceId::for_execution(
                     caller.execution_id().unwrap(),
                 )),
             };

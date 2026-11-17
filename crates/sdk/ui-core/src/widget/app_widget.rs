@@ -900,7 +900,7 @@ mod component_adapter {
             dyn crate::widget::Continuable,
             dyn crate::widget::FloatingSurfaceProvider,
             dyn crate::widget::AudiencePresentationProvider,
-            dyn crate::collaboration::participants::Participants,
+            dyn crate::collaboration::presences::Presences,
             dyn crate::undo::CommittedActions,
             dyn crate::undo::UndoControl,
             dyn crate::undo::LocalUndo,
@@ -1829,12 +1829,12 @@ mod component_adapter {
                 })
                 .unwrap_or(None)
         }
-        /// A participant's tree is built against the component's own record document, like
+        /// A presence's tree is built against the component's own record document, like
         /// [`Self::resources`]; the default would fall back to this boundary's own view (the published
         /// schema) on the outer doc.
         fn resources_for(
             &self,
-            participant: Option<&tilo_actions::ParticipantId>,
+            presence: Option<&tilo_actions::PresenceId>,
             doc: &AutoCommit,
         ) -> Vec<tilo_actions::ResourceSpec> {
             let binding = self.component.callback_binding();
@@ -1843,13 +1843,13 @@ mod component_adapter {
                     let Some(root) = self.component.root.as_deref() else {
                         return Vec::new();
                     };
-                    crate::resources::resources_for(root, participant, document)
+                    crate::resources::resources_for(root, presence, document)
                 })
                 .unwrap_or_else(|_| Vec::new())
         }
         fn resource_for(
             &self,
-            participant: Option<&tilo_actions::ParticipantId>,
+            presence: Option<&tilo_actions::PresenceId>,
             doc: &AutoCommit,
             id: &str,
         ) -> Option<tilo_actions::ResourceSpec> {
@@ -1857,7 +1857,7 @@ mod component_adapter {
             binding
                 .read_document(doc, |document, _record_root| {
                     let root = self.component.root.as_deref()?;
-                    crate::resources::resource_for(root, participant, document, id)
+                    crate::resources::resource_for(root, presence, document, id)
                 })
                 .unwrap_or(None)
         }
@@ -1994,43 +1994,30 @@ mod component_adapter {
         }
     }
 
-    impl crate::collaboration::participants::Participants for BoundAppWidget {
-        fn join_participant(&mut self, participant: &tilo_actions::ParticipantId) -> bool {
-            crate::collaboration::participants::join_participant_in_children(self, participant)
+    impl crate::collaboration::presences::Presences for BoundAppWidget {
+        fn join_presence(&mut self, presence: &tilo_actions::PresenceId) -> bool {
+            crate::collaboration::presences::join_presence_in_children(self, presence)
         }
-        fn leave_participant(&mut self, participant: &tilo_actions::ParticipantId) {
-            crate::collaboration::participants::leave_participant_in_children(self, participant);
+        fn leave_presence(&mut self, presence: &tilo_actions::PresenceId) {
+            crate::collaboration::presences::leave_presence_in_children(self, presence);
         }
-        fn set_participant_label(
-            &mut self,
-            participant: &tilo_actions::ParticipantId,
-            label: &str,
-        ) {
-            crate::collaboration::participants::set_participant_label_in_children(
-                self,
-                participant,
-                label,
-            );
+        fn set_presence_label(&mut self, presence: &tilo_actions::PresenceId, label: &str) {
+            crate::collaboration::presences::set_presence_label_in_children(self, presence, label);
         }
-        fn set_participant_host(&mut self, host: bool) {
-            crate::collaboration::participants::set_participant_host_in_children(self, host);
+        fn set_remote_only(&mut self, host: bool) {
+            crate::collaboration::presences::set_remote_only_in_children(self, host);
         }
-        /// Participant views (agent carets) live against the component's own record document, the one
+        /// Presence views (agent carets) live against the component's own record document, the one
         /// `sync` hands the app, never the outer App document: resolved against the outer document a Writer
-        /// caret finds no block, and no participant presence is produced at all.
-        fn participant_presence(
-            &self,
-            state: &AutoCommit,
-        ) -> Vec<crate::widget::ParticipantPresence> {
+        /// caret finds no block, and no presence is produced at all.
+        fn presences(&self, state: &AutoCommit) -> Vec<crate::widget::ViewPresence> {
             let binding = self.component.callback_binding();
             binding
                 .read_document(state, |document, _record_root| {
                     self.component
                         .root
                         .as_deref()
-                        .map(|root| {
-                            crate::collaboration::participants::participant_presence(root, document)
-                        })
+                        .map(|root| crate::collaboration::presences::presences(root, document))
                         .unwrap_or_default()
                 })
                 .unwrap_or_default()

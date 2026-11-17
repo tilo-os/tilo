@@ -125,14 +125,14 @@ history.
 - Sealed member state is a `tilo-seal` envelope that also carries the
   keyring; any other state file is refused.
 
-## Participants and endpoints
+## Key holders and endpoints
 
-A workspace's MLS group holds exactly the participant devices its membership
+A workspace's MLS group holds exactly the key-holding devices its membership
 lets read it: a projection the caller computes from the workspace's
 membership and access policy, never a second record of who belongs. Every
-participant keeps a [`GroupPeer`]:
+key holder keeps a [`GroupPeer`]:
 
-- **Any participant commits.** `reconcile(allowed)` writes the one commit
+- **Any key holder commits.** `reconcile(allowed)` writes the one commit
   that moves the group to `allowed`: it removes every member the projection
   no longer names and adds every allowed device that asked
   (`learn_request`), with a Welcome and the bundle of every past content
@@ -155,7 +155,7 @@ participant keeps a [`GroupPeer`]:
   the same way.
 - **Falling behind starts over.** A member that finds a frame it can never
   reach (it missed one, or its branch lost) waits again with a fresh member
-  key and asks anew; any participant admits it, history included.
+  key and asks anew; any key holder admits it, history included.
 - The peer's state is one sealed record: written to a file on a native
   device, or exported (`export_sealed`) for a browser's `IndexedDB`. A frame
   reaches `outbox()` only once the state holding it is durable. It signs
@@ -192,7 +192,7 @@ plaintext path.
 
 ### How a workspace is provisioned
 
-- **Creation.** Any participant creates a route's MLS group and its
+- **Creation.** Any key holder creates a route's MLS group and its
   `Genesis` frame (`tilo_action_broker::workspace_keys`): an allowed
   device whose endpoint opens the route, or that holds nothing of a route an
   allowed device asks for, waits a short while of its own for a genesis and
@@ -217,8 +217,8 @@ plaintext path.
   - live service members (below).
 
   Always-on host certificates are never a person's reading device. The
-  workspace's governor is a participant of every workspace of the workspace.
-  Every participant reconciles the group with this set on every policy
+  workspace's governor is a key holder of every workspace of the workspace.
+  Every key holder reconciles the group with this set on every policy
   change and every new request. Invites, removals, role changes that end
   reading, and device enrolment or revocation all become commits.
 - **Governance transport.** Frames and access requests travel on the
@@ -236,7 +236,7 @@ plaintext path.
   the moment the workspace service records a change to that workspace (a commit
   this device made, or a frame that reached it), and the endpoint asks for
   keys then. Every policy change above becomes such a commit within a
-  participant's reconcile interval, so a removed or revoked device's
+  key holder's reconcile interval, so a removed or revoked device's
   apps stop holding the workspace's keys within about a second plus the
   commit's delivery to that device; the broker's epoch gate and the identity
   service's per-signature trust check stop it publishing at once. A route
@@ -286,7 +286,7 @@ workspace's content only as a **service member**
 - It is listed in the Agents pane as a service row, with its purpose and
   when access ends.
 - When the deadline passes, or `revoke_service_member` ends the job, a
-  participant removes it. The removal is a commit, so content keys rotate: the
+  key holder removes it. The removal is a commit, so content keys rotate: the
   service keeps what it read and cannot open anything written afterwards.
 
 The relay and the action broker need no change: they route and retain
@@ -309,14 +309,14 @@ ciphertext and MLS control material without decoding either.
 - **Apps never hold MLS secrets.** They receive content keys for routes of
   their own launch only, gated on the device being trusted and the person
   holding a reading role.
-- **Commits follow the membership.** Any participant may sign a commit,
-  and every participant refuses one the membership does not back, so no
-  participant can admit an outsider; of two commits on one epoch every
+- **Commits follow the membership.** Any key holder may sign a commit,
+  and every key holder refuses one the membership does not back, so no
+  key holder can admit an outsider; of two commits on one epoch every
   device keeps the same one.
 - **Forward secrecy applies to membership, not to history**, as described
   above.
 - **Known limits.** Only the governing device creates a workspace's group:
-  if it is lost, existing workspaces go on and any participant admits and
+  if it is lost, existing workspaces go on and any key holder admits and
   removes devices, but a workspace nobody opened before stays closed until
   governance is re-established. Content a device sealed under a commit that
   lost a same-epoch race is readable only by devices that applied that
@@ -335,7 +335,7 @@ through the normal paths:
 
 1. The new device announces its root-signed certificate. Once the
    workspace's governor has admitted it, the policy allows it.
-2. A participant admits it, and its key history opens every earlier content
+2. A key holder admits it, and its key history opens every earlier content
    key, so the whole workspace history reads again
    (`a_restored_identity_regains_the_whole_group_on_its_new_device`).
 3. Revoking the lost device (fleet revocation) makes the next reconcile

@@ -269,7 +269,7 @@ mod tests {
                     publish: true,
                     subscribe: true,
                 },
-                participants: Vec::new(),
+                members: Vec::new(),
             }),
         }
     }

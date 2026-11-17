@@ -1,4 +1,4 @@
-//! `tilo-agent-session` — agents as first-class session participants.
+//! `tilo-agent-session` — agents as first-class session members.
 //!
 //! An agent works in a workspace the way a person's device does, not through a
 //! side channel:
@@ -19,9 +19,9 @@
 //!   ([`worker`]).
 //! - **Edits.** Each action's Automerge change is committed through the
 //!   agent's relay session and ordered by the host with everyone else's;
-//!   browsers receive it live, attributed to the agent ([`participant`]).
+//!   browsers receive it live, attributed to the agent ([`member`]).
 //! - **Presence.** The agent publishes the record it focuses and a
-//!   participant of kind agent on the live plane; browsers show it there,
+//!   member of kind agent on the live plane; browsers show it there,
 //!   and it sees theirs.
 //! - **Steering.** Spawn, message, pause, resume, stop and status are
 //!   remote actions the host answers for the delegating user's devices
@@ -47,9 +47,9 @@ pub mod bot;
 pub mod control;
 pub mod facts;
 pub mod host;
+pub mod member;
 pub mod message_lines;
 pub mod model;
-pub mod participant;
 pub mod planner;
 pub mod profile;
 pub mod render;
@@ -69,12 +69,12 @@ pub use control::{
     GrantRecord, Spawner, SupervisorHost, SupervisorSnapshot, Witness,
 };
 pub use host::{AgentHost, CatalogueFactory, HostEndpoint};
+pub use member::actions::{RECORD_PROVIDER, record_provider};
+pub use member::{AgentMember, MemberConfig, Next, Pumped};
 pub use model::{
     ApiKey, Briefing, CLOUD_MODEL, GatewayModel, ModelChoice, ModelPlanner, NoPlanReads,
     OpenAiModel, PlanModel, PlanReads, READ_VIEW, ReadView, ScriptedModel,
 };
-pub use participant::actions::{RECORD_PROVIDER, record_provider};
-pub use participant::{AgentParticipant, Next, ParticipantConfig, Pumped};
 pub use planner::{
     DirectPlanner, NoReads, Obligations, PlanContext, PlanRole, Planner, Reads, Role, Step,
     StepAction, TurnRetries,

@@ -6,7 +6,7 @@ use super::*;
 impl AppConnection {
     /// Admit `join` and hold its channel for this connection: the identity
     /// is verified, a workspace still being joined or placed is waited for, the
-    /// route's access and the participant's delegation are decided, and the
+    /// route's access and the member's delegation are decided, and the
     /// route is held and published.
     #[expect(
         clippy::too_many_lines,
@@ -184,28 +184,28 @@ impl AppConnection {
                     verified_identity.display_handle = Some(announced);
                 }
             }
-            Some(MemberId::Agent(participant_handle)) if verified_identity.agent_cert.is_some() => {
+            Some(MemberId::Agent(member_handle)) if verified_identity.agent_cert.is_some() => {
                 // A certified agent acts in its session alone, while the
                 // workspace lists it and its session goes.
                 state
-                    .admit_agent_join(&route.cluster_id, &participant_handle, &verified_identity)
+                    .admit_agent_join(&route.cluster_id, &member_handle, &verified_identity)
                     .map_err(BrokerError::failed)?;
             }
-            Some(MemberId::Agent(participant_handle)) => {
+            Some(MemberId::Agent(member_handle)) => {
                 // Unlike a display handle, this names the exact workspace
                 // actor. Normalize as enrollment does, then validate
                 // its byte bound; truncation can silently select another
                 // admitted Agent that shares the same display prefix.
-                let participant_handle = participant_handle.trim();
+                let member_handle = member_handle.trim();
                 // Bound allocation before Unicode case normalization;
                 // every normalized character consumes at least one byte.
-                if participant_handle.chars().take(129).count() > 128 {
+                if member_handle.chars().take(129).count() > 128 {
                     return Err(BrokerError::failed(
                         "invalid canonical workspace agent identifier".into(),
                     ));
                 }
-                let participant_handle = participant_handle.to_lowercase();
-                tilo_peer_state::workspace_membership::valid_agent_id(&participant_handle)
+                let member_handle = member_handle.to_lowercase();
+                tilo_peer_state::workspace_membership::valid_agent_id(&member_handle)
                     .map_err(BrokerError::failed)?;
                 let roster = state.services.agents.as_deref().ok_or_else(|| {
                     BrokerError::failed("agent session has no workspace record to join on".into())
@@ -214,7 +214,7 @@ impl AppConnection {
                     roster,
                     &route.cluster_id,
                     &mut verified_identity,
-                    &participant_handle,
+                    &member_handle,
                 )
                 .map_err(|error| {
                     BrokerError::failed(format!("agent collaboration join rejected: {error}"))

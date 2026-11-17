@@ -447,15 +447,13 @@ async fn the_device_takes_part_in_a_call(carrier: Carrier) {
     peer.send(Cmd::VoiceJoin(workspace_id, workspace.call.call))
         .unwrap();
     let bob: VoiceGrant = voice(&events, &mut pending, "Bob's grant", |event| match event {
-        VoiceEvent::Granted { grant, .. } if grant.participants.len() == 2 => {
-            Some((**grant).clone())
-        }
+        VoiceEvent::Granted { grant, .. } if grant.members.len() == 2 => Some((**grant).clone()),
         _ => None,
     })
     .await;
     assert!(bob.directions.publish && bob.directions.subscribe);
     let alice = crate::call::native(&workspace.owner, |envelope| match envelope {
-        Envelope::VoiceGranted { grant, .. } if grant.participants.len() == 2 => Some(*grant),
+        Envelope::VoiceGranted { grant, .. } if grant.members.len() == 2 => Some(*grant),
         _ => None,
     })
     .await;

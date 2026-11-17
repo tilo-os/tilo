@@ -90,7 +90,7 @@ pub(crate) struct ResourceRoot {
     /// The reactions to the record, in the window's bar, where the record
     /// takes them.
     reactions: super::reactions::ReactionsIndicator,
-    /// The participant's permissions, re-checked every sync so a role change
+    /// The member's permissions, re-checked every sync so a role change
     /// while the app runs takes effect at once. `None` for a read-only view
     /// of a past version.
     permissions: Option<LivePermissions>,
@@ -945,7 +945,7 @@ impl ResourceRoot {
     }
 
     /// [`Self::publication`] of the resource as `doc` holds it now, which a
-    /// change from another window or participant may have moved past what
+    /// change from another window or member may have moved past what
     /// this view last synced.
     #[inline(never)]
     fn current_publication(&self, doc: &AutoCommit) -> ResourceSpec {
@@ -969,7 +969,7 @@ impl ResourceRoot {
 
     /// Whether the live state is `doc`'s, after bringing it up to `doc` when
     /// the document moved on since the view last synced: this window's own
-    /// edit before its frame, or another window's or participant's change.
+    /// edit before its frame, or another window's or member's change.
     /// The state applies the change, reading only what it touched, and the
     /// view follows it at its next sync ([`Self::refresh`]). Publication runs
     /// on every keystroke between the edit and the frame, and reading the
@@ -1676,8 +1676,8 @@ impl RootModel for ResourceRoot {
         self
     }
 
-    // The resource is the same for every participant (an agent task sees and
-    // invokes the same actions); only the content's tree is per participant.
+    // The resource is the same for every member (an agent task sees and
+    // invokes the same actions); only the content's tree is per member.
 
     // The undo boundary of a surface's immediate actions this event; the
     // host records one step per event and author.
@@ -2206,19 +2206,19 @@ impl RootPublishes for ResourceRoot {
     }
     fn shared_resources_for(
         &self,
-        participant: Option<&tilo_actions::ParticipantId>,
+        member: Option<&tilo_actions::PresenceId>,
         doc: &AutoCommit,
     ) -> Option<Vec<ui_core::published::SharedResource>> {
-        self.shared_resources(participant, doc)
+        self.shared_resources(member, doc)
     }
     fn resources_for(
         &self,
-        participant: Option<&tilo_actions::ParticipantId>,
+        member: Option<&tilo_actions::PresenceId>,
         doc: &AutoCommit,
     ) -> Vec<ResourceSpec> {
         // What surfaces bind to where someone is, they bind to this
-        // participant's view.
-        let _viewer = participant
+        // member's view.
+        let _viewer = member
             .cloned()
             .map(ui_core::invocation_scope::ViewerScope::enter);
         let mut resource = self.current_publication(doc);
@@ -2226,7 +2226,7 @@ impl RootPublishes for ResourceRoot {
         // never a document action: those are the resource's own. One naming
         // the resource joins it rather than publishing it twice.
         let mut extras = Vec::new();
-        for extra in ui_core::resources::resources_for(self.app_view(), participant, doc) {
+        for extra in ui_core::resources::resources_for(self.app_view(), member, doc) {
             let extra = outside_document(extra);
             if extra.id == resource.id {
                 join(&mut resource, extra);
@@ -2282,14 +2282,14 @@ impl RootPublishes for ResourceRoot {
     /// child the resource resolves by id, or a live row a surface resolves.
     fn resource_for(
         &self,
-        participant: Option<&tilo_actions::ParticipantId>,
+        member: Option<&tilo_actions::PresenceId>,
         doc: &AutoCommit,
         id: &str,
     ) -> Option<ResourceSpec> {
-        let _viewer = participant
+        let _viewer = member
             .cloned()
             .map(ui_core::invocation_scope::ViewerScope::enter);
-        // A change from another window or participant may not have reached
+        // A change from another window or member may not have reached
         // this view yet: an item it removed is gone, one it made is there.
         if let Some(published) = find(&[self.current_publication(doc)], id) {
             return Some(published);
@@ -2466,10 +2466,10 @@ impl ui_core::history_mode::capability::DocumentHistory for ResourceRoot {
         doc: &ui_core::automerge::AutoCommit,
         path: &ui_core::automerge::ObjId,
     ) {
-        // An action a participant took (an agent's verb) leaves them where
+        // An action a member took (an agent's verb) leaves them where
         // the resource says it lands, once the state follows it.
-        if let Some(participant) = ui_core::invocation_scope::current_participant() {
-            self.typed.note_applied(&participant, action);
+        if let Some(member) = ui_core::invocation_scope::current_presence() {
+            self.typed.note_applied(&member, action);
         }
         with_app_view_mut(&mut self.content, |view| {
             if let Some(content) = ui_core::widget::capability::capability_mut::<

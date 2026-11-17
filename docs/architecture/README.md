@@ -17,7 +17,7 @@ their devices. There is nothing beside or under a workspace.
 certified identity root. Each of their devices has its own key, certified by
 that root, and that key is the device's iroh endpoint id. Membership, roles,
 grants and history name members, never devices. In each workspace a device is
-either a *participant* (holds the keys, reads, writes and can do work) or a
+either a *key holder* (holds the keys, reads, writes and can do work) or a
 *store* (keeps and forwards the encrypted data and can read none of it), and
 each device decides how much it offers: storage, sync, running actions,
 search, agents. A "host" is a device with a large appetite, not a different
@@ -26,13 +26,13 @@ kind of node.
 **Devices sync over iroh, end to end encrypted.** Devices reach the other
 devices of a workspace directly or through any device that stores it. Content
 is sealed under content keys whose group is an MLS group made of exactly the
-workspace's participant devices. Members added later receive the keys of every
+workspace's key-holding devices. Members added later receive the keys of every
 past epoch, so they read the whole history.
 
 **All shared state is CRDT.** Every resource is an Automerge document,
 including settings. Membership itself is a resource (`workspace.members`)
 whose ops are signed and checked against the membership as their author saw
-it, so every participant reaches the same answer without a coordinator.
+it, so every key holder reaches the same answer without a coordinator.
 
 **Apps are typed resources, actions and bound views.** An app declares its
 state as a model (`#[derive(Model)]`), the changes it allows as actions

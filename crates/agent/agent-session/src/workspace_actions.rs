@@ -40,7 +40,7 @@
 //!
 //! The service joins each workspace as the host's own device ([`HostDevice`], from
 //! the [`WorkspaceRecordsLink`] the host supplies): a member of the workspace's
-//! channels like any other, admitted by the workspace's participants. It reads
+//! channels like any other, admitted by the workspace's members. It reads
 //! only records it holds keys for and writes nothing in the clear. When the
 //! host device itself takes part in the workspace's channels (a workspace the host
 //! governs), it cannot be admitted to them a second time; the host hands the
@@ -93,7 +93,7 @@ use tilo_session_client::{Cmd, Event, Link, Outbox};
 
 use crate::apps::{AppCatalogue, Seed};
 use crate::host::CatalogueFactory;
-use crate::participant::actions::{Outcome, api_outcome, record_of, record_provider};
+use crate::member::actions::{Outcome, api_outcome, record_of, record_provider};
 use crate::worker::{ConfinedReplica, ConfinedViews};
 use crate::workspace_records::WorkspaceRecords;
 use catch_up::{catch_up, hold_parts};
@@ -1267,7 +1267,7 @@ struct Worker {
     host_device: HostDevice,
     catalogue: AppCatalogue,
     shared: Arc<Shared>,
-    participant: String,
+    member: String,
     workspaces: HashMap<WorkspaceId, Workspace>,
     mounted: BTreeMap<DocumentRoute, Mounted>,
     /// The replicas callers served within bounds act through ([`bounded`]).
@@ -1402,7 +1402,7 @@ impl Worker {
         let host_device = link.host_device();
         let _ = shared.host_device.set(host_device.clone());
         Self {
-            participant: hex::encode(link.user_public_key()),
+            member: hex::encode(link.user_public_key()),
             host_device,
             catalogue,
             shared,
@@ -1967,7 +1967,7 @@ impl Worker {
                 &self.catalogue,
                 &route.app_id,
                 &route.cluster_id,
-                &self.participant,
+                &self.member,
                 &crate::ReplicaActor::Owner,
                 Seed::Existing {
                     record: reads::record_id(&route.record)?,
@@ -2534,7 +2534,7 @@ impl Worker {
             return Err(unknown());
         }
         let person = if self.acts_for_owner(caller) {
-            self.participant.clone()
+            self.member.clone()
         } else {
             self.bounded(caller)
                 .filter(|who| self.admits_bounded(workspace_id, who))
@@ -2555,7 +2555,7 @@ impl Worker {
             .get(app)
             .map(|definition| definition.title().to_owned())
             .ok_or_else(unknown)?;
-        let layout = crate::participant::desktop_route(named);
+        let layout = crate::member::desktop_route(named);
         // Read, not acted on: a layout this host cannot open yet refuses nothing, it only goes
         // without the window.
         let state = self
@@ -2636,14 +2636,14 @@ impl Worker {
 
     /// Whether `caller` is the host's own person, whom the service acts for.
     fn serves_as_owner(&self, caller: &Caller) -> bool {
-        caller.acting().person_id() == Some(self.participant.as_str())
+        caller.acting().person_id() == Some(self.member.as_str())
     }
 
     /// Whether `caller` is the host's own person or an agent one of their
     /// devices handed its session to: who may open records, show them on the
     /// shared layout and run commands in the workspace's shell.
     fn acts_for_owner(&self, caller: &Caller) -> bool {
-        acts_for(caller, &self.participant)
+        acts_for(caller, &self.member)
     }
 
     fn try_registered_read(
@@ -2732,7 +2732,7 @@ impl Worker {
     ) -> Result<ActionOutput, Outcome> {
         let refused = |reason: String| Outcome::Rejected(ActionHostError::Refused { reason });
         let (creator, actor, permissions) = match who {
-            None => (self.participant.clone(), crate::ReplicaActor::Owner, None),
+            None => (self.member.clone(), crate::ReplicaActor::Owner, None),
             Some(who) => {
                 let policy = self
                     .policy_for(workspace_id, who, workspace, None)

@@ -1012,7 +1012,7 @@ fn native_history_discovery_tracks_the_same_focused_local_undo_api() {
     assert_eq!(
         calls.borrow().len(),
         3,
-        "private native page history cannot be invoked for another participant"
+        "private native page history cannot be invoked for another member"
     );
     *history.borrow_mut() = None;
     app.service_idle_model();

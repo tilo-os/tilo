@@ -14,7 +14,7 @@
 //!
 //! - an **action** ([`WindowBar::action`]) submits a verb of the record, with
 //!   its arguments, named and pictured as the action is declared, and disabled
-//!   where the participant may not take it;
+//!   where the member may not take it;
 //! - an **effect** ([`WindowBar::effect`]) invokes an effect the app declares
 //!   (what the window shows, what it asks the host for), answered wherever the
 //!   app already answers it;
@@ -268,7 +268,7 @@ impl<R: Resource> WindowBar<R> {
 
     /// The button that submits `submit` — a verb with its arguments, a field
     /// edit, a form — named and pictured as the action is declared, disabled
-    /// where the participant may not take it. The framework submits it
+    /// where the member may not take it. The framework submits it
     /// through the window's dispatcher when it is pressed.
     #[must_use]
     pub fn action(mut self, submit: impl Submit<R>) -> Self {
@@ -278,7 +278,7 @@ impl<R: Resource> WindowBar<R> {
     }
 
     /// The button that invokes `effect`, named and pictured as it is declared,
-    /// and disabled where the participant may not take it. The effect is
+    /// and disabled where the member may not take it. The effect is
     /// answered wherever the app answers that effect: the window's own view,
     /// or the host.
     #[must_use]
@@ -298,7 +298,7 @@ impl<R: Resource> WindowBar<R> {
     }
 
     /// The record's flag at `field` as a toggle: it shows `on`, and pressing
-    /// it submits the opposite, disabled where the participant may not edit
+    /// it submits the opposite, disabled where the member may not edit
     /// the record.
     #[must_use]
     pub fn flag(
@@ -353,7 +353,7 @@ impl<R: Resource> WindowBar<R> {
 
     /// The entry declared last is enabled only where `enabled` too: what it
     /// would do is possible only sometimes (a theme that must be legible
-    /// before it applies), and never where the participant may not take it.
+    /// before it applies), and never where the member may not take it.
     #[must_use]
     pub fn enabled(mut self, enabled: bool) -> Self {
         if let Some(entry) = self.entries.last_mut() {

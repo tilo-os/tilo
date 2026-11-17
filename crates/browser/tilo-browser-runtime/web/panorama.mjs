@@ -6,9 +6,9 @@
 export const STALE_AFTER_MS = 10000;
 /** A marker's text: the member's label, and for an agent what it is doing,
  * so a watcher sees which control it works on. */
-function markerText(publisher, participant) {
-  const label = participant?.label ?? publisher.slice(0, 8);
-  return participant?.kind === 'agent' && participant.activity ? `${label} · ${participant.activity}` : label;
+function markerText(publisher, member) {
+  const label = member?.label ?? publisher.slice(0, 8);
+  return member?.kind === 'agent' && member.activity ? `${label} · ${member.activity}` : label;
 }
 
 const sources = new WeakMap();
@@ -85,7 +85,7 @@ export function createPresentedSource({audience,app,canvas,layer,valid,now=()=>p
         epochs.clear();
         for(const member of members)epochs.set(member.publisher,member.epoch);
         if(epochs.size>MAX_PRESENCES)throw Error('presence capacity exceeded');
-        const pointers=members.filter(p=>p.agent&&p.pointer&&p.pointer.ageMs<=STALE_AFTER_MS&&overPanesTab(p.pointer)&&finite(p.pointer.at)&&p.pointer.at.length===2&&p.pointer.at[0]>=0&&p.pointer.at[1]>=0&&p.pointer.at[0]<size[0]&&p.pointer.at[1]<size[1]).map(p=>({publisher:p.publisher,seq:0,receivedAtMs:at-p.pointer.ageMs,pointer:[...p.pointer.at],participant:{kind:'agent',label:p.label,color:p.colour,activity:p.activity},epoch:p.epoch}));
+        const pointers=members.filter(p=>p.agent&&p.pointer&&p.pointer.ageMs<=STALE_AFTER_MS&&overPanesTab(p.pointer)&&finite(p.pointer.at)&&p.pointer.at.length===2&&p.pointer.at[0]>=0&&p.pointer.at[1]>=0&&p.pointer.at[0]<size[0]&&p.pointer.at[1]<size[1]).map(p=>({publisher:p.publisher,seq:0,receivedAtMs:at-p.pointer.ageMs,pointer:[...p.pointer.at],member:{kind:'agent',label:p.label,color:p.colour,activity:p.activity},epoch:p.epoch}));
         if(pointers.length>MAX_PRESENCES)throw Error('presence capacity exceeded');
         copy??=makeCanvas(canvas.width,canvas.height);
         if(copy.width!==canvas.width)copy.width=canvas.width;
@@ -166,9 +166,9 @@ export function createPanorama({canvas,sources:inputs,width=1920,height=1080,now
             // Native-size markers remain readable under camera zoom. Their
             // whole label is clipped to this pane, never over its neighbour.
             ctx.setTransform(1,0,0,1,0,0);
-            ctx.fillStyle=p.participant.color;
+            ctx.fillStyle=p.member.color;
             ctx.beginPath();ctx.moveTo(point[0],point[1]);ctx.lineTo(point[0]+9,point[1]+14);ctx.lineTo(point[0]+2,point[1]+12);ctx.closePath();ctx.fill();
-            ctx.font='11px system-ui';ctx.fillText(markerText(p.publisher,p.participant).slice(0,120),point[0]+12,point[1]+13,240);
+            ctx.font='11px system-ui';ctx.fillText(markerText(p.publisher,p.member).slice(0,120),point[0]+12,point[1]+13,240);
             pointers.push({publisher:p.publisher,sequence:p.seq,receivedAtMs:p.receivedAtMs,screen:point,kind:'observed-pointer'});
           }
           panes.push({index:row.index,app:frame.app,record:frame.record,frame:frame.frame,gpuGeneration:frame.gpuGeneration,layoutGeneration:frame.layoutGeneration,presentedAtMs:frame.at,logicalSize:[...frame.logical],pixels:[...frame.pixels],presenceAvailable:frame.presenceAvailable,transform,pointers});

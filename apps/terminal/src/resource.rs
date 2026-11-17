@@ -49,7 +49,7 @@ pub struct Terminal {
     pub device: Option<Atom>,
     /// Holder
     ///
-    /// Who that window is: the participant who set the session up there.
+    /// Who that window is: the member who set the session up there.
     #[model(readonly)]
     pub holder: Option<ui::tilo_resource::MemberId>,
     /// Runs
@@ -501,7 +501,7 @@ pub(crate) fn readable_output(screen: &Screen) -> (String, bool) {
 pub enum TerminalEffect {
     /// Inspect session
     ///
-    /// Read this participant's actual process lifecycle and startup cause.
+    /// Read this member's actual process lifecycle and startup cause.
     /// What the session shows is read with [`Self::ReadScreen`].
     #[effect(returns, kind = "read")]
     InspectSession,
@@ -513,7 +513,7 @@ pub enum TerminalEffect {
     ReadScreen,
     /// Inspect editable field
     ///
-    /// Participant-private native editor metadata; never the surrounding buffer.
+    /// Member-private native editor metadata; never the surrounding buffer.
     #[effect(returns, kind = "read")]
     InspectEditor,
     /// Replace editor selection
@@ -648,7 +648,7 @@ pub enum TerminalEffect {
 
 impl std::fmt::Debug for TerminalEffect {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        // Effect arguments may be participant-private transcripts or commands.
+        // Effect arguments may be member-private transcripts or commands.
         formatter.write_str(<Self as ui::tilo_resource::Effect>::id(self))
     }
 }

@@ -33,7 +33,7 @@ pub enum PresencePayload {
     /// keyboard gesture and therefore cannot create a synthetic cursor.
     Interaction(Box<tilo_actions::SemanticInteraction>),
     /// Short workspace-scoped intention. `automatic` distinguishes a local-model
-    /// suggestion from participant-authored words; empty text clears it.
+    /// suggestion from member-authored words; empty text clears it.
     Status {
         text: String,
         automatic: bool,
