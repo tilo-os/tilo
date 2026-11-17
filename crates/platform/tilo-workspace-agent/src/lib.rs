@@ -27,6 +27,7 @@ use tilo_resource::{
 
 pub mod coding;
 pub mod learned;
+pub mod skills;
 pub mod sub;
 
 pub use coding::{Coding, NewCoding, Produced, ProducedAt};

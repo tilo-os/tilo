@@ -84,6 +84,8 @@ pub mod person_learned;
 mod person_models;
 #[cfg(not(target_arch = "wasm32"))]
 mod person_settings;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod person_skills;
 // The inboxes such a host watches for its people, with no window open.
 #[cfg(not(target_arch = "wasm32"))]
 mod mail_watch;
