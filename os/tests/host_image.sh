@@ -37,7 +37,7 @@ inside bootc --version >/dev/null || die 'no bootc'
 for bin in usr/libexec/tilo/tilo-relay usr/libexec/tilo/tilo-relay-admin \
   usr/libexec/tilo/tilo-enroll usr/bin/fs usr/libexec/tilo/tilo-api \
   usr/libexec/tilo/tilo-legacy usr/libexec/tilo-esp-write \
-  usr/libexec/tilo/tilo-image-policy-check usr/libexec/tilo/tilo-board-successor \
+  usr/libexec/tilo-image-policy-check usr/libexec/tilo-board-successor \
   usr/libexec/tilo-deployment usr/libexec/tilo-verified-update \
   usr/libexec/tilo-boot-health usr/libexec/tilo-server-health \
   usr/libexec/tilo-server-update-window usr/libexec/tilo-server-update-apply \

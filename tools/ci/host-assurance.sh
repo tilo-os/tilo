@@ -28,8 +28,18 @@ TILO_USER=${TILO_ACCOUNT%%:*}
 rest=${TILO_ACCOUNT#*:}
 TILO_PASS=${rest%%:*}
 
-say() { printf '\n=== %s\n' "$*" >&2; }
-die() { printf 'host-assurance: %s\n' "$*" >&2; exit 1; }
+# Every step and every failure also goes to the console: a command that exits
+# at once takes the guest's output port down with it, and what it wrote in its
+# last instant never reached the log. The console is the stream the log keeps.
+say() {
+  printf '\n=== %s\n' "$*" >&2
+  printf 'host-assurance: %s\n' "$*" >/dev/console 2>/dev/null || true
+}
+die() {
+  printf 'host-assurance: %s\n' "$*" >&2
+  printf 'host-assurance: FAIL %s\n' "$*" >/dev/console 2>/dev/null || true
+  exit 1
+}
 
 bash tools/ci/install-packages.sh tools/ci/packages/boot-assessment.txt
 command -v qemu-system-x86_64 qemu-img podman skopeo systemd-repart >/dev/null
@@ -62,10 +72,15 @@ free -m >&2 || true
 # sandbox last pointed TMPDIR.
 export TMPDIR=$work/tmp
 mkdir -p "$TMPDIR"
+# The archive names its image, and the build wrote that name beside it. Read it
+# from the file, not from podman: an image loaded out of an archive carries no
+# repository digest, so podman's is empty and comparing it proves nothing.
+digest=$(skopeo inspect --format '{{.Digest}}' "oci-archive:$pub/image.oci.tar") \
+  || die "skopeo cannot read $pub/image.oci.tar"
+[[ $digest == "$(cat "$pub/digest")" ]] \
+  || die "$pub/image.oci.tar holds $digest, not the image $pub/digest names"
 image=$(podman pull -q "oci-archive:$pub/image.oci.tar") \
   || die "podman could not load $pub/image.oci.tar; the space and memory it had are above"
-[[ $(podman image inspect --format '{{.Digest}}' "$image") == "$(cat "$pub/digest")" ]] \
-  || die "$pub/image.oci.tar is not the image $pub/digest names"
 podman tag "$image" localhost/tilo-host:ci
 TILO_IMAGE=localhost/tilo-host:ci TILO_SKIP_BUILD=1 TILO_DISTROBOX="" \
   TILO_OUTPUT=$work/install TILO_RUN=$work/install-run TILO_DISK_SIZE=64G \
