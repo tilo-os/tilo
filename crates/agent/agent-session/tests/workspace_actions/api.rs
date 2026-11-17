@@ -80,6 +80,18 @@ impl Mcp<'_> {
         reply
     }
 
+    /// `tilo_read` with `arguments`, its typed answer: what the API's read of a resource
+    /// answers from.
+    pub(super) async fn tilo_read(&mut self, arguments: Value) -> Value {
+        let (status, reply) = self
+            .post(json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                         "params": {"name": "tilo_read", "arguments": arguments,
+                                    "_meta": {"so.tilo.mcp": {"structured": true}}}}))
+            .await;
+        assert_eq!(status, 200, "{reply}");
+        reply
+    }
+
     /// What `tilo_do` of `path` with `args` answered once it ran, asked
     /// again after each wait a busy host said, as the SDKs do; and how many
     /// times it was told to wait.
@@ -1077,5 +1089,145 @@ async fn a_members_key_posts_a_long_history_into_the_lounges_chat() {
     assert!(
         last <= first * 4.0 + 100.0,
         "a post costs more as the chat grows: {first:.0} ms early, {last:.0} ms late"
+    );
+}
+
+/// A conversation longer than one bounded read of Chat's directory: every message the
+/// conversation's read lists is read at the path the read gave for it, the newest as the
+/// oldest. A message past the pages a directory level is read to at first was once said not
+/// to be there, so an assistant could not read what it had just been sent.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn every_message_a_long_conversation_lists_is_read_at_its_path() {
+    const MESSAGES: usize = 45;
+    let on_relay = api_on_relay(ISSUER).await;
+    let api = Arc::clone(&on_relay.api);
+    let lobby = on_relay.lobby.clone();
+    // Its chat, as the operator seats it, with the channel posts go to.
+    let workspaces = on_relay.hosted.relay.workspaces().unwrap();
+    let serving = workspaces.serving_certificate().clone();
+    workspaces
+        .prepare_application(
+            &lobby,
+            &serving,
+            &crate::common::catalogue(),
+            "so.tilo.chat",
+            "",
+        )
+        .await
+        .unwrap();
+    workspaces
+        .author_application(
+            &lobby,
+            &serving,
+            &crate::common::catalogue(),
+            "so.tilo.chat",
+            "",
+            |doc| {
+                chat::demo::apply_as(
+                    doc,
+                    "operator",
+                    chat::Chat::CREATE_CHANNEL_WITH_ID.with(
+                        chat::record::chat::CreateChannelWithId {
+                            id: "c_general".into(),
+                            name: "general".parse().expect("a channel name"),
+                            category: None,
+                            kind: None,
+                            topic: None,
+                            members: None,
+                        },
+                    ),
+                )
+                .map_err(|error| error.to_string())
+            },
+        )
+        .await
+        .unwrap();
+    let (ada, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
+    let page = enrol(&ada, "Ada's browser", DeviceCapabilities::member());
+    let key = approved_key(&on_relay, &ada, &page, "Long conversation").await;
+    let mut lounge = Mcp {
+        api: &api,
+        path: format!("/w/{lobby}/mcp"),
+        token: key,
+        session: None,
+    };
+    let (status, init) = lounge.initialize().await;
+    assert_eq!(status, 200, "{init}");
+
+    let mut posted = Vec::with_capacity(MESSAGES);
+    for index in 0..MESSAGES {
+        let text = format!("message {index} of the long conversation");
+        let reply = lounge
+            .tilo_do(json!({"path": "chat/Messages#post",
+                            "args": {"channel": "c_general", "text": text}}))
+            .await;
+        assert_eq!(
+            reply["result"]["structuredContent"]["status"], "ok",
+            "post {index} landed: {}",
+            reply["result"]["structuredContent"]["error"]
+        );
+        posted.push(text);
+    }
+
+    // What the conversation's read lists, over as many pages as it comes in.
+    let mut listed: Vec<Value> = Vec::new();
+    let mut cursor: Option<String> = None;
+    loop {
+        let mut arguments = json!({"path": "chat/Messages"});
+        if let Some(cursor) = &cursor {
+            arguments["cursor"] = json!(cursor);
+        }
+        let reply = lounge.tilo_read(arguments).await;
+        assert_ne!(reply["result"]["isError"], true, "{reply}");
+        let read = &reply["result"]["structuredContent"];
+        listed.extend(read["children"].as_array().cloned().unwrap_or_default());
+        cursor = read["cursor"].as_str().map(str::to_owned);
+        if cursor.is_none() {
+            break;
+        }
+    }
+    let messages: Vec<&Value> = listed
+        .iter()
+        .filter(|child| {
+            child["item"]
+                .as_str()
+                .is_some_and(|item| item.starts_with("chat.messages/messages/"))
+        })
+        .collect();
+    assert!(
+        messages.len() >= MESSAGES,
+        "the read lists every message: {} of {MESSAGES} in {listed:?}",
+        messages.len()
+    );
+
+    // Each is read at the path its listing gave, and they are the messages posted.
+    let mut read = String::new();
+    let mut took: Vec<Duration> = Vec::with_capacity(messages.len());
+    for (index, message) in messages.iter().enumerate() {
+        let path = message["path"]
+            .as_str()
+            .expect("a listed message has a path");
+        let began = Instant::now();
+        let reply = lounge.tilo_read(json!({"path": path})).await;
+        took.push(began.elapsed());
+        assert_ne!(
+            reply["result"]["isError"],
+            true,
+            "message {index} of {} is read at {path}: {reply}",
+            messages.len()
+        );
+        read.push_str(&reply["result"]["structuredContent"].to_string());
+    }
+    for text in &posted {
+        assert!(read.contains(text.as_str()), "{text:?} was read back");
+    }
+    let millis = |read: &Duration| read.as_secs_f64() * 1000.0;
+    println!(
+        "API chat read by path, {} messages, in the order listed: {:.0} ms the first, {:.0} ms \
+         the last, {:.0} ms the slowest",
+        took.len(),
+        took.first().map_or(0.0, millis),
+        took.last().map_or(0.0, millis),
+        took.iter().map(millis).fold(0.0, f64::max),
     );
 }
