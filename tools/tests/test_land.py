@@ -185,6 +185,8 @@ class LandTest(unittest.TestCase):
         # The first, the three together, the two others, the blamed one alone: halving would take
         # one more.
         self.assertEqual(len(self.lint_runs()), 4, self.lint_runs())
+        suspects = json.loads((self.clone / ".git" / "land" / "main" / "suspects.json").read_text())
+        self.assertEqual(suspects["ids"], [], "an answered change is no longer set aside")
 
     def test_a_branch_moved_by_a_plain_push_is_landed_on_its_new_head(self):
         mine = self.worktree("mine", {"mine.txt": "mine\n"})

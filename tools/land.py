@@ -321,7 +321,8 @@ class Lander:
         # After a failed lint the next round tries the first half of what failed.
         self.limit = BATCH
         # Changes a failed lint points at: each is linted alone, after the others.
-        self.suspects: set[str] = set()
+        # Kept beside the queue, so a lander that takes up a newer one keeps them.
+        self.suspects: set[str] = set((read_json(place.dir / "suspects.json") or {}).get("ids", []))
         self.unexplained = 0
 
     def doing(self, line: str) -> None:
@@ -352,6 +353,7 @@ class Lander:
                   "waited": now() - entry["submitted"], **result}
         write_json(self.place.results / f"{entry['id']}.json", result)
         (self.place.queue / f"{entry['id']}.json").unlink(missing_ok=True)
+        self.keep_suspects(self.suspects - {entry["id"]})
         self.place.event(kind=result["status"], id=entry["id"], waited=result["waited"],
                          batch=result.get("batch"))
 
@@ -373,7 +375,7 @@ class Lander:
             return False
         upstream = self.place.fetch(self.place.repo)
         self.prepare(upstream)
-        self.suspects &= {entry["id"] for entry in entries}
+        self.keep_suspects(self.suspects & {entry["id"] for entry in entries})
         innocent = [entry for entry in entries if entry["id"] not in self.suspects]
         entries = innocent or entries[:1]
         batch: list[tuple[dict, str]] = []
@@ -515,6 +517,11 @@ class Lander:
         except RuntimeError:
             return False
 
+    def keep_suspects(self, suspects: set[str]) -> None:
+        if suspects != self.suspects:
+            self.suspects = suspects
+            write_json(self.place.dir / "suspects.json", {"ids": sorted(suspects)})
+
     def set_aside(self, batch: list[tuple[dict, str]], upstream: str, output: str) -> bool:
         """Set aside the changes a failed lint of several points at; whether there were any."""
         if len(batch) < 2:
@@ -523,7 +530,7 @@ class Lander:
         if not blamed or len(blamed) == len(batch):
             return False
         # The others are linted without them next; each of them alone after that.
-        self.suspects |= blamed
+        self.keep_suspects(self.suspects | blamed)
         self.place.event(kind="set-aside", ids=sorted(blamed), batch=len(batch))
         return True
 
