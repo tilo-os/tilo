@@ -294,9 +294,18 @@ case $remote in
   0|no) remote=0 ;;
   *) die "TILO_SH_REMOTE is 1 (on the build server), 0 (here) or unset, not $remote" ;;
 esac
-# A stack that already runs somewhere keeps running there: its mode saw to
-# that, and up/down/restart read it (see the dispatch below).
-[[ $(cat "$state/mode" 2>/dev/null) != remote ]] || remote=1
+# A stack that is up somewhere stays there: its mode says where,
+# and up/down/restart read it (see the dispatch below). One whose state is here
+# moves only when TILO_SH_REMOTE says so, since on the build server it would
+# start without that state.
+case $(cat "$state/mode" 2>/dev/null) in
+  remote) remote=1 ;;
+  native|images)
+    if [[ -z ${TILO_SH_REMOTE:-} ]]; then
+      remote=0
+      remote_why="it is up here already, its state in $state"
+    fi ;;
+esac
 # Where a remote stack's own state lives: the same path here and on the build
 # server (the worktree is built at its real path, and this is the one part of
 # it the build server keeps for the stack).
