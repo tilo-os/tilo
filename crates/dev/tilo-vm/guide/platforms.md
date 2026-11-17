@@ -40,13 +40,15 @@ that passes there says the software path works, not that a GPU path does.
 What the guest gets, from inside an account's session on a `--gl` VM:
 
 ```sh
-# eglinfo comes from egl-utils, wayland-info from wayland-utils. A bootc image
-# installs nothing on its read-only root: dnf install -y --transient egl-utils
-# wayland-utils, and pass --raw to vm ssh for that command.
-S='u=$(loginctl list-users --no-legend | awk "{print \$2; exit}");
-   uid=$(id -u "$u");
-   exec runuser -u "$u" -- env XDG_RUNTIME_DIR=/run/user/$uid WAYLAND_DISPLAY=wayland-0'
-tilo-vm vm ssh <vm> -- sh -c "$S eglinfo 2>&1 | grep -E 'EGL driver name|renderer' | head -6"
+# eglinfo comes from egl-utils. A bootc image installs nothing on its read-only
+# root, so the install goes in the same command as --transient (and needs --raw).
+# The script is one argument: vm ssh hands its words to the guest's login shell.
+tilo-vm vm ssh --raw <vm> -- '
+dnf install -y --transient egl-utils >/dev/null 2>&1
+u=$(loginctl list-users --no-legend | awk "{print \$2; exit}")
+uid=$(id -u "$u")
+exec runuser -u "$u" -- env XDG_RUNTIME_DIR=/run/user/$uid WAYLAND_DISPLAY=wayland-0 \
+  eglinfo 2>&1 | grep -E "EGL driver name|renderer" | head -6'
 ```
 
 A guest with virgl prints `EGL driver name: virtio_gpu` and an
