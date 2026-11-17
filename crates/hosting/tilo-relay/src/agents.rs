@@ -387,7 +387,7 @@ impl HostShells {
 
 impl HostShells {
     /// Start `start` in `workspace`'s machine as a run this host serves
-    /// ([`ush::served_runs`]): a program that lasts, with a channel to its
+    /// ([`ush::served_runs`]): a program that lasts, with a connection to its
     /// host.
     ///
     /// # Errors
@@ -1134,7 +1134,11 @@ pub async fn start_serving_documents_and_events(
         (feedback_reviewer, shell, browsers),
     )?;
     let events = relay.workspaces().cloned().map(|workspaces| {
-        crate::workspace_bots::events::PersonEvents::start(workspaces, events_state)
+        crate::workspace_bots::events::PersonEvents::start(
+            workspaces,
+            events_state,
+            Some(server.actions.clone()),
+        )
     });
     if let Some(events) = &events {
         let _ = server.events.set(events.clone());
