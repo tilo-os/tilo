@@ -88,9 +88,12 @@ pub use mail_watch::MailListening;
 // A person's own model, asked for whatever this host runs for them.
 #[cfg(not(target_arch = "wasm32"))]
 pub mod person_model;
-// What the person calls important, and what may interrupt them.
+// What the person calls important, what may interrupt them, and what
+// they were told.
 #[cfg(not(target_arch = "wasm32"))]
 mod person_telling;
+#[cfg(not(target_arch = "wasm32"))]
+pub use person_telling::{Spenders, ToTell};
 // What the person keeps to sign in with, in that same vault of theirs.
 #[cfg(not(target_arch = "wasm32"))]
 mod person_vault;

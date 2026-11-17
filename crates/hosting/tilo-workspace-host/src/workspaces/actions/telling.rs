@@ -3,9 +3,10 @@
 //! of the catalogue it reads. A page asks the host directly and is offered
 //! no row.
 //!
-//! The agent reads the rule wherever it works for its person. It changes
-//! the rule, when its person tells it to, only in a workspace that person
-//! owns. What only the person says (what breaks do-not-disturb, which
+//! The agent reads the rule wherever it works for its person, and tells
+//! its person there. It changes the rule, when its person tells it to,
+//! only in a workspace that person owns. What only the person does (reading
+//! what they were told, saying what breaks do-not-disturb and which
 //! workspace's words stay on the host) is no row.
 
 use tilo_actions::remote::{CatalogueRow, person_telling};
@@ -67,15 +68,61 @@ const CHANGES: [Verb; 5] = [
     },
 ];
 
-/// The rows an agent of a person's is offered: the read, and the changes
-/// where it asks through a workspace its person owns (`own`).
+/// What an agent adds to the log of what its person was told.
+const TELLS: [Verb; 1] = [Verb {
+    id: person_telling::TELL,
+    label: "Tell the person",
+    gate: "",
+    kind: ActionKind::Undoable,
+    params: tell_params,
+}];
+
+/// The rows an agent of a person's is offered: the read of the rule, its
+/// changes where it asks through a workspace its person owns (`own`), and
+/// telling its person.
 pub(super) fn agent_rows(own: bool) -> Vec<CatalogueRow> {
     let row = |verb: &Verb| verb.row(TELLING, person_telling::IMPORTANCE, "What is important");
     let mut rows: Vec<CatalogueRow> = READS.iter().map(row).collect();
     if own {
         rows.extend(CHANGES.iter().map(row));
     }
+    rows.extend(
+        TELLS
+            .iter()
+            .map(|verb| verb.row(TELLING, person_telling::TOLD, "Told")),
+    );
     rows
+}
+
+fn tell_params() -> Vec<ActionParam> {
+    vec![
+        ActionParam::required(
+            "words",
+            ParamType::Text,
+            "What to tell the person, as plain text, in a sentence or two.",
+        ),
+        ActionParam::optional("title", ParamType::Text, "A few words over it."),
+        ActionParam::optional(
+            "cause",
+            ParamType::Object,
+            "What caused it: { kind, label, key }, as the turn that tells it was started. A reminder's kind is reminder, a brief's is brief; the key is the starter's own id, and one cause is told once.",
+        ),
+        ActionParam::optional(
+            "about",
+            ParamType::Object,
+            "Where it is: { workspace, app, record, resource }, what opening it shows.",
+        ),
+        ActionParam::optional(
+            "task",
+            ParamType::Object,
+            "The task it belongs to: { record, issue }.",
+        ),
+        ActionParam::optional(
+            "actions",
+            ParamType::Array,
+            "Its buttons: [{ id, label, main, target: { app, record, resource, action }, arguments }], each a typed action the person's device invokes.",
+        ),
+    ]
 }
 
 fn say_params() -> Vec<ActionParam> {

@@ -1,17 +1,21 @@
-//! What may interrupt a person, kept where their workspace runs.
+//! What may interrupt a person and what they were told, kept where their
+//! workspace runs.
 //!
 //! A person says in their own words what is important to them, with the
-//! situations those words depend on ([`person_telling::Importance`]). The
-//! host keeps it in the person's own store, beside their models and their
-//! arriving mail, and not in a record of theirs a workspace carries: a
-//! person's own record is sealed for their devices, and it is the host
-//! that reads the rule and tells while every device of theirs is off.
+//! situations those words depend on ([`person_telling::Importance`]), and
+//! everything their assistant tells them joins one log, each thing marked
+//! by that rule ([`told`], [`judge`]). The host keeps both in the person's
+//! own store, beside their models and their arriving mail, and not in a
+//! record of theirs a workspace carries: a person's own record is sealed
+//! for their devices, and it is the host that reads the rule, judges and
+//! tells while every device of theirs is off.
 //!
 //! It is the person's alone. The host answers the person on a device of
 //! theirs, and an agent acting for them over such a device, which is what
 //! the caller of a turn this host runs for them is. The agent reads the
-//! rule wherever it works for them and changes it, when its person tells
-//! it to, only in a workspace that person owns. What a device does with a
+//! rule and tells its person wherever it works for them; it changes the
+//! rule, when its person tells it to, only in a workspace that person
+//! owns. The log is read by the person alone. What a device does with a
 //! notification (whether a kind breaks do-not-disturb, whether a
 //! workspace's words leave the host in a push) only the person says.
 //! Everybody else is told what a caller asking for something that does not
@@ -19,30 +23,39 @@
 
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex, OnceLock};
 
 use serde_json::Value;
 use tilo_actions::remote::person_telling::{
-    self, Fact, ForgetFact, Importance, Insisting, KeepOnHost, LetThrough, Line,
+    self, Fact, ForgetFact, Importance, Insisting, KeepOnHost, Kind, LetThrough, Line, ListAfter,
     MAX_FACT_NAME_BYTES, MAX_FACT_VALUE_BYTES, MAX_FACTS, MAX_LINE_BYTES, MAX_LINES, Say, SetFact,
-    Unsay,
+    Tell, Teller, Unsay,
 };
-use tilo_actions::remote::{ActionHostError, Caller, InvokeRequest};
+use tilo_actions::remote::{ActionHostError, Caller, InvokeArgument, InvokeRequest};
 use tilo_lock::MutexRecover as _;
 use tilo_user_identity::DeviceCert;
 
 use super::Workspaces;
 use super::person_settings::{AskingAboutMail, answer, argument};
 
+mod judge;
+mod told;
+
+pub use told::{Spenders, ToTell};
+
 /// The longest id of a workspace a person names, in bytes.
 const MAX_WORKSPACE_BYTES: usize = 128;
 
 /// What this host holds for its people's tellings beside their stores.
 pub(super) struct Telling {
-    /// One writer at a time of anybody's rule.
+    /// One writer at a time of anybody's rule or log.
     writing: Mutex<()>,
     /// Moves whenever anybody's rule changed.
     moved: tokio::sync::watch::Sender<u64>,
+    /// Moves whenever anybody's log changed.
+    told: tokio::sync::watch::Sender<u64>,
+    /// What knows whose day a judgement is counted on.
+    spenders: OnceLock<Arc<dyn Spenders>>,
 }
 
 impl Default for Telling {
@@ -50,20 +63,39 @@ impl Default for Telling {
         Self {
             writing: Mutex::default(),
             moved: tokio::sync::watch::channel(0).0,
+            told: tokio::sync::watch::channel(0).0,
+            spenders: OnceLock::new(),
         }
     }
 }
 
-/// Who asks about a person's rule.
+/// `text`, cut at a character to at most `most` bytes where it is longer,
+/// and then ending in an ellipsis.
+fn clipped(text: &str, most: usize) -> String {
+    if text.len() <= most {
+        return text.to_owned();
+    }
+    let mut end = most.saturating_sub('…'.len_utf8());
+    while end > 0 && !text.is_char_boundary(end) {
+        end = end.saturating_sub(1);
+    }
+    format!("{}…", text.get(..end).unwrap_or_default().trim_end())
+}
+
+/// Who asks about a person's rule and log.
 enum Asking {
     /// The person, on a device of theirs.
     Person([u8; 32]),
     /// An agent acting for the person over a device of theirs.
     Agent {
         person: [u8; 32],
+        /// The id it acts under in the workspace it asks through.
+        id: String,
         /// The name its person knows it under.
         name: String,
-        /// Whether it asks through a workspace its person owns.
+        /// The workspace it asks through, by its id spelled out.
+        workspace: String,
+        /// Whether its person owns that workspace.
         own: bool,
     },
 }
@@ -148,21 +180,7 @@ impl Change {
                 Ok(())
             }
             Self::SetFact(setting) => set_fact(rule, &setting, by, now_ms),
-            Self::ForgetFact(forgetting) => {
-                let Some(name) = rule.fact(&forgetting.name).map(|fact| fact.name.clone()) else {
-                    return Err("No situation has that name".to_owned());
-                };
-                let waited_on = rule.lines.iter().any(|line| {
-                    line.only_while.as_ref().is_some_and(|holds| {
-                        rule.fact(&holds.fact).is_some_and(|fact| fact.name == name)
-                    })
-                });
-                if waited_on {
-                    return Err("A line still depends on that situation".to_owned());
-                }
-                rule.facts.retain(|fact| fact.name != name);
-                Ok(())
-            }
+            Self::ForgetFact(forgetting) => forget_fact(rule, &forgetting.name),
             Self::SetInsisting(insisting) => {
                 rule.insists = insisting.checked()?;
                 Ok(())
@@ -270,6 +288,23 @@ fn set_fact(rule: &mut Importance, setting: &SetFact, by: &str, now_ms: u64) -> 
     Ok(())
 }
 
+/// Remove the situation called `name`, unless a line still waits on it.
+fn forget_fact(rule: &mut Importance, name: &str) -> Result<(), String> {
+    if rule.fact(name).is_none() {
+        return Err("No situation has that name".to_owned());
+    }
+    let waited_on = rule.lines.iter().any(|line| {
+        line.only_while
+            .as_ref()
+            .is_some_and(|holds| same(&holds.fact, name))
+    });
+    if waited_on {
+        return Err("A line still depends on that situation".to_owned());
+    }
+    rule.facts.retain(|fact| !same(&fact.name, name));
+    Ok(())
+}
+
 fn rule_at(root: &Path) -> PathBuf {
     root.join("telling").join("importance.json")
 }
@@ -302,16 +337,14 @@ fn write_rule(root: &Path, rule: &Importance) -> Result<(), String> {
 /// What `rule` is told to its person's assistant before every turn: the
 /// lines as the person said them, how the situations stand, and how a
 /// change the person asks for is written down.
-#[must_use]
-pub fn told_in_a_turn(rule: &Importance) -> String {
+fn told_in_a_turn(rule: &Importance) -> String {
     let mut told = String::new();
     if rule.lines.is_empty() {
         told.push_str("Your person has not said what is important to them.");
     } else {
         told.push_str("What your person calls important, in their own words:");
         for line in &rule.lines {
-            told.push_str("\n- ");
-            told.push_str(&line.words);
+            let _ = write!(told, "\n- {}", line.words);
             if let Some(holds) = &line.only_while {
                 let _ = write!(
                     told,
@@ -337,9 +370,20 @@ pub fn told_in_a_turn(rule: &Importance) -> String {
     told
 }
 
+/// The arguments of a request that may name none.
+fn argument_or_default<T: serde::de::DeserializeOwned + Default>(
+    request: &InvokeRequest,
+    what: &str,
+) -> Result<T, ActionHostError> {
+    if matches!(request.argument, InvokeArgument::None) {
+        return Ok(T::default());
+    }
+    argument(request, what)
+}
+
 impl Workspaces {
-    /// Who `caller` is to a person's rule: the person on a device of
-    /// theirs, or an agent acting for them over one, as the transport
+    /// Who `caller` is to a person's rule and log: the person on a device
+    /// of theirs, or an agent acting for them over one, as the transport
     /// certified. Nobody else is anybody here.
     fn asking_about_telling(
         &self,
@@ -355,15 +399,19 @@ impl Workspaces {
                 workspace,
             } => Ok(Asking::Agent {
                 own: self.owns(&person, &workspace),
-                name: caller.agent_name().map_or(agent, str::to_owned),
+                name: caller
+                    .agent_name()
+                    .map_or_else(|| agent.clone(), str::to_owned),
+                id: agent,
+                workspace,
                 person,
             }),
         }
     }
 
-    /// Whether `caller` is an agent of a person's that the rule's actions
-    /// are offered to, and if so whether it asks through a workspace that
-    /// person owns: what the catalogue offers them by.
+    /// Whether `caller` is an agent of a person's that the rule's and the
+    /// log's actions are offered to, and if so whether it asks through a
+    /// workspace that person owns: what the catalogue offers them by.
     pub(super) fn tells_as_agent(
         &self,
         caller: &Caller,
@@ -377,7 +425,7 @@ impl Workspaces {
     }
 
     /// Answer a [`person_telling::PROVIDER`] request.
-    pub(super) fn person_telling_invoke(
+    pub(super) async fn person_telling_invoke(
         &self,
         workspace_id: Option<collab_types::WorkspaceId>,
         caller: &Caller,
@@ -387,6 +435,7 @@ impl Workspaces {
         let asking = self.asking_about_telling(caller, certificate, workspace_id)?;
         match request.target.address.resource.as_str() {
             person_telling::IMPORTANCE => self.importance_invoke(&asking, request),
+            person_telling::TOLD => self.told_invoke(&asking, request).await,
             _ => Err(ActionHostError::UnknownAction),
         }
     }
@@ -408,6 +457,49 @@ impl Workspaces {
         }
         let change = Change::of(request)?;
         answer(&self.change_importance(asking.person(), change, asking.by()))
+    }
+
+    /// Answer a request about what a person was told: an agent of theirs
+    /// tells them, and only the person reads what they were told.
+    async fn told_invoke(
+        &self,
+        asking: &Asking,
+        request: &InvokeRequest,
+    ) -> Result<Value, ActionHostError> {
+        match (request.target.address.action.as_str(), asking) {
+            (
+                person_telling::TELL,
+                Asking::Agent {
+                    person,
+                    id,
+                    name,
+                    workspace,
+                    ..
+                },
+            ) => {
+                let tell: Tell = argument(request, "what to tell")?;
+                let telling = ToTell {
+                    id: None,
+                    // What a thing is comes from what caused it, never
+                    // from whoever tells.
+                    kind: Kind::of_cause(tell.cause.as_ref()),
+                    tell,
+                    from: Some(Teller {
+                        agent: id.clone(),
+                        name: name.clone(),
+                    }),
+                    workspace: Some(workspace.clone()),
+                    words_stay: false,
+                    spender: None,
+                };
+                answer(&self.tell(person, telling).await)
+            }
+            (person_telling::LIST, Asking::Person(person)) => {
+                let after: ListAfter = argument_or_default(request, "a place in the log")?;
+                answer(&Ok::<_, String>(self.told_listed(person, &after).await))
+            }
+            _ => Err(ActionHostError::UnknownAction),
+        }
     }
 
     /// Make `change` to `person`'s rule and answer the rule as it stands
@@ -443,7 +535,8 @@ impl Workspaces {
     }
 
     /// What `person`'s assistant is told about their rule before every
-    /// turn ([`told_in_a_turn`]).
+    /// turn: the lines as the person said them, how the situations stand,
+    /// and how a change the person asks for is written down.
     #[must_use]
     pub fn importance_told(&self, person: &[u8; 32]) -> String {
         told_in_a_turn(&self.importance_of(person))
@@ -512,5 +605,16 @@ mod tests {
             told.contains("You never decide what is important"),
             "{told}"
         );
+    }
+
+    /// Words longer than a notification shows are cut at a character and
+    /// say that they were.
+    #[test]
+    fn long_words_are_cut_at_a_character() {
+        assert_eq!(clipped("short", 10), "short");
+        let cut = clipped("grüße an alle zusammen", 8);
+        assert!(cut.len() <= 8, "{cut}");
+        assert!(cut.ends_with('…'), "{cut}");
+        assert!(cut.starts_with("grü"), "{cut}");
     }
 }

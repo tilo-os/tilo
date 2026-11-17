@@ -28,22 +28,22 @@ use crate::workspaces::Workspaces;
 use crate::workspaces::fixtures::TestHost;
 use crate::workspaces::tests::{governor, guest_device, test_host};
 
-const ASSISTANT: &str = "assistant";
+pub(super) const ASSISTANT: &str = "assistant";
 
 /// Ada's desk: a host that keeps workspaces of people's own, a device of
 /// hers, the workspace that is her own, and one she shares with others.
-struct Desk {
-    workspaces: Workspaces,
-    host: HostWorkspaceActions,
-    ada: DeviceCert,
-    own: WorkspaceId,
-    shared: WorkspaceId,
+pub(super) struct Desk {
+    pub(super) workspaces: Workspaces,
+    pub(super) host: HostWorkspaceActions,
+    pub(super) ada: DeviceCert,
+    pub(super) own: WorkspaceId,
+    pub(super) shared: WorkspaceId,
     _relay: TestHost,
     _dir: tempfile::TempDir,
 }
 
 impl Desk {
-    async fn new() -> Self {
+    pub(super) async fn new() -> Self {
         let dir = tempfile::tempdir().unwrap();
         let (key, owner) = governor();
         let relay = test_host(dir.path(), &key, &owner).await;
@@ -89,7 +89,11 @@ impl Desk {
     }
 
     /// What Ada is answered on her device, in her own workspace.
-    async fn ada(&self, action: &str, argument: Value) -> Result<Value, ActionHostError> {
+    pub(super) async fn ada(
+        &self,
+        action: &str,
+        argument: Value,
+    ) -> Result<Value, ActionHostError> {
         self.ask((self.own, &self.ada), &caller(&self.ada), action, argument)
             .await
     }
@@ -132,7 +136,7 @@ impl Desk {
 }
 
 /// The agent a person keeps, over the connection `device` certified.
-fn agent_of(device: &DeviceCert) -> Caller {
+pub(super) fn agent_of(device: &DeviceCert) -> Caller {
     Caller::delegated_agent(ASSISTANT, device.user_public_key, device.device_public_key)
 }
 
@@ -149,7 +153,7 @@ fn rule(answer: Result<Value, ActionHostError>) -> Importance {
 }
 
 /// `answer` is the one answer for unknown and forbidden.
-fn nobody(what: &str, answer: Result<Value, ActionHostError>) {
+pub(super) fn nobody(what: &str, answer: Result<Value, ActionHostError>) {
     let refused = answer.expect_err(what);
     assert!(
         matches!(refused, ActionHostError::UnknownAction),
@@ -310,6 +314,10 @@ async fn a_person_says_what_is_important_in_their_own_words_and_reads_it_back() 
 }
 
 #[tokio::test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one agent asked each action from a workspace of its person and from a shared one"
+)]
 async fn a_persons_agent_reads_their_rule_and_writes_it_down_only_in_a_workspace_of_theirs() {
     let desk = Desk::new().await;
     let always = "My landlord is always important";
@@ -413,11 +421,12 @@ async fn a_persons_agent_reads_their_rule_and_writes_it_down_only_in_a_workspace
             person_telling::SET_FACT,
             person_telling::FORGET_FACT,
             person_telling::SET_INSISTING,
+            person_telling::TELL,
         ]
     );
     assert_eq!(
         desk.offered(desk.shared, &agent).await,
-        [person_telling::READ]
+        [person_telling::READ, person_telling::TELL]
     );
     assert!(desk.offered(desk.own, &caller(&desk.ada)).await.is_empty());
 }
