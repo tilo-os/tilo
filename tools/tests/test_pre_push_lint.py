@@ -102,7 +102,6 @@ exit 0
 """
 HOST_ONLY = "x86_64-unknown-linux-gnu"
 WITH_PAGE = HOST_ONLY + "\nwasm32-unknown-unknown"
-MISSING_REF = "0" * 40
 NATIVE_CLIPPY = "clippy --locked -p fixture-native --all-targets --keep-going -- -D warnings"
 
 
@@ -210,7 +209,7 @@ class PrePushLintTests(unittest.TestCase):
             env["CARGO"] = str(self.bin / "drop-in")
         return env
 
-    def push(self, head=None, remote_oid=None, ref="refs/heads/topic", cwd=None, wide=False,
+    def push(self, head=None, remote_oid=None, ref="refs/heads/main", cwd=None, wide=False,
              **environment):
         """Run the hook as Git would, with the ref lines it writes for a push.
 
@@ -276,12 +275,14 @@ class PrePushLintTests(unittest.TestCase):
         self.assertIn("is not the commit checked out here", result.stderr)
         self.assertEqual(self.calls(), [])
 
-    def test_a_push_to_main_is_linted_as_any_push_is(self):
+    def test_a_push_to_integration_compiles_nothing(self):
+        # Work in progress is pushed unlinted and tested once when it is done.
         self.write("native/src/lib.rs", LIB.format(answer=62))
         self.commit("feat: answer 62")
-        result = self.push(ref="refs/heads/main")
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertTrue(self.calls(), "a push to main is linted")
+        for ref in ("refs/heads/integration", "refs/heads/topic"):
+            result = self.push(ref=ref)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertFalse(self.log.exists(), f"a push to {ref} compiled something")
 
     def test_a_push_main_has_moved_past_is_refused_before_anything_is_compiled(self):
         # The remote reports main's head when the push begins; a push that does not contain it
@@ -435,15 +436,6 @@ class PrePushLintTests(unittest.TestCase):
         self.assertNotIn("Checking crate-", result.stderr)
         self.assertIn("refusing the push", result.stderr)
 
-    def test_a_new_branch_is_compared_with_the_main_it_forked_from(self):
-        self.write("web/src/lib.rs", LIB.format(answer=10))
-        self.commit("feat: answer 10 in the page")
-        self.git("update-ref", "refs/remotes/origin/main", self.base)
-        result = self.push(remote_oid=MISSING_REF, wide=True)
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("clippy --locked --target wasm32-unknown-unknown -p fixture-web -- -D warnings",
-                      self.calls())
-
     def rebase(self, files):
         """Move main on by a commit writing `files`, and replay the last commit onto it.
 
@@ -534,7 +526,7 @@ class PrePushLintTests(unittest.TestCase):
             ["python3", str(self.root / "tools/ci/pre_push_lint.py"), "origin", "--plan", "--wide"],
             cwd=self.root,
             capture_output=True, text=True, env=self.environment(), timeout=HANG_BOUND,
-            input=f"refs/heads/topic {self.head()} refs/heads/topic {self.base}\n",
+            input=f"refs/heads/main {self.head()} refs/heads/main {self.base}\n",
         )
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout.splitlines(), ["native: fixture-web", "wasm32: fixture-web"])

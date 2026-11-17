@@ -5,7 +5,12 @@ Git runs `.githooks/pre-push` with one line per ref it is updating on stdin:
 
     <local ref> <local oid> <remote ref> <remote oid>
 
-A push lints the packages its commits own: the changed files through the
+Only a push to main is linted. Work in progress goes to `integration` (or a
+branch of its own) at once, and is tested once when it is done:
+tools/integrate.sh merges main into it, runs `t` over the result, and moves main
+to it, which is the push to main this lint runs for.
+
+A push to main lints the packages its commits own: the changed files through the
 repository's own format check, and Clippy over every target of the host with the
 features the workspace's unified build gives each package (so code behind a
 feature that no default build enables is compiled). Those features are the same
@@ -93,10 +98,10 @@ CARGO_REMARKS = (
 # its first diagnostic, and a failure report cut to its first lines showed nothing else.
 PROGRESS = re.compile(r"^\s*(?:Checking|Compiling|Fresh|Building|Blocking|Downloading|Downloaded"
                       r"|Locking|Updating|Adding|Documenting)\s")
-REF_TIPS = ("refs/remotes/{remote}/main", "refs/remotes/origin/main",
-            "refs/remotes/origin/HEAD", "refs/heads/main")
 ZERO_OID = {"0"}
-# The branch everyone lands on. A push to it that is not a fast-forward is a race already lost:
+# The branch everyone lands on, and the only one a push is linted for: work in progress goes to
+# `integration` or a branch of its own unlinted, and is tested once when it is done
+# (tools/integrate.sh). A push to main that is not a fast-forward is a race already lost:
 # nobody force-pushes main, so the remote refuses it after any lint.
 MAIN_REF = "refs/heads/main"
 # How many passing lint keys a clone keeps.
@@ -192,46 +197,10 @@ def diff(root: Path, base: str, head: str) -> set[str]:
     return {path for path in result.stdout.decode("utf-8", "surrogateescape").split("\0") if path}
 
 
-def start_of(root: Path, remote: str, head: str) -> str | None:
-    """The commit a ref being created started from: its merge base with main.
-
-    A branch push says nothing about where the branch began, so the merge base
-    with the branch it will be reviewed against is what the push adds.
-    """
-    for tip in (pattern.format(remote=remote) for pattern in REF_TIPS):
-        if not known(root, tip):
-            continue
-        merged = git(root, "merge-base", tip, head)
-        if merged.returncode == 0 and merged.stdout.strip():
-            return merged.stdout.strip()
-    return None
-
-
-def unreferenced(root: Path, head: str) -> set[str]:
-    """The files of the pushed commits no remote has yet: the last resort for a branch start."""
-    commits = git(root, "rev-list", head, "--not", "--remotes")
-    if commits.returncode != 0:
-        return set()
-    files: set[str] = set()
-    for commit in commits.stdout.split():
-        result = subprocess.run(
-            ["git", "diff-tree", "-r", "--root", "--no-commit-id", "--no-renames", "--name-only",
-             "-z", commit], cwd=root, capture_output=True, check=False,
-        )
-        files |= {path for path in result.stdout.decode("utf-8", "surrogateescape").split("\0") if path}
-    return files
-
-
-def comparison(root: Path, remote: str, remote_oid: str, head: str) -> tuple[str, set[str]] | None:
-    """Where a pushed ref starts and what it changes, or None when there is nothing to compare it with."""
+def comparison(root: Path, remote_oid: str, head: str) -> tuple[str, set[str]] | None:
+    """What a push to main changes from main's head, or None when that head is not here."""
     if set(remote_oid) != ZERO_OID and known(root, remote_oid):
         return remote_oid, diff(root, remote_oid, head)
-    start = start_of(root, remote, head)
-    if start:
-        return start, diff(root, start, head)
-    files = unreferenced(root, head)
-    if files:
-        return None, files
     return None
 
 
@@ -240,8 +209,8 @@ def contains(root: Path, head: str, commit: str) -> bool:
     return known(root, commit) and git(root, "merge-base", "--is-ancestor", commit, head).returncode == 0
 
 
-def pushed(root: Path, remote: str, lines: Iterable[str]) -> Push:
-    """Every file the pushed refs change, and each ref's comparison."""
+def pushed(root: Path, lines: Iterable[str]) -> Push:
+    """Every file a push to main changes, and its comparison; pushes to other branches are not linted."""
     files: set[str] = set()
     comparisons: list[tuple[str, str]] = []
     tips: list[str] = []
@@ -252,20 +221,19 @@ def pushed(root: Path, remote: str, lines: Iterable[str]) -> Push:
         if len(parts) != 4:
             continue
         ref, head, remote_ref, remote_oid = parts
-        if set(head) == ZERO_OID:
-            continue  # a deleted ref changes nothing that is built
-        if remote_ref == MAIN_REF and set(remote_oid) != ZERO_OID and not contains(root, head, remote_oid):
+        if remote_ref != MAIN_REF or set(head) == ZERO_OID:
+            continue  # work in progress, or a deleted ref, which changes nothing that is built
+        if set(remote_oid) != ZERO_OID and not contains(root, head, remote_oid):
             behind.append(remote_oid)
             continue
-        result = comparison(root, remote, remote_oid, head)
+        result = comparison(root, remote_oid, head)
         if result is None:
             unnamed.append(ref)
-            say(f"pre-push: cannot tell what {ref} adds (no main to compare it with); "
-                "its packages cannot be named")
+            say(f"pre-push: main's head {remote_oid[:12]} is not here, so what {ref} adds to it "
+                "cannot be named; fetch and push again")
             continue
         start, changed = result
-        if start:
-            comparisons.append((start, head))
+        comparisons.append((start, head))
         tips.append(head)
         files |= changed
     return Push(files, comparisons, tips, unnamed, behind)
@@ -757,7 +725,7 @@ def main(argv: list[str]) -> int:
             parser.error("--range takes BASE..HEAD")
         push = Push(diff(root, base, head), [(base, head)], [head], [])
     else:
-        push = pushed(root, options.remote, options.stdin)
+        push = pushed(root, options.stdin)
     if push.behind:
         say(f"pre-push: main is at {push.behind[0][:12]} now, which this push does not contain, so "
             "the remote refuses it whatever a lint says; nothing was linted. Rebase onto it "
