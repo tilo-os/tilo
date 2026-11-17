@@ -1244,8 +1244,8 @@ impl Checker<'_> {
                 "E063",
                 span,
                 format!(
-                    "`{}` is a view and takes no child block; pass children as a View parameter",
-                    v.name
+                    "`{}` takes no block: a view takes one when it declares a `View` parameter for it to fill, as `view {}(..., content: View)`",
+                    v.name, v.name
                 ),
             );
         }

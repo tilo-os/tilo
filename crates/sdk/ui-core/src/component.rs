@@ -143,6 +143,35 @@ pub trait PropType: Sized {
     }
 }
 
+/// The field `name` of a case's `fields`, read as a `T`: `None` when the case leaves it out or holds
+/// nothing there, so a field with a default reads as its default.
+pub(crate) fn case_field<T: PropType>(
+    fields: &[(String, Value)],
+    name: &str,
+) -> Result<Option<T>, String> {
+    match fields.iter().find(|(field, _)| field == name) {
+        None | Some((_, Value::None)) => Ok(None),
+        Some((_, value)) => T::from_value(value)
+            .map(Some)
+            .map_err(|error| format!("`{name}` {error}")),
+    }
+}
+
+/// A field of a case as its set's description lists it.
+pub(crate) fn case_field_description(
+    name: &str,
+    ty: Type,
+    default: Option<Value>,
+    doc: &str,
+) -> tilo_ui_graph::component::FieldDescription {
+    tilo_ui_graph::component::FieldDescription {
+        name: name.to_owned(),
+        ty,
+        default,
+        doc: doc.to_owned(),
+    }
+}
+
 pub(crate) fn wrong(want: &Type, found: &Value) -> String {
     format!("takes {}, not {}", want.show(), found.kind())
 }
@@ -1273,7 +1302,11 @@ pub fn catalogue() -> Catalogue {
             .map(|entry| (entry.describe)())
             .chain(parts().iter().map(|describe| describe()))
             .collect(),
-        enums: vec![crate::widget::drawing::shape_description()],
+        enums: vec![
+            crate::widget::drawing::shape_description(),
+            crate::widget::chart::series_description(),
+            crate::widget::connection_description(),
+        ],
     }
 }
 

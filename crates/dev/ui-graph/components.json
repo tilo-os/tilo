@@ -853,6 +853,69 @@
       }
     },
     {
+      "name": "Chart",
+      "doc": "A titled chart of one or more lines over a shared scale, with a grid and the labels of its scale: a history worth reading closely, where a sparkline only hints at a trend.",
+      "props": [
+        {
+          "name": "series",
+          "doc": "The lines, each over the ones before it: `.series(values: cpu, label: \"CPU\")`.",
+          "type": {
+            "list": {
+              "cases": {
+                "name": "Series"
+              }
+            }
+          },
+          "required": true,
+          "positional": true
+        },
+        {
+          "name": "title",
+          "doc": "What it shows, at its head and as assistive technology announces it.",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "max",
+          "doc": "The top of its scale, which may be more than the readings reach; the highest reading unless said.",
+          "type": {
+            "option": "float"
+          }
+        },
+        {
+          "name": "area",
+          "doc": "The area under each line washed in its ink.",
+          "type": "bool"
+        },
+        {
+          "name": "top_label",
+          "doc": "The label at the top of its scale: \"100%\".",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "bottom_label",
+          "doc": "The label at the foot of its scale: \"0%\".",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "height",
+          "doc": "Its height in logical pixels: 160 unless said.",
+          "type": {
+            "option": "float"
+          }
+        }
+      ],
+      "semantics": {
+        "role": "Image",
+        "label": "title"
+      }
+    },
+    {
       "name": "Sparkline",
       "doc": "A tiny trend line, with no axis, grid, title or legend: a recent history inside a table cell or a stat card.",
       "props": [
@@ -1927,6 +1990,21 @@
           "type": {
             "option": "float"
           }
+        },
+        {
+          "name": "motion",
+          "doc": "How its shapes move to a new reading: at the theme's pace unless said, never for someone who asked for reduced motion.",
+          "type": {
+            "choice": {
+              "name": "Motion",
+              "cases": [
+                "standard",
+                "brisk",
+                "calm",
+                "still"
+              ]
+            }
+          }
         }
       ],
       "events": [
@@ -1934,6 +2012,13 @@
           "name": "press",
           "doc": "The person pressed a shape: carries its index in `shapes`.",
           "value": "int"
+        },
+        {
+          "name": "hover",
+          "doc": "The pointer came over a shape, or left them all: carries the index of the shape under it in `shapes`, or none.",
+          "value": {
+            "option": "int"
+          }
         }
       ],
       "semantics": {
@@ -2372,6 +2457,59 @@
       "semantics": {
         "role": "ProgressBar",
         "label": "caption"
+      }
+    },
+    {
+      "name": "GraphCanvas",
+      "doc": "Nodes that are views of their own, placed where each says (or in rows when none says), and the connections between them drawn under them: a pipeline, a flow, the parts of a system.",
+      "props": [
+        {
+          "name": "name",
+          "doc": "What the graph is, for assistive technology.",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "connections",
+          "doc": "The connections drawn between nodes: `.connection(from: \"fetch\", to: \"build\")`, each end a node's id or the test id of a control inside one.",
+          "type": {
+            "list": {
+              "cases": {
+                "name": "Connection"
+              }
+            }
+          }
+        },
+        {
+          "name": "columns",
+          "doc": "How many nodes stand side by side when the nodes give no places: 3 unless said.",
+          "type": {
+            "option": "int"
+          }
+        },
+        {
+          "name": "column_width",
+          "doc": "How wide each node is when the nodes give no places, in logical pixels: 200 unless said.",
+          "type": {
+            "option": "float"
+          }
+        }
+      ],
+      "parts": [
+        {
+          "name": "nodes",
+          "doc": "The nodes, in order.",
+          "accepts": {
+            "component": "GraphNode"
+          },
+          "many": true,
+          "default": true
+        }
+      ],
+      "semantics": {
+        "role": "Group",
+        "label": "name"
       }
     },
     {
@@ -6856,6 +6994,52 @@
       }
     },
     {
+      "name": "GraphNode",
+      "doc": "One node of a graph: its id, which connections name, where it stands (in logical pixels from the graph's corner), and the view it is.",
+      "props": [
+        {
+          "name": "id",
+          "doc": "What connections call it: a name for the view to refer to, never shown or translated.",
+          "type": "text",
+          "required": true,
+          "positional": true,
+          "data": true
+        },
+        {
+          "name": "x",
+          "doc": "How far from the graph's leading edge it stands; with `y`, a place of its own.",
+          "type": {
+            "option": "float"
+          }
+        },
+        {
+          "name": "y",
+          "doc": "How far from the graph's top it stands.",
+          "type": {
+            "option": "float"
+          }
+        },
+        {
+          "name": "width",
+          "doc": "How wide it is: 200 unless said.",
+          "type": {
+            "option": "float"
+          }
+        }
+      ],
+      "parts": [
+        {
+          "name": "content",
+          "doc": "What the node shows.",
+          "accepts": "view",
+          "default": true
+        }
+      ],
+      "semantics": {
+        "role": "Group"
+      }
+    },
+    {
       "name": "SwipeAction",
       "doc": "What swiping a row across does: one command on its item, uncovered under the row as it moves.",
       "props": [
@@ -8266,7 +8450,166 @@
               "default": {
                 "bool": false
               },
-              "doc": "Its fill fading out downward."
+              "doc": "Its fill fading out downward, down to the drawing's foot when it is open."
+            }
+          ]
+        },
+        {
+          "name": "text",
+          "doc": "A text at (x, y), set in one of the theme's type roles.",
+          "fields": [
+            {
+              "name": "x",
+              "ty": "float"
+            },
+            {
+              "name": "y",
+              "ty": "float"
+            },
+            {
+              "name": "text",
+              "ty": "text"
+            },
+            {
+              "name": "role",
+              "ty": {
+                "choice": {
+                  "name": "TextRole",
+                  "cases": [
+                    "display",
+                    "large_title",
+                    "title",
+                    "heading",
+                    "subheading",
+                    "body",
+                    "label",
+                    "caption",
+                    "reading",
+                    "code"
+                  ]
+                }
+              },
+              "default": {
+                "choice": "body"
+              },
+              "doc": "Its type role: the theme's size and face for it."
+            },
+            {
+              "name": "ink",
+              "ty": {
+                "choice": {
+                  "name": "Ink",
+                  "cases": [
+                    "accent",
+                    "ink",
+                    "muted",
+                    "track",
+                    "success",
+                    "warning",
+                    "danger",
+                    "info"
+                  ]
+                }
+              },
+              "default": {
+                "choice": "ink"
+              }
+            },
+            {
+              "name": "anchor",
+              "ty": {
+                "choice": {
+                  "name": "Anchor",
+                  "cases": [
+                    "start",
+                    "middle",
+                    "end"
+                  ]
+                }
+              },
+              "default": {
+                "choice": "middle"
+              },
+              "doc": "Which side of it stands at (x, y)."
+            },
+            {
+              "name": "strong",
+              "ty": "bool",
+              "default": {
+                "bool": false
+              },
+              "doc": "Set heavier than its role."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Series",
+      "doc": "One line of a chart: its readings, oldest first.",
+      "cases": [
+        {
+          "name": "series",
+          "doc": "A line through `values`, named `label` in the chart's legend.",
+          "fields": [
+            {
+              "name": "values",
+              "ty": {
+                "list": "float"
+              },
+              "doc": "The readings, oldest first."
+            },
+            {
+              "name": "label",
+              "ty": "text",
+              "default": {
+                "text": ""
+              },
+              "doc": "What it is of, in the legend."
+            },
+            {
+              "name": "ink",
+              "ty": {
+                "choice": {
+                  "name": "Ink",
+                  "cases": [
+                    "accent",
+                    "ink",
+                    "muted",
+                    "track",
+                    "success",
+                    "warning",
+                    "danger",
+                    "info"
+                  ]
+                }
+              },
+              "default": {
+                "choice": "accent"
+              },
+              "doc": "The theme's ink it is drawn in."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Connection",
+      "doc": "One connection of a graph, between two of its nodes.",
+      "cases": [
+        {
+          "name": "connection",
+          "doc": "From the node (or a control in one) named `from` to the one named `to`.",
+          "fields": [
+            {
+              "name": "from",
+              "ty": "text",
+              "doc": "Where it starts."
+            },
+            {
+              "name": "to",
+              "ty": "text",
+              "doc": "Where it ends."
             }
           ]
         }

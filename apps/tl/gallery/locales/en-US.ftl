@@ -88,6 +88,8 @@ d-aia654wv = Places
 
 d-t7ydaknu = Chrome
 
+d-cq3vrgd7 = Customs
+
 d-lhci3noh = Controls
     .doc = The controls a form is made of: boxes and switches, a number, a choice from a short list, a person, a strip of choices, tabs, a day and a time, a colour, a shortcut, a completion, a picture choice, a row of controls, and a link.
     .noun = { $count ->
@@ -173,6 +175,15 @@ d-lhci3noh-filter-ends = Ends
 d-lhci3noh-filter-background = Background
 
 d-lhci3noh-filter-lettering = Lettering
+
+d-cdq37gtx = Custom
+    .doc = Components an app makes its own, a step further at each section: a view of its own that a caller fills like a component, the pace a change plays at, shapes drawn with the theme's inks and type, and the charts and graphs the toolkit draws from values.
+    .noun = { $count ->
+        [one] custom
+       *[other] customs
+    }
+
+d-qfb7dxgw = Title
 
 d-pprp6hfn = Data
     .doc = The data views: a table of columns and rows, a tree of nodes, a conversation, a grid of cards and the history of a document, each reading a collection of the app's own.
@@ -445,6 +456,7 @@ d-wjo4okew = Gallery
     .w-collections = Collections
     .w-media-and-places = Media and places
     .w-the-shell = The shell
+    .w-your-own = Your own
 
 d-7chkyi44 = Basics
     .w-basics = Basics
@@ -564,6 +576,43 @@ d-z5ai6zk5 = Controls
     .w-small = Small
     .w-regular = Regular
     .w-large = Large
+
+d-juvyfisd = Custom
+    .w-a-view-of-its-own = A view of its own
+    .w-a-view-the-caller-fills-like = A view the caller fills like a component: named options with defaults, a slot of its own content, and an event it answers.
+    .w-ada-lovelace = Ada Lovelace
+    .w-leads-the-release = Leads the release
+    .w-online = Online
+    .w-design = Design
+    .w-message = Message
+    .w-grace-hopper = Grace Hopper
+    .w-reviews-the-compiler = Reviews the compiler
+    .w-compiler = Compiler
+    .w-how-a-change-plays = How a change plays
+    .w-a-new-reading-glides-to-its = A new reading glides to its place at the pace the view names, and lands at once for someone who asked for less motion.
+    .w-requests-a-second = Requests a second
+    .w-live = Live
+    .w-new-reading = New reading
+    .w-drawn-with-the-theme = Drawn with the theme
+    .w-shapes-and-text-a-view-draws = Shapes and text a view draws itself, in the theme's inks and type roles, saying what they mean to assistive technology.
+    .w-disk = Disk
+    .w-of-256-gb = of 256 GB
+    .w-fill = Fill
+    .w-free = Free
+    .w-hours-worked-each-day-this-week = Hours worked each day this week
+    .w-charts-and-graphs = Charts and graphs
+    .w-the-last-ten-minutes = The last ten minutes
+    .w-release-pipeline = Release pipeline
+    .w-fetch = Fetch
+    .w-fetched = Fetched
+    .w-build = Build
+    .w-built = Built
+    .w-test = Test
+    .w-passed = Passed
+    .w-ship = Ship
+    .w-waiting = Waiting
+
+d-xnmgxmkk = Usage ring
 
 d-wxq3apea = Data
     .w-data-table = Data table

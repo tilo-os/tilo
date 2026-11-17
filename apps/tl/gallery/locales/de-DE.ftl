@@ -443,6 +443,7 @@ d-wjo4okew = Galerie
     .w-collections = Sammlungen
     .w-media-and-places = Medien und Orte
     .w-the-shell = Die Shell
+    .w-your-own = Eigene
 
 d-7chkyi44 = Grundlagen
     .w-basics = Grundlagen
@@ -755,3 +756,51 @@ d-rygoropv = Rahmenteile
     .w-a-pinned-app-let-go-over = Eine angeheftete App, die über dieser Karte losgelassen wird, wird hier aufgenommen.
     .w-section-divider = Abschnittstrenner
     .w-the-line-a-conversation-marks-its = Die Linie, mit der eine Unterhaltung ihre erste ungelesene Nachricht markiert.
+
+d-cq3vrgd7 = Eigene
+
+d-cdq37gtx = Eigenes
+    .doc = Komponenten, die eine App zu ihren eigenen macht, in jedem Abschnitt einen Schritt weiter: eine eigene Ansicht, die ein Aufrufer wie eine Komponente füllt, das Tempo, in dem eine Änderung abläuft, Formen in den Farben und der Schrift des Designs und die Diagramme und Graphen, die das Toolkit aus Werten zeichnet.
+    .noun = { $count ->
+        [one] Eigenes
+       *[other] Eigene
+    }
+
+d-qfb7dxgw = Titel
+
+d-juvyfisd = Eigenes
+    .w-a-view-of-its-own = Eine eigene Ansicht
+    .w-a-view-the-caller-fills-like = Eine Ansicht, die der Aufrufer wie eine Komponente füllt: benannte Optionen mit Vorgaben, ein Platz für eigenen Inhalt und ein Ereignis, auf das er antwortet.
+    .w-ada-lovelace = Ada Lovelace
+    .w-leads-the-release = Leitet das Release
+    .w-online = Online
+    .w-design = Design
+    .w-message = Nachricht
+    .w-grace-hopper = Grace Hopper
+    .w-reviews-the-compiler = Prüft den Compiler
+    .w-compiler = Compiler
+    .w-how-a-change-plays = Wie eine Änderung abläuft
+    .w-a-new-reading-glides-to-its = Ein neuer Messwert gleitet im Tempo, das die Ansicht nennt, an seinen Platz und steht sofort da, wenn jemand weniger Bewegung wünscht.
+    .w-requests-a-second = Anfragen pro Sekunde
+    .w-live = Live
+    .w-new-reading = Neuer Messwert
+    .w-drawn-with-the-theme = Mit dem Design gezeichnet
+    .w-shapes-and-text-a-view-draws = Formen und Text, die eine Ansicht selbst zeichnet, in den Farben und Schriftrollen des Designs, und die Hilfstechnologien sagen, was sie bedeuten.
+    .w-disk = Festplatte
+    .w-of-256-gb = von 256 GB
+    .w-fill = Füllen
+    .w-free = Freigeben
+    .w-hours-worked-each-day-this-week = Arbeitsstunden pro Tag in dieser Woche
+    .w-charts-and-graphs = Diagramme und Graphen
+    .w-the-last-ten-minutes = Die letzten zehn Minuten
+    .w-release-pipeline = Release-Pipeline
+    .w-fetch = Abrufen
+    .w-fetched = Abgerufen
+    .w-build = Bauen
+    .w-built = Gebaut
+    .w-test = Testen
+    .w-passed = Bestanden
+    .w-ship = Ausliefern
+    .w-waiting = Wartet
+
+d-xnmgxmkk = Speicherring

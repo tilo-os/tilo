@@ -385,6 +385,9 @@ fn paint_trend(
 
 pub struct Chart {
     series: Vec<Series>,
+    /// The theme's inks its lines are drawn in, when it was described with them: each line's
+    /// colour follows the theme it is drawn with.
+    inks: Vec<crate::widget::drawing::Ink>,
     max: Option<f32>,
     area: bool,
     title: String,
@@ -404,6 +407,7 @@ impl Chart {
         Self {
             dirty: true,
             series,
+            inks: Vec::new(),
             max: None,
             area: false,
             title: String::new(),
@@ -698,6 +702,7 @@ impl ChartStyle {
 }
 
 impl Widget for Chart {
+    crate::described!();
     crate::widget::chart_navigation::chart_leaf!();
 
     fn draw(
@@ -709,6 +714,9 @@ impl Widget for Chart {
         _presence: &PresenceCtx,
     ) {
         crate::scene_parts::picture();
+        for (series, ink) in self.series.iter_mut().zip(&self.inks) {
+            series.color = ink.colour(theme);
+        }
         let style = if self.area {
             self.style
         } else {
@@ -739,6 +747,13 @@ impl Widget for Chart {
 
     fn name(&self) -> &'static str {
         "Chart"
+    }
+
+    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+        Some(
+            crate::a11y::AccessNode::new(crate::a11y::Role::Image)
+                .with_optional_name((!self.title.is_empty()).then(|| self.title.clone())),
+        )
     }
 }
 
@@ -944,7 +959,9 @@ impl Widget for Sparkline {
     }
 }
 
+mod chart_component;
 mod sparkline_component;
+pub use chart_component::{ChartLine, ChartProps, series_description};
 
 #[cfg(test)]
 mod tests {

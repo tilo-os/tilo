@@ -4,7 +4,8 @@ use tilo_ui_graph::component::{CaseDescription, EnumDescription, FieldDescriptio
 
 use crate::component::{Component, Described, Event, PropType, Type, Value};
 
-use super::{Drawing, Ink, Meaning, Shape, Weight};
+use super::{Anchor, Drawing, Ink, Meaning, Shape, Weight};
+use crate::tokens::TextRole;
 
 /// Shapes drawn with the design system over a box of their own.
 #[derive(Component, Default)]
@@ -24,36 +25,51 @@ pub struct DrawingProps {
     pub width: Option<f64>,
     /// Its height in logical pixels.
     pub height: Option<f64>,
+    /// How its shapes move to a new reading: at the theme's pace unless said, never for someone
+    /// who asked for reduced motion.
+    pub motion: crate::motion::Feel,
     /// The person pressed a shape: carries its index in `shapes`.
     #[component(event(value = i64))]
     pub press: Event,
+    /// The pointer came over a shape, or left them all: carries the index of the shape under it in
+    /// `shapes`, or none.
+    #[component(event(value = Option<i64>))]
+    pub hover: Event,
 }
 
 impl Described for Drawing {
     type Props = DrawingProps;
 
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "a widget's size, well inside f32"
-    )]
     fn from_props(_key: &str, props: DrawingProps) -> Self {
         let mut drawing = Self::default();
-        let height = props.height.unwrap_or(48.0);
-        drawing.width = props.width.unwrap_or(height) as f32;
-        drawing.height = height as f32;
         drawing.set_props(props);
         drawing
     }
 
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "a widget's size, well inside f32"
+    )]
     fn set_props(&mut self, props: DrawingProps) -> bool {
-        self.shapes = props.shapes;
+        let height = props.height.unwrap_or(48.0);
+        let size = (props.width.unwrap_or(height) as f32, height as f32);
+        if size != (self.width, self.height) {
+            (self.width, self.height) = size;
+            self.layout_dirty = true;
+        }
+        self.feel = props.motion;
+        self.set_shapes(props.shapes);
         self.meaning = props.meaning;
         self.label = props.label;
         self.value = props.value;
+        let index = |at: usize| Value::Int(i64::try_from(at).unwrap_or(i64::MAX));
         let press = props.press;
-        self.on_press = Some(Box::new(move |index| {
-            press.fire(Some(Value::Int(i64::try_from(index).unwrap_or(i64::MAX))));
-        }));
+        self.on_press = (!press.is_none())
+            .then(|| -> Box<dyn FnMut(usize)> { Box::new(move |at| press.fire(Some(index(at)))) });
+        let hover = props.hover;
+        self.on_hover = (!hover.is_none()).then(|| -> Box<dyn FnMut(Option<usize>)> {
+            Box::new(move |at| hover.fire(Some(at.map_or(Value::None, index))))
+        });
         true
     }
 }
@@ -168,7 +184,43 @@ pub fn shape_description() -> EnumDescription {
                     ink("fill", false),
                     ink("stroke", false),
                     weight,
-                    flag("wash", "Its fill fading out downward."),
+                    flag(
+                        "wash",
+                        "Its fill fading out downward, down to the drawing's foot when it is open.",
+                    ),
+                ],
+            ),
+            case(
+                "text",
+                "A text at (x, y), set in one of the theme's type roles.",
+                vec![
+                    float("x", ""),
+                    float("y", ""),
+                    FieldDescription {
+                        name: "text".to_owned(),
+                        ty: Type::Text,
+                        default: None,
+                        doc: String::new(),
+                    },
+                    FieldDescription {
+                        name: "role".to_owned(),
+                        ty: TextRole::ty(),
+                        default: Some(Value::Choice("body".to_owned())),
+                        doc: "Its type role: the theme's size and face for it.".to_owned(),
+                    },
+                    FieldDescription {
+                        name: "ink".to_owned(),
+                        ty: Ink::ty(),
+                        default: Some(Value::Choice("ink".to_owned())),
+                        doc: String::new(),
+                    },
+                    FieldDescription {
+                        name: "anchor".to_owned(),
+                        ty: Anchor::ty(),
+                        default: Some(Value::Choice("middle".to_owned())),
+                        doc: "Which side of it stands at (x, y).".to_owned(),
+                    },
+                    flag("strong", "Set heavier than its role."),
                 ],
             ),
         ],
@@ -271,9 +323,27 @@ impl PropType for Shape {
                 weight,
                 wash: flag("wash"),
             },
+            "text" => Shape::Text {
+                x: float("x")?,
+                y: float("y")?,
+                text: match field("text") {
+                    Some(Value::Text(text)) => text.clone(),
+                    _ => return Err("`text` needs `text`, a text".to_owned()),
+                },
+                role: match field("role") {
+                    None | Some(Value::None) => TextRole::Body,
+                    Some(v) => TextRole::from_value(v)?,
+                },
+                ink: ink("ink")?.unwrap_or(Ink::Ink),
+                anchor: match field("anchor") {
+                    None | Some(Value::None) => Anchor::Middle,
+                    Some(v) => Anchor::from_value(v)?,
+                },
+                strong: flag("strong"),
+            },
             other => {
                 return Err(format!(
-                    "a shape is rect, ellipse, arc, line or path, not `{other}`"
+                    "a shape is rect, ellipse, arc, line, path or text, not `{other}`"
                 ));
             }
         })

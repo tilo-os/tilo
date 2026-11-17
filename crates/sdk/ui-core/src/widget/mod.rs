@@ -2794,7 +2794,10 @@ pub use keyboard_map::{KeyboardMap, KeyboardMapInput, KeyboardMapKey, KeyboardMa
 /// Logical screen topology canvas shared by local and native peer displays.
 pub mod display_placement;
 mod graph_canvas;
-pub use graph_canvas::{GraphCanvas, GraphCanvasConnection, GraphCanvasNode};
+pub use graph_canvas::{
+    Connection, GraphCanvas, GraphCanvasConnection, GraphCanvasNode, GraphCanvasProps,
+    GraphNodeProps, connection_description,
+};
 
 #[cfg(test)]
 mod keyboard_entry_tests {
