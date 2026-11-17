@@ -20,7 +20,7 @@ pub struct CommitHistory {
     /// The commit's content address.
     pub commit: [u8; 32],
     /// The workspace whose units the action wrote.
-    pub workspace: String,
+    pub workspace: uuid::Uuid,
     /// Who invoked it, when someone did.
     pub actor: Option<tilo_actions::Actor>,
     /// The device that signed it.
@@ -41,7 +41,7 @@ impl CommitHistory {
     pub fn of(commit: &WorkspaceCommit) -> Self {
         Self {
             commit: commit.id(),
-            workspace: commit.workspace.clone(),
+            workspace: commit.workspace,
             actor: commit.author.actor.clone(),
             device: commit.author.device,
             at_ms: commit.at_ms,
@@ -56,7 +56,7 @@ impl CommitHistory {
 #[derive(Default)]
 pub struct CommitLog {
     /// Each workspace's actions, kept as its commits arrive.
-    workspaces: BTreeMap<String, WorkspaceIndex>,
+    workspaces: BTreeMap<uuid::Uuid, WorkspaceIndex>,
 }
 
 /// What one workspace's log holds.
@@ -85,7 +85,7 @@ impl CommitLog {
     /// Keep `commit`, unless this endpoint kept it already.
     pub fn record(&mut self, commit: &WorkspaceCommit) {
         let id = commit.id();
-        let index = self.workspaces.entry(commit.workspace.clone()).or_default();
+        let index = self.workspaces.entry(commit.workspace).or_default();
         if index.commits.contains_key(&id) {
             return;
         }
@@ -94,8 +94,8 @@ impl CommitLog {
 
     /// Every action this endpoint kept in `workspace`, oldest first.
     #[must_use]
-    pub fn history(&self, workspace: &str) -> Vec<CommitHistory> {
-        let Some(index) = self.workspaces.get(workspace) else {
+    pub fn history(&self, workspace: uuid::Uuid) -> Vec<CommitHistory> {
+        let Some(index) = self.workspaces.get(&workspace) else {
             return Vec::new();
         };
         let mut actions: Vec<&CommitHistory> = index.commits.values().collect();
@@ -112,7 +112,7 @@ mod tests {
     use collab_types::{CommitAuthor, UnitMutation};
     use tilo_actions::{ActionContext, Did, EditOp, FieldEdit, PathStep};
 
-    const WORKSPACE: &str = "workspace-1";
+    const WORKSPACE: uuid::Uuid = uuid::Uuid::from_u128(1);
     const DEVICE: [u8; 32] = [3; 32];
 
     fn author() -> CommitAuthor {
@@ -170,7 +170,7 @@ mod tests {
             assert_eq!(history.len(), 1, "one action, one entry");
             assert_eq!(history[0].actor, Some(tilo_actions::MemberId::person("ada").into()));
             assert_eq!(history[0].device, DEVICE);
-            assert!(log.history("elsewhere").is_empty());
+            assert!(log.history(uuid::Uuid::from_u128(2)).is_empty());
         }
 
         phase the_actions_of_a_workspace_read_oldest_first;

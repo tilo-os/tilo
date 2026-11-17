@@ -1369,12 +1369,11 @@ impl InstanceDocument {
                 document: None,
             })
             .collect();
-        let workspace = self.route.cluster_id.to_string();
         let author = collab_types::CommitAuthor {
             actor: None,
             device: [0; 32],
         };
-        collab_types::WorkspaceCommit::of_units(&workspace, &author, &units).map_or_else(
+        collab_types::WorkspaceCommit::of_units(self.route.cluster_id, &author, &units).map_or_else(
             |_| vec![None; parts.len()],
             |commits| {
                 commits

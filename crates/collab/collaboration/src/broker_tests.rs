@@ -5230,7 +5230,7 @@ tilo_test_env::scenario! {
         // The action commit a sealed part carries rides inside what only
         // the unit's readers open.
         let commit = collab_types::WorkspaceCommit::new(
-            "workspace",
+            uuid::Uuid::from_u128(1),
             collab_types::CommitAuthor {
                 actor: Some(tilo_actions::MemberId::person("alice").into()),
                 device: [9; 32],

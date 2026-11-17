@@ -5887,7 +5887,7 @@ fn origin_commit(
         return None;
     }
     match collab_types::WorkspaceCommit::of_mutation(
-        &route.spec.cluster_id.to_string(),
+        route.spec.cluster_id,
         app,
         record,
         &collab_types::CommitAuthor {

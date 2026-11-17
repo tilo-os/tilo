@@ -146,7 +146,7 @@ tilo_test_env::scenario! {
         }
         let change = DocumentMutation::Incremental(doc.save_after(&before));
         let commit = collab_types::WorkspaceCommit::of_mutation(
-            "workspace",
+            uuid::Uuid::from_u128(1),
             APP,
             "tally",
             &collab_types::CommitAuthor {

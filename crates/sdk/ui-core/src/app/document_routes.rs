@@ -753,12 +753,10 @@ pub(super) fn unit_commits(
         actor: None,
         device: [0; 32],
     };
-    collab_types::WorkspaceCommit::of_units(&workspace.to_string(), &author, units).unwrap_or_else(
-        |error| {
-            tracing::warn!(%error, "collab: a published change commits to no action");
-            vec![None; units.len()]
-        },
-    )
+    collab_types::WorkspaceCommit::of_units(workspace, &author, units).unwrap_or_else(|error| {
+        tracing::warn!(%error, "collab: a published change commits to no action");
+        vec![None; units.len()]
+    })
 }
 
 /// What one part of the pass sends: its changes under the commit of the

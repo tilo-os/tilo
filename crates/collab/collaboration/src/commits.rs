@@ -185,7 +185,7 @@ impl Commits {
     /// Every action this endpoint has seen in `workspace`, oldest first: one
     /// action with its author, its time and every unit change it made.
     #[cfg(test)]
-    pub fn history(&self, workspace: &str) -> Vec<CommitHistory> {
+    pub fn history(&self, workspace: uuid::Uuid) -> Vec<CommitHistory> {
         self.log.history(workspace)
     }
 
@@ -216,7 +216,7 @@ mod tests {
     use tilo_actions::{ActionContext, Did, EditOp, FieldEdit, InvocationId, PathStep};
 
     const DEVICE: [u8; 32] = [7; 32];
-    const WORKSPACE: &str = "workspace";
+    const WORKSPACE: uuid::Uuid = uuid::Uuid::from_u128(1);
 
     /// A record holding `field` = `value`, with the history entry an app's
     /// executor writes: the action `field`, invoked by alice under
@@ -262,7 +262,7 @@ mod tests {
         let claims = mutation_claims(&mutation, record_unit).unwrap();
         SignedOp::new_unsigned(
             framed,
-            document_artifact_id(app, WORKSPACE, document_id),
+            document_artifact_id(app, &WORKSPACE.to_string(), document_id),
             Ed25519PublicKey::from_bytes(DEVICE),
             AttestationId::new(),
             OpKind::Change,
@@ -532,7 +532,7 @@ mod tests {
             assert_eq!(action.parts, commit.parts);
             assert_eq!(action.parts.len(), 2);
             assert_eq!(action.parts[0].heads, vec![commit.parts[0].heads[0]]);
-            assert!(state.commits().history("elsewhere").is_empty());
+            assert!(state.commits().history(uuid::Uuid::from_u128(2)).is_empty());
         }
 
         phase a_peer_receiving_an_undo_reverts_both_units_together;
@@ -666,7 +666,7 @@ mod tests {
             let framed = commit.frame(&frame).unwrap();
             let op = SignedOp::new_unsigned(
                 framed,
-                document_artifact_id("tasks", WORKSPACE, "a"),
+                document_artifact_id("tasks", &WORKSPACE.to_string(), "a"),
                 Ed25519PublicKey::from_bytes([8; 32]),
                 AttestationId::new(),
                 OpKind::Change,

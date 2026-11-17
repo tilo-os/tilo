@@ -984,7 +984,7 @@ impl TilolangHost {
                 continue;
             }
             if running.hosted.spec().instance == asked_in {
-                workspace = Some(route.cluster_id.to_string());
+                workspace = Some(route.cluster_id);
             }
             parts.push((
                 route.app_id.clone(),
@@ -1043,7 +1043,7 @@ impl TilolangHost {
             return false;
         }
         let undo = collaboration::WorkspaceCommit::of_units(
-            &workspace,
+            workspace,
             &collaboration::CommitAuthor {
                 actor: None,
                 device: [0; 32],

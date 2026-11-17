@@ -763,7 +763,7 @@ tilo_test_env::scenario! {
         let history = actions.borrow();
         assert!(!history.is_empty(), "the undo reached the workspace");
         for action in history.iter() {
-            assert_eq!(action.workspace, cluster.to_string());
+            assert_eq!(action.workspace, cluster);
             assert_eq!(action.commit, undo_a.id());
             assert_eq!(action.parts.len(), 2, "the undo names both units");
         }
