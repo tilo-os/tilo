@@ -6,7 +6,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   fetchEnvelope, fetchProfile, fitDisplayName, hex, IdentityError, installNodeCertificate, MAX_DISPLAY_NAME_BYTES,
-  keptIdentity, nodeInstallInfo, publishProfile, signInWithPasskey, unhex,
+  keptIdentity, nodeInstallInfo, publishProfile, REFUSED_WITHIN_MS, signInWithPasskey, unhex,
 } from './identity.mjs';
 
 /** What resolved a promise: its value, or the error it refused with. */
@@ -180,6 +180,36 @@ function memoryStorage(entries = {}) {
   const kept = new Map(Object.entries(entries));
   return {get: async key => kept.get(key), put: async (key, value) => { kept.set(key, value); }};
 }
+
+test('a place that refuses a passkey at once is told apart from a person who closes the sheet', async () => {
+  const refusal = () => Object.assign(new Error('The request is not allowed'), {name: 'NotAllowedError'});
+  const stored = memoryStorage({identity: {rootPublicKey: 'ef'.repeat(32), held: 'held-before', envelope: {wraps: []}}});
+  let clock = 1000;
+  // `took` milliseconds pass before the browser answers with `error`.
+  const signIn = (took, error = refusal()) => signInWithPasskey({rpId: 'tilo.test', fetchEnvelope: async () => null, storage: stored,
+    credentials: {get: async () => { clock += took; throw error; }}, persist: null, runtime: {}, now: () => clock});
+  // A web view inside an app that may not use this site's passkeys answers in a few
+  // milliseconds, before anything is shown: the place cannot, and the page says what can.
+  const refused = await signIn(3).then(() => null, error => error);
+  assert.equal(refused?.code, 'passkeys-refused');
+  assert.equal(refused.cause?.name, 'NotAllowedError', 'what the browser said stays readable');
+  await assert.rejects(signIn(REFUSED_WITHIN_MS - 1), {code: 'passkeys-refused'});
+  // A person needs a moment to read a sheet and close it: that stays their own answer.
+  await assert.rejects(signIn(REFUSED_WITHIN_MS), {name: 'NotAllowedError'});
+  await assert.rejects(signIn(4000), {name: 'NotAllowedError'});
+  // Anything else the browser says at once is what it is.
+  await assert.rejects(signIn(1, Object.assign(new Error('insecure'), {name: 'SecurityError'})), {name: 'SecurityError'});
+  await assert.rejects(signIn(1, Object.assign(new Error('gone'), {name: 'AbortError'})), {name: 'AbortError'});
+  // A page that is not in front is refused at once as well, and may simply ask again.
+  globalThis.document = {hasFocus: () => false};
+  try {
+    await assert.rejects(signIn(1), {name: 'NotAllowedError'});
+  } finally {
+    delete globalThis.document;
+  }
+  assert.deepEqual(await keptIdentity({storage: stored}), {rootPublicKey: 'ef'.repeat(32), held: 'held-before'},
+    'a refusal leaves whoever this browser was');
+});
 
 test('a person signed in with a passkey is the person this browser keeps, replacing whoever it was', async () => {
   const root = 'cd'.repeat(32);

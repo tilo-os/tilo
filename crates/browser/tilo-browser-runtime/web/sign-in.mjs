@@ -533,6 +533,12 @@ function offerSignIn({window, card, show, tell, storage, signIn, hosts, words, t
         card.passkey.disabled = false;
         // Closing the passkey prompt is the person's own answer.
         if (error?.code === 'passkey-cancelled' || ['NotAllowedError', 'AbortError'].includes(error?.name)) return;
+        // Refused before anything was shown (`asked` in identity.mjs): the
+        // place cannot use passkeys, and the browser where they use Tilo can.
+        if (['passkeys-refused', 'passkeys-unavailable'].includes(error?.code)) {
+          tell('Passkeys can’t be used here. Open this page in the browser where you use Tilo.');
+          return;
+        }
         tell(['no-envelope', 'not-tilo', 'no-wrap'].includes(error?.code)
           ? 'That passkey doesn’t open a Tilo identity. Use one you made on Tilo, or open Tilo below.'
           : 'Signing in didn’t work in this browser. Try again, or open Tilo below.');

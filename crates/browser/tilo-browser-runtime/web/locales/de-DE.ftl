@@ -111,6 +111,7 @@ arrival-sign-in-not-member = Du bist angemeldet, aber diese Identität ist noch 
 arrival-sign-in-not-member-unnamed = Du bist angemeldet, aber diese Identität ist noch nicht in diesem Arbeitsbereich. Bitte jemanden darin um eine Einladung.
 arrival-sign-in-unknown = Dieser Passkey öffnet keine Tilo-Identität, die diese Seite kennt. Nimm einen, den du bei Tilo angelegt hast, oder öffne Tilo dort, wo du es schon nutzt.
 arrival-sign-in-failed = Die Anmeldung hat in diesem Browser nicht geklappt. Versuch es noch einmal oder öffne Tilo dort, wo du es schon nutzt.
+arrival-sign-in-no-passkeys = Passkeys lassen sich hier nicht verwenden. Wähle auf einem Gerät, auf dem du angemeldet bist, „Pair a new device“ und füge den Link hier ein.
 arrival-invite-toggle = Du hast einen Einladungs- oder Kopplungslink?
 arrival-own = Oder probier Tilo für dich allein aus
 

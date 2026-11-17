@@ -1837,9 +1837,12 @@ function offerWaitList({workspace, contact, mail, messages}) {
  * passkey opens it (its envelope from the hosts that keep it), and the page
  * loads again to join as them, opening a workspace of their own rather than
  * the home workspace's shared desktop. A member gets in; anyone else is told
- * this identity is not in `named` yet, with the wait list still there.
+ * this identity is not in `named` yet, with the wait list still there. Where
+ * the place cannot use passkeys at all (a web view inside an app that may not
+ * use this site's), trying again changes nothing: the entry says the way in
+ * that works there, a device where the person is signed in adding this one.
  */
-function offerSignIn({workspace, named, messages, runtime, link}) {
+export function offerSignIn({workspace, named, messages, runtime, link}) {
   const say = (key, english, args) => localized(messages, key, english, args);
   const row = document.getElementById('arrival-sign-in');
   const agent = document.getElementById('arrival-sign-in-agent');
@@ -1904,6 +1907,12 @@ function offerSignIn({workspace, named, messages, runtime, link}) {
       // Closing the passkey prompt is the person's own answer.
       if (error?.code === 'passkey-cancelled' || ['NotAllowedError', 'AbortError'].includes(error?.name)) return;
       note.classList.add('refusal-problem');
+      if (['passkeys-refused', 'passkeys-unavailable'].includes(error?.code)) {
+        // Refused before anything was shown: not the person's answer, and not
+        // something another try changes (`asked` in identity.mjs).
+        note.textContent = say('arrival-sign-in-no-passkeys', 'Passkeys can’t be used here. On a device where you are signed in, choose “Pair a new device” and paste its link here.');
+        return;
+      }
       note.textContent = ['no-envelope', 'not-tilo', 'no-wrap'].includes(error?.code)
         ? say('arrival-sign-in-unknown', 'That passkey doesn’t open a Tilo identity this site knows. Use one you made on Tilo, or open Tilo where you already use it.')
         : say('arrival-sign-in-failed', 'Signing in didn’t work in this browser. Try again, or open Tilo where you already use it.');
