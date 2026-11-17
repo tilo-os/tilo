@@ -330,6 +330,25 @@ impl Fixture {
         host_steps: Vec<Arc<dyn crate::services::HostStepServices>>,
         resource_changes: Option<Arc<dyn crate::services::DocumentChangeServices>>,
     ) -> Self {
+        Self::built(launcher, host_steps, resource_changes, true)
+    }
+    /// As [`Self::with_services`], on a device of this host's own: its connections are the local
+    /// socket's, which reach the host's own steps (`is_local_host_caller`), as the agent app's
+    /// connection to the person's own session does.
+    fn on_this_device(host_steps: Vec<Arc<dyn crate::services::HostStepServices>>) -> Self {
+        Self::built(None, host_steps, None, false)
+    }
+    /// The fixture, its signed device `foreign` to this host or one of its own.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario, end to end, reads as one test"
+    )]
+    fn built(
+        launcher: Option<Arc<dyn crate::services::LauncherServices>>,
+        host_steps: Vec<Arc<dyn crate::services::HostStepServices>>,
+        resource_changes: Option<Arc<dyn crate::services::DocumentChangeServices>>,
+        foreign: bool,
+    ) -> Self {
         let directory = tempfile::tempdir().unwrap();
         let mut identity_env = tilo_test_env::ScopedEnv::new();
         identity_env
@@ -352,7 +371,7 @@ impl Fixture {
         );
         // The signed device is initially governed here, so its foreign-device
         // ceiling only applies after the live connection loses that authority.
-        certificate.capabilities.foreign = true;
+        certificate.capabilities.foreign = foreign;
         tilo_user_identity::sign_device_cert(&mut certificate, &SigningKey::from_bytes(&[91; 32]))
             .unwrap();
         tilo_peer_state::owner::testing::enroll_interactive_governor(&owner, &key, &certificate)
@@ -763,6 +782,9 @@ use tilo_actions::remote::{ActionHostError, Caller, InvocationReceipt, InvokeReq
 #[derive(Default)]
 struct TurnSteps {
     taken: Mutex<Vec<tilo_actions::MemberId>>,
+    /// The turn each step was taken on, as the session reads it to stand what the step shows
+    /// beside the turn that asked.
+    on_turns: Mutex<Vec<Option<tilo_action_policy::turn::Turn>>>,
 }
 
 impl crate::services::HostStepServices for TurnSteps {
@@ -806,6 +828,10 @@ impl crate::services::HostStepServices for TurnSteps {
             .lock()
             .unwrap()
             .push(request.actor.member().clone());
+        self.on_turns
+            .lock()
+            .unwrap()
+            .push(request.actor.turn().cloned());
         Ok(tilo_actions::remote::Pending::ready(Ok(
             tilo_actions::ActionOutput::default(),
         )))

@@ -199,6 +199,56 @@ async fn a_turn_is_answered_by_its_agent_and_its_steps_are_the_turns() {
         .await;
 }
 
+/// The session's own step (`shell:layout` `place`), asked on the agent's own connection while it
+/// answers a turn, is taken on that turn: the session stands what the step shows beside the turn
+/// that asked. Without it the place stood at the canvas' origin, past the edge of what the person
+/// saw, while the room beside the turn stayed empty.
+#[tokio::test(flavor = "current_thread")]
+async fn a_turns_session_step_on_its_own_connection_is_taken_on_the_turn() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let steps = Arc::new(super::TurnSteps::default());
+            let f = Fixture::on_this_device(vec![steps.clone()]);
+            super::grant_the_layout(&f, true);
+            let agent = answering(&f).await;
+            ask(&f);
+            f.state.refresh_turns();
+            let answer = handed(&agent).await;
+            let turn_id = uuid::Uuid::from_bytes(answer.invocation_uuid);
+            let place = InvokeRequest {
+                target: RemoteActionTarget {
+                    provider: tilo_actions::remote::session_actions::PROVIDER.into(),
+                    address: tilo_actions::ActionAddress::new("shell:layout", "place"),
+                },
+                ..append(42, turn_id)
+            };
+            let receipt = remote(&f, &agent, RemoteActionMessage::Invoke(place)).await;
+            assert!(
+                matches!(
+                    receipt,
+                    RemoteActionMessage::Receipt(tilo_actions::remote::InvocationReceipt {
+                        status: tilo_actions::remote::ReceiptStatus::Accepted
+                            | tilo_actions::remote::ReceiptStatus::Completed { .. },
+                        ..
+                    })
+                ),
+                "{receipt:?}"
+            );
+            assert_eq!(
+                steps.taken.lock().unwrap().as_slice(),
+                [tilo_actions::MemberId::agent("scribe")],
+                "the step ran once, as the turn's agent"
+            );
+            assert_eq!(
+                steps.on_turns.lock().unwrap().as_slice(),
+                [Some(turn())],
+                "the step is taken on the turn the agent answers"
+            );
+            drop(f);
+        })
+        .await;
+}
+
 /// The person ending the turn cancels its answer, and the agent's requests are refused after it.
 #[tokio::test(flavor = "current_thread")]
 async fn an_ended_turn_is_cancelled_and_its_agent_does_nothing_more() {

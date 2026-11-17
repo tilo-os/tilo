@@ -7,24 +7,31 @@ use tilo_actions::{ActionDescriptor, ActionFailure, InvocationUpdate};
 use tilo_desktop_model::Workspace;
 
 /// The actor a step from an agent's own connection acts as, when the step is a step of a turn
-/// the agent answers: the connection's admitted agent, in the turn's agent session.
+/// the agent answers: the connection's admitted agent, in the turn's agent session, on the turn.
 ///
 /// A turn's steps are requests on the agent's connection served as the turn's: the caller carries
-/// the turn's session (`Caller::agent_turn(..).in_agent_session(..)`), which `agent_session_of`
-/// checks goes, while the actor the admitted connection makes carries none, since the connection
-/// itself is in no session. Every step of the turn then acted outside it: a session's own step
-/// (the API's programs, `task_programs`) refused it as "an agent runs programs as a step of its
-/// session", and what the turn changed was not caused by its session. Only the same agent's turn
-/// session is taken, and only when the connection's actor has none of its own.
+/// the turn and the turn's session (`Caller::agent_turn(..).in_agent_session(..)`), which
+/// `agent_session_of` checks goes, while the actor the admitted connection makes carries neither,
+/// since the connection itself answers no turn. Every step of the turn then acted outside it: a
+/// session's own step (the API's programs, `task_programs`) refused it as "an agent runs programs
+/// as a step of its session", what the turn changed was not caused by its session, and what a
+/// step opened or placed stood at the canvas' origin rather than beside the turn that asked,
+/// since the session stands it beside the turn its actor is on. Only the same agent's turn is
+/// taken, and a session or turn the connection's actor has of its own is kept.
 fn in_turn_session(actor: BrokerActor, caller: &Caller) -> BrokerActor {
-    if actor.session().is_some() || !actor.is_agent() {
+    let acting = caller.acting();
+    let same_agent = actor.is_agent()
+        && acting.agent_id().is_some()
+        && actor.member().agent_id() == acting.agent_id();
+    if !same_agent {
         return actor;
     }
-    let acting = caller.acting();
-    match acting.agent_session.as_ref().zip(acting.agent_id()) {
-        Some((session, agent)) if actor.member().agent_id() == Some(agent) => {
-            actor.in_session(session.as_str())
-        }
+    let actor = match (&acting.agent_session, actor.session()) {
+        (Some(session), None) => actor.in_session(session.as_str()),
+        _ => actor,
+    };
+    match caller.turn() {
+        Some(turn) if actor.turn().is_none() => actor.on_turn(Some(turn.clone())),
         _ => actor,
     }
 }
@@ -34,7 +41,7 @@ mod turn_session_tests {
     use super::{BrokerActor, Caller, in_turn_session};
 
     /// A step from the agent's connection, for the turn it answers, acts in that turn's
-    /// session; a step that is no turn's, or another agent's, does not.
+    /// session and on that turn; a step that is no turn's, or another agent's, does not.
     #[test]
     fn a_turns_step_acts_in_the_turns_session() {
         let turn = tilo_action_policy::turn::Turn::new("chat.workspace/channels/c", "m1");
@@ -45,12 +52,20 @@ mod turn_session_tests {
         let acting = in_turn_session(connection.clone(), &caller);
         assert_eq!(acting.session(), Some("so.tilo.session/agent-session/s1"));
         assert_eq!(acting.member().agent_id(), Some("scribe"));
+        // On the turn it answers: the session stands what the step opens beside that turn.
+        assert_eq!(acting.turn(), Some(&turn));
 
         let other = BrokerActor::agent("other").for_person("person");
-        assert_eq!(in_turn_session(other, &caller).session(), None);
+        let other = in_turn_session(other, &caller);
+        assert_eq!(other.session(), None);
+        assert_eq!(
+            other.turn(),
+            None,
+            "another agent's step is not on this turn"
+        );
 
-        let no_turn = Caller::agent_turn("scribe", "person", turn).in_workspace("w");
-        assert_eq!(in_turn_session(connection, &no_turn).session(), None);
+        let no_session = Caller::agent_turn("scribe", "person", turn).in_workspace("w");
+        assert_eq!(in_turn_session(connection, &no_session).session(), None);
     }
 }
 
