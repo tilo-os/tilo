@@ -38,7 +38,7 @@ use super::{Needs, Worker};
 use crate::participant::actions::record_provider;
 
 /// The app whose workspace record the notebook is.
-pub const NOTES_APP: &str = "so.tilo.notes";
+pub use ui::apps::NOTES as NOTES_APP;
 /// The folder of the workspace's folder the notes are files in.
 pub const FOLDER: &str = "Notes";
 /// What a projection's agreement says once the file's note was deleted through it: the

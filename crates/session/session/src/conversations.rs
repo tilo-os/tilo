@@ -25,7 +25,7 @@ use ui::record::DocumentId;
 use ui::record::workspace::WorkspaceRecords;
 
 /// The app that keeps the conversations: its own record of a workspace.
-const CHAT_OWNER: &str = "so.tilo.chat";
+use ui::apps::CHAT as CHAT_OWNER;
 /// How the run source names Chat where a record is opened.
 const CHAT_APP: (&str, &str) = ("chat", "Chat");
 /// Chat's verb that records a turn's work on the reply to its message: the one Chat's window

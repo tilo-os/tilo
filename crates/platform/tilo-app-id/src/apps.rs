@@ -1,20 +1,33 @@
-//! The first-party packages, by their `so.tilo.*` ids.
+//! The first-party apps: the `so.tilo.*` id, one constant each.
 //!
 //! Current names only: nothing here reads or aliases a retired id. Used to
-//! tell a first-party app from a foreign one, and to find the package a
-//! desktop built-in label names.
+//! name an app in an action, a grant or a record, to tell a first-party app
+//! from a foreign one, and to find the package a desktop built-in label names.
+
+/// The first-party apps, one row each: the constant that names an app and its
+/// id.
+macro_rules! first_party_apps {
+    ($($name:ident => $id:literal),* $(,)?) => {
+        $(pub const $name: &str = $id;)*
+
+        /// Every first-party package: one per app manifest.
+        pub const FIRST_PARTY_PACKAGES: &[&str] = &[$($name),*];
+    };
+}
+
+mod app_ids;
+
+pub use app_ids::*;
 
 /// The package namespace every first-party app is registered under.
 pub const FIRST_PARTY_PREFIX: &str = "so.tilo";
 
-include!("first_party_catalogue.rs");
-
 /// The label a desktop built-in shows for `package` when it is not the
 /// package's name in `PascalCase`.
 const BUILTIN_LABELS: &[(&str, &str)] = &[
-    ("so.tilo.file-explorer", "Files"),
-    ("so.tilo.code-editor", "Editor"),
-    ("so.tilo.word-processor", "Word"),
+    (FILE_EXPLORER, "Files"),
+    (CODE_EDITOR, "Editor"),
+    (WORD_PROCESSOR, "Word"),
 ];
 
 /// Whether `label` is `kebab` spelled in `PascalCase`: `pdf-viewer` ↔
@@ -73,35 +86,40 @@ pub fn is_first_party_app_id(app_id: &str) -> bool {
 mod tests {
     use super::*;
 
-    tilo_test_env::scenario! {
-        fn first_party_app_ids;
+    #[test]
+    fn every_app_names_itself_once() {
+        let mut packages = FIRST_PARTY_PACKAGES.to_vec();
+        packages.sort_unstable();
+        packages.dedup();
+        assert_eq!(packages.len(), FIRST_PARTY_PACKAGES.len());
+        assert_eq!(SETTINGS, "so.tilo.settings");
+    }
 
-        phase builtin_labels_name_their_packages;
-        {
-            assert_eq!(app_id_for_builtin_label("Notes"), Some("so.tilo.notes"));
-            assert_eq!(
-                app_id_for_builtin_label("PdfViewer"),
-                Some("so.tilo.pdf-viewer")
-            );
-            assert_eq!(
-                app_id_for_builtin_label("Files"),
-                Some("so.tilo.file-explorer")
-            );
-            assert_eq!(app_id_for_builtin_label("FileExplorer"), None);
-            assert_eq!(
-                app_id_for_builtin_label("Editor"),
-                Some("so.tilo.code-editor")
-            );
-            assert_eq!(app_id_for_builtin_label("Scratch"), None);
-            assert_eq!(app_id_for_builtin_label("notes"), None);
-        }
+    #[test]
+    fn builtin_labels_name_their_packages() {
+        assert_eq!(app_id_for_builtin_label("Notes"), Some("so.tilo.notes"));
+        assert_eq!(
+            app_id_for_builtin_label("PdfViewer"),
+            Some("so.tilo.pdf-viewer")
+        );
+        assert_eq!(
+            app_id_for_builtin_label("Files"),
+            Some("so.tilo.file-explorer")
+        );
+        assert_eq!(
+            app_id_for_builtin_label("Editor"),
+            Some("so.tilo.code-editor")
+        );
+        assert_eq!(app_id_for_builtin_label("FileExplorer"), None);
+        assert_eq!(app_id_for_builtin_label("Scratch"), None);
+        assert_eq!(app_id_for_builtin_label("notes"), None);
+    }
 
-        phase only_the_tilo_namespace_is_first_party;
-        {
-            assert!(is_first_party_app_id("so.tilo.chat"));
-            assert!(is_first_party_app_id("so.tilo.desktop"));
-            assert!(!is_first_party_app_id("so.tilonet.App"));
-            assert!(!is_first_party_app_id("so.tilo."));
-        }
+    #[test]
+    fn only_the_tilo_namespace_is_first_party() {
+        assert!(is_first_party_app_id("so.tilo.chat"));
+        assert!(is_first_party_app_id("so.tilo.desktop"));
+        assert!(!is_first_party_app_id("so.tilonet.App"));
+        assert!(!is_first_party_app_id("so.tilo."));
     }
 }

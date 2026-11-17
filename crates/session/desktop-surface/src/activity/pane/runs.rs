@@ -29,10 +29,10 @@ use super::{
     WorkspaceActivityPane, humanize_app_id, t,
 };
 
-/// The app whose records are shell sessions: a step there ran a program.
-pub(super) const TERMINAL_APP: &str = "so.tilo.terminal";
 /// The app whose records are web pages.
-const BROWSER_APP: &str = "so.tilo.browser";
+use ui::apps::BROWSER as BROWSER_APP;
+/// The app whose records are shell sessions: a step there ran a program.
+pub use ui::apps::TERMINAL as TERMINAL_APP;
 /// The field of a shell session's record that queues the command lines asked of it.
 const REQUESTS: &str = "requests";
 /// The field of a shell session's record that keeps the command lines it recorded.

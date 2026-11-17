@@ -29,7 +29,7 @@ use crate::moderation::{ReplicaApi, files_a_report};
 use crate::workspaces::{RecordWrite, Workspaces};
 
 /// The app whose record holds the workspace's reports and decisions.
-const CHAT: &str = "so.tilo.chat";
+use ui::apps::CHAT;
 /// The installation id the workspace's moderation agent acts as.
 pub const MODERATION_INSTALLATION: &str = "moderation";
 

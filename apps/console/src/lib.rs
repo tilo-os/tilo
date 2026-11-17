@@ -1,7 +1,7 @@
 //! Console: what your agents do in your workspaces, for a person who mostly has agents work
 //! for them rather than working at the desktop themselves.
 
-pub const APP_ID: &str = "so.tilo.console";
+pub use ui::apps::CONSOLE as APP_ID;
 pub const APP_TITLE: &str = "Console";
 
 mod agent_card;

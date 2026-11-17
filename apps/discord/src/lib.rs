@@ -35,7 +35,7 @@ pub use record::{
 };
 
 /// The connector's package id.
-pub const APP_ID: &str = "so.tilo.discord";
+pub use ui::apps::DISCORD as APP_ID;
 /// The record kind it publishes.
 pub const KIND: &str = "discord.guild";
 

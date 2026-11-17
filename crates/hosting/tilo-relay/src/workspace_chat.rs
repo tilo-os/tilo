@@ -5,7 +5,7 @@
 
 use tilo_resource::Fields;
 
-pub(crate) const CHAT_APP: &str = "so.tilo.chat";
+pub use ui::apps::CHAT as CHAT_APP;
 /// The longest starting channel name.
 const CHANNEL_NAME_MAX: usize = 64;
 

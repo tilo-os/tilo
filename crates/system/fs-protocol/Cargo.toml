@@ -36,6 +36,7 @@ uuid.workspace = true
 tilo-content = { version = "0.1.0", path = "../content", optional = true }
 tilo-doc = { version = "0.1.0", path = "../../doc/tilo-doc", optional = true }
 tilo-doc-codecs = { version = "0.1.0", path = "../../doc/tilo-doc-codecs", optional = true, default-features = false, features = ["markdown", "html", "rtf", "docx", "odt"] }
+tilo-app-id = { version = "0.1.0", path = "../../platform/tilo-app-id" }
 
 [features]
 # Read a text document of the tree as its file: what a reader without the

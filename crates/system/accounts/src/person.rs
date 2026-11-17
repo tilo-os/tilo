@@ -10,7 +10,7 @@ use tilo_resource::{Collection, Id, Invoke, Model, ModelError, Refusal, SharedRe
 use crate::{Account, AccountId, AccountStore, AccountTypeId};
 
 /// The app that keeps the person's accounts.
-pub const ACCOUNTS_OWNER: &str = "so.tilo.settings";
+pub use tilo_app_id::apps::SETTINGS as ACCOUNTS_OWNER;
 
 /// The other apps that change the person's accounts: Mail adds the mail
 /// accounts its provider sign-in sets up.

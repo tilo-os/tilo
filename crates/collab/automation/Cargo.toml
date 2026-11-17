@@ -31,6 +31,7 @@ uuid.workspace = true
 tilo-resource = { version = "0.1.0", path = "../../sdk/tilo-resource", optional = true }
 # The clock that also reads in a browser page, where std has none.
 tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
+tilo-app-id = { version = "0.1.0", path = "../../platform/tilo-app-id" }
 
 [features]
 model = ["dep:tilo-resource"]

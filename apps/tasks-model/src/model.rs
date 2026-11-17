@@ -42,7 +42,7 @@ pub const KIND: &str = "tasks.tracker";
 pub const ISSUES_KIND: &str = "tasks.issues";
 
 /// The app that keeps the record.
-pub const APP_ID: &str = "so.tilo.tasks";
+pub use tilo_app_id::apps::TASKS as APP_ID;
 
 /// The resource address of `issue`, the one its reference chip, its search
 /// hit and its `open` name, whichever part keeps it.

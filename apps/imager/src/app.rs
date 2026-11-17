@@ -5053,7 +5053,7 @@ mod tests {
     struct HeldWriterJobsApp;
     impl ui::framework::ResourceApp for HeldWriterJobsApp {
         type Resource = Imager;
-        const ID: &'static str = "so.tilo.imager";
+        const ID: &'static str = tilo_app_id::apps::IMAGER;
         const TITLE: &'static str = "Disk Imager";
         fn view(cx: &mut ui::framework::ViewCx<Imager>) -> ui::widget::Element {
             crate::app::wizard_view(cx, ImagerApp::sample())

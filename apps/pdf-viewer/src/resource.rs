@@ -784,7 +784,7 @@ pub struct PdfViewerShell;
 
 impl ResourceApp for PdfViewerShell {
     type Resource = PdfMarkup;
-    const ID: &'static str = "so.tilo.pdf-viewer";
+    const ID: &'static str = ui::apps::PDF_VIEWER;
     // Each window shows what it opened, never another window's.
     const WINDOW_RESOURCE: bool = true;
     const TITLE: &'static str = "PDF Viewer";

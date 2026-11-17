@@ -81,7 +81,7 @@ pub(super) struct LocalAppConnection {
 }
 
 /// The only app that hands this broker selected objects.
-const FILES: &str = "so.tilo.file-explorer";
+use ui::apps::FILE_EXPLORER as FILES;
 
 /// Selected objects one Files connection may have handed over and not yet
 /// named: two whole captures, each its sources and one destination.

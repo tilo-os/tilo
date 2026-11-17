@@ -23,7 +23,7 @@ use tilo_action_policy::WorkspacePolicy;
 /// The one app that browses this device's own files. It is handed the home
 /// of the machine it runs on; every other app reaches files through what the
 /// person granted it in the workspace.
-const FILE_MANAGER: &str = "so.tilo.file-explorer";
+use ui::apps::FILE_EXPLORER as FILE_MANAGER;
 
 /// One workspace, as a launch into it needs it.
 #[derive(Clone, Debug, Default, PartialEq)]

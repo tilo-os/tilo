@@ -15,7 +15,7 @@ use super::{
 use crate::{Span, SpanUnit};
 
 /// The app that keeps a discussion thread for a published text.
-const CHAT_APP: &str = "so.tilo.chat";
+use tilo_app_id::apps::CHAT as CHAT_APP;
 /// The kind of resource a discussion thread is, in the chat's own record.
 const THREAD_KIND: &str = "chat.channel";
 

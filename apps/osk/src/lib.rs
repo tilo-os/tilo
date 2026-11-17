@@ -26,7 +26,7 @@
 /// The app-id the compositor recognises the keyboard by, and only when the client
 /// also arrived on the private OSK socket: the string alone grants no privileges.
 /// Must stay in step with the compositor's constant.
-pub const KEYBOARD_APP_ID: &str = "so.tilo.osk";
+pub use ui::apps::OSK as KEYBOARD_APP_ID;
 
 pub mod autocorrect;
 pub mod dict;

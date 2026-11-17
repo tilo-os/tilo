@@ -190,7 +190,7 @@ mod tests {
     struct ContactsOwner;
     impl ResourceApp for ContactsOwner {
         type Resource = ContactDirectory;
-        const ID: &'static str = "so.tilo.contacts";
+        const ID: &'static str = ui::apps::CONTACTS;
         const TITLE: &'static str = "Contacts fixture";
         fn view(_: &mut ViewCx<ContactDirectory>) -> Element {
             Box::new(Text::new("Contacts fixture"))

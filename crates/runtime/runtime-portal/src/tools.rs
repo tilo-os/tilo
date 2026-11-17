@@ -26,7 +26,7 @@ pub const MAX_APP_ID_BYTES: usize = 512;
 const MAX_DRIVE_ID_BYTES: usize = 64;
 const MAX_PATH_BYTES: usize = 2 * 1024;
 const MAX_CONTAINER_NAME_BYTES: usize = 255;
-const TERMINAL_PACKAGE_ID: &str = "so.tilo.terminal";
+use tilo_app_id::apps::TERMINAL as TERMINAL_PACKAGE_ID;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -358,10 +358,10 @@ impl ToolIntent {
 
     pub fn package_id(&self) -> Option<&'static str> {
         match self {
-            Self::Vpn { .. } => Some("so.tilo.settings"),
-            Self::Firewall { .. } => Some("so.tilo.firewall"),
-            Self::Disks { .. } => Some("so.tilo.disks"),
-            Self::Backups { .. } => Some("so.tilo.backups"),
+            Self::Vpn { .. } => Some(tilo_app_id::apps::SETTINGS),
+            Self::Firewall { .. } => Some(tilo_app_id::apps::FIREWALL),
+            Self::Disks { .. } => Some(tilo_app_id::apps::DISKS),
+            Self::Backups { .. } => Some(tilo_app_id::apps::BACKUPS),
             Self::Terminal { .. } | Self::ContainerShell { .. } => Some(TERMINAL_PACKAGE_ID),
             Self::WorkspaceSettings { .. }
             | Self::IdentityBackup

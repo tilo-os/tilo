@@ -1706,7 +1706,7 @@ fn probe_contact_directory_engine(_: &str) -> Result<(), String> {
 
 impl ResourceApp for MailShell {
     type Resource = Mail;
-    const ID: &'static str = "so.tilo.mail";
+    const ID: &'static str = ui::apps::MAIL;
     const TITLE: &'static str = "Mail";
     const TITLE_KEY: &'static str = "mail-app-title";
     const ICON: Option<&'static str> = Some("mail");

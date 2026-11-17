@@ -10,7 +10,7 @@ pub(crate) const KEEP_LIMIT: usize = 512 * 1024 * 1024;
 pub(crate) const KEPT_VIDEOS: usize = 3;
 
 const SCHEME: &str = "tilo-kept:";
-const APP: &str = "so.tilo.video-player";
+use ui::apps::VIDEO_PLAYER as APP;
 
 /// Whether chosen files have native paths here; without them a video is opened by its
 /// contents and kept for Recent.

@@ -17,7 +17,7 @@ pub const KEY_ENV: &str = "TILO_PUBLISHER_KEY";
 
 /// The app whose secrets hold the publisher key: the App Publisher's. Secret stores are scoped per
 /// app, and `tilo-app` addresses the same app's secret so both see one key.
-pub const SECRETS_APP: &str = "so.tilo.publisher";
+pub use tilo_app_id::apps::PUBLISHER as SECRETS_APP;
 
 /// The key's purpose and item in [`SECRETS_APP`]'s store: one key per
 /// machine.

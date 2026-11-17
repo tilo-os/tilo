@@ -306,7 +306,7 @@ fn review(sources: &[Source]) -> Vec<Invoke<Imager>> {
 
 impl ResourceApp for ImagerShell {
     type Resource = Imager;
-    const ID: &'static str = "so.tilo.imager";
+    const ID: &'static str = tilo_app_id::apps::IMAGER;
     const READS_HOST: &'static [ui::launch::HostSource] = &[ui::launch::HostSource::Disks];
     const TITLE: &'static str = "Tilo Installer";
     const TITLE_KEY: &'static str = "installer-app-title";
@@ -387,7 +387,7 @@ mod tests {
 
     impl ResourceApp for SampleImager {
         type Resource = Imager;
-        const ID: &'static str = "so.tilo.imager";
+        const ID: &'static str = tilo_app_id::apps::IMAGER;
         const TITLE: &'static str = "Disk Imager";
 
         fn view(cx: &mut ViewCx<Imager>) -> Element {

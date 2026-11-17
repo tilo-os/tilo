@@ -9,7 +9,7 @@ use tilo_system_info::protocol::{ProcessStats, Snapshot};
 use super::{StopKind, note_provider_read};
 use crate::model::{MonitorModel, ProcessDataStatus, ProcessInfo};
 
-const APP_ID: &str = "so.tilo.monitor";
+use ui::apps::MONITOR as APP_ID;
 
 const DEFAULT_INTERVAL_MS: u32 = 1500;
 

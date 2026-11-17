@@ -50,7 +50,7 @@ pub(crate) const CAPTURE_STUDIO: &str = tilo_capture_studio::RESOURCE;
 pub(crate) const KEY_XF86_RFKILL: u32 = 0x1008_ffb5;
 
 /// The app the calculator key opens.
-pub(crate) const CALCULATOR: &str = "so.tilo.calculator";
+pub use ui::apps::CALCULATOR;
 
 /// How long a key's readout waits for the device to answer it before what it showed stands as it
 /// is.

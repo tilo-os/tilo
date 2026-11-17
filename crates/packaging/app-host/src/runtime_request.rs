@@ -19,7 +19,7 @@ pub type Installer =
     dyn Fn(&str, &mut dyn FnMut(Phase, u64, Option<u64>)) -> Result<(), String> + Send + Sync;
 
 /// The one app the host answers about language packs.
-pub const SETTINGS_APP_ID: &str = "so.tilo.settings";
+pub use tilo_app_id::apps::SETTINGS as SETTINGS_APP_ID;
 
 /// How the host answers about language packs: which the repositories offer,
 /// whether one is installed, and installing one by its locale.

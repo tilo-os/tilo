@@ -20,7 +20,7 @@ pub struct NotesShell;
 
 impl ResourceApp for NotesShell {
     type Resource = Notebook;
-    const ID: &'static str = "so.tilo.notes";
+    const ID: &'static str = ui::apps::NOTES;
     const TITLE: &'static str = "Notes";
     const TITLE_KEY: &'static str = "notes-app-title";
     const ICON: Option<&'static str> = Some("notes");

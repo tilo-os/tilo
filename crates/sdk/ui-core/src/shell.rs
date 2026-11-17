@@ -12,7 +12,7 @@ pub const RESOURCE: &str = SESSION;
 pub const OPEN: &str = layout::OPEN;
 
 /// Settings, by its package id: the app a `settings:` link opens.
-pub const SETTINGS_APP: &str = "so.tilo.settings";
+pub use tilo_app_id::apps::SETTINGS as SETTINGS_APP;
 /// The anchor of a page of Settings, by its slug, as Settings' `open` reads it.
 const SETTINGS_PAGE: &str = "settings.section:";
 

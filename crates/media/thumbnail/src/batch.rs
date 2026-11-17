@@ -10,7 +10,7 @@ use std::path::Path;
 use crate::generate::{encode_png, image_thumb};
 
 pub const BATCH_EDGE: u32 = 256;
-pub const PACKAGE: &str = "so.tilo.thumbnails";
+pub use tilo_app_id::apps::THUMBNAILS as PACKAGE;
 pub const ENTRYPOINT: &str = "thumbnail-batch";
 pub const EXIT_REQUEST: u8 = 2;
 

@@ -42,7 +42,7 @@ use serde::{Deserialize, Serialize};
 /// `<RESOURCE_KIND>.<field>`.
 pub mod destination {
     /// The destination app's package.
-    pub const PACKAGE: &str = "so.tilo.chat";
+    pub const PACKAGE: &str = tilo_app_id::apps::CHAT;
     /// Its resource kind.
     pub const RESOURCE_KIND: &str = "chat.workspace";
     /// The field of the channels reports are filed in.

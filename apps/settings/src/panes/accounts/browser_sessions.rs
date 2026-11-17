@@ -49,7 +49,7 @@ impl Removal {
                     let mut workspaces = page
                         .providers
                         .iter()
-                        .filter(|provider| provider.app_id == "so.tilo.settings")
+                        .filter(|provider| provider.app_id == ui::apps::SETTINGS)
                         .map(|provider| provider.workspace.as_str())
                         .collect::<Vec<_>>();
                     workspaces.sort_unstable();

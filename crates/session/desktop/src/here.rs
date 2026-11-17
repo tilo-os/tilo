@@ -325,7 +325,7 @@ impl AgentFinished {
 }
 
 /// Console, where an agent's card is.
-const AGENTS_APP: &str = "so.tilo.console";
+use tilo_app_id::apps::CONSOLE as AGENTS_APP;
 /// The action key of a finished notice's choice that opens the card of the agent of the client
 /// after it.
 pub const AGENT_CARD_ACTION: &str = "agent-card:";

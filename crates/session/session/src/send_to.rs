@@ -249,7 +249,7 @@ impl Service for SendToService {
 }
 
 /// The app that keeps a workspace's conversations.
-pub(crate) const CHAT: &str = "so.tilo.chat";
+pub use ui::apps::CHAT;
 
 /// The resource Chat publishes a workspace's conversations under.
 const CHAT_WORKSPACE: &str = "chat.workspace";

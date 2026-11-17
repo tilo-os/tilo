@@ -64,7 +64,7 @@ const STILL_LIMIT: Duration = Duration::from_secs(60);
 const KEPT_JOBS: usize = 8;
 
 /// The app whose records publish the operations answered here.
-const VIDEO_EDITOR: &str = "so.tilo.video-editor";
+use ui::apps::VIDEO_EDITOR;
 
 /// The operations the service answers.
 const RENDER: &str = "render-timeline";

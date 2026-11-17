@@ -1977,7 +1977,7 @@ mod tests {
         // it in its app as a link to it does: the app's `open` on that record, through the action host,
         // which brings the window on it forward or opens the app there.
         {
-            const PDF: &str = "so.tilo.pdf-viewer";
+            const PDF: &str = ui::apps::PDF_VIEWER;
             const FORM: &str = "uuid:6d1c1f36-0000-4000-8000-0000000000aa";
             let home = tilo_test_env::TestHome::new().expect("a home");
             let directory = app_state::workspace_index_directory(home.data(), PDF, "here")
@@ -2042,7 +2042,7 @@ mod tests {
         // A PDF its workspace's index names `application.pdf` is offered for "application", and
         // choosing it opens PDF Viewer on that record, as a link to the record opens it on the page.
         {
-            const PDF: &str = "so.tilo.pdf-viewer";
+            const PDF: &str = ui::apps::PDF_VIEWER;
             const FORM: &str = "uuid:6d1c1f36-0000-4000-8000-0000000000aa";
             let _settled = ui::motion::testing::settled();
             let mut minter = tilo_desktop_model::IdMinter::new(7);
@@ -2571,7 +2571,7 @@ mod tests {
     }
 
     /// Notes, as the page's bundle registers it.
-    const NOTES_APP: &str = "so.tilo.notes";
+    const NOTES_APP: &str = ui::apps::NOTES;
 
     /// The places the search over `scope` lists, each with the facts it shows about it.
     fn places_listed(

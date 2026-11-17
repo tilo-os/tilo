@@ -34,7 +34,7 @@ use crate::search::AppActions;
 
 /// The agent the person's workspace records name: a participant without a window, which the session
 /// runs for the person who keeps it.
-const AGENT_PACKAGE: &str = "so.tilo.agent";
+use ui::apps::AGENT as AGENT_PACKAGE;
 
 /// The answer for `asked` that did not open, and `why`, with trying again as its button.
 fn not_opened(policy: &tilo_desktop_policy::DesktopPolicy, asked: &str, why: &str) -> Outcome {

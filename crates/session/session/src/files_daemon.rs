@@ -15,7 +15,7 @@ use crate::Launches;
 /// The login unit that serves the person's own workspace.
 const UNIT: &str = "tilo-files-workspace.service";
 /// The app whose endpoint the daemon is: the one that keeps the tree record.
-const FILES_APP: &str = "so.tilo.file-explorer";
+use ui::apps::FILE_EXPLORER as FILES_APP;
 /// The process to record instead of the unit's, for a run where something other than the login's
 /// unit serves the trees: a test that mounts them itself names its own process here.
 const ENDPOINT_PID: &str = "TILO_FILES_ENDPOINT_PID";

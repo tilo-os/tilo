@@ -85,6 +85,7 @@ hex.workspace = true
 serde_json.workspace = true
 tracing.workspace = true
 uuid.workspace = true
+tilo-app-id = { version = "0.1.0", path = "../../platform/tilo-app-id" }
 
 [dev-dependencies]
 tempfile.workspace = true

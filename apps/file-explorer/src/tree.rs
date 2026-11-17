@@ -67,7 +67,7 @@ pub struct FilesTreeShell;
 
 impl ResourceApp for FilesTreeShell {
     type Resource = FilesWindow;
-    const ID: &'static str = "so.tilo.file-explorer";
+    const ID: &'static str = ui::apps::FILE_EXPLORER;
     const TITLE: &'static str = "Files";
     const TITLE_KEY: &'static str = "files-app-title";
     const ICON: Option<&'static str> = Some("file-explorer");

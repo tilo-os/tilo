@@ -132,7 +132,7 @@ const SCENARIOS: &[&str] = &[
 
 impl ResourceApp for WindowsShell {
     type Resource = Windows;
-    const ID: &'static str = "so.tilo.windows";
+    const ID: &'static str = ui::apps::WINDOWS;
     const READS_HOST: &'static [ui::launch::HostSource] = &[ui::launch::HostSource::Processes];
     const TITLE: &'static str = "Windows Apps";
     const TITLE_KEY: &'static str = "windows-app-title";

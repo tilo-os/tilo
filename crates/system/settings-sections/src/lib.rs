@@ -22,7 +22,7 @@ pub mod shortcuts;
 
 /// The app whose settings they are, whose controls change them and under
 /// which a change is admitted.
-pub const APP_ID: &str = "so.tilo.settings";
+pub use ui::apps::SETTINGS as APP_ID;
 
 pub const APP_TITLE: &str = "Settings";
 

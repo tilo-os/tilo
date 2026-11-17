@@ -46,7 +46,7 @@ pub const SYSTEM_SETTINGS_CAPABILITY: &str = "settings.system";
 /// the image owns the grant and the package asks for it, so an app that
 /// declares [`SYSTEM_SETTINGS_CAPABILITY`] without being listed here still
 /// reaches only its own entries.
-pub const SYSTEM_SETTINGS_APPS: &[&str] = &["so.tilo.settings"];
+pub const SYSTEM_SETTINGS_APPS: &[&str] = &[tilo_app_id::apps::SETTINGS];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Reach {

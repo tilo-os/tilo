@@ -16,6 +16,7 @@ durable-store = { path = "../../system/durable-store" }
 tilo-feedback-review = { path = "../feedback-review" }
 # A reviewed submission is a stored value of the record it is filed in.
 tilo-resource = { path = "../../sdk/tilo-resource" }
+tilo-app-id = { version = "0.1.0", path = "../../platform/tilo-app-id" }
 
 [dev-dependencies]
 automerge.workspace = true

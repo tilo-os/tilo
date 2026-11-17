@@ -105,7 +105,7 @@ pub struct SpeedTestShell;
 
 impl ResourceApp for SpeedTestShell {
     type Resource = SpeedTest;
-    const ID: &'static str = "so.tilo.speed-test";
+    const ID: &'static str = ui::apps::SPEED_TEST;
     const TITLE: &'static str = "Speed Test";
     const TITLE_KEY: &'static str = "speed-test-app-title";
 

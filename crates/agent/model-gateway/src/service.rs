@@ -99,17 +99,17 @@ mod provision;
 
 /// The launcher's handoff: a little-endian `u32` length, then JSON.
 const HANDOFF_FRAMING: wire_frame::Framing = wire_frame::Framing::little_endian(4096);
-const SETTINGS_APP: &str = "so.tilo.settings";
-const AGENT_APP: &str = "so.tilo.agent";
-const CHAT_APP: &str = "so.tilo.chat";
-const PHOTOS_APP: &str = "so.tilo.photos";
-const CANVAS_APP: &str = "so.tilo.canvas";
+use tilo_app_id::apps::AGENT as AGENT_APP;
+use tilo_app_id::apps::CANVAS as CANVAS_APP;
+use tilo_app_id::apps::CHAT as CHAT_APP;
+use tilo_app_id::apps::PHOTOS as PHOTOS_APP;
+use tilo_app_id::apps::SETTINGS as SETTINGS_APP;
 /// The desktop's report composer: its review asks a model which words of a
 /// report are personal, a completion without tools, as Chat's are.
 const FEEDBACK_APP: &str = "so.tilo.feedback-composer";
 /// The session's history: what its changes were, and the names over the runs
 /// of them, asked as one completion without tools, as Chat's are.
-const ACTIVITY_APP: &str = "so.tilo.activity";
+use tilo_app_id::apps::ACTIVITY as ACTIVITY_APP;
 const MAX_VISION_IMAGE_BYTES: usize = 1024 * 1024;
 /// Face batches are intentionally small.  A large library is scanned as
 /// bounded background batches by Photos, never materialized into one giant

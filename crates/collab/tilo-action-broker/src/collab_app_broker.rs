@@ -7710,7 +7710,7 @@ fn private_display_control(
     route: &CrdtRoute,
     identity: &AdmittedJoinIdentity,
 ) -> Option<runtime_collab::settings::host::DisplayControl> {
-    if route.app_id != "so.tilo.settings" || identity.agent_id.is_some() {
+    if route.app_id != ui::apps::SETTINGS || identity.agent_id.is_some() {
         return None;
     }
     let registration = identity.worker_registration.clone()?;
@@ -7847,10 +7847,10 @@ fn delegate_realtime_command(
         .map_err(BrokerError::failed)
 }
 
-/// The only application that may carry Wi-Fi credentials between devices.
-const WIFI_CONTINUITY_APP_ID: &str = "so.tilo.settings";
 /// The only application that may send files to nearby devices.
-const NEARBY_TRANSFER_APP_ID: &str = "so.tilo.file-explorer";
+use ui::apps::FILE_EXPLORER as NEARBY_TRANSFER_APP_ID;
+/// The only application that may carry Wi-Fi credentials between devices.
+use ui::apps::SETTINGS as WIFI_CONTINUITY_APP_ID;
 
 fn delegate_wifi_continuity_command(
     services: &HostServices,
@@ -7959,7 +7959,7 @@ fn nearby_transfer_change(
 }
 
 /// The only application that manages the person's speaker groups.
-const SPEAKER_APP_ID: &str = "so.tilo.settings";
+use ui::apps::SETTINGS as SPEAKER_APP_ID;
 
 /// The wait for the speaker groups' next change past `after` for a
 /// connection on `route_app`: only the certified Settings route may wait, as
@@ -10425,7 +10425,7 @@ pub mod tests {
     #[tokio::test(start_paused = true)]
     async fn launcher_attestation_decides_on_one_look() {
         use tokio::io::AsyncWriteExt as _;
-        const APP: &str = "so.tilo.calculator";
+        const APP: &str = ui::apps::CALCULATOR;
         const WORKSPACE: &str = "5ba25f73-87c5-447f-a5a6-880dc4249a81";
         let launches = Arc::new(RecordedLaunches(Mutex::new(Vec::new())));
         let services = HostServices {

@@ -70,6 +70,7 @@ tilo-app-state = { path = "../../system/app-state" }
 hex.workspace = true
 # The window request the channel carries, as the app reads it.
 ui = { package = "tilo-ui", path = "../../sdk/ui-core", default-features = false }
+tilo-app-id = { version = "0.1.0", path = "../../platform/tilo-app-id" }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # The workspace-hack's native feature set does not build for wasm32.

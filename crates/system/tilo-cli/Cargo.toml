@@ -105,6 +105,7 @@ uuid.workspace = true
 zeroize.workspace = true
 # A Thunderbird message read for Mail's `deliver-message`: who, what, when and its words.
 mail-parser = "0.11.4"
+tilo-app-id = { version = "0.1.0", path = "../../platform/tilo-app-id" }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 fuser.workspace = true

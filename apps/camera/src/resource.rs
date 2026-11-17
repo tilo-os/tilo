@@ -65,7 +65,7 @@ pub struct CameraShell;
 
 impl ResourceApp for CameraShell {
     type Resource = Record;
-    const ID: &'static str = "so.tilo.camera";
+    const ID: &'static str = ui::apps::CAMERA;
     const TITLE: &'static str = "Camera";
     const TITLE_KEY: &'static str = "camera-app-title";
     const ICON: Option<&'static str> = Some("camera");

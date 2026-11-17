@@ -101,7 +101,7 @@ use tilo_user_identity::{
 };
 
 /// The app a hosted workspace opens Browser through.
-pub const APP: &str = "so.tilo.browser";
+pub use ui::apps::BROWSER as APP;
 /// What people read Browser's name as.
 pub const TITLE: &str = "Browser";
 

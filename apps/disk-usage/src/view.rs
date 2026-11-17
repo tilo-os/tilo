@@ -32,7 +32,7 @@ use ui::tilo_resource::AbsolutePath;
 use ui::widget::DrawChild;
 
 pub(crate) const OWNER_NAME: &str = "Disk Usage Analyzer";
-const OWNER_APP: &str = "so.tilo.disk-usage";
+use ui::apps::DISK_USAGE as OWNER_APP;
 
 fn owner() -> ui::attention::Owner {
     ui::attention::Owner::new(OWNER_APP, OWNER_NAME).with_icon(Icon::HardDrive)

@@ -128,11 +128,11 @@ fn child_fd_reserved(fd: i32) -> bool {
     }
     false
 }
-const STORE_APP_ID: &str = "so.tilo.store";
 /// Settings holds `app-host` for the person's languages alone: the host answers it which language packs
 /// are offered and installs one, never the Store's package-management interface (the host decides by
 /// the app id stamped on the connection).
-const SETTINGS_APP_ID: &str = "so.tilo.settings";
+use tilo_app_id::apps::SETTINGS as SETTINGS_APP_ID;
+use tilo_app_id::apps::STORE as STORE_APP_ID;
 pub const APP_HOST_LAUNCH_MAGIC: [u8; 4] = *b"QAH1";
 /// After [`APP_HOST_LAUNCH_MAGIC`]: a big-endian `u32` length, then the JSON handoff.
 const APP_HOST_HANDOFF_FRAMING: Framing = Framing::big_endian(1024).reject_empty();

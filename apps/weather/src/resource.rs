@@ -165,7 +165,7 @@ pub struct WeatherShell;
 
 impl ResourceApp for WeatherShell {
     type Resource = Weather;
-    const ID: &'static str = "so.tilo.weather";
+    const ID: &'static str = ui::apps::WEATHER;
     const TITLE: &'static str = "Weather";
     const TITLE_KEY: &'static str = "weather-app-title";
 

@@ -72,7 +72,10 @@ pub fn command(
     }
     let command: Command = serde_json::from_value(command.clone()).map_err(io::Error::other)?;
     if !matches!(command.edit, Edit::Add(_))
-        && !matches!(app, "so.tilo.settings" | "so.tilo.word-processor")
+        && !matches!(
+            app,
+            tilo_app_id::apps::SETTINGS | tilo_app_id::apps::WORD_PROCESSOR
+        )
     {
         return Err(denied());
     }

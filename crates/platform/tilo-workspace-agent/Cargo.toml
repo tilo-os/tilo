@@ -16,6 +16,7 @@ serde.workspace = true
 serde_json.workspace = true
 tilo-action-policy = { version = "0.1.0", path = "../../collab/action-policy" }
 tilo-resource = { version = "0.1.0", path = "../../sdk/tilo-resource" }
+tilo-app-id = { version = "0.1.0", path = "../tilo-app-id" }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 workspace-hack = { version = "0.1" }

@@ -1481,7 +1481,7 @@ fn annotated(scenario: Option<&str>) -> bool {
 
 impl ResourceApp for SheetsShell {
     type Resource = Workbook;
-    const ID: &'static str = "so.tilo.sheets";
+    const ID: &'static str = ui::apps::SHEETS;
     // Each window shows the document it opened, never another window's.
     const WINDOW_RESOURCE: bool = true;
     const TITLE: &'static str = "Sheets";

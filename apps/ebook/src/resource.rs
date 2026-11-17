@@ -1025,7 +1025,7 @@ pub struct EbookShell;
 
 impl ResourceApp for EbookShell {
     type Resource = Ebook;
-    const ID: &'static str = "so.tilo.ebook";
+    const ID: &'static str = ui::apps::EBOOK;
     const TITLE: &'static str = "Books";
     const TITLE_KEY: &'static str = "ebook-app-title";
     const ICON: Option<&'static str> = Some("ebook");

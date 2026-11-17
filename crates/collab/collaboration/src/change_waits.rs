@@ -8,11 +8,11 @@ use super::{CollabEvent, InboundBridge};
 
 /// The app whose routes follow the speaker groups: only the certified
 /// Settings route is answered, so no other app spends a call on it.
-const SPEAKER_APP_ID: &str = "so.tilo.settings";
+use tilo_app_id::apps::SETTINGS as SPEAKER_APP_ID;
 
 /// The app whose routes follow the drive list and the app list: only the
 /// certified Files route is answered, so no other app spends a call on it.
-const DRIVES_APP_ID: &str = "so.tilo.file-explorer";
+use tilo_app_id::apps::FILE_EXPLORER as DRIVES_APP_ID;
 
 /// Start the waits `app_id`'s route on `channel` may follow. Every route
 /// follows Nearby Send (the broker answers only Files); the speaker groups

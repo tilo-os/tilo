@@ -14,7 +14,7 @@ use durable_store::{DurableStore as _, MemoryStore, StorageKey, Stored, WriteOp}
 use serde_json::{Map, Value};
 
 /// Where the document lives in the store. Changing it orphans stored settings.
-const SETTINGS_PACKAGE: &str = "so.tilo.settings";
+use tilo_app_id::apps::SETTINGS as SETTINGS_PACKAGE;
 
 fn key() -> StorageKey {
     StorageKey::app(SETTINGS_PACKAGE)

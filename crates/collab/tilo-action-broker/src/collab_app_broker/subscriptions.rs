@@ -361,7 +361,7 @@ mod tests {
         )
     }
 
-    const CHAT: &str = "so.tilo.chat";
+    const CHAT: &str = ui::apps::CHAT;
 
     /// Chat's messages: a chain of parts of the workspace's default record.
     fn messages() -> ui::record::DocumentId {

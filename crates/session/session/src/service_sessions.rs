@@ -37,7 +37,7 @@ use tilo_desktop_model::WorkspaceId;
 use crate::engine::Engine;
 
 const UNAVAILABLE: &str = "Selected website session unavailable";
-const BROWSER: &str = "so.tilo.browser";
+use ui::apps::BROWSER;
 const MAX_STORE: u64 = 2 * 1024 * 1024;
 
 /// The person's account custody, as the apps it serves reach it on the action API.

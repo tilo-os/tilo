@@ -44,8 +44,8 @@ const COMMENT: &str = "tasks/tasks.issues#comment";
 const MOVE_UNDER: &str = "tasks/tasks.issues#move-under";
 const LINK: &str = "tasks/tasks.issues#link";
 /// How Tasks names the kind of an issue a link points at.
-const ISSUE_KIND: &str = "tasks.issues.issues";
-const TASKS_APP: &str = "so.tilo.tasks";
+const ISSUE_KIND: &str = "tasks.tracker.issues";
+use tilo_app_id::apps::TASKS as TASKS_APP;
 
 fn kind(source: &str) -> Result<ServiceKind> {
     ServiceKind::from_key(source)

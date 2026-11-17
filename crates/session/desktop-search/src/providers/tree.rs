@@ -32,7 +32,7 @@ pub struct TreeFile {
 }
 
 /// The app that keeps a workspace's tree: the folder a row opens it at.
-const FILES_APP: &str = "so.tilo.file-explorer";
+use ui::apps::FILE_EXPLORER as FILES_APP;
 
 /// The most rows one query offers.
 const MAX_ROWS: usize = 64;

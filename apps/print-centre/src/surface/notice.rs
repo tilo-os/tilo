@@ -18,7 +18,7 @@ pub(super) fn serial() -> std::sync::MutexGuard<'static, ()> {
     LOCK.lock_recover()
 }
 
-pub(super) const OWNER_APP: &str = "so.tilo.print-centre";
+pub use ui::apps::PRINT_CENTRE as OWNER_APP;
 pub(super) const OWNER_NAME: &str = "Print centre";
 
 /// Print centre, as the ledger and the waiting stack name it.

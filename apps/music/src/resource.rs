@@ -268,7 +268,7 @@ pub struct MusicShell;
 
 impl ResourceApp for MusicShell {
     type Resource = Library;
-    const ID: &'static str = "so.tilo.music";
+    const ID: &'static str = ui::apps::MUSIC;
     const TITLE: &'static str = "Music";
     const TITLE_KEY: &'static str = "music-app-title";
     const ICON: Option<&'static str> = Some("music");

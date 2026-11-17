@@ -3,9 +3,6 @@
 //! from what is in front of it. Kept apart from the shell, which only the
 //! page builds, so its tests run on the host too.
 
-/// The Console app.
-pub(crate) const CONSOLE_APP: &str = "so.tilo.console";
-
 /// Where the page is in holding Console in front.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) enum ConsoleHold {

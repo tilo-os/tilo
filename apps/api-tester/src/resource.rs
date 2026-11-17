@@ -372,7 +372,7 @@ impl ApiTesterShell {
 
 impl ResourceApp for ApiTesterShell {
     type Resource = Workspace;
-    const ID: &'static str = "so.tilo.api-tester";
+    const ID: &'static str = ui::apps::API_TESTER;
     const TITLE: &'static str = "API Tester";
     const TITLE_KEY: &'static str = "api-tester-app-title";
     const ICON: Option<&'static str> = Some("api-tester");

@@ -71,6 +71,7 @@ wire-frame = { path = "../../system/wire-frame" }
 tilo-files = { optional = true, path = "../../platform/tilo-files" }
 url.workspace = true
 agent-provider-config = { path = "../provider-config" }
+tilo-app-id = { version = "0.1.0", path = "../../platform/tilo-app-id" }
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
 tilo-clock = { path = "../../platform/tilo-clock", optional = true }

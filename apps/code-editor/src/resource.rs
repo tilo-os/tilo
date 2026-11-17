@@ -48,7 +48,7 @@ fn launched_path(argument: &str) -> PathBuf {
 
 impl ResourceApp for CodeEditorShell {
     type Resource = Project;
-    const ID: &'static str = "so.tilo.code-editor";
+    const ID: &'static str = ui::apps::CODE_EDITOR;
     // Each window shows the document it opened, never another window's.
     const WINDOW_RESOURCE: bool = true;
     const TITLE: &'static str = "Code Editor";

@@ -14,8 +14,8 @@ pub mod client;
 
 pub const SERVICE: &str = "messaging";
 /// The only app that holds messaging accounts.
-pub const MESSAGES_APP: &str = "so.tilo.messages";
-pub const PASSWORDS_APP: &str = "so.tilo.passwords";
+pub use tilo_app_id::apps::MESSAGES as MESSAGES_APP;
+pub use tilo_app_id::apps::PASSWORDS as PASSWORDS_APP;
 pub const SERVICE_FD_ENV: &str = "TILO_SVC_MESSAGING_FD";
 
 pub fn inherited() -> Option<(crate::EnrollmentClient, crate::MessagingClient)> {

@@ -25,8 +25,8 @@ pub const SCENARIOS: &[&str] = &[
     "library", "editor", "review", "saved", "empty", "blocks", "drafted", "picker",
 ];
 
-const NOTES: &str = "so.tilo.notes";
-const MAIL: &str = "so.tilo.mail";
+use ui::apps::MAIL;
+use ui::apps::NOTES;
 
 fn resource(id: &str, kind: &str, label: &str) -> CatalogueResource {
     CatalogueResource {

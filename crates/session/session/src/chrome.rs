@@ -30,7 +30,7 @@ use crate::notifications::NoticeSignals;
 use crate::platform::notice::{Notice, Notices as Told};
 
 /// The app whose live activity is the clocks app's when the shell reads the running timer.
-pub(crate) const CLOCKS_APP: &str = "so.tilo.clocks";
+pub use ui::apps::CLOCKS as CLOCKS_APP;
 
 /// What the board published, parsed, at the revision it was read at.
 type Parsed = (u64, Rc<Vec<(String, Published)>>);
@@ -974,7 +974,7 @@ mod tests {
         // there until the app's own window is up: a card appears, and the screen never shows a blank
         // card or two of them.
         {
-            const CHAT_APP: &str = "so.tilo.chat";
+            const CHAT_APP: &str = ui::apps::CHAT;
             let board = Arc::new(runtime_collab::LiveActivities::default());
             let cards = crate::cards::Cards::new();
             let activities = Activities::new(Arc::clone(&board), cards.clone());

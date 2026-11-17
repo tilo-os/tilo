@@ -669,7 +669,7 @@ impl ui::widget::Decorator for Inspected {
         };
         let root = self.content.get_rect();
         Some(serde_json::json!({
-            "app": "so.tilo.settings",
+            "app": ui::apps::SETTINGS,
             "nav_id": nav_id,
             "ready": valid(root) && nav_id.is_some(),
             "search_query": self.search_query(),

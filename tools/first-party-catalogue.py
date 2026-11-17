@@ -1,13 +1,12 @@
 #!/usr/bin/env python3
-"""Write the first-party catalogue from the apps' own manifests.
+"""Write the first-party app ids from the apps' own manifests.
 
-Every `apps/*/tilo-app.toml` is one first-party package. The catalogue is written to
-`crates/session/desktop-model/src/first_party_catalogue.rs`, which no one
-edits by hand: the desktop model (and through it every host) reads the
-first-party packages from there.
+Every `apps/*/tilo-app.toml` is one first-party package. The ids are written to
+`crates/platform/tilo-app-id/src/apps/app_ids.rs`, which no one edits by hand: every
+crate that names a first-party app reads its constant from there.
 
-  first-party-catalogue.py           write the catalogue
-  first-party-catalogue.py --check   fail when the written one differs
+  first-party-catalogue.py           write the ids
+  first-party-catalogue.py --check   fail when the written ones differ
 
 `--check` prints its finding as `path: message` on stdout.
 """
@@ -19,7 +18,7 @@ import tomllib
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-OUTPUT = ROOT / "crates/session/desktop-model/src/first_party_catalogue.rs"
+OUTPUT = ROOT / "crates/platform/tilo-app-id/src/apps/app_ids.rs"
 
 
 def packages() -> list[str]:
@@ -32,18 +31,21 @@ def packages() -> list[str]:
     return sorted(ids)
 
 
+def constant(package: str) -> str:
+    """`so.tilo.file-explorer` → `FILE_EXPLORER`."""
+    return package.removeprefix("so.tilo.").replace("-", "_").upper()
+
+
 def rendered() -> str:
     found = packages()
-
-    def listed(name: str, doc: str, ids: list[str]) -> str:
-        rows = "".join(f'    "{package}",\n' for package in ids)
-        return f"/// {doc}\npub const {name}: &[&str] = &[\n{rows}];\n"
-
+    rows = "".join(f'    {constant(package)} => "{package}",\n' for package in found)
     return (
         "// Written by tools/first-party-catalogue.py from apps/*/tilo-app.toml;\n"
         "// tools/policy checks it matches them. Do not edit by hand.\n"
         "\n"
-        + listed("FIRST_PARTY_PACKAGES", "Every first-party package: one per app manifest.", found)
+        "first_party_apps! {\n"
+        + rows
+        + "}\n"
     )
 
 
@@ -55,7 +57,7 @@ def main() -> int:
             print(f"{OUTPUT.relative_to(ROOT)}: differs from the app manifests; "
                   "run tools/first-party-catalogue.py")
             return 1
-        print("first-party catalogue OK", file=sys.stderr)
+        print("first-party app ids OK", file=sys.stderr)
         return 0
     OUTPUT.write_text(text)
     return 0

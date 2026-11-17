@@ -17,7 +17,7 @@ use ui::prelude::*;
 
 pub use studio::Studio;
 
-pub const APP_ID: &str = "so.tilo.themes";
+pub use ui::apps::THEMES as APP_ID;
 pub const APP_TITLE: &str = "Theme Studio";
 
 pub const GALLERY_SCENARIO: &str = "gallery";

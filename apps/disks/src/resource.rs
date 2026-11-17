@@ -356,7 +356,7 @@ const SCENARIOS: &[&str] = &[
 
 impl ResourceApp for DisksShell {
     type Resource = Disks;
-    const ID: &'static str = "so.tilo.disks";
+    const ID: &'static str = ui::apps::DISKS;
     const READS_HOST: &'static [ui::launch::HostSource] = &[ui::launch::HostSource::Disks];
     const TITLE: &'static str = "Disks";
     const TITLE_KEY: &'static str = "disks-app-title";
@@ -463,7 +463,7 @@ mod tests {
 
     impl ResourceApp for SampleDisks {
         type Resource = Disks;
-        const ID: &'static str = "so.tilo.disks";
+        const ID: &'static str = ui::apps::DISKS;
         const TITLE: &'static str = "Disks";
 
         fn view(cx: &mut ViewCx<Disks>) -> Element {

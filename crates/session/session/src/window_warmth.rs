@@ -227,7 +227,7 @@ mod tests {
     use tilo_desktop_model::ids::{GroupId, StripId, TabId};
     use tilo_desktop_model::{Strip, Tab, TileContent, WindowGroup, WindowWidth, Workspace};
 
-    const APP: &str = "so.tilo.tasks";
+    const APP: &str = ui::apps::TASKS;
     const PERSON: &str = "ada";
 
     /// A workspace named `name` holding one window of [`APP`], where `PERSON` holds `role`.

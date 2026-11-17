@@ -35,6 +35,7 @@ tilo-action-policy = { version = "0.1.0", path = "../../collab/action-policy" }
 # protocol. Framing is plain `Read`/`Write`, so the messages read and write on
 # every target; only the client's transport is a Unix socket.
 wire-frame = { version = "0.1.0", path = "../../system/wire-frame" }
+tilo-app-id = { version = "0.1.0", path = "../../platform/tilo-app-id" }
 
 [target.'cfg(unix)'.dependencies]
 # Caller-private atomic publication through the existing canonical file API.

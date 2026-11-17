@@ -256,7 +256,7 @@ mod tests {
     fn a_change_written_to_a_file_record_becomes_an_event() {
         use durable_store::{StorageKey, WriteOp};
 
-        const APP: &str = "so.tilo.word-processor";
+        const APP: &str = ui::apps::WORD_PROCESSOR;
         const WORKSPACE: &str = "7c307c8d-bfa5-46fa-ae08-fa2fe4790bd4";
         let dir = tempfile::tempdir().unwrap();
         let changes = Changes::default();

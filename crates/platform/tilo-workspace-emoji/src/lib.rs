@@ -16,7 +16,7 @@ use tilo_resource::{ActionCx, Doc, Map, Model, ModelError, Refusal, Settable, Sl
 mod tests;
 
 /// The app that owns the record and decides its changes: Chat ships wherever a workspace is used.
-pub const OWNER: &str = "so.tilo.chat";
+pub use tilo_app_id::apps::CHAT as OWNER;
 
 pub const KIND: &str = "tilo.workspace.emoji";
 

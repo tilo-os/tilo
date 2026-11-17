@@ -115,7 +115,7 @@ mod tests {
     use ui::automerge::{AutoCommit, ROOT, ReadDoc as _};
     use ui::record::ResourceType;
 
-    const APP: &str = "so.tilo.chat";
+    const APP: &str = tilo_app_id::apps::CHAT;
     const PERSON: &str = "4f1e2d3c4b5a69788796a5b4c3d2e1f00f1e2d3c4b5a69788796a5b4c3d2e1f0";
     const WORKSPACE: &str = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 

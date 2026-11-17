@@ -10,7 +10,7 @@ use crate::model::{
     SmartStatusOpt, Topology,
 };
 
-const APP_ID: &str = "so.tilo.disks";
+use ui::apps::DISKS as APP_ID;
 
 /// Ask the session for this machine's storage.
 ///

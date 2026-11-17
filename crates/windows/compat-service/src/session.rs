@@ -32,7 +32,7 @@ use crate::{
     RuntimeRegistry, SandboxExecutor, ServiceError, VmDelegate,
 };
 
-const MANAGER_APP_ID: &str = "so.tilo.windows";
+use tilo_app_id::apps::WINDOWS as MANAGER_APP_ID;
 /// Requests and responses: a little-endian `u32` length, then JSON. A request
 /// that passes a descriptor carries it with the length. Empty frames are
 /// invalid.

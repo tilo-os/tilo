@@ -260,7 +260,7 @@ fn probe_contact_directory_engine(_: &str) -> Result<(), String> {
 
 impl ResourceApp for MessagesShell {
     type Resource = Messages;
-    const ID: &'static str = "so.tilo.messages";
+    const ID: &'static str = ui::apps::MESSAGES;
     const TITLE: &'static str = "Messages";
     const TITLE_KEY: &'static str = "messages-app-title";
     const ICON: Option<&'static str> = Some("chat");

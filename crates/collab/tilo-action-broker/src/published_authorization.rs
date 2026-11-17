@@ -10,7 +10,7 @@ mod tests {
 
     const OWNER: &str = "owner-person";
     const WORKSPACE: &str = "workspace-7";
-    const WRITER: &str = "so.tilo.word-processor";
+    const WRITER: &str = ui::apps::WORD_PROCESSOR;
 
     /// Admit `action` on `surface` for `person` at `now`: whether it asks.
     fn authorize_person_published(

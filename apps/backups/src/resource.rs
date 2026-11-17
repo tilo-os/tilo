@@ -72,7 +72,7 @@ pub struct BackupsShell;
 
 impl ResourceApp for BackupsShell {
     type Resource = Backups;
-    const ID: &'static str = "so.tilo.backups";
+    const ID: &'static str = ui::apps::BACKUPS;
     const TITLE: &'static str = "Backups";
     const TITLE_KEY: &'static str = "backups-app-title";
     const ICON: Option<&'static str> = Some("backups");

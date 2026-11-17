@@ -93,6 +93,7 @@ taffy.workspace = true
 # The data directory for the workspace document, the workspace mount the
 # attachment picker browses, and the session's account and host names.
 tilo-paths = { path = "../../crates/platform/tilo-paths" }
+
 [dev-dependencies]
 # Tests build their image fixtures.
 image = { workspace = true, features = ["png"] }

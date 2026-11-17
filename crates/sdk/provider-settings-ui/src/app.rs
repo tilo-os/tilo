@@ -56,7 +56,7 @@ pub fn definition() -> &'static ui::application::ApplicationDefinition {
 }
 impl ResourceApp for ProviderSettingsApp {
     type Resource = Providers;
-    const ID: &'static str = "so.tilo.model-providers";
+    const ID: &'static str = ui::apps::MODEL_PROVIDERS;
     const TITLE: &'static str = "Model providers";
     const ICON: Option<&'static str> = Some("settings");
     fn view(cx: &mut ViewCx<Providers>) -> Element {

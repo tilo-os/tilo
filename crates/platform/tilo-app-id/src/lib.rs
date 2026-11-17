@@ -5,6 +5,8 @@ use std::str::FromStr;
 
 use serde::{Deserialize, Serialize};
 
+pub mod apps;
+
 pub const MAX_APP_ID_BYTES: usize = 255;
 
 /// What a person installs and runs, named: its reverse-DNS id, which the dot keeps

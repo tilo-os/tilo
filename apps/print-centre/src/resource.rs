@@ -236,7 +236,7 @@ pub struct PrintCentreShell;
 
 impl ResourceApp for PrintCentreShell {
     type Resource = PrintDefaults;
-    const ID: &'static str = "so.tilo.print-centre";
+    const ID: &'static str = ui::apps::PRINT_CENTRE;
     const TITLE: &'static str = "Print Centre";
     const TITLE_KEY: &'static str = "print-centre-app-title";
 

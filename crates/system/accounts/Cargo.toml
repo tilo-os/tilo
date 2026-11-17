@@ -50,6 +50,7 @@ bounded-command = { version = "0.1.0", path = "../../../crates/system/bounded-co
 # The person's accounts as a record of their own (`person`): the resource
 # layer, without any UI.
 tilo-resource = { version = "0.1.0", path = "../../sdk/tilo-resource", optional = true }
+tilo-app-id = { version = "0.1.0", path = "../../platform/tilo-app-id" }
 
 [features]
 person = ["dep:tilo-resource"]

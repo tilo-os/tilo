@@ -871,7 +871,7 @@ pub const DEVICE_PANEL: &str = "so.tilo.quick-settings";
 
 /// The app a workspace's files are the record of: the tree every device
 /// holding the workspace mounts or mirrors, published as this app's record.
-pub const FILES_APP: &str = "so.tilo.file-explorer";
+pub use tilo_app_id::apps::FILE_EXPLORER as FILES_APP;
 
 /// The kind the session publishes its own resources under: the compositor's
 /// state, the clipboard, the lock.

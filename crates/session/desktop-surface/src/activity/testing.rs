@@ -547,7 +547,7 @@ impl ActivityHost for TestHost {
 }
 
 /// The app the fixture records belong to, as a host admits them.
-pub(crate) const RECORD_APP: &str = "so.tilo.tasks";
+pub use ui::apps::TASKS as RECORD_APP;
 
 /// Every record the active workspace holds in `records` , as a host admits it to the pane: the
 /// checkout its index names and the document as its app last wrote it.

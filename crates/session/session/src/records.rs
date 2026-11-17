@@ -391,7 +391,7 @@ mod tests {
     use durable_store::{StorageKey, WriteOp};
     use ui::record::{DocumentId, ResourceType};
 
-    const NOTES: &str = "so.tilo.notes";
+    const NOTES: &str = ui::apps::NOTES;
     const WORKSPACE: &str = "6d1c1f36-0000-4000-8000-000000000001";
     const NOTE: &str = "tab:00000000000000a1";
 

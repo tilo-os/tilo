@@ -103,7 +103,7 @@ fn probe_timezone_engine(_: &str) -> Result<(), String> {
 
 impl ResourceApp for ClocksShell {
     type Resource = Clocks;
-    const ID: &'static str = "so.tilo.clocks";
+    const ID: &'static str = ui::apps::CLOCKS;
     const TITLE: &'static str = "Clocks";
     const TITLE_KEY: &'static str = "clocks-app-title";
 

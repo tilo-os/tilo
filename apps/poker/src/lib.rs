@@ -1,6 +1,6 @@
 //! Poker: Texas hold'em for everyone in the workspace.
 
-pub const APP_ID: &str = "so.tilo.poker";
+pub use ui::apps::POKER as APP_ID;
 pub const APP_TITLE: &str = "Poker";
 
 pub mod card;

@@ -291,7 +291,7 @@ const NARROW_SCENARIOS: [&str; 2] = ["sidebar-open", "detail"];
 
 impl ResourceApp for FeedsShell {
     type Resource = Library;
-    const ID: &'static str = "so.tilo.feeds";
+    const ID: &'static str = ui::apps::FEEDS;
     const TITLE: &'static str = "Feeds";
     const TITLE_KEY: &'static str = "feeds-app-title";
     const ICON: Option<&'static str> = Some("feeds");

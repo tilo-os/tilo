@@ -12,6 +12,7 @@ automerge.workspace = true
 serde.workspace = true
 tilo-resource = { path = "../../sdk/tilo-resource" }
 uuid.workspace = true
+tilo-app-id = { version = "0.1.0", path = "../tilo-app-id" }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 workspace-hack = { version = "0.1" }

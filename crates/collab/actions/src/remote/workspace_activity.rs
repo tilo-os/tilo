@@ -24,7 +24,7 @@ use crate::api::ActionAddress;
 /// The provider the session serves workspace activity under.
 pub const PROVIDER: &str = "tilo.activity";
 /// The application whose window shows it, and whose grants reach it.
-pub const APP_ID: &str = "so.tilo.activity";
+pub use tilo_app_id::apps::ACTIVITY as APP_ID;
 /// The resource every action is an action of.
 pub const RESOURCE: &str = "workspace.activity";
 

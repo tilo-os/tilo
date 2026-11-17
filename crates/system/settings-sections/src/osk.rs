@@ -4,7 +4,7 @@ use ui::tilo_resource;
 
 /// The app whose settings the layouts are: the keyboard reads them as its
 /// own.
-pub const KEYBOARD_APP_ID: &str = "so.tilo.osk";
+pub use ui::apps::OSK as KEYBOARD_APP_ID;
 
 /// The letter layouts the on-screen keyboard switches between, and the one
 /// it types with.

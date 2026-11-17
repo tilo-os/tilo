@@ -11,7 +11,7 @@ use tilo_session_client::Outbox;
 use super::AgentParticipant;
 
 /// The app whose record an agent introduces itself in.
-const CHAT: &str = "so.tilo.chat";
+use ui::apps::CHAT;
 
 /// Chat's action that names its author in the workspace's roster.
 const INTRODUCE: &str = "introduce";

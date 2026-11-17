@@ -90,7 +90,7 @@ pub struct GitClientShell;
 
 impl ResourceApp for GitClientShell {
     type Resource = GitClient;
-    const ID: &'static str = "so.tilo.git-client";
+    const ID: &'static str = ui::apps::GIT_CLIENT;
     const TITLE: &'static str = "Git";
     const TITLE_KEY: &'static str = "git-client-app-title";
     const ICON: Option<&'static str> = Some("git-client");

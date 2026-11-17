@@ -1329,7 +1329,7 @@ mod tests {
         // branch's, and the two met as a record of no identity, its history blocked.
         {
             use crate::record::workspace::WorkspaceRecords;
-            const CHAT: &str = "so.tilo.chat";
+            const CHAT: &str = tilo_app_id::apps::CHAT;
             const EMOJI: &str = "tilo.workspace.emoji";
             let initialize = |doc: &mut AutoCommit| {
                 doc.put_object(ROOT, "emoji", ObjType::Map)

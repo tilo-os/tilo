@@ -70,7 +70,7 @@ pub struct BlockList {
 }
 
 /// The Store, whose person directory keeps the person's list.
-pub const STORE_PACKAGE_ID: &str = "so.tilo.store";
+pub use tilo_app_id::apps::STORE as STORE_PACKAGE_ID;
 
 pub const PERSON_LIST_FILE: &str = "blocked.json";
 

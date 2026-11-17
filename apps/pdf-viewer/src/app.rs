@@ -134,7 +134,7 @@ fn pdf_save_request(suggested_name: &str) -> PickRequest {
 const MAX_NEW_THUMB_RASTERS_PER_FRAME: usize = tilo_page_raster::Admission::FRAME.thumbnails;
 
 #[cfg(test)]
-const APP_ID: &str = "so.tilo.pdf-viewer";
+use ui::apps::PDF_VIEWER as APP_ID;
 
 fn now_ms() -> i64 {
     i64::try_from(ui::time::unix_now_ms()).unwrap_or(0)

@@ -141,7 +141,7 @@ pub struct DiskUsageShell;
 
 impl ResourceApp for DiskUsageShell {
     type Resource = DiskUsage;
-    const ID: &'static str = "so.tilo.disk-usage";
+    const ID: &'static str = ui::apps::DISK_USAGE;
     const READS_HOST: &'static [ui::launch::HostSource] = &[ui::launch::HostSource::Files];
     const TITLE: &'static str = "Disk Usage Analyzer";
     const TITLE_KEY: &'static str = "disk-usage-app-title";

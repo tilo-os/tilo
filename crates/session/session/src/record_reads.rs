@@ -347,7 +347,7 @@ mod tests {
     use super::*;
     use crate::engine::Engine;
 
-    const APP: &str = "so.tilo.notes";
+    const APP: &str = ui::apps::NOTES;
     /// A record a host sends only once asked for it.
     const ON_DEMAND: &str = "derived:on-demand@history";
     const RECORD: &str = "note-1";

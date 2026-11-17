@@ -4392,7 +4392,7 @@ mod tests {
 
     impl ui::framework::ResourceApp for DiskCamera {
         type Resource = Camera;
-        const ID: &'static str = "so.tilo.camera";
+        const ID: &'static str = ui::apps::CAMERA;
         const TITLE: &'static str = "Camera";
 
         fn view(cx: &mut ui::framework::ViewCx<Camera>) -> ui::widget::Element {
@@ -4408,7 +4408,7 @@ mod tests {
 
     impl ui::framework::ResourceApp for SampleCamera {
         type Resource = Camera;
-        const ID: &'static str = "so.tilo.camera";
+        const ID: &'static str = ui::apps::CAMERA;
         const TITLE: &'static str = "Camera";
 
         fn view(cx: &mut ui::framework::ViewCx<Camera>) -> ui::widget::Element {

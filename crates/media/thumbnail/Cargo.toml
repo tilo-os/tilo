@@ -40,6 +40,7 @@ hex.workspace = true
 serde = { workspace = true, features = ["derive"] }
 # The staged compute request a batch job reads.
 serde_json.workspace = true
+tilo-app-id = { version = "0.1.0", path = "../../platform/tilo-app-id" }
 
 [dev-dependencies]
 tempfile.workspace = true

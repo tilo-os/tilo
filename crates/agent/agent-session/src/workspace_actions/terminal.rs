@@ -53,7 +53,7 @@ use crate::participant::actions::record_of;
 use tilo_relay_protocol::WorkspaceId;
 
 /// Terminal's app id: its session records are what the host runs.
-pub const TERMINAL_APP: &str = "so.tilo.terminal";
+pub use ui::apps::TERMINAL as TERMINAL_APP;
 /// The session record's action that runs a command line.
 const RUN: &str = "run";
 /// The session record's action that stops the command line it is running.

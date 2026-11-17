@@ -53,7 +53,7 @@ fn probe_youtube_engine(_: &str) -> Result<(), String> {
 
 impl ResourceApp for TubeShell {
     type Resource = Library;
-    const ID: &'static str = "so.tilo.tube";
+    const ID: &'static str = ui::apps::TUBE;
     const TITLE: &'static str = "Tube";
     const TITLE_KEY: &'static str = "tube-app-title";
     const ICON: Option<&'static str> = Some("tube");

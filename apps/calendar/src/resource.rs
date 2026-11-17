@@ -1140,7 +1140,7 @@ fn probe_contact_directory_engine(_: &str) -> Result<(), String> {
 
 impl ResourceApp for CalendarShell {
     type Resource = Calendar;
-    const ID: &'static str = "so.tilo.calendar";
+    const ID: &'static str = ui::apps::CALENDAR;
     const TITLE: &'static str = "Calendar";
     const TITLE_KEY: &'static str = "calendar-app-title";
     const ICON: Option<&'static str> = Some("calendar");

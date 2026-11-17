@@ -23,7 +23,7 @@ const MAX_ENDPOINT_LEN: usize = 320;
 const MAX_RECORD_BYTES: u64 = 4 * 1024 * 1024;
 
 /// The app whose favourites are the priority contacts.
-pub const CONTACTS_APP: &str = "so.tilo.contacts";
+pub use tilo_app_id::apps::CONTACTS as CONTACTS_APP;
 
 /// A contact as Contacts (or the person) names it: its id, its name and the
 /// endpoints (email addresses, phone numbers) its messages come from.

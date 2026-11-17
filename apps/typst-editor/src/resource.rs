@@ -196,7 +196,7 @@ pub struct TypstEditorShell;
 
 impl ResourceApp for TypstEditorShell {
     type Resource = Workspace;
-    const ID: &'static str = "so.tilo.typst-editor";
+    const ID: &'static str = ui::apps::TYPST_EDITOR;
     // Each window shows the document it opened, never another window's.
     const WINDOW_RESOURCE: bool = true;
     const TITLE: &'static str = "Typst";

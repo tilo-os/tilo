@@ -19,7 +19,7 @@ use crate::catalogue::{package_of, parse_surfaces};
 /// The app the device's resources are published as: `use so.tilo.device`.
 pub const DEVICE_APP: &str = "so.tilo.device";
 /// Settings' app, whose sections the session keeps and publishes.
-pub const SETTINGS_APP: &str = "so.tilo.settings";
+pub use tilo_app_id::apps::SETTINGS as SETTINGS_APP;
 
 /// The device's surface as the session publishes it, which the session holds to its services.
 const DEVICE_SURFACE: &str = include_str!("../../../session/session/device-surface.json");

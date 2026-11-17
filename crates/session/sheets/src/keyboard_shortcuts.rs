@@ -33,7 +33,7 @@ use crate::t;
 
 /// The application the catalogue's actions are checked against: they are
 /// this device's settings, which Settings administers.
-pub const APP_ID: &str = "so.tilo.settings";
+pub use ui::apps::SETTINGS as APP_ID;
 
 /// The resource carrying the catalogue-wide actions.
 pub const RESOURCE: &str = "keyboard-shortcuts";

@@ -228,7 +228,7 @@ pub struct DbClientShell;
 
 impl ResourceApp for DbClientShell {
     type Resource = Workspace;
-    const ID: &'static str = "so.tilo.db-client";
+    const ID: &'static str = ui::apps::DB_CLIENT;
     const TITLE: &'static str = "Database Client";
     const TITLE_KEY: &'static str = "db-client-app-title";
     const ICON: Option<&'static str> = Some("db-client");

@@ -983,7 +983,7 @@ mod tests {
     use automerge::transaction::Transactable as _;
 
     const WORKSPACE: &str = "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71";
-    const APP: &str = "so.tilo.tasks";
+    const APP: &str = ui::apps::TASKS;
 
     /// A record holding a title and an issue's comments, its one change, and
     /// the document to write the next change on.

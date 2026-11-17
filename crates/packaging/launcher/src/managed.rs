@@ -10,7 +10,7 @@ use std::{
 use tilo_app_package::PackageId;
 use tilo_app_package::trust::TrustFile as _;
 
-pub const WORKSPACE_AGENT_PACKAGE_ID: &str = "so.tilo.agent";
+pub use tilo_app_id::apps::AGENT as WORKSPACE_AGENT_PACKAGE_ID;
 /// Non-terminal managed launches one launcher holds.
 pub const MAX_LIVE_MANAGED_LAUNCHES: usize = 16;
 

@@ -63,7 +63,7 @@ impl ui::storage::SettingsSchema for PreferencesSetting {
     const SCOPE: ui::storage::Scope = ui::storage::Scope::Personal;
 }
 
-const TERMINAL_APP_ID: &str = "so.tilo.terminal";
+use ui::apps::TERMINAL as TERMINAL_APP_ID;
 
 #[derive(Clone, Debug)]
 pub struct Preferences {

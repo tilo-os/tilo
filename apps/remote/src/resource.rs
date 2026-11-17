@@ -16,7 +16,7 @@ use crate::app::RemoteApp;
 pub use crate::model::Remote;
 use crate::model::{AuthMethod, ConnectionDraft, ConnectionId, ConnectionKind};
 
-pub const REMOTE_APP_ID: &str = "so.tilo.remote";
+pub use ui::apps::REMOTE as REMOTE_APP_ID;
 
 ui::embedded_catalog!(pub(crate) static CATALOG, ["de-DE", "en-US"]);
 

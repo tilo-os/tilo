@@ -18,6 +18,7 @@ serde_json.workspace = true
 hex.workspace = true
 zeroize.workspace = true
 taffy.workspace = true
+tilo-app-id = { version = "0.1.0", path = "../../platform/tilo-app-id" }
 
 [dev-dependencies]
 # Mounted native tests use the SDK's complete native test driver.

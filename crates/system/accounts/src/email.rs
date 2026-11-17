@@ -8,7 +8,7 @@ pub const TYPE_ID: &str = "email";
 
 /// The app that keeps email accounts: the one the session's custody
 /// releases an email account's secret to.
-pub const KEEPER: &str = "so.tilo.mail";
+pub use tilo_app_id::apps::MAIL as KEEPER;
 
 /// How an account authenticates to its IMAP/SMTP servers. Password is the
 /// classic user+secret; OAuth is the modern token flow the big providers now

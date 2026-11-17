@@ -36,7 +36,7 @@ pub struct VideoPlayerShell;
 
 impl ResourceApp for VideoPlayerShell {
     type Resource = Library;
-    const ID: &'static str = "so.tilo.video-player";
+    const ID: &'static str = ui::apps::VIDEO_PLAYER;
     const TITLE: &'static str = "Video Player";
     const TITLE_KEY: &'static str = "video-player-app-title";
     const ICON: Option<&'static str> = Some("video-player");

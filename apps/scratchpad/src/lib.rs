@@ -43,7 +43,7 @@ pub struct Scratchpad;
 
 impl ResourceApp for Scratchpad {
     type Resource = Note;
-    const ID: &'static str = "so.tilo.scratchpad";
+    const ID: &'static str = ui::apps::SCRATCHPAD;
     const TITLE: &'static str = "Scratchpad";
     const TITLE_KEY: &'static str = "scratchpad-app-title";
 

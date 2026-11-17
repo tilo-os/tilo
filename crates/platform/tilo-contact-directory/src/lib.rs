@@ -572,7 +572,7 @@ impl ContactDirectory {
 }
 
 impl SharedRecord for ContactDirectory {
-    const OWNER: &'static str = "so.tilo.contacts";
+    const OWNER: &'static str = tilo_app_id::apps::CONTACTS;
     const EDITORS: &'static [&'static str] = &["so.tilo.messages"];
 }
 

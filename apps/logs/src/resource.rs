@@ -67,7 +67,7 @@ pub struct LogsShell;
 
 impl ResourceApp for LogsShell {
     type Resource = Logs;
-    const ID: &'static str = "so.tilo.logs";
+    const ID: &'static str = ui::apps::LOGS;
     const READS_HOST: &'static [ui::launch::HostSource] = &[ui::launch::HostSource::Journal];
     const TITLE: &'static str = "Logs";
     const TITLE_KEY: &'static str = "logs-app-title";

@@ -23,7 +23,7 @@ const CALL_PREFIX: &str = "call:";
 
 /// Chat holds a workspace's voice channels: each channel has a call row with the
 /// action that joins its call.
-const CHAT_APP: &str = "so.tilo.chat";
+use ui::apps::CHAT as CHAT_APP;
 const CHAT_RECORD_KIND: &str = "chat.workspace";
 const JOIN_CALL: &str = "join-call";
 

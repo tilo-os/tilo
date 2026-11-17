@@ -350,7 +350,7 @@ fn read_direct(
     })
 }
 
-const CHAT: &str = "so.tilo.chat";
+use ui::apps::CHAT;
 const CHAT_RECORD: &str = "chat.workspace";
 const CHAT_MESSAGES: &str = "derived:messages@derived:default@tab:0000000000000000";
 pub(crate) const SEND_DIRECT_MESSAGE: &str = "send-direct-message";

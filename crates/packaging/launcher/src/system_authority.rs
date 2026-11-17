@@ -8,7 +8,7 @@ use std::path::PathBuf;
 use crate::dbus_proxy::{self, DBusProxyGuard};
 
 /// The packages that act as the device's system control panel.
-pub const CLIENTS: &[&str] = &["so.tilo.settings"];
+pub const CLIENTS: &[&str] = &[tilo_app_id::apps::SETTINGS];
 
 /// Host paths bound read-only (and executable) at the same path.
 pub const HOST_READ_PATHS: &[&str] = &[

@@ -223,7 +223,7 @@ fn operator_page(
 
 impl ResourceApp for ChipDesignShell {
     type Resource = ChipProject;
-    const ID: &'static str = "so.tilo.chip-design";
+    const ID: &'static str = ui::apps::CHIP_DESIGN;
     // Each window shows the document it opened, never another window's.
     const WINDOW_RESOURCE: bool = true;
     const TITLE: &'static str = "Chip Design";

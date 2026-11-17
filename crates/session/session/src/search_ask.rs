@@ -24,7 +24,7 @@ use ui::search::system::MAX_PROVIDER_SCORE;
 
 /// The package a question asks as: what the person's AI settings can choose a model for, and what
 /// the gateway authorizes for a plain completion. Activity describes the history as the same app.
-pub(crate) const PACKAGE: &str = "so.tilo.activity";
+pub use ui::apps::ACTIVITY as PACKAGE;
 
 /// The Settings page providers are set up on, as the row asks it to open.
 const PROVIDERS_ANCHOR: &str = "settings.section:agent_models";

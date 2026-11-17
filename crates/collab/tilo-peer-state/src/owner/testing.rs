@@ -31,7 +31,7 @@ pub(crate) fn record_on_disk(path: &std::path::Path) -> Vec<(std::path::PathBuf,
 }
 
 pub const WORKSPACE: &str = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
-pub const APP: &str = "so.tilo.chat";
+pub use tilo_app_id::apps::CHAT as APP;
 
 /// Where `certificate`'s device keeps a workspace it founds on itself:
 /// `workspace`'s own host, reached at `endpoint`, signed by the device.

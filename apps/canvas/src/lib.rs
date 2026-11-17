@@ -7,7 +7,7 @@
 //! marks on every machine. Every pointer gesture is one of the artwork's
 //! actions, and `look` lets a caller with no screen see the result.
 
-pub const APP_ID: &str = "so.tilo.canvas";
+pub use ui::apps::CANVAS as APP_ID;
 pub const APP_TITLE: &str = "Canvas";
 
 pub mod actions;

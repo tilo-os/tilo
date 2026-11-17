@@ -86,7 +86,7 @@ pub use shortcut::{
     Weekday,
 };
 /// Application that publishes shortcuts as runnable actions.
-pub const SHORTCUTS_APP_ID: &str = "so.tilo.shortcuts";
+pub use tilo_app_id::apps::SHORTCUTS as SHORTCUTS_APP_ID;
 /// Resource kind of one saved shortcut; its id is
 /// `shortcuts.shortcut:<shortcut id>` (see [`shortcut_resource_id`]).
 pub const SHORTCUT_RESOURCE_KIND: &str = "shortcuts.shortcut";
@@ -94,7 +94,7 @@ pub const SHORTCUT_RUN_ACTION: &str = "run";
 
 /// Application that publishes the model-backed transform actions an
 /// [`Ai`](StepKind::Ai) step lowers to.
-pub const AGENT_APP_ID: &str = "so.tilo.agent";
+pub use tilo_app_id::apps::AGENT as AGENT_APP_ID;
 /// Resource kind carrying the transform actions.
 pub const AGENT_TRANSFORM_KIND: &str = "agent.transform";
 pub const AGENT_TRANSFORM_RESOURCE: &str = "agent.transform:default";

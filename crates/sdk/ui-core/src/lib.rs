@@ -132,6 +132,7 @@ pub mod control_notice;
 pub mod jobs;
 pub mod motion;
 /// The actions the host publishes itself, named for apps to call through `ui`.
+pub use tilo_app_id::apps;
 pub mod shell;
 extern crate self as tilo_ui;
 #[cfg(test)]

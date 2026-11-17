@@ -51,7 +51,7 @@ use tilo_relay_protocol::hosted::Material;
 use crate::Shared;
 
 /// The app whose window a session holds.
-pub const BROWSER: &str = "so.tilo.browser";
+pub use ui::apps::BROWSER;
 /// The resource the window's page actions are actions of.
 const PAGE_RESOURCE: &str = "browser.page";
 /// The page action that drops a held request the person did not allow.

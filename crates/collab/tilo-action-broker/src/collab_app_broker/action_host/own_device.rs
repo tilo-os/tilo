@@ -168,7 +168,7 @@ mod tests {
         InvokeRequest, Pending, RemoteActionMessage, own_device, pending,
     };
 
-    const SETTINGS: &str = "so.tilo.settings";
+    const SETTINGS: &str = ui::apps::SETTINGS;
 
     /// The host's network, standing in: it records what it was asked to
     /// send and answers when the test completes it.

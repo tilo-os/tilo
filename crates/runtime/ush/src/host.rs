@@ -135,7 +135,7 @@ impl HostPolicy {
     }
 }
 
-pub const TERMINAL_APP_ID: &str = "so.tilo.terminal";
+pub use tilo_app_id::apps::TERMINAL as TERMINAL_APP_ID;
 
 pub const LAUNCH_MAGIC: [u8; 4] = *b"QUS1";
 const MAX_HANDOFF_BYTES: u32 = 1024;

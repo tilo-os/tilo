@@ -60,8 +60,7 @@ mod activity_split {
     use ui::widget::SkeletonShape;
 
     use crate::split::Callback;
-
-    const APP: &str = "so.tilo.activity";
+    use tilo_app_id::apps::ACTIVITY as APP;
 
     #[link(wasm_import_module = "./__wasm_split.js")]
     #[allow(improper_ctypes, reason = "the definition only passes between Rust")]
@@ -95,8 +94,7 @@ mod api_tester_split {
     use ui::widget::SkeletonShape;
 
     use crate::split::Callback;
-
-    const APP: &str = "so.tilo.api-tester";
+    use tilo_app_id::apps::API_TESTER as APP;
 
     #[link(wasm_import_module = "./__wasm_split.js")]
     #[allow(improper_ctypes, reason = "the definition only passes between Rust")]
@@ -130,8 +128,7 @@ mod calculator_split {
     use ui::widget::SkeletonShape;
 
     use crate::split::Callback;
-
-    const APP: &str = "so.tilo.calculator";
+    use tilo_app_id::apps::CALCULATOR as APP;
 
     #[link(wasm_import_module = "./__wasm_split.js")]
     #[allow(improper_ctypes, reason = "the definition only passes between Rust")]
@@ -165,8 +162,7 @@ mod calendar_split {
     use ui::widget::SkeletonShape;
 
     use crate::split::Callback;
-
-    const APP: &str = "so.tilo.calendar";
+    use tilo_app_id::apps::CALENDAR as APP;
 
     #[link(wasm_import_module = "./__wasm_split.js")]
     #[allow(improper_ctypes, reason = "the definition only passes between Rust")]
@@ -200,8 +196,7 @@ mod camera_split {
     use ui::widget::SkeletonShape;
 
     use crate::split::Callback;
-
-    const APP: &str = "so.tilo.camera";
+    use tilo_app_id::apps::CAMERA as APP;
 
     #[link(wasm_import_module = "./__wasm_split.js")]
     #[allow(improper_ctypes, reason = "the definition only passes between Rust")]
@@ -235,8 +230,7 @@ mod canvas_split {
     use ui::widget::SkeletonShape;
 
     use crate::split::Callback;
-
-    const APP: &str = "so.tilo.canvas";
+    use tilo_app_id::apps::CANVAS as APP;
 
     #[link(wasm_import_module = "./__wasm_split.js")]
     #[allow(improper_ctypes, reason = "the definition only passes between Rust")]
@@ -270,8 +264,7 @@ mod chat_split {
     use ui::widget::SkeletonShape;
 
     use crate::split::Callback;
-
-    const APP: &str = "so.tilo.chat";
+    use tilo_app_id::apps::CHAT as APP;
 
     #[link(wasm_import_module = "./__wasm_split.js")]
     #[allow(improper_ctypes, reason = "the definition only passes between Rust")]
@@ -305,8 +298,7 @@ mod chip_design_split {
     use ui::widget::SkeletonShape;
 
     use crate::split::Callback;
-
-    const APP: &str = "so.tilo.chip-design";
+    use tilo_app_id::apps::CHIP_DESIGN as APP;
 
     #[link(wasm_import_module = "./__wasm_split.js")]
     #[allow(improper_ctypes, reason = "the definition only passes between Rust")]
@@ -340,8 +332,7 @@ mod clocks_split {
     use ui::widget::SkeletonShape;
 
     use crate::split::Callback;
-
-    const APP: &str = "so.tilo.clocks";
+    use tilo_app_id::apps::CLOCKS as APP;
 
     #[link(wasm_import_module = "./__wasm_split.js")]
     #[allow(improper_ctypes, reason = "the definition only passes between Rust")]
@@ -380,8 +371,7 @@ mod tilo_console_split {
     use ui::widget::SkeletonShape;
 
     use crate::split::Callback;
-
-    const APP: &str = "so.tilo.console";
+    use tilo_app_id::apps::CONSOLE as APP;
 
     #[link(wasm_import_module = "./__wasm_split.js")]
     #[allow(improper_ctypes, reason = "the definition only passes between Rust")]
@@ -415,8 +405,7 @@ mod contacts_split {
     use ui::widget::SkeletonShape;
 
     use crate::split::Callback;
-
-    const APP: &str = "so.tilo.contacts";
+    use tilo_app_id::apps::CONTACTS as APP;
 
     #[link(wasm_import_module = "./__wasm_split.js")]
     #[allow(improper_ctypes, reason = "the definition only passes between Rust")]
@@ -450,8 +439,7 @@ mod diffmerge_split {
     use ui::widget::SkeletonShape;
 
     use crate::split::Callback;
-
-    const APP: &str = "so.tilo.diffmerge";
+    use tilo_app_id::apps::DIFFMERGE as APP;
 
     #[link(wasm_import_module = "./__wasm_split.js")]
     #[allow(improper_ctypes, reason = "the definition only passes between Rust")]
@@ -485,8 +473,7 @@ mod ebook_split {
     use ui::widget::SkeletonShape;
 
     use crate::split::Callback;
-
-    const APP: &str = "so.tilo.ebook";
+    use tilo_app_id::apps::EBOOK as APP;
 
     #[link(wasm_import_module = "./__wasm_split.js")]
     #[allow(improper_ctypes, reason = "the definition only passes between Rust")]
@@ -520,8 +507,7 @@ mod feeds_split {
     use ui::widget::SkeletonShape;
 
     use crate::split::Callback;
-
-    const APP: &str = "so.tilo.feeds";
+    use tilo_app_id::apps::FEEDS as APP;
 
     #[link(wasm_import_module = "./__wasm_split.js")]
     #[allow(improper_ctypes, reason = "the definition only passes between Rust")]
@@ -555,8 +541,7 @@ mod file_explorer_split {
     use ui::widget::SkeletonShape;
 
     use crate::split::Callback;
-
-    const APP: &str = "so.tilo.file-explorer";
+    use tilo_app_id::apps::FILE_EXPLORER as APP;
 
     #[link(wasm_import_module = "./__wasm_split.js")]
     #[allow(improper_ctypes, reason = "the definition only passes between Rust")]
@@ -590,8 +575,7 @@ mod hex_editor_split {
     use ui::widget::SkeletonShape;
 
     use crate::split::Callback;
-
-    const APP: &str = "so.tilo.hex-editor";
+    use tilo_app_id::apps::HEX_EDITOR as APP;
 
     #[link(wasm_import_module = "./__wasm_split.js")]
     #[allow(improper_ctypes, reason = "the definition only passes between Rust")]
@@ -625,8 +609,7 @@ mod mail_split {
     use ui::widget::SkeletonShape;
 
     use crate::split::Callback;
-
-    const APP: &str = "so.tilo.mail";
+    use tilo_app_id::apps::MAIL as APP;
 
     #[link(wasm_import_module = "./__wasm_split.js")]
     #[allow(improper_ctypes, reason = "the definition only passes between Rust")]
@@ -660,8 +643,7 @@ mod maps_split {
     use ui::widget::SkeletonShape;
 
     use crate::split::Callback;
-
-    const APP: &str = "so.tilo.maps";
+    use tilo_app_id::apps::MAPS as APP;
 
     #[link(wasm_import_module = "./__wasm_split.js")]
     #[allow(improper_ctypes, reason = "the definition only passes between Rust")]
@@ -700,8 +682,7 @@ mod messages_split {
     use ui::widget::SkeletonShape;
 
     use crate::split::Callback;
-
-    const APP: &str = "so.tilo.messages";
+    use tilo_app_id::apps::MESSAGES as APP;
 
     #[link(wasm_import_module = "./__wasm_split.js")]
     #[allow(improper_ctypes, reason = "the definition only passes between Rust")]
@@ -735,8 +716,7 @@ mod model_providers_split {
     use ui::widget::SkeletonShape;
 
     use crate::split::Callback;
-
-    const APP: &str = "so.tilo.model-providers";
+    use tilo_app_id::apps::MODEL_PROVIDERS as APP;
 
     #[link(wasm_import_module = "./__wasm_split.js")]
     #[allow(improper_ctypes, reason = "the definition only passes between Rust")]
@@ -770,8 +750,7 @@ mod music_split {
     use ui::widget::SkeletonShape;
 
     use crate::split::Callback;
-
-    const APP: &str = "so.tilo.music";
+    use tilo_app_id::apps::MUSIC as APP;
 
     #[link(wasm_import_module = "./__wasm_split.js")]
     #[allow(improper_ctypes, reason = "the definition only passes between Rust")]
@@ -810,8 +789,7 @@ mod notes_split {
     use ui::widget::SkeletonShape;
 
     use crate::split::Callback;
-
-    const APP: &str = "so.tilo.notes";
+    use tilo_app_id::apps::NOTES as APP;
 
     #[link(wasm_import_module = "./__wasm_split.js")]
     #[allow(improper_ctypes, reason = "the definition only passes between Rust")]
@@ -845,8 +823,7 @@ mod passwords_split {
     use ui::widget::SkeletonShape;
 
     use crate::split::Callback;
-
-    const APP: &str = "so.tilo.passwords";
+    use tilo_app_id::apps::PASSWORDS as APP;
 
     #[link(wasm_import_module = "./__wasm_split.js")]
     #[allow(improper_ctypes, reason = "the definition only passes between Rust")]
@@ -880,8 +857,7 @@ mod pdf_viewer_split {
     use ui::widget::SkeletonShape;
 
     use crate::split::Callback;
-
-    const APP: &str = "so.tilo.pdf-viewer";
+    use tilo_app_id::apps::PDF_VIEWER as APP;
 
     #[link(wasm_import_module = "./__wasm_split.js")]
     #[allow(improper_ctypes, reason = "the definition only passes between Rust")]
@@ -915,8 +891,7 @@ mod photos_split {
     use ui::widget::SkeletonShape;
 
     use crate::split::Callback;
-
-    const APP: &str = "so.tilo.photos";
+    use tilo_app_id::apps::PHOTOS as APP;
 
     #[link(wasm_import_module = "./__wasm_split.js")]
     #[allow(improper_ctypes, reason = "the definition only passes between Rust")]
@@ -950,8 +925,7 @@ mod poker_split {
     use ui::widget::SkeletonShape;
 
     use crate::split::Callback;
-
-    const APP: &str = "so.tilo.poker";
+    use tilo_app_id::apps::POKER as APP;
 
     #[link(wasm_import_module = "./__wasm_split.js")]
     #[allow(improper_ctypes, reason = "the definition only passes between Rust")]
@@ -985,8 +959,7 @@ mod scratchpad_split {
     use ui::widget::SkeletonShape;
 
     use crate::split::Callback;
-
-    const APP: &str = "so.tilo.scratchpad";
+    use tilo_app_id::apps::SCRATCHPAD as APP;
 
     #[link(wasm_import_module = "./__wasm_split.js")]
     #[allow(improper_ctypes, reason = "the definition only passes between Rust")]
@@ -1020,8 +993,7 @@ mod settings_split {
     use ui::widget::SkeletonShape;
 
     use crate::split::Callback;
-
-    const APP: &str = "so.tilo.settings";
+    use tilo_app_id::apps::SETTINGS as APP;
 
     #[link(wasm_import_module = "./__wasm_split.js")]
     #[allow(improper_ctypes, reason = "the definition only passes between Rust")]
@@ -1060,8 +1032,7 @@ mod sheets_split {
     use ui::widget::SkeletonShape;
 
     use crate::split::Callback;
-
-    const APP: &str = "so.tilo.sheets";
+    use tilo_app_id::apps::SHEETS as APP;
 
     #[link(wasm_import_module = "./__wasm_split.js")]
     #[allow(improper_ctypes, reason = "the definition only passes between Rust")]
@@ -1095,8 +1066,7 @@ mod shortcuts_split {
     use ui::widget::SkeletonShape;
 
     use crate::split::Callback;
-
-    const APP: &str = "so.tilo.shortcuts";
+    use tilo_app_id::apps::SHORTCUTS as APP;
 
     #[link(wasm_import_module = "./__wasm_split.js")]
     #[allow(improper_ctypes, reason = "the definition only passes between Rust")]
@@ -1130,8 +1100,7 @@ mod slides_split {
     use ui::widget::SkeletonShape;
 
     use crate::split::Callback;
-
-    const APP: &str = "so.tilo.slides";
+    use tilo_app_id::apps::SLIDES as APP;
 
     #[link(wasm_import_module = "./__wasm_split.js")]
     #[allow(improper_ctypes, reason = "the definition only passes between Rust")]
@@ -1165,8 +1134,7 @@ mod snippets_split {
     use ui::widget::SkeletonShape;
 
     use crate::split::Callback;
-
-    const APP: &str = "so.tilo.snippets";
+    use tilo_app_id::apps::SNIPPETS as APP;
 
     #[link(wasm_import_module = "./__wasm_split.js")]
     #[allow(improper_ctypes, reason = "the definition only passes between Rust")]
@@ -1200,8 +1168,7 @@ mod speed_test_split {
     use ui::widget::SkeletonShape;
 
     use crate::split::Callback;
-
-    const APP: &str = "so.tilo.speed-test";
+    use tilo_app_id::apps::SPEED_TEST as APP;
 
     #[link(wasm_import_module = "./__wasm_split.js")]
     #[allow(improper_ctypes, reason = "the definition only passes between Rust")]
@@ -1235,8 +1202,7 @@ mod tasks_split {
     use ui::widget::SkeletonShape;
 
     use crate::split::Callback;
-
-    const APP: &str = "so.tilo.tasks";
+    use tilo_app_id::apps::TASKS as APP;
 
     #[link(wasm_import_module = "./__wasm_split.js")]
     #[allow(improper_ctypes, reason = "the definition only passes between Rust")]
@@ -1270,8 +1236,7 @@ mod themes_split {
     use ui::widget::SkeletonShape;
 
     use crate::split::Callback;
-
-    const APP: &str = "so.tilo.themes";
+    use tilo_app_id::apps::THEMES as APP;
 
     #[link(wasm_import_module = "./__wasm_split.js")]
     #[allow(improper_ctypes, reason = "the definition only passes between Rust")]
@@ -1305,8 +1270,7 @@ mod totp_split {
     use ui::widget::SkeletonShape;
 
     use crate::split::Callback;
-
-    const APP: &str = "so.tilo.totp";
+    use tilo_app_id::apps::TOTP as APP;
 
     #[link(wasm_import_module = "./__wasm_split.js")]
     #[allow(improper_ctypes, reason = "the definition only passes between Rust")]
@@ -1340,8 +1304,7 @@ mod tube_split {
     use ui::widget::SkeletonShape;
 
     use crate::split::Callback;
-
-    const APP: &str = "so.tilo.tube";
+    use tilo_app_id::apps::TUBE as APP;
 
     #[link(wasm_import_module = "./__wasm_split.js")]
     #[allow(improper_ctypes, reason = "the definition only passes between Rust")]
@@ -1380,8 +1343,7 @@ mod typst_editor_split {
     use ui::widget::SkeletonShape;
 
     use crate::split::Callback;
-
-    const APP: &str = "so.tilo.typst-editor";
+    use tilo_app_id::apps::TYPST_EDITOR as APP;
 
     #[link(wasm_import_module = "./__wasm_split.js")]
     #[allow(improper_ctypes, reason = "the definition only passes between Rust")]
@@ -1415,8 +1377,7 @@ mod video_editor_split {
     use ui::widget::SkeletonShape;
 
     use crate::split::Callback;
-
-    const APP: &str = "so.tilo.video-editor";
+    use tilo_app_id::apps::VIDEO_EDITOR as APP;
 
     #[link(wasm_import_module = "./__wasm_split.js")]
     #[allow(improper_ctypes, reason = "the definition only passes between Rust")]
@@ -1450,8 +1411,7 @@ mod video_player_split {
     use ui::widget::SkeletonShape;
 
     use crate::split::Callback;
-
-    const APP: &str = "so.tilo.video-player";
+    use tilo_app_id::apps::VIDEO_PLAYER as APP;
 
     #[link(wasm_import_module = "./__wasm_split.js")]
     #[allow(improper_ctypes, reason = "the definition only passes between Rust")]
@@ -1485,8 +1445,7 @@ mod weather_split {
     use ui::widget::SkeletonShape;
 
     use crate::split::Callback;
-
-    const APP: &str = "so.tilo.weather";
+    use tilo_app_id::apps::WEATHER as APP;
 
     #[link(wasm_import_module = "./__wasm_split.js")]
     #[allow(improper_ctypes, reason = "the definition only passes between Rust")]
@@ -1520,8 +1479,7 @@ mod word_processor_split {
     use ui::widget::SkeletonShape;
 
     use crate::split::Callback;
-
-    const APP: &str = "so.tilo.word-processor";
+    use tilo_app_id::apps::WORD_PROCESSOR as APP;
 
     #[link(wasm_import_module = "./__wasm_split.js")]
     #[allow(improper_ctypes, reason = "the definition only passes between Rust")]

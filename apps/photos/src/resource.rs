@@ -445,7 +445,7 @@ pub struct PhotosShell;
 
 impl ResourceApp for PhotosShell {
     type Resource = PhotoLibrary;
-    const ID: &'static str = "so.tilo.photos";
+    const ID: &'static str = ui::apps::PHOTOS;
     const TITLE: &'static str = "Photos";
     const TITLE_KEY: &'static str = "photos-app-title";
     const ICON: Option<&'static str> = Some("photos");

@@ -27,7 +27,7 @@ const MAX_TEXT_BYTES: usize = 1024;
 
 /// The app that shares windows into conversations and takes the shell's asks
 /// ([`take_ask`]): the shell brings it forward when a window's menu asks to share.
-pub const SHARING_APP: &str = "so.tilo.chat";
+pub use tilo_app_id::apps::CHAT as SHARING_APP;
 
 /// A resource as one app's view shows it: the app, the record it keeps the resource in
 /// and the resource itself.

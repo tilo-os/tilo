@@ -191,7 +191,7 @@ pub struct ContainersShell;
 
 impl ResourceApp for ContainersShell {
     type Resource = Containers;
-    const ID: &'static str = "so.tilo.containers";
+    const ID: &'static str = ui::apps::CONTAINERS;
     const READS_HOST: &'static [ui::launch::HostSource] = &[ui::launch::HostSource::Containers];
     const TITLE: &'static str = "Containers";
     const TITLE_KEY: &'static str = "containers-app-title";

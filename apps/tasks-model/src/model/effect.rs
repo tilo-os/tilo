@@ -8,7 +8,7 @@
 use tilo_resource::{Effect, Id};
 
 /// The app that keeps the workspace's notes.
-pub const NOTES: &str = "so.tilo.notes";
+pub use tilo_app_id::apps::NOTES;
 
 /// The kind of a note, an item of the notebook's pages.
 pub const NOTE_KIND: &str = "notes.notebook.pages";

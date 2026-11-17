@@ -10,7 +10,7 @@ use ui::notify::PriorityContact;
 
 use crate::resource::Contacts;
 
-const PACKAGE_ID: &str = "so.tilo.contacts";
+use ui::apps::CONTACTS as PACKAGE_ID;
 
 static ENABLED: LazyLock<bool> =
     LazyLock::new(|| std::env::var("TILO_PACKAGE_ID").as_deref() == Ok(PACKAGE_ID));

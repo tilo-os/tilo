@@ -53,6 +53,7 @@ durable-store = { version = "0.1.0", path = "../../system/durable-store", option
 collab-types = { version = "0.1.0", path = "../../collab/collab-types" }
 # The platform's history sentences, which the host's history verbs speak in.
 tilo-history = { version = "0.1.0", path = "../../sdk/tilo-history" }
+tilo-app-id = { version = "0.1.0", path = "../tilo-app-id" }
 
 [features]
 # The instance's commit path to its workspace record through the collab client

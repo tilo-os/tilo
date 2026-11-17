@@ -942,7 +942,7 @@ mod tests {
         // holds that, so neither loses their place.
         {
             use crate::test_support::{Grantee, Grants as _, KindSet};
-            const NOTES: &str = "so.tilo.notes";
+            const NOTES: &str = ui::apps::NOTES;
             let mut workspace = workspace();
             workspace.allow_agent("scribe", KindSet::READ);
             for app in [APP, NOTES] {

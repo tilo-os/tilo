@@ -912,7 +912,7 @@ pub struct FileExplorerShell;
 
 impl ResourceApp for FileExplorerShell {
     type Resource = FileExplorer;
-    const ID: &'static str = "so.tilo.file-explorer";
+    const ID: &'static str = ui::apps::FILE_EXPLORER;
     const READS_HOST: &'static [ui::launch::HostSource] = &[ui::launch::HostSource::Files];
     const TITLE: &'static str = "Files";
     const TITLE_KEY: &'static str = "files-app-title";

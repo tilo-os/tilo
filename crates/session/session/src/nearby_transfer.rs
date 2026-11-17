@@ -57,7 +57,7 @@ use ui::widget::ScreenshotSendDevice;
 use crate::platform::fabric::Continuity;
 
 /// The one app the action API serves: the certified Files application.
-pub(crate) const FILES_APP_ID: &str = "so.tilo.file-explorer";
+pub use ui::apps::FILE_EXPLORER as FILES_APP_ID;
 
 /// How long the handles one Files connection holds stay usable. Files does not ask again on a
 /// timer, so a wait it holds is woken to ask shortly before they lapse ([`HANDLE_REFRESH`]).

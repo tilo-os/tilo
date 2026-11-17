@@ -3345,7 +3345,7 @@ mod tests {
 
     impl ui::framework::ResourceApp for ImportShots {
         type Resource = Imager;
-        const ID: &'static str = "so.tilo.imager";
+        const ID: &'static str = tilo_app_id::apps::IMAGER;
         const TITLE: &'static str = "Disk Imager";
 
         fn scenarios() -> &'static [&'static str] {

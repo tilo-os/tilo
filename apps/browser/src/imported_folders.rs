@@ -26,7 +26,7 @@ mod tests {
     struct TestBrowser;
     impl ui::framework::ResourceApp for TestBrowser {
         type Resource = crate::resource::Browser;
-        const ID: &'static str = "so.tilo.browser";
+        const ID: &'static str = ui::apps::BROWSER;
         const TITLE: &'static str = "Browser";
         fn view(cx: &mut ui::framework::ViewCx<Self::Resource>) -> ui::widget::Element {
             let engine = cx

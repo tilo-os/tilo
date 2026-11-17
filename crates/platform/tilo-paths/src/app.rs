@@ -387,7 +387,7 @@ mod tests {
 
     use super::*;
 
-    const ID: &str = "so.tilo.notes";
+    const ID: &str = tilo_app_id::apps::NOTES;
 
     fn env<'a>(pairs: &'a [(&'a str, &'a str)]) -> impl Fn(&str) -> Option<OsString> + 'a {
         move |name| {

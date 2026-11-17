@@ -658,7 +658,7 @@ pub struct TerminalShell;
 
 impl ResourceApp for TerminalShell {
     type Resource = Terminal;
-    const ID: &'static str = "so.tilo.terminal";
+    const ID: &'static str = ui::apps::TERMINAL;
     const READS_HOST: &'static [ui::launch::HostSource] = &[ui::launch::HostSource::Processes];
     const WINDOW_RESOURCE: bool = true;
     const TITLE: &'static str = "Terminal";

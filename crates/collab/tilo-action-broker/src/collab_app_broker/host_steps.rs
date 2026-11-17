@@ -1472,7 +1472,7 @@ mod settings_records_tests {
         settings_records,
     };
 
-    const APP: &str = "so.tilo.settings";
+    const APP: &str = ui::apps::SETTINGS;
     const RESOURCE: &str = "settings:power";
 
     /// The session's settings, standing in: one section whose lock delay

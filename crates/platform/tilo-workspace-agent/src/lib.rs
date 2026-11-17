@@ -24,7 +24,7 @@ use tilo_resource::{
 mod tests;
 
 /// The app whose record this is, and whose surface decides its changes.
-pub const OWNER: &str = "so.tilo.chat";
+pub use tilo_app_id::apps::CHAT as OWNER;
 
 pub const KIND: &str = "chat.agent";
 

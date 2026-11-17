@@ -37,7 +37,7 @@ pub struct PasswordsShell;
 
 impl ResourceApp for PasswordsShell {
     type Resource = Passwords;
-    const ID: &'static str = "so.tilo.passwords";
+    const ID: &'static str = ui::apps::PASSWORDS;
     const TITLE: &'static str = "Passwords";
     const TITLE_KEY: &'static str = "passwords-app-title";
     const ICON: Option<&'static str> = Some("passwords");

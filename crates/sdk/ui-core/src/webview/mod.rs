@@ -35,7 +35,7 @@ pub mod test_engine;
 
 /// The Browser's app id: the app the shell opens a web address in when nothing else is
 /// chosen for it.
-pub const BROWSER_APP_ID: &str = "so.tilo.browser";
+pub use tilo_app_id::apps::BROWSER as BROWSER_APP_ID;
 
 /// The switch a Browser window is launched with when it is opened for an agent
 /// ([`runtime_portal::windows::VISITOR_WINDOW_FLAG`]).

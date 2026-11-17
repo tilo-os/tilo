@@ -317,7 +317,7 @@ const SCENARIOS: &[&str] = &[
 
 impl ResourceApp for FirewallShell {
     type Resource = Firewall;
-    const ID: &'static str = "so.tilo.firewall";
+    const ID: &'static str = ui::apps::FIREWALL;
     const READS_HOST: &'static [ui::launch::HostSource] = &[ui::launch::HostSource::Network];
     const TITLE: &'static str = "Firewall";
     const TITLE_KEY: &'static str = "firewall-app-title";

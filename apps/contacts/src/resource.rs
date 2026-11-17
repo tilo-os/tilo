@@ -409,7 +409,7 @@ fn probe_contact_directory_engine(_: &str) -> Result<(), String> {
 
 impl ResourceApp for ContactsShell {
     type Resource = Contacts;
-    const ID: &'static str = "so.tilo.contacts";
+    const ID: &'static str = ui::apps::CONTACTS;
     const TITLE: &'static str = "Contacts";
     const TITLE_KEY: &'static str = "contacts-app-title";
     const ICON: Option<&'static str> = Some("contacts");

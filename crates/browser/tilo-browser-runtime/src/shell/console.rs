@@ -16,7 +16,9 @@ use tilo_desktop_surface::navigation::{self, ChromeEffect};
 
 use super::BrowserShell;
 pub(crate) use crate::console_hold::ConsoleHold;
-use crate::console_hold::{CONSOLE_APP, Front, Step};
+use tilo_app_id::apps::CONSOLE as CONSOLE_APP;
+
+use crate::console_hold::{Front, Step};
 
 impl BrowserShell {
     /// Hold Console in front while the page shows the console; answers

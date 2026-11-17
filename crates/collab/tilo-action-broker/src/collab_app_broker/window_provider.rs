@@ -42,7 +42,7 @@ mod window_provider_tests {
     use super::super::{AppBrokerState, BrokerChannels, CrdtRoute, FanoutState, PeerPublisher};
     use std::sync::{Arc, Mutex};
 
-    const BROWSER: &str = "so.tilo.browser";
+    const BROWSER: &str = ui::apps::BROWSER;
     const WORKSPACE: &str = "6f1b4a7e-0b2f-4d3a-9a1e-2c3d4e5f6a7b";
     const RECORD: &str = "derived:default@tab:0000000000000000";
 

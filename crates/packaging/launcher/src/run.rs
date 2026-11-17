@@ -1736,7 +1736,7 @@ fn splice_app_dir(
 fn splice_session_settings(argv: &mut Vec<String>, package_id: &str) -> Result<(), RunError> {
     use std::os::unix::fs::DirBuilderExt as _;
 
-    if package_id != "so.tilo.settings" {
+    if package_id != tilo_app_id::apps::SETTINGS {
         return Ok(());
     }
     let Some(host) = tilo_paths::xdg::config_home() else {

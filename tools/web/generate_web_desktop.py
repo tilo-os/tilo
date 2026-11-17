@@ -148,6 +148,11 @@ def split_point(app: dict) -> tuple[str, str]:
     return app["lib"], hashlib.sha256(app["id"].encode()).hexdigest()[:16]
 
 
+def constant(package: str) -> str:
+    """`so.tilo.file-explorer` → `FILE_EXPLORER`, its name in `tilo_app_id::apps`."""
+    return package.removeprefix("so.tilo.").replace("-", "_").upper()
+
+
 def link_registration(app: dict) -> str:
     """The app's claim on links, registered beside it."""
     if app["links"] is None:
@@ -193,8 +198,7 @@ def apps_rs(apps: list[dict]) -> str:
             "    use ui::widget::SkeletonShape;\n"
             "\n"
             "    use crate::split::Callback;\n"
-            "\n"
-            f"    const APP: &str = {json.dumps(app['id'])};\n"
+            f"    use tilo_app_id::apps::{constant(app['id'])} as APP;\n"
             "\n"
             '    #[link(wasm_import_module = "./__wasm_split.js")]\n'
             '    #[allow(improper_ctypes, reason = "the definition only passes between Rust")]\n'

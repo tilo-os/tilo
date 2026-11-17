@@ -18,7 +18,6 @@ pub mod capability;
 pub mod closed_tabs;
 pub mod commands;
 pub mod desktop_doc;
-pub mod first_party;
 pub mod grants;
 pub mod history;
 pub mod ids;

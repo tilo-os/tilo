@@ -231,7 +231,7 @@ pub struct SnippetsShell;
 
 impl ResourceApp for SnippetsShell {
     type Resource = Snippets;
-    const ID: &'static str = "so.tilo.snippets";
+    const ID: &'static str = ui::apps::SNIPPETS;
     const TITLE: &'static str = "Snippets";
     const TITLE_KEY: &'static str = "snippets-app-title";
     const ICON: Option<&'static str> = Some("snippets");

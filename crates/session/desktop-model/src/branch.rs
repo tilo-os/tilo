@@ -3,9 +3,9 @@
 //! one it keeps.
 
 /// Chat's records: every conversation of the workspace, which stays behind.
-pub const CHAT: &str = "so.tilo.chat";
+pub use tilo_app_id::apps::CHAT;
 /// Terminal's records: its environments, which the runtime branches itself.
-pub const TERMINAL: &str = "so.tilo.terminal";
+pub use tilo_app_id::apps::TERMINAL;
 /// The record each person's place in the workspace's tilolang apps is kept in, one for all of them.
 pub const PERSONAL_PLACES: (&str, &str) = ("tilo.host", "tilolang.personal");
 

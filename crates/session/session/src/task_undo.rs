@@ -322,7 +322,7 @@ mod tests {
     use tilo_actions::{ActionContext, ResourceSpec};
     use ui::history_source::ThreadWords;
 
-    const APP: &str = "so.tilo.notes";
+    const APP: &str = ui::apps::NOTES;
     const RECORD: &str = "file:/notes/release.note";
     /// The root of an app's record as the session publishes it, where its history is answered.
     const SESSION_ROOT: &str = "tl:so.tilo.notes:notebook";

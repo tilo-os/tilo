@@ -1,6 +1,8 @@
 //! Trusted host binding, deliberately not serializable/deserializable.
 //! Implementations come from launcher/session authentication, never RPC JSON.
 
+use tilo_app_id::apps;
+
 #[derive(Clone, Copy)]
 pub enum Caller {
     Agent,
@@ -13,7 +15,7 @@ pub enum Caller {
 /// This is a role mapping, not an administration grant: sessions must still
 /// hold the current credential-management permission.
 pub fn provider_admin_app(app_id: &str) -> bool {
-    matches!(app_id, "so.tilo.settings" | "so.tilo.model-providers")
+    matches!(app_id, apps::SETTINGS | apps::MODEL_PROVIDERS)
 }
 
 /// A revocable authenticated caller. Settings identity alone grants no

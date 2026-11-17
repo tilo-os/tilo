@@ -202,7 +202,7 @@ pub const REMOTE_POINTER: (f32, f32) = (145.0, 97.0);
 
 impl ResourceApp for CalculatorShell {
     type Resource = Calculator;
-    const ID: &'static str = "so.tilo.calculator";
+    const ID: &'static str = ui::apps::CALCULATOR;
     const TITLE: &'static str = "Calculator";
     const TITLE_KEY: &'static str = "calculator-app-title";
     const ICON: Option<&'static str> = Some("calculator");

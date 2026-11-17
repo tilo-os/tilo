@@ -2,6 +2,7 @@
 use crate::CommandEntry;
 use std::cmp::Ordering;
 use std::collections::HashMap;
+use tilo_app_id::apps;
 use tilo_sort::CompactSort as _;
 pub mod filters;
 #[cfg(test)]
@@ -694,46 +695,52 @@ pub fn starting_point_rank(package_id: &str) -> i32 {
         .strip_prefix("dev.tilo.")
         .map(|name| format!("so.tilo.{name}"));
     match canonical.as_deref().unwrap_or(package_id) {
-        "so.tilo.browser" => 90,
-        "so.tilo.file-explorer" => 89,
-        "so.tilo.notes" => 88,
-        "so.tilo.terminal" => 87,
-        "so.tilo.settings" => 86,
-        "so.tilo.store" => 85,
+        apps::BROWSER => 90,
+        apps::FILE_EXPLORER => 89,
+        apps::NOTES => 88,
+        apps::TERMINAL => 87,
+        apps::SETTINGS => 86,
+        apps::STORE => 85,
 
-        "so.tilo.calendar" => 74,
-        "so.tilo.mail" => 73,
-        "so.tilo.contacts" => 72,
-        "so.tilo.chat" => 71,
-        "so.tilo.calculator" => 70,
+        apps::CALENDAR => 74,
+        apps::MAIL => 73,
+        apps::CONTACTS => 72,
+        apps::CHAT => 71,
+        apps::CALCULATOR => 70,
 
-        "so.tilo.word-processor" => 59,
-        "so.tilo.sheets" => 58,
-        "so.tilo.slides" => 57,
-        "so.tilo.pdf-viewer" => 56,
-        "so.tilo.typst-editor" => 55,
+        apps::WORD_PROCESSOR => 59,
+        apps::SHEETS => 58,
+        apps::SLIDES => 57,
+        apps::PDF_VIEWER => 56,
+        apps::TYPST_EDITOR => 55,
 
-        "so.tilo.music" => 49,
-        "so.tilo.tube" => 48,
-        "so.tilo.video-player" => 47,
-        "so.tilo.photos" => 46,
-        "so.tilo.camera" => 45,
-        "so.tilo.weather" => 44,
-        "so.tilo.maps" => 43,
-        "so.tilo.feeds" => 42,
-        "so.tilo.ebook" => 41,
-        "so.tilo.totp" => 40,
+        apps::MUSIC => 49,
+        apps::TUBE => 48,
+        apps::VIDEO_PLAYER => 47,
+        apps::PHOTOS => 46,
+        apps::CAMERA => 45,
+        apps::WEATHER => 44,
+        apps::MAPS => 43,
+        apps::FEEDS => 42,
+        apps::EBOOK => 41,
+        apps::TOTP => 40,
 
-        "so.tilo.monitor" | "so.tilo.disks" | "so.tilo.logs" | "so.tilo.firewall"
-        | "so.tilo.remote" | "so.tilo.backups" | "so.tilo.imager" | "so.tilo.themes" => 25,
-        "so.tilo.api-tester"
-        | "so.tilo.snippets"
-        | "so.tilo.diffmerge"
-        | "so.tilo.db-client"
-        | "so.tilo.containers"
-        | "so.tilo.hex-editor"
-        | "so.tilo.git-client"
-        | "so.tilo.code-editor" => 5,
+        apps::MONITOR
+        | apps::DISKS
+        | apps::LOGS
+        | apps::FIREWALL
+        | apps::REMOTE
+        | apps::BACKUPS
+        | apps::IMAGER
+        | apps::THEMES => 25,
+        apps::API_TESTER
+        | apps::SNIPPETS
+        | apps::DIFFMERGE
+        | apps::DB_CLIENT
+        | apps::CONTAINERS
+        | apps::HEX_EDITOR
+        | apps::GIT_CLIENT
+        | apps::CODE_EDITOR => 5,
         _ => 10,
     }
 }

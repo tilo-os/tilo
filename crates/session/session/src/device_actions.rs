@@ -495,7 +495,7 @@ mod tests {
     const WORKSPACE: &str = testing::WORKSPACE;
     /// How long the device asked has to answer before the test fails.
     const PATIENCE: Duration = Duration::from_secs(20);
-    const APP: &str = "so.tilo.notes";
+    const APP: &str = ui::apps::NOTES;
     /// The package whose transform a test's action declares.
     const PACKAGE: &str = "so.tilo.images";
     const ENTRYPOINT: &str = "thumbnail";

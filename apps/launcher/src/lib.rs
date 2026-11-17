@@ -13,6 +13,6 @@ pub use source::{
 };
 pub use surface::LauncherSurface;
 
-pub const APP_ID: &str = "so.tilo.launcher";
+pub use ui::apps::LAUNCHER as APP_ID;
 
 ui::dev_reload_entry!(LauncherShell);

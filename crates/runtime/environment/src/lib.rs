@@ -30,7 +30,7 @@ use crate::files::{
 
 pub const RUNTIME_APP_ID: &str = "so.tilo.ush";
 
-pub const OWNER_APP_ID: &str = "so.tilo.terminal";
+pub use tilo_app_id::apps::TERMINAL as OWNER_APP_ID;
 
 pub const DEFAULT_RECORD: &str = "default";
 

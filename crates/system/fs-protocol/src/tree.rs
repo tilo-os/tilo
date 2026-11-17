@@ -239,7 +239,7 @@ impl Resource for FilesTree {
 }
 
 impl SharedRecord for FilesTree {
-    const OWNER: &'static str = "so.tilo.file-explorer";
+    const OWNER: &'static str = tilo_app_id::apps::FILE_EXPLORER;
 }
 
 /// The file the text document `id` of the tree `doc` is: its document written
