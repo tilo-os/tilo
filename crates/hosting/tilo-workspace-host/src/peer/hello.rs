@@ -12,8 +12,8 @@ pub(super) async fn handle_host_hello(
     hosted_workspaces: Vec<WorkspaceId>,
 ) -> Result<Option<Envelope>, PeerError> {
     // A host of this host's own person attaches to every workspace both hold;
-    // another person's host only to a workspace governed here whose governance
-    // names it among its hosts. A device that is neither attaches nowhere.
+    // another person's host only to a workspace whose governance names it
+    // among its holders. A device that is neither attaches nowhere.
     let own = peer.user_public_key == *session.own_user_public_key;
     let mut hosted_here: Vec<WorkspaceId> = Vec::new();
     let mut governed = Vec::new();
@@ -25,7 +25,13 @@ pub(super) async fn handle_host_hello(
             .collect()
     };
     for (id, ws) in held {
-        let authority = ws.lock().await.workspace_authority.clone();
+        let (authority, replica) = {
+            let runtime = ws.lock().await;
+            (
+                runtime.workspace_authority.clone(),
+                runtime.hosted_replica.clone(),
+            )
+        };
         if !own {
             let named = match authority.as_ref().and_then(|authority| {
                 Some((authority.workspaces()?, authority.workspace().to_owned()))
@@ -35,7 +41,7 @@ pub(super) async fn handle_host_hello(
                         .names_host(&workspace, peer.device_public_key)
                         .await
                 }
-                None => false,
+                None => replica.is_some_and(|replica| replica.names_holder(peer.device_public_key)),
             };
             if !named {
                 continue;
