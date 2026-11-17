@@ -139,41 +139,62 @@ fi
 # generated from the apps' surfaces and manifests (`tilo sdk gen`), so a
 # change to either leaves them stale: they are what an
 # agent or a script reads an app's actions from, and nothing else in a commit
-# notices. Regenerating them is not a judgement call, so do it here with this
-# tree's own generator and stage what it wrote; a tree that has not built one
-# is told the one command that writes them, rather than left stale.
+# notices. Regenerating them is not a judgement call, so do it here and stage
+# what it wrote; a tree that can do neither below is told the one command that
+# writes them, rather than left stale.
 if grep -qE '^apps/[^/]+/(surface|tilo-app)\.toml$' <<< "$lock_staged_names"; then
-  # Like the tilolang formatter below: the freshest generator this tree has
-  # built into target/, under any profile, answering `--help` so a binary for
-  # another platform is skipped rather than run.
-  sdk_gen=""
-  sdk_found=()
-  while IFS= read -r -d '' c; do sdk_found+=("$c"); done < <(
-    find "$root/target" -maxdepth 4 -type f -name tilo -perm -u+x -print0 2>/dev/null)
-  if [ "${#sdk_found[@]}" -gt 0 ]; then
-    while IFS= read -r c; do
-      [ -n "$c" ] && [ -x "$c" ] || continue
-      case "$("$c" --help 2>&1)" in
-        *"sdk"*) sdk_gen=$c; break ;;
-      esac
-    done < <(ls -td -- "${sdk_found[@]}" 2>/dev/null || true)
-  fi
   sdk_paths="sdk/python/src/tilo/types sdk/typescript/src/types docs/api"
-  if [ -n "$sdk_gen" ]; then
-    # Which generated files the person is editing by hand: those are left
-    # alone, since staging them would stage their edits too.
-    sdk_dirty=$(git diff --name-only -- $sdk_paths)
-    for lang in python ts openapi; do
-      case "$lang" in
-        python) out=sdk/python/src/tilo/types ;;
-        ts) out=sdk/typescript/src/types ;;
-        openapi) out=docs/api ;;
-      esac
-      (cd "$root" && "$sdk_gen" sdk gen --lang "$lang" --out "$out") >/dev/null || {
-        note "the SDK's types could not be written with $sdk_gen; run 't fix sdk-types'"
-        fail=1
-      }
+  sdk_langs="python:sdk/python/src/tilo/types ts:sdk/typescript/src/types openapi:docs/api"
+  # Which generated files the person is editing by hand: those are left
+  # alone, since staging them would stage their edits too.
+  sdk_dirty=$(git diff --name-only -- $sdk_paths)
+  sdk_done=""
+  # With a remote builder (rcargo), the generator is built and run there from
+  # this tree's sources, as the builder already holds this worktree's build,
+  # and the files it writes come back into the tree: nothing to build or
+  # download here. Its own index, so it sees the whole tree.
+  if command -v rcargo >/dev/null 2>&1 && rcargo exec --help >/dev/null 2>&1; then
+    sdk_script="set -e"
+    for spec in $sdk_langs; do
+      sdk_script="$sdk_script; cargo run --locked -q -p tilo-cli -- sdk gen --lang ${spec%%:*} --out ${spec#*:}"
     done
+    note "sdk: an app's surface changed; writing the SDK's types on the builder (rcargo)"
+    sdk_log=$(mktemp)
+    if (cd "$root" && GIT_INDEX_FILE="$full_index" rcargo exec sh -c "$sdk_script") >"$sdk_log" 2>&1; then
+      sdk_done=rcargo
+    else
+      note "sdk: writing them on the builder failed:"
+      tail -n 20 "$sdk_log" | sed 's/^/  /' >&2
+    fi
+    rm -f "$sdk_log"
+  fi
+  if [ -z "$sdk_done" ]; then
+    # Like the tilolang formatter below: the freshest generator this tree has
+    # built into target/, under any profile, answering `--help` so a binary for
+    # another platform is skipped rather than run.
+    sdk_gen=""
+    sdk_found=()
+    while IFS= read -r -d '' c; do sdk_found+=("$c"); done < <(
+      find "$root/target" -maxdepth 4 -type f -name tilo -perm -u+x -print0 2>/dev/null)
+    if [ "${#sdk_found[@]}" -gt 0 ]; then
+      while IFS= read -r c; do
+        [ -n "$c" ] && [ -x "$c" ] || continue
+        case "$("$c" --help 2>&1)" in
+          *"sdk"*) sdk_gen=$c; break ;;
+        esac
+      done < <(ls -td -- "${sdk_found[@]}" 2>/dev/null || true)
+    fi
+    if [ -n "$sdk_gen" ]; then
+      sdk_done=$sdk_gen
+      for spec in $sdk_langs; do
+        (cd "$root" && "$sdk_gen" sdk gen --lang "${spec%%:*}" --out "${spec#*:}") >/dev/null || {
+          note "the SDK's types could not be written with $sdk_gen; run 't fix sdk-types'"
+          fail=1
+        }
+      done
+    fi
+  fi
+  if [ -n "$sdk_done" ]; then
     sdk_wrote=0
     sdk_left=""
     while IFS= read -r f; do
