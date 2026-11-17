@@ -963,3 +963,56 @@ test('an app whose widgets all render as HTML opens as HTML; any other on the ca
   const other = await present({route: {mode: 'app', target: {scope, app: 'so.tilo.calculator'}}, mountDesktop});
   assert.equal(other.mount.options.dom, undefined);
 });
+
+/** The grammar's answer to an address with no route: `no-route`, or for one
+ * that ends in `#/`, a route with an empty part (tilo-links, tested there). */
+const noRoute = url => {
+  throw url.endsWith('#/')
+    ? Object.assign(new Error('This link has an empty part (two slashes in a row, or a trailing slash)'), {code: 'empty-segment'})
+    : Object.assign(new Error('no route'), {code: 'no-route'});
+};
+
+test('an address that ends in #/ names no route, and goes where the bare site goes', () => {
+  // What is left of a link whose route was taken out, and what people type:
+  // `https://site/#/`. Read as a route, it stopped the page with "This link
+  // has an empty part" where the bare site opens the person's workspace.
+  const home = {name: 'Lounge', host: {origin: 'https://workspaces.example'}, admission: 'https://workspaces.example/'};
+  const chosen = {origin: 'https://acme.example', workspace: 'A'};
+  const link = {parse: noRoute};
+  for (const hash of ['', '#', '#/']) {
+    const location = {hash, href: `https://tilo.example/${hash}`};
+    assert.deepEqual(chosenRoute({location, mode: 'desktop', home, chosen}),
+      {mode: 'desktop', target: {scope: {kind: 'workspace', host: 'https://acme.example', workspace: 'A'}}}, `the workspace last chosen, at "${hash}"`);
+    assert.deepEqual(initialRoute({link, location, mode: 'desktop', home}),
+      {mode: 'desktop', target: {scope: {kind: 'workspace', host: 'https://workspaces.example', workspace: null}}}, `the site's home, at "${hash}"`);
+    assert.deepEqual(initialRoute({link, location, mode: 'desktop'}),
+      {mode: 'desktop', target: {scope: {kind: 'own'}}}, `the person's own desktop, at "${hash}"`);
+    assert.throws(() => initialRoute({link, location: {hash, href: `https://tilo.example/app/${hash}`}, mode: 'app'}), {code: 'no-route'}, `an app page names its app, at "${hash}"`);
+  }
+  // A route with an empty part is still refused as one.
+  const broken = {hash: '#/desktop//chat', href: 'https://tilo.example/#/desktop//chat'};
+  const strict = {parse: () => { throw Object.assign(new Error('This link has an empty part'), {code: 'empty-segment'}); }};
+  assert.equal(chosenRoute({location: broken, mode: 'desktop', home, chosen}), null);
+  assert.throws(() => initialRoute({link: strict, location: broken, mode: 'desktop', home}), {code: 'empty-segment'});
+});
+
+test('a page opened at an address ending in #/ goes in through its home’s entry, as the bare site does', async () => {
+  const home = {name: 'Commons', host: {origin: 'https://workspaces.example'}, admission: 'https://workspaces.example/', app: 'so.tilo.chat'};
+  const order = [];
+  const window = {
+    __tiloLinkSecrets: Object.freeze({}),
+    location: {href: 'https://workspaces.example/open/#/', hash: '#/'},
+    history: {state: null, replaceState() {}, pushState() {}},
+    addEventListener() {}, removeEventListener() {},
+  };
+  const deps = {
+    loadRuntime: async () => runtimeFake({...entering('entry'), parseLink: noRoute}),
+    prefetchApplication: app => order.push(`prefetch ${app}`),
+    fetch: async () => ({ok: true, json: async () => ({home})}),
+    enterViaHost: async () => { order.push('entry'); return {workspace: 'r1'}; },
+  };
+  // An admitted boot goes on past what this asks of it.
+  void boot({mode: 'desktop', window, deps}).catch(error => order.push(error.message));
+  await new Promise(resolve => setTimeout(resolve, 10));
+  assert.deepEqual(order.slice(0, 2), ['entry', 'prefetch so.tilo.chat']);
+});
