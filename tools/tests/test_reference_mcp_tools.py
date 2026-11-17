@@ -45,6 +45,7 @@ TOOLS = [
         annotations=READ,
     ),
     tool("tilo_read", "Read a resource as text.", {"path": {"type": "string", "description": "What to read."}}, ("path",), READ),
+    tool("tilo_view", "What a person's window shows.", {"path": {"type": "string", "description": "What to show."}}, ("path",), READ),
     tool("tilo_find", "Search the workspace by words.", {"query": {"type": "string", "description": "The words."}}, ("query",), READ),
     tool("tilo_link", "A link a person opens.", {"path": {"type": "string", "description": "What to link."}}, ("path",), READ),
     tool("tilo_watch", "What changed since cursor.", {"cursor": {"type": "string", "description": "Where to go on from."}}, (), READ),

@@ -34,7 +34,7 @@ PACKAGE = "crates/runtime/tilo-runtime"
 # so is a name here that the server no longer serves.
 GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("Workspace tools", (
-        "tilo_ls", "tilo_read", "tilo_find", "tilo_link", "tilo_watch",
+        "tilo_ls", "tilo_read", "tilo_view", "tilo_find", "tilo_link", "tilo_watch",
         "tilo_do", "tilo_status", "tilo",
     )),
     ("Files", ("tilo_put_begin", "tilo_put_append", "tilo_put_finish", "tilo_get")),
