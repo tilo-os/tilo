@@ -320,6 +320,12 @@ impl HostAgents {
                         continue;
                     };
                     let (request, _) = chat::summons::request(message);
+                    let request = chat::summons::with_conversation(
+                        request,
+                        &part,
+                        &summons,
+                        runtime_collab::INSTRUCTION_CONVERSATION,
+                    );
                     turns.push(Turn {
                         agent: agent.clone(),
                         person: summons.person.clone(),
