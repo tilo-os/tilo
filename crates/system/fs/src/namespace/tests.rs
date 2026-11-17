@@ -1162,9 +1162,15 @@ pub(super) fn assert_indexes_match_rebuild(ns: &Namespace) {
     assert_eq!(ns.tree.placement, rebuilt.tree.placement, "placement");
     assert_eq!(ns.tree.children, rebuilt.tree.children, "children");
     assert_eq!(ns.tree.records, rebuilt.tree.records, "record bindings");
-    assert_eq!(ns.tree.resource_of, rebuilt.tree.resource_of, "record owners");
+    assert_eq!(
+        ns.tree.resource_of, rebuilt.tree.resource_of,
+        "record owners"
+    );
     assert_eq!(ns.document_index, rebuilt.document_index, "rows");
-    assert_eq!(ns.document_index_order, rebuilt.document_index_order, "order");
+    assert_eq!(
+        ns.document_index_order, rebuilt.document_index_order,
+        "order"
+    );
     assert_eq!(
         ns.document_index_digest, rebuilt.document_index_digest,
         "digest"
@@ -1352,7 +1358,10 @@ fn a_write_is_one_change_of_the_chunk_that_holds_the_file() {
     assert_eq!(desktop.record_heads(), laptop.record_heads());
     // And a namespace kept on disk reads back the same.
     let kept = Namespace::from_bytes("laptop", &laptop.save()).unwrap();
-    assert_eq!(kept.indexed_document_count(), laptop.indexed_document_count());
+    assert_eq!(
+        kept.indexed_document_count(),
+        laptop.indexed_document_count()
+    );
 }
 
 /// A record that changed more than one write carries (files written while it could not go out)

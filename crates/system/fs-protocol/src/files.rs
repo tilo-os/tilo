@@ -1688,10 +1688,12 @@ mod tests {
             let other = FileDocumentId::new();
             let scope = collab_types::Scope::FsResource(record.0.to_string());
             assert!(
-                scope.matches_resource(&collab_types::ResourceRef::FsResource(record.0.to_string()))
+                scope
+                    .matches_resource(&collab_types::ResourceRef::FsResource(record.0.to_string()))
             );
             assert!(
-                !scope.matches_resource(&collab_types::ResourceRef::FsResource(other.0.to_string()))
+                !scope
+                    .matches_resource(&collab_types::ResourceRef::FsResource(other.0.to_string()))
             );
             assert!(
                 !scope.matches_resource(&collab_types::ResourceRef::FsPath("/renamed.txt".into()))

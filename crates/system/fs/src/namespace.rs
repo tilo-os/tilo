@@ -25,7 +25,7 @@ pub use fs_protocol::tree::ROOT_ID;
 // The document's layout is `fs_protocol::tree`'s: the record that carries the tree reads
 // the same document the mount writes.
 use fs_protocol::tree::{
-    CONTENT_REVISION_KEY, NODES_KEY, PLACEMENT_NAME_KEY, DOCUMENT_ID_KEY, ROOT_DOCUMENT_ID_KEY,
+    CONTENT_REVISION_KEY, DOCUMENT_ID_KEY, NODES_KEY, PLACEMENT_NAME_KEY, ROOT_DOCUMENT_ID_KEY,
     TRASH_ID, document_node_id,
 };
 const RECORD_ID_MIGRATION_DOMAIN: &[u8] = b"tilo.collaborative-fs.namespace-record-id.v1";
@@ -42,6 +42,7 @@ mod documents;
 mod records;
 pub use records::ResourceWrite;
 use records::bundle;
+mod document_index;
 pub mod history;
 #[cfg(test)]
 mod index_walk_tests;
@@ -49,7 +50,6 @@ mod kernel_changes;
 mod leases;
 mod posix;
 mod projection;
-mod document_index;
 pub use changesets::ChangesetMark;
 use chunks::Chunks;
 pub(crate) use chunks::Obj;
@@ -1547,7 +1547,11 @@ impl Namespace {
         self.raw_content_revision_for_id(id)
     }
 
-    fn content_revision_of(&self, obj: &Obj, document_id: FileDocumentId) -> Option<ContentRevisionV1> {
+    fn content_revision_of(
+        &self,
+        obj: &Obj,
+        document_id: FileDocumentId,
+    ) -> Option<ContentRevisionV1> {
         let revision = match self.doc.get(obj, CONTENT_REVISION_KEY) {
             Ok(Some((Value::Scalar(value), _))) => revision_from_scalar(value.as_ref())?,
             _ => return None,

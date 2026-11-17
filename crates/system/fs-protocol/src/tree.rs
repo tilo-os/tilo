@@ -7,7 +7,7 @@ use automerge::{ObjId, ObjType, ROOT, ReadDoc};
 use tilo_automerge::read::ReadTyped as _;
 use tilo_resource::{Delta, Doc, ModelError, NoAction, Resource, SharedResource, Touch};
 
-use crate::files::{FIRST_TREE_CHUNK, FileNameV1, FileNodeKind, FileDocumentId, TreeChunk};
+use crate::files::{FIRST_TREE_CHUNK, FileDocumentId, FileNameV1, FileNodeKind, TreeChunk};
 
 pub const TREE_KIND: &str = "files.tree";
 
@@ -281,7 +281,8 @@ pub struct TreeChunks {
 impl TreeChunks {
     /// Take in the tree's own record as it reads now.
     pub fn read_index<D: ReadDoc>(&mut self, doc: &D) {
-        self.root_document_id = resource_of(doc, &ROOT, ROOT_DOCUMENT_ID_KEY).or(self.root_document_id);
+        self.root_document_id =
+            resource_of(doc, &ROOT, ROOT_DOCUMENT_ID_KEY).or(self.root_document_id);
         self.listed.extend(listed_chunks(doc));
     }
 

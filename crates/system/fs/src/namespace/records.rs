@@ -9,7 +9,9 @@ use tilo_automerge::ApplyIncoming as _;
 
 use super::changes::ChangeTrackedDoc;
 use super::chunks::Chunks;
-use super::{Namespace, ROOT_ID, ROOT_INO, ROOT_DOCUMENT_ID_KEY, next_merge_generation, str_at_doc};
+use super::{
+    Namespace, ROOT_DOCUMENT_ID_KEY, ROOT_ID, ROOT_INO, next_merge_generation, str_at_doc,
+};
 
 impl Namespace {
     /// A namespace as [`Self::save`] kept it.
