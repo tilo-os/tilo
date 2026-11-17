@@ -21,6 +21,8 @@
 //! agreed, so nothing it writes comes back to it as a change. When both moved, the note
 //! wins and the file is written from it.
 
+use std::collections::{BTreeMap, BTreeSet, HashMap};
+
 use automerge::AutoCommit;
 use collab_types::DocumentMutation;
 use serde_json::{Map, Value, json};
@@ -30,7 +32,6 @@ use tilo_fs::namespace::{Namespace, ROOT_INO};
 use tilo_fs::tree_record::{FILES_APP, record as tree_record};
 use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_relay_protocol::WorkspaceId;
-use ui::tilo_resource::Resource as _;
 
 use tilo_lock::MutexRecover as _;
 
@@ -91,30 +92,72 @@ fn names_the_same(name: &str, wanted: &str) -> bool {
 }
 
 /// One note as its file shows it.
+#[derive(Clone)]
 pub(super) struct Note {
     pub(super) id: String,
     pub(super) title: String,
     pub(super) markdown: Vec<u8>,
 }
 
-/// The notes of the notebook `doc`, each with its body as Markdown.
-pub(super) fn notes(doc: &AutoCommit) -> Vec<Note> {
-    let Ok(notebook) = notes::Notebook::read(doc) else {
-        return Vec::new();
-    };
-    notebook
+/// The notebook's pages in `doc`, by the ids they are stored under.
+pub(super) fn page_keys(doc: &AutoCommit) -> Vec<String> {
+    use automerge::ReadDoc as _;
+    notes::Notebook::paths()
         .pages
-        .ids()
-        .filter_map(|id| {
-            let page = notes::notebook::page_of(id)?;
-            let note = notebook.pages.get(id)?;
-            Some(Note {
-                id: id.to_string(),
-                title: note.title.clone(),
-                markdown: body_markdown(doc, page).unwrap_or_default(),
+        .object(doc)
+        .map(|pages| doc.keys(&pages).collect())
+        .unwrap_or_default()
+}
+
+/// The pages of the notebook `doc` that changed between its heads `before` and `after`:
+/// made, deleted, renamed, moved or written. Only they are read again, so a pass costs the
+/// notes that changed, never the notebook.
+pub(super) fn pages_changed(
+    doc: &mut AutoCommit,
+    before: &[automerge::ChangeHash],
+    after: &[automerge::ChangeHash],
+) -> BTreeSet<String> {
+    let Some(pages) = notes::Notebook::paths().pages.object(doc) else {
+        return BTreeSet::new();
+    };
+    doc.diff(before, after)
+        .iter()
+        .filter_map(|patch| {
+            if patch.obj == pages {
+                return match &patch.action {
+                    automerge::PatchAction::PutMap { key, .. }
+                    | automerge::PatchAction::DeleteMap { key } => Some(key.clone()),
+                    _ => None,
+                };
+            }
+            patch.path.iter().find_map(|(parent, prop)| match prop {
+                automerge::Prop::Map(key) if *parent == pages => Some(key.clone()),
+                _ => None,
             })
         })
         .collect()
+}
+
+/// The note stored under `id` in the notebook `doc`, with its body as Markdown; `None` once
+/// it is gone.
+pub(super) fn note(doc: &AutoCommit, id: &str) -> Option<Note> {
+    let page = notes::notebook::page_of(&ui::tilo_resource::Id::from(id))?;
+    let object = notes::Notebook::paths()
+        .pages
+        .item_path(&notes::notebook::page_id(page))
+        .object(doc)?;
+    // A title is kept as text, or as a string a field edit wrote whole.
+    let title = match automerge::ReadDoc::get(doc, &object, "title") {
+        Ok(Some((value, at))) => {
+            <String as ui::tilo_resource::Model>::load(doc, &value, &at).unwrap_or_default()
+        }
+        _ => String::new(),
+    };
+    Some(Note {
+        id: id.to_owned(),
+        title,
+        markdown: body_markdown(doc, page).unwrap_or_default(),
+    })
 }
 
 /// Note `page`'s body in `doc` as Markdown, written by the same codec the folder writes
@@ -143,10 +186,12 @@ pub(super) struct NoteEdit {
     pub(super) then: (String, String),
 }
 
-/// Who wrote the newest version of the file at node `id` of the tree `doc`: the person
+/// Who wrote the newest version of the file at node `id` of the tree, as `history` (the
+/// tree's own document when `None`) records it: the person
 /// whose device signed it, and the agent or program that wrote for them. `None` when the
 /// tree records no version of it.
-fn writer(tree: &Namespace, doc: &AutoCommit, id: &str) -> Option<Caller> {
+fn writer(tree: &Namespace, history: Option<&AutoCommit>, id: &str) -> Option<Caller> {
+    let doc = history.unwrap_or_else(|| tree.document());
     let record = tree.document_id_for_id(id)?;
     let (version, attribution) = fs_protocol::history::latest(doc, record)?;
     let caller = Caller::authenticated(version.actor.person.0, version.actor.device.0);
@@ -166,27 +211,49 @@ fn writer(tree: &Namespace, doc: &AutoCommit, id: &str) -> Option<Caller> {
     })
 }
 
-/// Bring the folder's note files and the notebook into step, as far as the tree alone can:
-/// files written from notes that moved, files of deleted notes trashed, deleted notes'
-/// files restored when the note came back, and new notes' files made. What the folder asks
-/// of the notes is answered as edits to make with Notes' own actions.
+/// The file of each note in the folder: the node projecting it, by the note's id. Read
+/// from the tree once, then kept as the tree changes.
+pub(super) type Files = HashMap<String, String>;
+
+/// Every note file the tree `tree` holds, live or in the trash, by the note it projects.
+pub(super) fn files_of(tree: &Namespace) -> Files {
+    tree.projected_nodes()
+        .into_iter()
+        .filter_map(|id| {
+            let (source, _) = tree.projection(&id)?;
+            Some((page_of_source(&source)?.to_owned(), id))
+        })
+        .collect()
+}
+
+/// Bring the files of the notes in `dirty` and the notes into step, as far as the tree alone
+/// can: files written from notes that moved, files of deleted notes trashed, deleted notes'
+/// files restored when the note came back, and new notes' files made. `dirty` holds each
+/// note whose note or file changed, as it reads now (`None` once deleted); nothing else is
+/// read. What the folder asks of the notes is answered as edits to make with Notes' own
+/// actions. Who wrote a file is read from `history` (the tree's own document when `None`).
 pub(super) fn reconcile(
     tree: &mut Namespace,
-    tree_doc: &AutoCommit,
-    notes: &[Note],
+    history: Option<&AutoCommit>,
+    files: &mut Files,
+    dirty: &BTreeMap<String, Option<Note>>,
     mtime: u64,
 ) -> Vec<NoteEdit> {
     let mut edits = Vec::new();
-    let mut projected = std::collections::BTreeSet::new();
-    for id in tree.projected_nodes() {
-        let Some((source, agreed)) = tree.projection(&id) else {
+    for (page, note) in dirty {
+        let projected = files.get(page).and_then(|id| {
+            let (source, agreed) = tree.projection(id)?;
+            (page_of_source(&source) == Some(page.as_str())).then(|| (id.clone(), source, agreed))
+        });
+        let Some((id, source, agreed)) = projected else {
+            files.remove(page);
+            if let Some(note) = note
+                && let Some(id) = make_file(tree, note, mtime)
+            {
+                files.insert(page.clone(), id);
+            }
             continue;
         };
-        let Some(page) = page_of_source(&source) else {
-            continue;
-        };
-        projected.insert(page.to_owned());
-        let note = notes.iter().find(|note| note.id == page);
         let trashed = tree.is_directly_trashed(&id);
         match (note, trashed) {
             // The note was deleted in Notes: its file goes to the trash.
@@ -206,7 +273,7 @@ pub(super) fn reconcile(
             }
             // The file was deleted in the folder: so is the note, as whoever deleted it.
             (Some(note), true) => {
-                if let Some(by) = writer(tree, tree_doc, &id) {
+                if let Some(by) = writer(tree, history, &id) {
                     let mut arguments = Map::new();
                     arguments.insert("page".into(), json!(note.id));
                     edits.push(NoteEdit {
@@ -219,12 +286,9 @@ pub(super) fn reconcile(
                 }
             }
             (Some(note), false) => {
-                edits.extend(follow(tree, tree_doc, &id, note, &agreed, mtime));
+                edits.extend(follow(tree, history, &id, note, &agreed, mtime));
             }
         }
-    }
-    for note in notes.iter().filter(|note| !projected.contains(&note.id)) {
-        make_file(tree, note, mtime);
     }
     edits
 }
@@ -233,7 +297,7 @@ pub(super) fn reconcile(
 /// to the note when only the file did, and named for the note's title.
 fn follow(
     tree: &mut Namespace,
-    tree_doc: &AutoCommit,
+    history: Option<&AutoCommit>,
     id: &str,
     note: &Note,
     agreed: &str,
@@ -259,7 +323,7 @@ fn follow(
     }
     if note_agreed == agreed {
         // Only the file moved: the note is written as it says, by whoever wrote it.
-        let Some(by) = writer(tree, tree_doc, id) else {
+        let Some(by) = writer(tree, history, id) else {
             tracing::debug!(
                 page = %note.id,
                 record = ?tree.document_id_for_id(id),
@@ -366,20 +430,15 @@ fn folder(tree: &mut Namespace, mtime: u64) -> Option<(String, u64)> {
     Some((id, ino))
 }
 
-/// Make note `note`'s file in the notes folder.
-fn make_file(tree: &mut Namespace, note: &Note, mtime: u64) {
+/// Make note `note`'s file in the notes folder; the file's node.
+fn make_file(tree: &mut Namespace, note: &Note, mtime: u64) -> Option<String> {
     tracing::debug!(page = %note.id, "notes folder: a note's file is made");
-    let Some((folder, folder_ino)) = folder(tree, mtime) else {
-        return;
-    };
+    let (folder, folder_ino) = folder(tree, mtime)?;
     let name = free_name(tree, &folder, &file_name(&note.title));
-    let Some(ino) = tree.create_document(folder_ino, &name, "md", mtime) else {
-        return;
-    };
-    let Some(id) = tree.id_for_ino(ino).map(str::to_owned) else {
-        return;
-    };
+    let ino = tree.create_document(folder_ino, &name, "md", mtime)?;
+    let id = tree.id_for_ino(ino).map(str::to_owned)?;
     write_file(tree, &id, note, mtime);
+    Some(id)
 }
 
 /// How long a failed pass over a workspace's notes waits before it is tried again, the
@@ -474,6 +533,10 @@ impl Worker {
 
     /// Bring `workspace_id`'s notes and their files in its folder into step
     /// ([module docs](self)). Run whenever either record of the workspace takes a write.
+    ///
+    /// The notebook and the tree are kept between passes ([`Followed`]): a pass merges
+    /// only the changes since the last, and reads, renders and writes only the notes and
+    /// files they touched, so one note's edit costs that note in a notebook of thousands.
     pub(super) fn project_notes(&mut self, workspace_id: WorkspaceId) -> Result<(), String> {
         let tree_name = tree_record();
         let notes_route = DocumentRoute {
@@ -503,55 +566,189 @@ impl Worker {
                 },
             )
             .map_err(|error| error.to_string())?;
-        // A workspace that has no notebook yet has no notes to show; one whose folder
-        // nobody wrote yet gets one when the first note is made.
-        let Ok((notebook, _)) = state.document(&notes_route) else {
-            return Ok(());
-        };
-        let notebook = AutoCommit::load(&notebook).map_err(|error| error.to_string())?;
-        let notes = notes(&notebook);
-        let existing = state.document(&tree_route).ok().map(|(bytes, _)| bytes);
-        if existing.is_none() && notes.is_empty() {
-            return Ok(());
-        }
-        let author = hex::encode(self.host_device.key.verifying_key().to_bytes());
-        let (mut tree, tree_doc) = match &existing {
-            Some(bytes) => (
-                Namespace::from_bytes(&author, bytes).map_err(|error| error.to_string())?,
-                AutoCommit::load(bytes).map_err(|error| error.to_string())?,
-            ),
-            None => (
-                Namespace::new(&author).map_err(|error| error.to_string())?,
-                AutoCommit::new(),
-            ),
-        };
+        // What failed part way is read whole again by the next pass.
+        let held = self.notes_followed.remove(&workspace_id);
+        let (mut followed, dirty) =
+            match held.map(|held| held.caught_up(&state, &notes_route, &tree_route)) {
+                Some(Ok(Some(caught_up))) => caught_up,
+                Some(Err(error)) => return Err(error),
+                Some(Ok(None)) | None => {
+                    let author = hex::encode(self.host_device.key.verifying_key().to_bytes());
+                    // A workspace that has no notebook yet has no notes to show; one whose folder
+                    // nobody wrote yet gets one when the first note is made.
+                    match Followed::read(&state, &notes_route, &tree_route, &author)? {
+                        Some(read) => read,
+                        None => return Ok(()),
+                    }
+                }
+            };
+        let dirty: BTreeMap<String, Option<Note>> = dirty
+            .into_iter()
+            .map(|page| {
+                let note = note(&followed.notebook, &page);
+                (page, note)
+            })
+            .collect();
         let mtime = tilo_clock::unix_now_ns() / 1_000_000;
-        // What loading the tree settled of its own (ids it lacked) is not this pass's
-        // change: the tree is written only when the notes asked something of it.
-        let loaded = tree.heads();
-        let edits = reconcile(&mut tree, &tree_doc, &notes, mtime);
+        let loaded = followed.tree.heads();
+        let edits = reconcile(&mut followed.tree, None, &mut followed.files, &dirty, mtime);
         tracing::debug!(
             %workspace_id,
-            notes = notes.len(),
+            notes = dirty.len(),
             edits = edits.len(),
-            "notes folder: a pass over the notes and their files"
+            "notes folder: a pass over the notes and their files that changed"
         );
-        let applied = self.apply_note_edits(workspace_id, &notes_route, &mut tree, edits);
-        if existing.is_some() && tree.heads() == loaded {
+        let applied = self.apply_note_edits(workspace_id, &notes_route, &mut followed.tree, edits);
+        let written = followed.tree.heads();
+        if followed.tree_heads.is_some() && written == loaded {
+            self.keep_followed(workspace_id, followed);
             return applied;
         }
-        let mutation = if existing.is_some() {
-            let change = tree.save_incremental();
-            if change.is_empty() {
-                return applied;
-            }
+        followed.tree.note_change();
+        let mutation = if followed.tree_heads.is_some() {
+            let change = followed.tree.changes_since(&loaded);
             tracing::debug!(bytes = change.len(), "notes folder: the tree is written");
             DocumentMutation::Incremental(change)
         } else {
-            DocumentMutation::Snapshot(tree.save())
+            DocumentMutation::Snapshot(followed.tree.save())
         };
         self.commit(workspace_id, &tree_route, &mutation)?;
+        // The tree record now stands where this pass left it: the next pass merges only what
+        // others write after.
+        followed.tree_heads = Some(followed.tree.heads().iter().map(|head| head.0).collect());
+        self.keep_followed(workspace_id, followed);
         applied
+    }
+}
+
+/// How many workspaces' notebooks and folders a worker keeps between passes: those whose
+/// notes moved last. One past them is read whole by its next pass.
+const MOST_FOLLOWED: usize = 32;
+
+impl Worker {
+    /// Keep `followed` for `workspace_id`'s next pass, letting go of the workspace whose
+    /// notes were projected longest ago once more than [`MOST_FOLLOWED`] are kept.
+    fn keep_followed(&mut self, workspace_id: WorkspaceId, mut followed: Followed) {
+        followed.last = tilo_clock::unix_now_ns();
+        self.notes_followed.insert(workspace_id, followed);
+        if self.notes_followed.len() > MOST_FOLLOWED
+            && let Some(oldest) = self
+                .notes_followed
+                .iter()
+                .min_by_key(|(_, followed)| followed.last)
+                .map(|(id, _)| *id)
+        {
+            self.notes_followed.remove(&oldest);
+        }
+    }
+}
+
+/// What the host holds of a workspace's notebook and the tree its folder is, between passes
+/// over them ([`Worker::project_notes`]): both as it merged them last, and which file is
+/// each note's.
+pub(super) struct Followed {
+    notebook: AutoCommit,
+    /// The notebook record's heads it merged last.
+    notebook_heads: Vec<[u8; 32]>,
+    tree: Namespace,
+    /// The tree record's heads it merged last; `None` while the workspace has no tree.
+    tree_heads: Option<Vec<[u8; 32]>>,
+    files: Files,
+    /// When its pass ended.
+    last: u64,
+}
+
+impl Followed {
+    /// Read the notebook and the tree whole: every note and every note file is to be
+    /// brought into step. `None` when there is nothing to project: no notebook, or neither a
+    /// note nor a folder.
+    fn read(
+        state: &super::WorkspaceState,
+        notes_route: &DocumentRoute,
+        tree_route: &DocumentRoute,
+        author: &str,
+    ) -> Result<Option<(Self, BTreeSet<String>)>, String> {
+        let Ok((notebook, notebook_heads)) = state.document(notes_route) else {
+            return Ok(None);
+        };
+        let notebook = AutoCommit::load(&notebook).map_err(|error| error.to_string())?;
+        let pages = page_keys(&notebook);
+        let (tree, tree_heads) = match state.document(tree_route).ok() {
+            Some((bytes, heads)) => (
+                Namespace::from_bytes(author, &bytes).map_err(|error| error.to_string())?,
+                Some(heads),
+            ),
+            None if pages.is_empty() => return Ok(None),
+            None => (
+                Namespace::new(author).map_err(|error| error.to_string())?,
+                None,
+            ),
+        };
+        let files = files_of(&tree);
+        let dirty = pages.into_iter().chain(files.keys().cloned()).collect();
+        Ok(Some((
+            Self {
+                notebook,
+                notebook_heads,
+                tree,
+                tree_heads,
+                files,
+                last: 0,
+            },
+            dirty,
+        )))
+    }
+
+    /// Merge what the notebook and the tree took since they were read: the notes whose note
+    /// or file changed. `None` when either record is no longer where it was read from (a
+    /// record started anew, a tree someone else made first), to be read whole.
+    fn caught_up(
+        mut self,
+        state: &super::WorkspaceState,
+        notes_route: &DocumentRoute,
+        tree_route: &DocumentRoute,
+    ) -> Result<Option<(Self, BTreeSet<String>)>, String> {
+        let mut dirty = BTreeSet::new();
+        match state.update(notes_route, Some(&self.notebook_heads))? {
+            None => {}
+            Some((DocumentMutation::Incremental(change), heads)) => {
+                let before = self.notebook.get_heads();
+                tilo_automerge::ApplyIncoming::load_incoming(&mut self.notebook, &change)
+                    .map_err(|error| error.to_string())?;
+                let after = self.notebook.get_heads();
+                dirty.extend(pages_changed(&mut self.notebook, &before, &after));
+                self.notebook_heads = heads;
+            }
+            Some((DocumentMutation::Snapshot(_), _)) => return Ok(None),
+        }
+        let Some(tree_heads) = &self.tree_heads else {
+            if state.document(tree_route).is_ok() {
+                return Ok(None);
+            }
+            return Ok(Some((self, dirty)));
+        };
+        match state.update(tree_route, Some(tree_heads))? {
+            None => {}
+            Some((DocumentMutation::Incremental(change), heads)) => {
+                let before = self.tree.heads();
+                self.tree
+                    .apply_incremental(&change)
+                    .map_err(|error| error.to_string())?;
+                let after = self.tree.heads();
+                for node in self.tree.nodes_changed_between(&before, &after) {
+                    let Some((source, _)) = self.tree.projection(&node) else {
+                        continue;
+                    };
+                    if let Some(page) = page_of_source(&source) {
+                        self.files.insert(page.to_owned(), node);
+                        dirty.insert(page.to_owned());
+                    }
+                }
+                self.tree_heads = Some(heads);
+            }
+            Some((DocumentMutation::Snapshot(_), _)) => return Ok(None),
+        }
+        Ok(Some((self, dirty)))
     }
 }
 

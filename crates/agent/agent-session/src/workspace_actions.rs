@@ -1295,6 +1295,9 @@ struct Worker {
     /// How many passes over each workspace's notes and their files failed in a row
     /// ([`notes_folder`]): the next is tried again after a wait that grows with them.
     notes_failures: HashMap<WorkspaceId, u32>,
+    /// The notebook and folder of the workspaces whose notes were projected last, as the
+    /// last pass left them ([`notes_folder::Followed`]).
+    notes_followed: HashMap<WorkspaceId, notes_folder::Followed>,
 }
 
 /// The API's answer for an action it has nothing by that address.
@@ -1414,6 +1417,7 @@ impl Worker {
             handed: HashMap::new(),
             canonical: canonical::CanonicalReads::default(),
             notes_failures: HashMap::new(),
+            notes_followed: HashMap::new(),
         }
     }
 

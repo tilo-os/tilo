@@ -2706,6 +2706,24 @@ impl Namespace {
         self.doc.get_heads()
     }
 
+    /// The document the tree is kept in, to read what it records beside its nodes (a file's
+    /// versions, who wrote them).
+    #[must_use]
+    pub fn document(&self) -> &AutoCommit {
+        &self.doc
+    }
+
+    /// The nodes whose fields (or file content) changed between heads `before` and `after`:
+    /// what a follower of the tree reads again, rather than every node, once changes arrive.
+    pub fn nodes_changed_between(
+        &mut self,
+        before: &[automerge::ChangeHash],
+        after: &[automerge::ChangeHash],
+    ) -> HashSet<String> {
+        let patches = self.doc.diff(before, after);
+        self.patched_nodes(&patches)
+    }
+
     /// A receiver that sees, after this call, every change to the document. It says that something
     /// may have changed, never what; compare [`Self::heads`] to know.
     #[must_use]

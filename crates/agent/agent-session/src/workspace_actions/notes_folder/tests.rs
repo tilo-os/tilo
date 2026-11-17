@@ -17,7 +17,30 @@ fn notebook() -> TestApp<notes::NotesShell> {
 }
 
 fn notes_of(app: &TestApp<notes::NotesShell>) -> Vec<Note> {
-    app.read_document(notes)
+    app.read_document(|doc| {
+        page_keys(doc)
+            .iter()
+            .filter_map(|page| note(doc, page))
+            .collect()
+    })
+}
+
+/// A pass over every note and every note file, as the host's first pass over a workspace.
+fn reconcile_all(
+    tree: &mut Namespace,
+    history: &AutoCommit,
+    notes: &[Note],
+    mtime: u64,
+) -> Vec<NoteEdit> {
+    let mut files = files_of(tree);
+    let mut dirty: BTreeMap<String, Option<Note>> =
+        files.keys().map(|page| (page.clone(), None)).collect();
+    dirty.extend(
+        notes
+            .iter()
+            .map(|note| (note.id.clone(), Some(note.clone()))),
+    );
+    reconcile(tree, Some(history), &mut files, &dirty, mtime)
 }
 
 fn page_of(app: &TestApp<notes::NotesShell>, title: &str) -> String {
@@ -121,14 +144,14 @@ fn a_note_is_a_file_in_the_folder_and_the_hosts_own_write_is_no_change() {
     app.settle();
     let mut tree = Namespace::new("host").unwrap();
     let doc = AutoCommit::new();
-    let edits = reconcile(&mut tree, &doc, &notes_of(&app), 1);
+    let edits = reconcile_all(&mut tree, &doc, &notes_of(&app), 1);
     assert!(edits.is_empty(), "nothing asked of the notes");
     assert_eq!(
         file(&mut tree, "Notes/Terms.md").as_deref().map(str::trim),
         Some("Payment due net 30.")
     );
     tree.save();
-    let edits = reconcile(&mut tree, &doc, &notes_of(&app), 2);
+    let edits = reconcile_all(&mut tree, &doc, &notes_of(&app), 2);
     assert!(edits.is_empty());
     assert!(
         tree.save_incremental().is_empty(),
@@ -147,7 +170,7 @@ fn a_file_written_in_the_folder_is_the_note_written_by_the_writer() {
     app.settle();
     let mut tree = Namespace::new("host").unwrap();
     let mut doc = AutoCommit::new();
-    reconcile(&mut tree, &doc, &notes_of(&app), 1);
+    reconcile_all(&mut tree, &doc, &notes_of(&app), 1);
     // An agent writes the file through the mounted folder.
     let ino = tree.resolve_path_ino("Notes/Terms.md").unwrap();
     assert!(tree.import_document(
@@ -157,7 +180,7 @@ fn a_file_written_in_the_folder_is_the_note_written_by_the_writer() {
         &tilo_content::ContentStore::memory(),
     ));
     written_by_agent(&mut tree, &mut doc, "Notes/Terms.md", FileProvenance::Edit);
-    let edits = reconcile(&mut tree, &doc, &notes_of(&app), 4);
+    let edits = reconcile_all(&mut tree, &doc, &notes_of(&app), 4);
     assert_eq!(edits.len(), 1);
     let edit = &edits[0];
     assert_eq!(edit.action, "write-note");
@@ -173,7 +196,7 @@ fn a_file_written_in_the_folder_is_the_note_written_by_the_writer() {
     assert!(body.contains("net 45"), "{body}");
     assert!(body.contains("signed by both"), "{body}");
     tree.save();
-    assert!(reconcile(&mut tree, &doc, &notes_of(&app), 5).is_empty());
+    assert!(reconcile_all(&mut tree, &doc, &notes_of(&app), 5).is_empty());
     assert!(
         tree.save_incremental().is_empty(),
         "the note written from the file comes back to the file as no change"
@@ -191,7 +214,7 @@ fn a_note_edited_in_notes_is_written_into_its_file_and_renamed_with_it() {
     app.settle();
     let mut tree = Namespace::new("host").unwrap();
     let doc = AutoCommit::new();
-    reconcile(&mut tree, &doc, &notes_of(&app), 1);
+    reconcile_all(&mut tree, &doc, &notes_of(&app), 1);
     let page = page_of(&app, "Terms");
     app.call(
         "append-to-note",
@@ -201,7 +224,7 @@ fn a_note_edited_in_notes_is_written_into_its_file_and_renamed_with_it() {
     app.call("rename", json!({ "page": page, "title": "Payment terms" }))
         .unwrap();
     app.settle();
-    assert!(reconcile(&mut tree, &doc, &notes_of(&app), 2).is_empty());
+    assert!(reconcile_all(&mut tree, &doc, &notes_of(&app), 2).is_empty());
     let written = file(&mut tree, "Notes/Payment terms.md").expect("renamed with its note");
     assert!(written.contains("Late fees apply."), "{written}");
     assert!(file(&mut tree, "Notes/Terms.md").is_none());
@@ -218,21 +241,21 @@ fn a_deleted_file_deletes_its_note_and_undo_brings_both_back() {
     app.settle();
     let mut tree = Namespace::new("host").unwrap();
     let mut doc = AutoCommit::new();
-    reconcile(&mut tree, &doc, &notes_of(&app), 1);
+    reconcile_all(&mut tree, &doc, &notes_of(&app), 1);
     let ino = tree.resolve_path_ino("Notes/Terms.md").unwrap();
     written_by_agent(&mut tree, &mut doc, "Notes/Terms.md", FileProvenance::Edit);
     assert!(tree.remove(ino));
-    let edits = reconcile(&mut tree, &doc, &notes_of(&app), 2);
+    let edits = reconcile_all(&mut tree, &doc, &notes_of(&app), 2);
     assert_eq!(edits.len(), 1);
     assert_eq!(edits[0].action, "delete");
     apply(&mut app, &mut tree, edits);
     assert!(notes_of(&app).is_empty(), "the note is deleted");
-    assert!(reconcile(&mut tree, &doc, &notes_of(&app), 3).is_empty());
+    assert!(reconcile_all(&mut tree, &doc, &notes_of(&app), 3).is_empty());
 
     assert!(app.undo(), "Notes undoes the delete");
     app.settle();
     assert_eq!(notes_of(&app).len(), 1);
-    assert!(reconcile(&mut tree, &doc, &notes_of(&app), 4).is_empty());
+    assert!(reconcile_all(&mut tree, &doc, &notes_of(&app), 4).is_empty());
     assert_eq!(
         file(&mut tree, "Notes/Terms.md").as_deref().map(str::trim),
         Some("Payment due net 30."),
@@ -251,11 +274,11 @@ fn a_note_deleted_in_notes_takes_its_file_to_the_trash() {
     app.settle();
     let mut tree = Namespace::new("host").unwrap();
     let doc = AutoCommit::new();
-    reconcile(&mut tree, &doc, &notes_of(&app), 1);
+    reconcile_all(&mut tree, &doc, &notes_of(&app), 1);
     let page = page_of(&app, "Terms");
     app.call("delete", json!({ "page": page })).unwrap();
     app.settle();
-    assert!(reconcile(&mut tree, &doc, &notes_of(&app), 2).is_empty());
+    assert!(reconcile_all(&mut tree, &doc, &notes_of(&app), 2).is_empty());
     assert!(file(&mut tree, "Notes/Terms.md").is_none());
 }
 
@@ -266,4 +289,32 @@ fn a_failed_pass_waits_longer_each_time_up_to_five_minutes() {
         .map(|failures| super::retry_after(failures).as_secs())
         .collect();
     assert_eq!(waits, [2, 4, 8, 256, 300, 300]);
+}
+
+#[test]
+fn a_pass_after_one_note_changed_reads_that_note_alone() {
+    let mut app = notebook();
+    for n in 0..20 {
+        app.call(
+            "create-page",
+            json!({ "title": format!("Note {n}"), "markdown": "Some text." }),
+        )
+        .unwrap();
+    }
+    app.settle();
+    let before = app.read_document(|doc| doc.clone().get_heads());
+    let page = page_of(&app, "Note 7");
+    app.call(
+        "write-note",
+        json!({ "page": page, "markdown": "Other text." }),
+    )
+    .unwrap();
+    app.settle();
+    let mut after = app.read_document(Clone::clone);
+    let heads = after.get_heads();
+    assert_eq!(
+        pages_changed(&mut after, &before, &heads),
+        BTreeSet::from([page]),
+        "only the written note is read again"
+    );
 }
