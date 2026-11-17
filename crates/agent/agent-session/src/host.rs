@@ -485,8 +485,8 @@ fn read_state(file: &Path) -> Result<SupervisorSnapshot, String> {
     }
 }
 
-/// Write the snapshot if it changed since the last write: to a private
-/// temporary file, then renamed over the state file.
+/// Write the snapshot if it changed since the last write: a private file
+/// replaced whole, so a reader never sees half of it.
 fn persist(supervisor: &AgentSupervisor, file: &Path, written: &Mutex<String>) {
     let Ok(text) = serde_json::to_string_pretty(&supervisor.snapshot()) else {
         return;
@@ -495,27 +495,10 @@ fn persist(supervisor: &AgentSupervisor, file: &Path, written: &Mutex<String>) {
     if *last == text {
         return;
     }
-    let temporary = file.with_extension("json.tmp");
-    let result =
-        write_private(&temporary, text.as_bytes()).and_then(|()| std::fs::rename(&temporary, file));
-    match result {
+    match tilo_files::native::atomic::write_with_mode(file, text.as_bytes(), 0o600) {
         Ok(()) => *last = text,
         Err(error) => tracing::warn!(%error, file = %file.display(), "agent state not written"),
     }
-}
-
-fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
-    use std::io::Write as _;
-    let mut options = std::fs::OpenOptions::new();
-    options.write(true).create(true).truncate(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt as _;
-        options.mode(0o600);
-    }
-    let mut out = options.open(path)?;
-    out.write_all(bytes)?;
-    out.sync_all()
 }
 
 #[cfg(test)]
