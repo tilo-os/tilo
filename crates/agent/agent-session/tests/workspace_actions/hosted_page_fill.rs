@@ -467,7 +467,7 @@ async fn narrow(hosted: &Hosted, bound: Vec<Bound>) {
 /// page.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_assistant_has_a_sign_in_field_filled_with_a_password_only_the_page_holds() {
-    let signing = at_the_sign_in_page(SITE).await;
+    let signing = Box::pin(at_the_sign_in_page(SITE)).await;
     let hosted = &signing.hosted;
 
     let told = signing
@@ -529,7 +529,7 @@ async fn the_assistant_has_a_sign_in_field_filled_with_a_password_only_the_page_
 /// A no fills nothing, and the next fill asks again.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_no_fills_nothing_and_the_next_fill_asks_again() {
-    let signing = at_the_sign_in_page(SITE).await;
+    let signing = Box::pin(at_the_sign_in_page(SITE)).await;
     let hosted = &signing.hosted;
     let told = signing
         .asks_to_fill("Please sign in to the made-up site for me.", "call-1")
@@ -561,7 +561,7 @@ async fn a_no_fills_nothing_and_the_next_fill_asks_again() {
 /// the question says it was not done, the item keeps no leave, and the next fill asks again.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn always_to_an_edited_question_fills_nothing_and_lets_nothing_stand() {
-    let mut signing = at_the_sign_in_page(SITE).await;
+    let mut signing = Box::pin(at_the_sign_in_page(SITE)).await;
     let told = signing
         .asks_to_fill("Please sign in to the made-up site for me.", "call-1")
         .await;
@@ -619,7 +619,7 @@ async fn always_to_an_edited_question_fills_nothing_and_lets_nothing_stand() {
 /// An item of another site is refused where the page is: nobody is asked, nothing is released.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_item_of_another_site_is_refused_and_nobody_is_asked() {
-    let signing = at_the_sign_in_page(ELSEWHERE).await;
+    let signing = Box::pin(at_the_sign_in_page(ELSEWHERE)).await;
     let hosted = &signing.hosted;
     let told = signing
         .asks_to_fill("Please sign in to the made-up site for me.", "call-1")
@@ -649,7 +649,7 @@ async fn an_item_of_another_site_is_refused_and_nobody_is_asked() {
 /// is asked: nothing is handed over, nobody is asked, nothing is released.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_agent_whose_rules_do_not_name_the_fill_is_refused_before_any_window_is_asked() {
-    let signing = at_the_sign_in_page(SITE).await;
+    let signing = Box::pin(at_the_sign_in_page(SITE)).await;
     let hosted = &signing.hosted;
     // Everything of Chat, so it answers its person, and nothing of the vault.
     narrow(
