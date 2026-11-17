@@ -167,6 +167,41 @@ fn the_persons_vault_is_asked_by_the_person_alone() {
     assert_eq!(api.admitted.lock().unwrap().len(), 1);
 }
 
+/// What a person was told, and what they call important, is asked of their
+/// host by the person alone, as their vault is: an agent and an app on the
+/// device reach neither through the session.
+#[test]
+fn what_a_person_was_told_is_asked_by_the_person_alone() {
+    use tilo_actions::remote::person_telling;
+
+    let (session, _openings) = super::serve("workspace", Arc::default());
+    let person = Caller::local_person("ada").in_workspace("workspace");
+    let listing = || InvokeRequest {
+        target: person_telling::target(person_telling::TOLD, person_telling::LIST),
+        ..ask(mcp_server::STOP)
+    };
+    let early = answer(session.invoke(&person, listing()));
+    assert!(
+        matches!(early, Err(ActionHostError::Unavailable { .. })),
+        "without an API nothing answers it: {early:?}"
+    );
+
+    let api = Arc::new(Host::default());
+    session.serve_person_api(person_telling::PROVIDER, api.clone());
+    assert!(answer(session.invoke(&person, listing())).is_ok());
+    assert_eq!(api.admitted.lock().unwrap().len(), 1);
+
+    let agent = person.delegated_to("helper");
+    let app = Caller::local_app("so.tilo.chat")
+        .acting_for("ada")
+        .in_workspace("workspace");
+    for other in [agent, app] {
+        let refused = answer(session.invoke(&other, listing()));
+        assert_eq!(refused.unwrap_err(), ActionHostError::UnknownAction);
+    }
+    assert_eq!(api.admitted.lock().unwrap().len(), 1);
+}
+
 /// What a window shows its tiles as: a notice, which is all a test needs.
 struct Notices;
 

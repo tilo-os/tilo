@@ -1,5 +1,5 @@
-//! The person's mail accounts and model providers, as their page reaches
-//! them.
+//! The person's mail accounts, model providers, vault, and what they were
+//! told, as their page reaches them.
 //!
 //! A page cannot open a mail server's session and keeps no vault of its own,
 //! so these asks are the workspace host's to answer. The page's desktop
@@ -10,7 +10,7 @@
 
 use std::sync::Arc;
 
-use tilo_actions::remote::{person_accounts, person_models, person_vault};
+use tilo_actions::remote::{person_accounts, person_models, person_telling, person_vault};
 use tilo_desktop_surface::session::DesktopSession;
 use tilo_session_client::remote::SessionActions;
 
@@ -21,6 +21,9 @@ pub(crate) fn serve(session: &DesktopSession, host: &SessionActions) {
         person_accounts::PROVIDER,
         person_models::PROVIDER,
         person_vault::PROVIDER,
+        // What the person calls important and what they were told: the
+        // host keeps both, because it tells while no page is open.
+        person_telling::PROVIDER,
     ] {
         session.serve_person_api(provider, Arc::new(host.clone()));
     }
