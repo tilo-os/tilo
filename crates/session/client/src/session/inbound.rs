@@ -107,26 +107,29 @@ impl Task {
         workspace_id: WorkspaceId,
         refusal: &tilo_server_protocol::refusal::Refusal,
     ) {
-        if *refusal == tilo_server_protocol::refusal::Refusal::WorkspaceDeleted {
-            self.workspace_deleted(workspace_id);
-        } else {
-            self.fail("permission-required", refusal.to_string());
+        use tilo_server_protocol::refusal::Refusal;
+        match refusal {
+            Refusal::WorkspaceDeleted => self.left(workspace_id, WORKSPACE_DELETED),
+            // Taken out of the workspace (removed, or this device no longer counts as theirs):
+            // the workspace stops letting this session in, as a deleted one does, and the page
+            // hears it is no longer a member rather than a permission it could ask for.
+            Refusal::NotAMember(_) => self.left(workspace_id, NOT_ADMITTED),
+            refusal => self.fail("permission-required", refusal.to_string()),
         }
     }
 
-    /// The server says `workspace_id`'s owner deleted it: it is gone for good.
-    /// The session stops following it, and says so (`workspace-deleted`) for
-    /// the page or layout to forget it; a session holding nothing else ends
-    /// there, as a refusal ends one.
-    fn workspace_deleted(&mut self, workspace_id: WorkspaceId) {
+    /// The server lets this session into `workspace_id` no more, for `why` (its owner deleted
+    /// it, `workspace-deleted`, or took this person out, `not-admitted`). The session stops
+    /// following it and says why for the page or layout to act on; a session holding nothing
+    /// else ends there, as a refusal ends one.
+    fn left(&mut self, workspace_id: WorkspaceId, (code, message): (&'static str, &str)) {
         self.workspaces.remove(&workspace_id);
         self.live_sessions_due.remove(&workspace_id);
         self.placing.remove(&workspace_id);
-        // Its records are opened on no later subscription: the host holds
-        // nothing of it to answer with.
+        // Its records are opened on no later subscription: none of them is answered.
         self.opened_records
             .retain(|(workspace, _), _| *workspace != workspace_id);
-        self.fail(WORKSPACE_DELETED.0, WORKSPACE_DELETED.1);
+        self.fail(code, message);
         let nothing_left = self.workspaces.is_empty();
         self.emptied = nothing_left;
         self.reports.change(|status| {

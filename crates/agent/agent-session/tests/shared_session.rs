@@ -500,7 +500,8 @@ async fn an_agent_edits_beside_a_browser_and_both_see_each_other() {
     let carried = Delegation::decode(&hex::decode(&info.delegation).unwrap()).unwrap();
     assert_eq!(carried.verify(&user, tilo_clock::unix_now_ns()), Ok(()));
 
-    // 5. The host keeps the agent to its delegated workspaces.
+    // 5. The agent is kept to its delegated workspaces: one outside them does not count
+    // it as a member, and its session goes on in the workspace it is delegated.
     agent
         .peer()
         .send(Cmd::Join(
@@ -516,7 +517,7 @@ async fn an_agent_edits_beside_a_browser_and_both_see_each_other() {
                 .status()
                 .failures
                 .iter()
-                .any(|failure| failure.code == "permission-required");
+                .any(|failure| failure.code == "not-admitted");
             async move { refused.then_some(()) }
         },
     )
