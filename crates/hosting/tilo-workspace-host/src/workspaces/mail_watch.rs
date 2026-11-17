@@ -445,7 +445,9 @@ pub(crate) mod testing {
         FetchMail, FetchedMail, FetchedMessage, FoundFolder, FoundMail, MarkMail, ReadMail,
         SearchMail, SendMail, SentMail,
     };
-    use tilo_mail_session::{Attachment, InboxHeard, InboxSeen, MailSession, Watching};
+    use tilo_mail_session::{
+        Attachment, InboxHeard, InboxSeen, Leaving, MailSession, Recipient, Watching,
+    };
 
     /// One watch the host started: the account, where it starts, what it
     /// tells, and whether it was stopped.
@@ -590,13 +592,32 @@ pub(crate) mod testing {
             &self,
             account: &accounts::Account,
             _: &accounts::Secret,
-            message: &SendMail,
+            leaving: &Leaving,
             _: &[Attachment],
             _: Option<&str>,
         ) -> Result<SentMail, String> {
+            // Whom it is sent as when that is not the account itself, and
+            // the addresses of every list it is handed over for: what a
+            // test compares with what the person was shown.
+            let listed = |list: &[Recipient]| {
+                let addresses: Vec<&str> = list.iter().map(Recipient::address).collect();
+                addresses.join(", ")
+            };
+            let mut whom = Vec::new();
+            if leaving.sender() != account.id.as_str() {
+                whom.push(format!("as {}", leaving.sender()));
+            }
+            whom.push(format!("to {}", listed(leaving.to())));
+            for (word, copies) in [("copy to", leaving.cc()), ("blind copy to", leaving.bcc())] {
+                if !copies.is_empty() {
+                    whom.push(format!("{word} {}", listed(copies)));
+                }
+            }
             self.ask(format!(
-                "send {} to {}: {}",
-                account.id, message.to, message.subject
+                "send {} {}: {}",
+                account.id,
+                whom.join(" "),
+                leaving.message().subject
             ))?;
             Ok(SentMail::default())
         }

@@ -14,6 +14,8 @@
 //! What it answers fits the frame an action's answer travels in: a message
 //! whose words would not fit is answered by its start, and says so.
 
+mod leaving;
+
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 use std::time::Duration;
@@ -24,6 +26,8 @@ use tilo_actions::remote::person_accounts::{
 };
 use tokio::time::timeout;
 use web_time::Instant;
+
+pub use crate::leaving::{Leaving, Recipient};
 
 /// The messages one read answers at most, newest first.
 const PAGE: u32 = 50;
@@ -109,7 +113,9 @@ pub trait MailSession: Send + Sync {
 
     /// Hand `sending` to its server, with the `files` it carries and the
     /// calendar `invitation` it brings, and keep a copy in the account's
-    /// Sent folder unless its server files what it sends.
+    /// Sent folder unless its server files what it sends. It goes to the
+    /// recipients `sending` was read with ([`Leaving::read`]) and to nobody
+    /// else: whoever showed the message to a person first showed them those.
     ///
     /// # Errors
     /// The server could not be reached, refused the sign-in or the message.
@@ -119,7 +125,7 @@ pub trait MailSession: Send + Sync {
         &self,
         account: &accounts::Account,
         secret: &accounts::Secret,
-        sending: &SendMail,
+        sending: &Leaving,
         files: &[Attachment],
         invitation: Option<&str>,
     ) -> Result<SentMail, String>;
@@ -358,12 +364,12 @@ impl MailSession for LiveMailSession {
         &self,
         account: &accounts::Account,
         secret: &accounts::Secret,
-        sending: &SendMail,
+        sending: &Leaving,
         files: &[Attachment],
         invitation: Option<&str>,
     ) -> Result<SentMail, String> {
         self.block(async {
-            let mime = write_mime(sending, files, invitation)?;
+            let mime = write_leaving(sending, files, invitation)?;
             send_message(account, secret, sending, &mime, &self.smtp_trust).await?;
             // The message left. Its copy is told apart from that: a server
             // that will not take one does not unsend the message.
@@ -1264,7 +1270,7 @@ fn message_id_search(mime: &[u8]) -> Option<String> {
 async fn send_message(
     account: &accounts::Account,
     secret: &accounts::Secret,
-    sending: &SendMail,
+    sending: &Leaving,
     mime: &[u8],
     trust: &[rustls::pki_types::CertificateDer<'static>],
 ) -> Result<(), String> {
@@ -1283,7 +1289,7 @@ async fn send_message(
     if secret.password.is_empty() {
         return Err("account has no saved password".into());
     }
-    let envelope = envelope(sending)?;
+    let envelope = sending.envelope()?;
     let mut builder = TlsParameters::builder(host.clone());
     for certificate in trust {
         let certificate =
@@ -1312,10 +1318,75 @@ async fn send_message(
         .map_err(|error| format!("the message could not be sent: {error}"))
 }
 
-/// The MIME of a message as it goes on the wire: its text and HTML bodies,
-/// the files it carries, and a calendar invitation as its own part.
+/// The MIME of a message that leaves: its head written from what `leaving`
+/// was read as, so the names and addresses it shows its readers are the
+/// envelope's own, with its text and HTML bodies, the files it carries and a
+/// calendar invitation as its own part.
+fn write_leaving(
+    leaving: &Leaving,
+    files: &[Attachment],
+    invitation: Option<&str>,
+) -> Result<Vec<u8>, String> {
+    let named = |recipients: &[Recipient]| {
+        recipients
+            .iter()
+            .map(|one| (one.name().to_owned(), one.address().to_owned()))
+            .collect()
+    };
+    write_parts(
+        leaving.message(),
+        named(leaving.to()),
+        named(leaving.cc()),
+        files,
+        invitation,
+    )
+}
+
+/// The MIME of a draft: a message as far as it is written. A recipient that
+/// is no address yet stays in its head as it stands, since nothing leaves
+/// with a draft. What no line of a head can hold is left out of it, so
+/// nothing a draft says begins a header of its own.
 fn write_mime(
+    draft: &SendMail,
+    files: &[Attachment],
+    invitation: Option<&str>,
+) -> Result<Vec<u8>, String> {
+    let spaced = |text: &str| -> String {
+        let cleaned = text.chars().map(|character| {
+            if character.is_control() {
+                ' '
+            } else {
+                character
+            }
+        });
+        cleaned.collect()
+    };
+    let joined = |id: &String| -> String {
+        id.chars()
+            .filter(|character| !character.is_control())
+            .collect()
+    };
+    let draft = SendMail {
+        from_name: draft.from_name.as_deref().map(spaced),
+        from_address: joined(&draft.from_address),
+        to: spaced(&draft.to),
+        cc: spaced(&draft.cc),
+        subject: spaced(&draft.subject),
+        message_id: draft.message_id.as_ref().map(joined),
+        in_reply_to: draft.in_reply_to.as_ref().map(joined),
+        references: draft.references.iter().map(joined).collect(),
+        ..draft.clone()
+    };
+    let (to, cc) = (draft_addresses(&draft.to), draft_addresses(&draft.cc));
+    write_parts(&draft, to, cc, files, invitation)
+}
+
+/// The MIME of `sending`, addressed in its head to `to` and `cc`, each a
+/// name and an address.
+fn write_parts(
     sending: &SendMail,
+    to: Vec<(String, String)>,
+    cc: Vec<(String, String)>,
     files: &[Attachment],
     invitation: Option<&str>,
 ) -> Result<Vec<u8>, String> {
@@ -1339,8 +1410,6 @@ fn write_mime(
     if !sending.references.is_empty() {
         builder = builder.references(sending.references.clone());
     }
-    let to = parse_env_addresses(&sending.to);
-    let cc = parse_env_addresses(&sending.cc);
     if !to.is_empty() {
         builder = builder.to(to);
     }
@@ -1364,28 +1433,10 @@ fn write_mime(
         .map_err(|error| format!("could not write the message: {error}"))
 }
 
-fn envelope(sending: &SendMail) -> Result<lettre::address::Envelope, String> {
-    let sender = sending
-        .from_address
-        .parse::<lettre::Address>()
-        .map_err(|error| format!("the sending address is not usable: {error}"))?;
-    let mut recipients = Vec::new();
-    for list in [&sending.to, &sending.cc, &sending.bcc] {
-        for address in parse_env_addresses(list) {
-            if let Ok(email) = address.1.parse::<lettre::Address>() {
-                recipients.push(email);
-            }
-        }
-    }
-    if recipients.is_empty() {
-        return Err("a message needs a recipient".into());
-    }
-    lettre::address::Envelope::new(Some(sender), recipients)
-        .map_err(|error| format!("the message's addresses are not usable: {error}"))
-}
-
-/// `Name <address>, other@example` as mail's own tuple form.
-fn parse_env_addresses(list: &str) -> Vec<(String, String)> {
+/// What a draft's list names so far, `Name <address>, other@example`, as
+/// mail's own tuple form. Nothing is sent to these: a message that leaves is
+/// addressed by [`Leaving::read`].
+fn draft_addresses(list: &str) -> Vec<(String, String)> {
     list.split([';', ','])
         .map(str::trim)
         .filter(|entry| !entry.is_empty())
@@ -1549,6 +1600,11 @@ mod tests {
 
     use super::*;
 
+    /// The envelope `sending` leaves in, as its send reads it.
+    fn envelope(sending: &SendMail) -> Result<lettre::address::Envelope, String> {
+        Leaving::read(sending.clone())?.envelope()
+    }
+
     /// A folder is found by its special-use mark before its name, and a
     /// server that marks nothing is still read by the names people know.
     #[test]
@@ -1618,6 +1674,15 @@ mod tests {
         assert!(
             !mime.to_ascii_lowercase().contains("hidden@example.test"),
             "{mime}"
+        );
+        // And so the message that leaves, written from what it was read as.
+        let leaving = Leaving::read(sending).unwrap();
+        let left = write_leaving(&leaving, &[], None).unwrap();
+        let left = String::from_utf8_lossy(&left).to_string();
+        assert!(left.contains("\"Bob\" <bob@example.test>"), "{left}");
+        assert!(
+            !left.to_ascii_lowercase().contains("hidden@example.test"),
+            "{left}"
         );
     }
 
@@ -1735,5 +1800,91 @@ Hi Bob\r\n";
         assert!(message.starred);
         assert!(!message.read);
         assert!(message.html_body.is_none());
+    }
+
+    /// A line break in what a message's head is written from never begins a
+    /// header of the writer's own: neither in a list of recipients, nor in
+    /// the subject, the sender, or the ids that join it to a conversation.
+    /// Whether the message is refused or the break is dropped, no line of
+    /// its head says where answers go.
+    #[test]
+    fn a_line_break_in_a_field_writes_no_header_of_its_own() {
+        let lunch = || SendMail {
+            account: "ada@example.test".into(),
+            from_address: "ada@example.test".into(),
+            to: "bo@example.test".into(),
+            subject: "Lunch".into(),
+            body: "Friday at one works.".into(),
+            ..SendMail::default()
+        };
+        let smuggled = "1@example.test>\r\nReply-To: <eve@elsewhere.test".to_owned();
+        let broken = [
+            SendMail {
+                to: "bo@example.test, Bo <bo@example.test>\r\nReply-To: <eve@elsewhere.test>"
+                    .into(),
+                ..lunch()
+            },
+            SendMail {
+                cc: "Cy <cy@example.test>\nReply-To: <eve@elsewhere.test>".into(),
+                ..lunch()
+            },
+            SendMail {
+                subject: "Lunch\r\nReply-To: eve@elsewhere.test".into(),
+                ..lunch()
+            },
+            SendMail {
+                from_name: Some("Ada\r\nReply-To: eve@elsewhere.test".into()),
+                ..lunch()
+            },
+            SendMail {
+                from_address: "ada@example.test>\r\nReply-To: <eve@elsewhere.test".into(),
+                ..lunch()
+            },
+            SendMail {
+                message_id: Some(smuggled.clone()),
+                ..lunch()
+            },
+            SendMail {
+                in_reply_to: Some(smuggled.clone()),
+                ..lunch()
+            },
+            SendMail {
+                references: vec!["0@example.test".into(), smuggled],
+                ..lunch()
+            },
+        ];
+        for message in broken {
+            // No such message leaves at all.
+            let read = Leaving::read(message.clone());
+            assert!(read.is_err(), "{message:?} was read for sending: {read:?}");
+            // Kept as a draft, it says what it said without the break.
+            let Ok(mime) = write_mime(&message, &[], None) else {
+                continue;
+            };
+            let written = String::from_utf8_lossy(&mime).to_string();
+            let head = written.split("\r\n\r\n").next().unwrap_or_default();
+            assert!(
+                !head
+                    .lines()
+                    .any(|line| line.to_ascii_lowercase().starts_with("reply-to")),
+                "{message:?} wrote a header of its own:\n{head}"
+            );
+        }
+    }
+
+    /// Security review, 17 November 2026. Every address a list names is a
+    /// recipient in the envelope, however far into the list it stands: so
+    /// what a person is shown of the list before they allow the message has
+    /// to reach as far.
+    #[test]
+    fn an_address_after_a_stretch_of_blanks_is_a_recipient() {
+        let sending = SendMail {
+            from_address: "ada@example.test".into(),
+            to: format!("bo@example.test,{}eve@elsewhere.test", " ".repeat(700)),
+            ..SendMail::default()
+        };
+        let envelope = envelope(&sending).unwrap();
+        let recipients: Vec<String> = envelope.to().iter().map(ToString::to_string).collect();
+        assert_eq!(recipients, ["bo@example.test", "eve@elsewhere.test"]);
     }
 }

@@ -38,7 +38,7 @@ use crate::workspaces::{AsksPeople, PersonAnswer, Workspaces};
 const ACCOUNT: &str = "ada@example.test";
 const ASSISTANT: &str = "assistant";
 
-/// Ada's setup: a host whose mail servers answer and keep what they were
+/// Ada's setup: a holder whose mail servers answer and keep what they were
 /// asked, a device of hers, the workspace its page is in, and one account
 /// she keeps signed in.
 struct Setup {
@@ -534,4 +534,447 @@ async fn removing_an_account_forgets_the_agents_named_for_it() {
     assert!(read::<AccountAssistants>(named).agents.is_empty());
     let again = setup.ask(&agent, person_accounts::LIST, json!({})).await;
     nobody("her agent for the account kept again", again);
+}
+
+/// Security review, 17 November 2026. The question a person is put before a
+/// message their assistant wrote leaves must name everyone the message goes
+/// to: what they allow is what they were shown. The question shows the first
+/// 600 characters of each list of recipients and nothing says it was cut, so
+/// an address written after a stretch of blanks is sent to and never shown.
+#[tokio::test]
+async fn the_question_names_every_address_the_message_goes_to() {
+    let setup = Setup::new().await;
+    let page = setup.page();
+    let agent = setup.agent(ASSISTANT);
+    setup.name(ASSISTANT, true).await;
+    let allowing = Asked::answering(Some(ConfirmationAnswer::AllowOnce));
+    setup.workspaces.ask_people(allowing.clone());
+
+    let unseen = "eve@elsewhere.test";
+    let to = format!("bo@example.test,{}{unseen}", " ".repeat(700));
+    let message = json!({"message": {
+        "account": ACCOUNT,
+        "fromAddress": ACCOUNT,
+        "to": to,
+        "subject": "Lunch",
+        "body": "Friday at one works.",
+    }});
+    let begun: StartedSend =
+        read(asked_of(&page, &agent, person_accounts::BEGIN_SEND, message).await);
+    asked_of(
+        &page,
+        &agent,
+        person_accounts::SEND,
+        json!({"send": begun.send}),
+    )
+    .await
+    .expect("the person allowed what they were shown");
+
+    // The message left, addressed to both.
+    let left = setup.servers.asked();
+    assert_eq!(left.len(), 1, "{left:?}");
+    assert!(
+        left.iter().all(
+            |sent| sent.starts_with("send ada@example.test to bo@example.test,")
+                && sent.contains(unseen)
+        ),
+        "{left:?}"
+    );
+
+    // What the person was shown before they allowed it.
+    assert_eq!(allowing.count(), 1);
+    let (_, question) = allowing.questions.lock().unwrap()[0].clone();
+    let shown: Vec<(&str, &str)> = question
+        .arguments
+        .iter()
+        .map(|(label, value)| (label.as_str(), value.trim_end()))
+        .collect();
+    assert!(
+        shown.iter().any(|(_, value)| value.contains(unseen)),
+        "the message went to {unseen}, and the question the person allowed never named it: {shown:?}"
+    );
+}
+
+/// The lunch to Bo with `fields` of its message set anew.
+fn lunch_with(fields: &Value) -> Value {
+    let mut begun = lunch();
+    for (name, value) in fields.as_object().into_iter().flatten() {
+        begun["message"][name.as_str()] = value.clone();
+    }
+    begun
+}
+
+/// Why a request was not carried out.
+type Refusal = ActionHostError;
+
+/// The rows a question names its recipients in.
+const WHOM: [&str; 3] = ["To", "Copy to", "Blind copy to"];
+/// What the lunch to Bo alone is handed to the servers as.
+const LUNCH_LEFT: &str = "send ada@example.test to bo@example.test: Lunch";
+
+/// Ada's setup with her assistant named for her account, and Ada allowing
+/// whatever she is asked: so what leaves is what the question let through.
+struct Sending {
+    setup: Setup,
+    allowing: Arc<Asked>,
+}
+
+impl Sending {
+    async fn new() -> Self {
+        let setup = Setup::new().await;
+        setup.name(ASSISTANT, true).await;
+        let allowing = Asked::answering(Some(ConfirmationAnswer::AllowOnce));
+        setup.workspaces.ask_people(allowing.clone());
+        Self { setup, allowing }
+    }
+
+    /// Her assistant begins `begun`, answered the id it is sent by.
+    async fn begin(&self, begun: Value) -> Result<String, Refusal> {
+        let agent = self.setup.agent(ASSISTANT);
+        let started = self
+            .setup
+            .ask(&agent, person_accounts::BEGIN_SEND, begun)
+            .await?;
+        Ok(serde_json::from_value::<StartedSend>(started).unwrap().send)
+    }
+
+    /// Her assistant asks for the message begun as `send` to be sent.
+    async fn send_begun(&self, send: &str) -> Result<Value, Refusal> {
+        let agent = self.setup.agent(ASSISTANT);
+        self.setup
+            .ask(&agent, person_accounts::SEND, json!({"send": send}))
+            .await
+    }
+
+    /// Her assistant begins `begun` and asks for it to be sent.
+    async fn send(&self, begun: Value) -> Result<Value, Refusal> {
+        let send = self.begin(begun).await?;
+        self.send_begun(&send).await
+    }
+
+    /// The values of the rows called `label` in the question she was put
+    /// last, in its order.
+    fn rows(&self, label: &str) -> Vec<String> {
+        let questions = self.allowing.questions.lock().unwrap();
+        let (_, question) = questions.last().expect("she was asked");
+        question
+            .arguments
+            .iter()
+            .filter(|(row, _)| row == label)
+            .map(|(_, value)| value.clone())
+            .collect()
+    }
+
+    /// Every address the question she was put last names as a recipient.
+    fn named(&self) -> Vec<String> {
+        WHOM.iter().flat_map(|label| self.rows(label)).collect()
+    }
+
+    /// `answer` refused the message before she was asked anything, and
+    /// nothing left: the reason it gave.
+    fn refused_unasked(&self, what: &str, answer: Result<Value, Refusal>) -> String {
+        let Err(Refusal::Refused { reason }) = answer else {
+            panic!("{what} is refused, not {answer:?}");
+        };
+        assert_eq!(self.allowing.count(), 0, "{what}: she is asked nothing");
+        let left = self.setup.servers.asked();
+        assert!(left.is_empty(), "{what}: nothing leaves, not {left:?}");
+        reason
+    }
+}
+
+/// The address a message is handed to the server for is the one in angle
+/// brackets, whatever stands before it. The question names that address and
+/// nothing else: a name that reads as an address, quoted or not, with a
+/// comma inside or not, hides nobody.
+#[tokio::test]
+async fn a_name_that_reads_as_an_address_hides_nobody() {
+    let sending = Sending::new().await;
+    let named_so = [
+        "bo@example.test <eve@elsewhere.test>",
+        "\"bo@example.test\" <eve@elsewhere.test>",
+        "\"Bo, bo@example.test\" <eve@elsewhere.test>",
+    ];
+    for to in named_so {
+        sending
+            .send(lunch_with(&json!({"to": to})))
+            .await
+            .expect("she allowed what she was shown");
+        assert_eq!(sending.named(), ["eve@elsewhere.test"], "{to}");
+        assert_eq!(sending.rows("Goes to"), ["1 address"], "{to}");
+    }
+    let left = "send ada@example.test to eve@elsewhere.test: Lunch";
+    assert_eq!(sending.setup.servers.asked(), [left, left, left]);
+}
+
+/// A group of addresses under one name is no list a person reads at a
+/// glance: the message is refused before anyone is asked, and nothing
+/// leaves.
+#[tokio::test]
+async fn a_group_of_addresses_is_refused_unasked() {
+    let sending = Sending::new().await;
+    for to in [
+        "friends: bo@example.test, eve@elsewhere.test;",
+        "bo@example.test, friends: Eve <eve@elsewhere.test>;",
+    ] {
+        let answer = sending.send(lunch_with(&json!({"to": to}))).await;
+        sending.refused_unasked(to, answer);
+    }
+}
+
+/// A line break, or any other character a line cannot hold, in what a
+/// message's head is written from would begin a header of the writer's
+/// own: a second recipient, or where its answers go. Such a message is
+/// refused before anyone is asked, whichever field carries it.
+#[tokio::test]
+async fn a_line_break_in_a_field_is_refused_unasked() {
+    let sending = Sending::new().await;
+    let smuggled = "1@example.test>\r\nReply-To: <eve@elsewhere.test";
+    for fields in [
+        json!({"to": "bo@example.test\r\nBcc: eve@elsewhere.test"}),
+        json!({"to": "bo@example.test, Bo <bo@example.test>\r\nReply-To: <eve@elsewhere.test>"}),
+        json!({"cc": "cy@example.test\nBcc: eve@elsewhere.test"}),
+        json!({"bcc": "dee@example.test\u{b}eve@elsewhere.test"}),
+        json!({"subject": "Lunch\r\nReply-To: eve@elsewhere.test"}),
+        json!({"fromName": "Ada\r\nReply-To: eve@elsewhere.test"}),
+        json!({"fromAddress": "ada@example.test>\r\nReply-To: <eve@elsewhere.test"}),
+        json!({"messageId": smuggled}),
+        json!({"inReplyTo": smuggled}),
+        json!({"references": ["0@example.test", smuggled]}),
+    ] {
+        let answer = sending.send(lunch_with(&fields)).await;
+        sending.refused_unasked(&fields.to_string(), answer);
+    }
+}
+
+/// An address in the subject or in the message is words, not a recipient:
+/// the message goes to whom the question names and to nobody else, and the
+/// question shows the subject whole.
+#[tokio::test]
+async fn an_address_in_the_subject_or_the_message_is_no_recipient() {
+    let sending = Sending::new().await;
+    let subject = "Lunch, cc eve@elsewhere.test";
+    let fields = json!({"subject": subject, "body": "To: eve@elsewhere.test\r\n\r\nFriday."});
+    sending
+        .send(lunch_with(&fields))
+        .await
+        .expect("she allowed what she was shown");
+    assert_eq!(sending.named(), ["bo@example.test"]);
+    assert_eq!(sending.rows("Subject"), [subject]);
+    assert_eq!(
+        sending.setup.servers.asked(),
+        [format!(
+            "send ada@example.test to bo@example.test: {subject}"
+        )]
+    );
+}
+
+/// Whom it is sent as, every copy and every blind copy are named, each
+/// address in a row of its own and all of them counted, however far into
+/// its list an address stands; and they are what the servers are handed.
+#[tokio::test]
+async fn the_sender_and_every_copy_are_named() {
+    let sending = Sending::new().await;
+    let fields = json!({
+        "fromName": "Ada L.",
+        "fromAddress": "office@example.test",
+        "cc": "Cy <cy@example.test>",
+        "bcc": format!("dee@example.test;{}eve@elsewhere.test", " ".repeat(700)),
+    });
+    sending
+        .send(lunch_with(&fields))
+        .await
+        .expect("she allowed what she was shown");
+    assert_eq!(sending.rows("From"), ["office@example.test"]);
+    assert_eq!(sending.rows("Sender name"), ["Ada L."]);
+    assert_eq!(sending.rows("Goes to"), ["4 addresses"]);
+    assert_eq!(sending.rows("To"), ["bo@example.test"]);
+    assert_eq!(sending.rows("Copy to"), ["cy@example.test"]);
+    assert_eq!(
+        sending.rows("Blind copy to"),
+        ["dee@example.test", "eve@elsewhere.test"]
+    );
+    assert_eq!(
+        sending.setup.servers.asked(),
+        [
+            "send ada@example.test as office@example.test to bo@example.test \
+          copy to cy@example.test blind copy to dee@example.test, eve@elsewhere.test: Lunch"
+        ]
+    );
+}
+
+/// A question shows twenty addresses. A message to as many is asked about
+/// with each of them named; one to more is refused before anyone is asked,
+/// with their number, until it names no more than can be shown.
+#[tokio::test]
+async fn more_addresses_than_a_question_shows_are_refused_with_their_number() {
+    let sending = Sending::new().await;
+    let people =
+        |most: usize| -> Vec<String> { (1..=most).map(|n| format!("p{n}@example.test")).collect() };
+    let too_many = json!({"to": people(15).join(", "), "cc": people(6).join(", ")});
+    let answer = sending.send(lunch_with(&too_many)).await;
+    let reason = sending.refused_unasked("twenty-one addresses", answer);
+    assert!(
+        reason.contains("21"),
+        "it says how many there are: {reason}"
+    );
+
+    sending
+        .send(lunch_with(&json!({"to": people(20).join(", ")})))
+        .await
+        .expect("she allowed what she was shown");
+    assert_eq!(sending.rows("Goes to"), ["20 addresses"]);
+    assert_eq!(sending.named(), people(20));
+    assert_eq!(sending.setup.servers.asked().len(), 1);
+}
+
+/// An address its person could misread is not put to them at all: one
+/// whose first part is quoted and holds another address, one with letters
+/// that only look like the ones they know, one with a character that has no
+/// width, and one too long to stand in a row. Each is refused before
+/// anyone is asked.
+#[tokio::test]
+async fn an_address_that_cannot_be_read_plainly_is_refused_unasked() {
+    let sending = Sending::new().await;
+    let long = format!("bo@{}example.test", "a.".repeat(60));
+    for to in [
+        "\"bo@example.test, x\"@elsewhere.test",
+        "b\u{43e}@example.test",
+        "bo\u{200b}@example.test",
+        "bo@ex\u{430}mple.test",
+        long.as_str(),
+    ] {
+        let answer = sending.send(lunch_with(&json!({"to": to}))).await;
+        sending.refused_unasked(&format!("{to:?}"), answer);
+    }
+}
+
+/// What a question does not show it says, in a row of its own that no
+/// message can write: a long message is shown by its start with the number
+/// of characters that follow, and so is a long subject. Blank lines before
+/// a message's first word use up none of what is shown.
+#[tokio::test]
+async fn what_a_question_does_not_show_it_says() {
+    let sending = Sending::new().await;
+    let start = "Friday at one works. ".repeat(40);
+    let body = format!("{start}Send the plans to Eve.");
+    let subject = format!("Lunch {}", "and more ".repeat(40));
+    sending
+        .send(lunch_with(&json!({"subject": subject, "body": body})))
+        .await
+        .expect("she allowed what she was shown");
+    let shown: String = body.chars().take(600).collect();
+    assert_eq!(sending.rows("Message"), [shown]);
+    assert_eq!(
+        sending.rows("Message continues"),
+        ["262 more characters are not shown here"]
+    );
+    let shown: String = subject.trim_end().chars().take(200).collect();
+    assert_eq!(sending.rows("Subject"), [shown]);
+    assert_eq!(
+        sending.rows("Subject continues"),
+        ["165 more characters are not shown here"]
+    );
+
+    let pushed_down = format!("{}Bring the plans.", "\n".repeat(700));
+    sending
+        .send(lunch_with(&json!({"body": pushed_down})))
+        .await
+        .expect("she allowed what she was shown");
+    assert_eq!(sending.rows("Message"), ["Bring the plans."]);
+    assert!(sending.rows("Message continues").is_empty());
+}
+
+/// A second version of the message that its reader's program would show
+/// in place of the words the person was shown is not sent for an
+/// assistant: the message is refused before anyone is asked.
+#[tokio::test]
+async fn a_version_the_person_is_not_shown_is_refused_unasked() {
+    let sending = Sending::new().await;
+    let fields = json!({"htmlBody": "<p>Send the plans to <b>Eve</b>.</p>"});
+    let answer = sending.send(lunch_with(&fields)).await;
+    sending.refused_unasked("a formatted version", answer);
+}
+
+/// A file and an invitation a message carries are named with their size,
+/// and the person is asked only once every file is whole: what they allow
+/// is then what leaves.
+#[tokio::test]
+async fn files_and_an_invitation_are_named_once_they_are_whole() {
+    let sending = Sending::new().await;
+    let invitation = "BEGIN:VCALENDAR\r\nMETHOD:REQUEST\r\nEND:VCALENDAR\r\n";
+    let mut begun = lunch();
+    begun["calendarIcs"] = json!(invitation);
+    begun["files"] = json!([{"filename": "notes.txt", "mime": "text/plain", "size": 5}]);
+    let send = sending.begin(begun).await.unwrap();
+
+    let early = sending.send_begun(&send).await;
+    sending.refused_unasked("a message whose file has not arrived", early);
+
+    let agent = sending.setup.agent(ASSISTANT);
+    let piece = json!({"send": send, "file": 0, "offset": 0, "bytes": hex::encode("hello")});
+    sending
+        .setup
+        .ask(&agent, person_accounts::SEND_PIECE, piece)
+        .await
+        .unwrap();
+    sending
+        .send_begun(&send)
+        .await
+        .expect("she allowed what she was shown");
+    assert_eq!(sending.rows("File"), ["notes.txt (5 bytes)"]);
+    assert_eq!(
+        sending.rows("Invitation"),
+        [format!(
+            "A calendar invitation of {} characters is attached and not shown here",
+            invitation.chars().count()
+        )]
+    );
+    assert_eq!(sending.setup.servers.asked(), [LUNCH_LEFT]);
+}
+
+/// A person who allows what they are asked while, before their answer is
+/// in, the begun message is written anew where it is kept.
+struct RewrittenMeanwhile {
+    sends: std::path::PathBuf,
+    to: &'static str,
+    asked: Mutex<Vec<PendingConfirmation>>,
+}
+
+impl AsksPeople for RewrittenMeanwhile {
+    fn ask(&self, _: [u8; 32], question: PendingConfirmation) -> PersonAnswer {
+        self.asked.lock().unwrap().push(question);
+        for begun in std::fs::read_dir(&self.sends).unwrap().flatten() {
+            let meta = begun.path().join("meta.json");
+            let mut kept: Value = serde_json::from_slice(&std::fs::read(&meta).unwrap()).unwrap();
+            kept["message"]["to"] = json!(self.to);
+            kept["message"]["subject"] = json!("Plans");
+            std::fs::write(&meta, serde_json::to_vec(&kept).unwrap()).unwrap();
+        }
+        Box::pin(async { Ok(ConfirmationAnswer::AllowOnce) })
+    }
+}
+
+/// The message that leaves is the one that was shown: what is sent is what
+/// was read before the person was asked, never what the begun message says
+/// by the time their answer is in.
+#[tokio::test]
+async fn the_message_that_leaves_is_the_one_that_was_shown() {
+    let setup = Setup::new().await;
+    setup.name(ASSISTANT, true).await;
+    let person = setup.device.user_public_key;
+    let rewriting = Arc::new(RewrittenMeanwhile {
+        sends: setup.workspaces.person_settings_root(&person).join("sends"),
+        to: "eve@elsewhere.test",
+        asked: Mutex::default(),
+    });
+    setup.workspaces.ask_people(rewriting.clone());
+
+    send_lunch(&setup.page(), &setup.agent(ASSISTANT))
+        .await
+        .expect("she allowed what she was shown");
+    let asked = rewriting.asked.lock().unwrap();
+    let shown = ("To".to_owned(), "bo@example.test".to_owned());
+    assert!(asked[0].arguments.contains(&shown), "{:?}", asked[0]);
+    assert_eq!(setup.servers.asked(), [LUNCH_LEFT]);
 }

@@ -18,6 +18,8 @@
 //! included, reaches only their own store, and an agent's request is refused
 //! here, as the host's own operations refuse one.
 
+mod sending;
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -30,16 +32,20 @@ use tilo_actions::remote::person_accounts::{
 };
 use tilo_actions::remote::person_accounts::{
     AddMailAccount, BeginSend, MAX_SEND_FILE_BYTES, MAX_SEND_FILES, MAX_SEND_PIECE_BYTES,
-    MAX_SEND_TOTAL_BYTES, MailAccount, MailAccounts, PieceKept, SendId, SendMail, SendPiece,
+    MAX_SEND_TOTAL_BYTES, MailAccount, MailAccounts, PieceKept, SendFile, SendId, SendPiece,
     SentMail, StartedSend,
 };
+// A message as text is read for sending in one place, `Leaving::read`; only
+// this file's tests still name one.
+#[cfg(test)]
+use tilo_actions::remote::person_accounts::SendMail;
 use tilo_actions::remote::person_models::{
     Assignment, ModelProviders, OfferedModel, ProviderView, SetAssignment, SetKey,
 };
 use tilo_actions::remote::{
     ActionHostError, Caller, InvokeArgument, InvokeRequest, person_accounts, person_models,
 };
-use tilo_mail_session::Attachment;
+use tilo_mail_session::{Attachment, Leaving};
 use tilo_net::proxy::host::Destinations;
 use tilo_relay_protocol::certify::{ConfirmationAnswer, PendingConfirmation};
 use tilo_user_identity::DeviceCert;
@@ -253,21 +259,32 @@ impl Workspaces {
             }
             person_accounts::SEND_PIECE => {
                 let piece: SendPiece = argument(request, "a piece of a message's file")?;
-                may(&begun_for(&root, &piece.send)?.message.account)?;
+                may(&begun_for(&root, &piece.send)?.1.message.account)?;
                 answer(&send_piece(&root, &piece))
             }
             person_accounts::SAVE_DRAFT => {
                 let keeping: SendId = argument(request, "a draft to keep")?;
-                may(&begun_for(&root, &keeping.send)?.message.account)?;
+                may(&begun_for(&root, &keeping.send)?.1.message.account)?;
                 answer(&save_staged_draft_with(self.mail_session(), &root, keeping).await)
             }
             person_accounts::SEND => {
                 let sending: SendId = argument(request, "a message to send")?;
-                let beginning = begun_for(&root, &sending.send)?;
+                let (dir, beginning) = begun_for(&root, &sending.send)?;
                 may(&beginning.message.account)?;
-                self.ask_before_sending(person, agent.agent, caller, &beginning)
-                    .await?;
-                answer(&send_staged_with(self.mail_session(), &root, sending).await)
+                // The message is read once, here. Its person is shown that
+                // reading, and that reading is what leaves on their yes:
+                // nothing is read again from what was begun.
+                let read =
+                    Staged::read(dir, beginning).and_then(|staged| Ok((staged.shown()?, staged)));
+                let sent = match read {
+                    Ok((shown, staged)) => {
+                        self.ask_before_sending(person, agent.agent, caller, &shown)
+                            .await?;
+                        send_staged(self.mail_session(), &root, staged).await
+                    }
+                    Err(unshowable) => Err(unshowable),
+                };
+                answer(&sent)
             }
             _ => Err(ActionHostError::UnknownAction),
         }
@@ -282,7 +299,7 @@ impl Workspaces {
         person: [u8; 32],
         agent: &str,
         caller: &Caller,
-        beginning: &BeginSend,
+        shown: &sending::Shown,
     ) -> Result<(), ActionHostError> {
         let asker = self
             .inner
@@ -291,10 +308,7 @@ impl Workspaces {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone()
             .ok_or_else(ActionHostError::confirmation_required)?;
-        match asker
-            .ask(person, sending_question(agent, caller, beginning))
-            .await
-        {
+        match asker.ask(person, shown.question(agent, caller)).await {
             Ok(ConfirmationAnswer::AllowOnce) => Ok(()),
             Ok(ConfirmationAnswer::Deny) => Err(ActionHostError::Refused {
                 reason: "the person did not allow it".into(),
@@ -449,11 +463,10 @@ fn arrived_argument(request: &InvokeRequest) -> Result<ArrivedAfter, ActionHostE
     }
 }
 
-/// The message begun under `send`, for a request that goes on with it.
-fn begun_for(root: &Path, send: &str) -> Result<BeginSend, ActionHostError> {
-    begun_send(root, send)
-        .map(|(_, beginning)| beginning)
-        .map_err(|reason| ActionHostError::Refused { reason })
+/// The message begun under `send` and where its files wait, for a request
+/// that goes on with it.
+fn begun_for(root: &Path, send: &str) -> Result<(PathBuf, BeginSend), ActionHostError> {
+    begun_send(root, send).map_err(|reason| ActionHostError::Refused { reason })
 }
 
 /// Who asks about a person's mail.
@@ -477,54 +490,6 @@ pub(super) enum AskingAboutMail {
 struct NamedAgent<'a> {
     workspace: &'a str,
     agent: &'a str,
-}
-
-/// How long a message waits for its person's answer before the question is
-/// a refusal.
-const SENDING_QUESTION_WAIT_NS: u64 = 2 * 60 * 1_000_000_000;
-/// How much of a long recipient list, subject or message a question shows.
-const QUESTION_CHARS: usize = 600;
-
-/// What a person is asked before a message their agent wrote leaves: whom
-/// it goes to, what it is called, how it begins and what it carries.
-fn sending_question(agent: &str, caller: &Caller, beginning: &BeginSend) -> PendingConfirmation {
-    let mut id = [0_u8; 32];
-    for half in id.chunks_mut(16) {
-        half.copy_from_slice(uuid::Uuid::new_v4().as_bytes());
-    }
-    let message = &beginning.message;
-    let shown = |text: &str| text.chars().take(QUESTION_CHARS).collect::<String>();
-    let mut arguments = vec![("To".to_owned(), shown(&message.to))];
-    for (label, list) in [("Copy to", &message.cc), ("Blind copy to", &message.bcc)] {
-        if !list.trim().is_empty() {
-            arguments.push((label.to_owned(), shown(list)));
-        }
-    }
-    arguments.push(("Subject".to_owned(), shown(&message.subject)));
-    arguments.push(("Message".to_owned(), shown(&message.body)));
-    if !beginning.files.is_empty() {
-        let files: Vec<&str> = beginning
-            .files
-            .iter()
-            .map(|file| file.filename.as_str())
-            .collect();
-        arguments.push(("Files".to_owned(), shown(&files.join(", "))));
-    }
-    PendingConfirmation {
-        id,
-        agent_id: agent.to_owned(),
-        agent_label: caller.agent_name().unwrap_or(agent).to_owned(),
-        title: String::new(),
-        action_label: "send this message".into(),
-        resource_label: message.account.clone(),
-        arguments,
-        risk: "sensitive".into(),
-        kind: "outside".into(),
-        undoable: false,
-        workspace: String::new(),
-        expires_at_ns: tilo_clock::unix_now_ns().saturating_add(SENDING_QUESTION_WAIT_NS),
-        page: None,
-    }
 }
 
 /// The `provider` a removing action names.
@@ -947,6 +912,46 @@ fn send_piece(root: &Path, piece: &SendPiece) -> Result<PieceKept, String> {
     Ok(PieceKept { written: end })
 }
 
+/// A begun message read for its send: where its files wait, what leaves
+/// and whom it goes to, read once ([`Leaving::read`]), and what it carries.
+struct Staged {
+    dir: PathBuf,
+    leaving: Leaving,
+    files: Vec<SendFile>,
+    invitation: Option<String>,
+}
+
+impl Staged {
+    /// Read the message begun as `beginning`, whose files wait in `dir`.
+    fn read(dir: PathBuf, beginning: BeginSend) -> Result<Self, String> {
+        Ok(Self {
+            dir,
+            leaving: Leaving::read(beginning.message)?,
+            files: beginning.files,
+            invitation: beginning.calendar_ics,
+        })
+    }
+
+    /// What its person is shown of it before it leaves. Every file it
+    /// carries is whole by then: a file's bytes only ever grow to the size
+    /// it was begun with, so what is whole when its person is asked is what
+    /// leaves on their answer.
+    fn shown(&self) -> Result<sending::Shown, String> {
+        for (index, file) in self.files.iter().enumerate() {
+            let held = std::fs::metadata(self.dir.join(format!("file-{index}")))
+                .map_err(|_| format!("{} did not arrive", file.filename))?
+                .len();
+            if held != file.size {
+                return Err(format!(
+                    "{} arrived incomplete: {held} of {} bytes",
+                    file.filename, file.size
+                ));
+            }
+        }
+        sending::Shown::of(&self.leaving, &self.files, self.invitation.as_deref())
+    }
+}
+
 /// Send the message begun under `sending`'s id through `session`: the files
 /// its pieces made, its invitation, and what it says. Answers what became of
 /// its copy in the account's Sent folder.
@@ -956,17 +961,15 @@ async fn send_staged_with(
     sending: SendId,
 ) -> Result<SentMail, String> {
     let (dir, beginning) = begun_send(root, &sending.send)?;
-    let files = staged_files(&dir, &beginning)?;
-    let outcome = send_with(
-        session,
-        root,
-        beginning.message,
-        files,
-        beginning.calendar_ics,
-    )
-    .await;
+    send_staged(session, root, Staged::read(dir, beginning)?).await
+}
+
+/// Send `staged` through `session`, as it was read.
+async fn send_staged(session: Session, root: &Path, staged: Staged) -> Result<SentMail, String> {
+    let files = staged_files(&staged.dir, &staged.files)?;
+    let outcome = send_leaving(session, root, staged.leaving, files, staged.invitation).await;
     if outcome.is_ok() {
-        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&staged.dir);
     }
     outcome
 }
@@ -979,7 +982,7 @@ async fn save_staged_draft_with(
     keeping: SendId,
 ) -> Result<(), String> {
     let (dir, beginning) = begun_send(root, &keeping.send)?;
-    let files = staged_files(&dir, &beginning)?;
+    let files = staged_files(&dir, &beginning.files)?;
     let (account, secret) = account_with_secret(root, &beginning.message.account)?;
     let (draft, invitation) = (beginning.message, beginning.calendar_ics);
     let outcome = tokio::task::spawn_blocking(move || {
@@ -994,9 +997,9 @@ async fn save_staged_draft_with(
 }
 
 /// The files a begun message carries, each whole as its pieces made it.
-fn staged_files(dir: &Path, beginning: &BeginSend) -> Result<Vec<Attachment>, String> {
-    let mut files = Vec::with_capacity(beginning.files.len());
-    for (index, file) in beginning.files.iter().enumerate() {
+fn staged_files(dir: &Path, staged: &[SendFile]) -> Result<Vec<Attachment>, String> {
+    let mut files = Vec::with_capacity(staged.len());
+    for (index, file) in staged.iter().enumerate() {
         let bytes = std::fs::read(dir.join(format!("file-{index}")))
             .map_err(|_| format!("{} did not arrive", file.filename))?;
         if bytes.len() as u64 != file.size {
@@ -1056,6 +1059,7 @@ async fn search_with(
         .map_err(|_| "the mail session did not finish".to_string())?
 }
 
+#[cfg(test)]
 async fn send_with(
     session: Session,
     root: &Path,
@@ -1063,9 +1067,21 @@ async fn send_with(
     files: Vec<Attachment>,
     invitation: Option<String>,
 ) -> Result<SentMail, String> {
-    let (account, secret) = account_with_secret(root, &sending.account)?;
+    send_leaving(session, root, Leaving::read(sending)?, files, invitation).await
+}
+
+/// Hand `leaving` to its account's server through `session`: to the
+/// recipients it was read with, and to nobody else.
+async fn send_leaving(
+    session: Session,
+    root: &Path,
+    leaving: Leaving,
+    files: Vec<Attachment>,
+    invitation: Option<String>,
+) -> Result<SentMail, String> {
+    let (account, secret) = account_with_secret(root, &leaving.message().account)?;
     tokio::task::spawn_blocking(move || {
-        session.send(&account, &secret, &sending, &files, invitation.as_deref())
+        session.send(&account, &secret, &leaving, &files, invitation.as_deref())
     })
     .await
     .map_err(|_| "the mail session did not finish".to_string())?
@@ -1563,14 +1579,14 @@ mod mail_session_tests {
             &self,
             account: &accounts::Account,
             secret: &accounts::Secret,
-            sending: &SendMail,
+            sending: &Leaving,
             files: &[Attachment],
             invitation: Option<&str>,
         ) -> Result<SentMail, String> {
             self.asked.lock().unwrap().push(format!(
                 "send {} to {} with {} carrying {} files and invitation {:?}",
                 account.id,
-                sending.to,
+                sending.message().to,
                 secret.password,
                 files.len(),
                 invitation.is_some()
@@ -1683,6 +1699,7 @@ mod mail_session_tests {
                 root,
                 SendMail {
                     account: "ada@example.test".into(),
+                    from_address: "ada@example.test".into(),
                     to: "bob@example.test".into(),
                     ..SendMail::default()
                 },
@@ -1851,6 +1868,7 @@ mod mail_session_tests {
             &BeginSend {
                 message: SendMail {
                     account: "ada@example.test".into(),
+                    from_address: "ada@example.test".into(),
                     to: "bob@example.test".into(),
                     subject: "Contract".into(),
                     body: "Attached.".into(),
