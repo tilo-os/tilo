@@ -189,11 +189,7 @@ fn asked<'a>(chat: &Chat, part: &'a ChatPart) -> Vec<Asked<'a>> {
         let mut agents: Vec<(String, bool)> = members
             .iter()
             .filter(|member| !member.is_person())
-            .filter_map(|member| {
-                member
-                    .agent_id()
-                    .map(|agent| (agent.to_owned(), false))
-            })
+            .filter_map(|member| member.agent_id().map(|agent| (agent.to_owned(), false)))
             .collect();
         for (_, message) in &messages {
             for agent in mentioned_agents(message) {
