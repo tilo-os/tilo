@@ -31,7 +31,7 @@ sys.path.insert(0, str(HERE))
 
 from acceptance import core, records, report, session_unit  # noqa: E402
 from acceptance.checks import (agent, agents_e2e, apps, basics, clock,  # noqa: E402,F401
-                               daily_apps, input_devices, provenance, resources, search, secrets, startup, ui,
+                               daily_apps, input_devices, kept_apps, provenance, resources, search, secrets, startup, ui,
                                window, ws_branch_e2e)
 from acceptance.context import Context  # noqa: E402
 from management import start_management  # noqa: E402
@@ -114,7 +114,7 @@ ORDER = ["P01", "P02", "R06", "R01", "A14", "R02", "R03", "A15", "A17", "R04",
          "W01", "W02", "W03", "W04", "W05", "W06", "W07", "W08", "W09", "W10", "W11", "W12",
          "W13", "W14", "W15", "W16", "W17", "W18", "W19", "W20", "W21",
          "A01", "A02", "A03", "A04", "A05", "A06", "A07",
-         "A08", "A09", "A10", "A11", "A12", "A13",
+         "A08", "A09", "A10", "A11", "A12", "A13", "A18",
          "S01", "S02", "S04", "S05", "S06", "S07", "S08", "S09",
          "U01", "U02", "B01", "B02", "B03", "B04", "B05", "B06",
          "M01", "M02", "M03", "M04", "I01", "I02", "I03", "I04", "I05", "I06", "I07", "I08",
@@ -711,7 +711,7 @@ SHARDS = {
     "apps": "apps",
     # The non-Tilo apps (Chromium on Wayland and X11, GTK, Qt, alacritty, glxgears), each a
     # minute or more: with the Tilo apps they made the longest part twice the next.
-    "foreign-apps": "A08,A09,A10,A11,A12,A13",
+    "foreign-apps": "A08,A09,A10,A11,A12,A13,A18",
     "window": "window,input",
     "shell": "ui,search",
 }
