@@ -22150,6 +22150,7 @@ dependencies = [
 name = "tilo-settings-engine"
 version = "0.1.0"
 dependencies = [
+ "model-providers",
  "provider-settings-ui",
  "runtime-dylib",
  "settings",

@@ -1,0 +1,5 @@
+reason = "Model Providers runs from the Settings engine library, which already held its provider panel for Settings: its tapp fell from 1,299,456 to 18,432 bytes and the library rose from 13,483,304 to 14,150,304, the panel's window and the app framework's code compiled for it, measured by t's app-sizes-x86_64 (run r3ac9a7d790). The tapp's budget in tools/perf/tapp-size-budget/budget.toml falls by the same move. The amount is the library's overage plus the ratchet's 1 % headroom, rounded up to 64 KiB. The aarch64 numbers are the same move: its first run prints what to raise them to."
+run = "r3ac9a7d790"
+
+[engines.x86_64]
+"libtilo_settings_engine.so" = 655360

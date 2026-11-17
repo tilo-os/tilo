@@ -88,8 +88,8 @@ Mail; the archive codecs, tilo-archive with the 7z, xz and bzip2 decoders:
 every pane, and the libraries only Settings uses, the settings sections, the
 model-provider administration panel, the NTFS mount protocol, the wallpaper
 catalogue, the accessibility settings, the PC keyboard outlines and the
-time-zone globe: `libtilo_settings_engine.so` for Settings, whose binary is
-one call into it; the spreadsheet formula engine, IronCalc:
+time-zone globe: `libtilo_settings_engine.so` for Settings and Model
+Providers, whose binaries are each one call into it; the spreadsheet formula engine, IronCalc:
 `libtilo_spreadsheet_engine.so` for Sheets; the keyless web search and page
 reader, tilo-web-search, and the agent's two tools over it,
 tilo-agent-web-tools: `libtilo_agent_web_engine.so` for Agent). It is

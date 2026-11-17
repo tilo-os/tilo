@@ -195,7 +195,7 @@ x86_64 = 1376256
 aarch64 = 1245184
 
 [apps."so.tilo.model-providers"]
-x86_64 = 851968
+x86_64 = 65536
 aarch64 = 851968
 
 [apps."so.tilo.monitor"]
