@@ -459,12 +459,28 @@ the person saw it. What came while no device of theirs was looking (`since-you-l
 message at the top of the new stretch of the main chat: what waits, what was done without
 asking, what else came in.
 
-**Told while the app is closed** takes what nothing here makes: an App ID for
-`so.tilo.assistant` with Push Notifications and a profile for it, `aps-environment` in
-`AssistantBundle/Phone.entitlements`, and a host that sends to the addresses the app hands it
-(`AssistantSource.register`: for notifications, for starting a live activity, and for each
-activity that runs). A live activity that the app starts and keeps current itself needs no
-capability.
+**Told while the app is closed** is off in a build until the build is told to include it:
+`TILO_APPLE_PUSH=1` in `build.sh`'s environment. Without that word a build is as it always
+was: it claims no push right, carries no notice extension, and is signed as before. With it,
+the app claims Apple's push right only where its provisioning profile grants it
+(`aps-environment` on the iPhone; `com.apple.developer.aps-environment` on the Mac, where
+the app then carries its profile, `TILO_APPLE_MAC_PROFILE`): a signature that claims what its
+profile does not grant is not installed on an iPhone and not started on a Mac. A build that
+was told to and whose profile grants none says `no push in this build` with the reason, and
+is as one that was not told. A build with push also carries the notice extension
+(`AssistantNotice`, `so.tilo.assistant.notice`; on the iPhone under a profile of its own,
+`TILO_APPLE_NOTICE_PROFILE`), shares one keychain group with it
+(`<team>.so.tilo.assistant.told`, after the app's own, which stays the first), says in its
+`Info.plist` which of Apple's two services reaches it (`TiloPush`), and on the iPhone may be
+woken by a push that shows nothing. What it takes at Apple, which nothing here makes: Push
+Notifications and Time Sensitive Notifications on the App ID `so.tilo.assistant`, an App ID
+`so.tilo.assistant.notice`, their profiles made again after that, and a key for Apple's push
+service, which the person's server holds and never the app. So far the build is all there is
+of it: the app hands its person's server no address yet (`AssistantSource.register`), and the
+extension hands a notice on as it came, so a push would show its one plain line. A Mac build
+with push names itself by its application identifier for the first time; whether it still
+reads what a build without one kept on that Mac is not shown. A live activity that the app
+starts and keeps current itself needs no capability.
 
 **Pictures.** `assistant-shots.sh DIR` draws every screen with nothing on screen, light and
 dark: the Mac's by this Mac, in a window that is never put on a screen, and the iPhone's in a
@@ -498,6 +514,7 @@ dist/apple/build.sh shell simulator --live       # the iPhone app, asked in a si
 dist/apple/build.sh shell iphone --install       # build, sign, and put it on the one reachable iPhone
 dist/apple/build.sh assistant mac --check        # Tilo Assistant: build, sign, and ask it what it can tell
 dist/apple/build.sh assistant iphone --install   # its iPhone app with its widget extension
+TILO_APPLE_PUSH=1 dist/apple/build.sh assistant iphone  # the same, told while it is closed, where its profile grants push
 dist/apple/assistant-shots.sh DIR                # every screen of Tilo Assistant as a picture, nothing on screen
 open "target/apple.noindex/shell/mac/Tilo Shell.app"  # start the Mac app
 ```
@@ -601,6 +618,15 @@ script against a page that speaks as Tilo's does, and the web view of a one-app 
 pages that leave the app, and the way in against pages that show the entry page as Tilo's
 do), the Mac apps' `--check` in their real signature and sandbox, and
 the iPhone apps' in a simulator.
+
+What `build.sh` makes of Tilo Assistant with and without push is checked by `BuildTests`: the
+script's own functions make a bundle from stand-ins for the programs, with the signing
+command written down instead of carried out and a profile that is only the list a real one
+decodes to. A build that was not told to, one told to whose profile grants push, and one told
+to whose profile grants none: the rights its signature would claim, what the bundle says of
+itself, the files it carries, and what is signed in which order. Not checked by anything
+here: a build with push signed under a real profile, installed or started, and a push from
+Apple's service.
 
 `EntryPageShots` in the tests takes pictures of a site's entry page as the apps show it, with nothing on
 screen, when it is asked to (`TILO_SHOTS_DIR`, `TILO_SHOTS_SITE`).

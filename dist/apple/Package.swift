@@ -40,6 +40,12 @@ let package = Package(
             dependencies: ["AssistantCore", "AssistantUI"],
             linkerSettings: [.unsafeFlags(["-Xlinker", "-e", "-Xlinker", "_NSExtensionMain"])]
         ),
+        // The notice extension: it opens what a push says for this device alone. Only a build
+        // that is told while it is closed carries it (build.sh, TILO_APPLE_PUSH).
+        .executableTarget(
+            name: "AssistantNotice",
+            linkerSettings: [.unsafeFlags(["-Xlinker", "-e", "-Xlinker", "_NSExtensionMain"])]
+        ),
         // The content of the window's drawing, for tests and pictures. No app links it.
         .target(name: "AssistantDrawing", dependencies: ["AssistantCore"]),
         // Draws every screen to a picture with nothing on screen.

@@ -19,6 +19,7 @@ both, and `stack.sh help` covers the commands.
 | `integration/person.mjs` | a person in their own headless Chromium: arrives, follows an invitation, approves a key on `/sign-in` |
 | `integration/hosted-visa.py` | a hosted workspace's Browser: opened, filled and submitted through page actions, with the person asked |
 | `integration/hosted-terminal.py` | a hosted workspace's Linux commands: the plan a card admits, the Terminal's run and its History, an agent's key through the `tilo` command, and the tenant's account |
+| `integration/model_stand_in.py` | a stand-in for a model provider (Anthropic's Messages protocol) on a loopback address: one fixed sentence, or one tool call and an end; it notes each request's path and whether a key header came, never a value |
 | `integration/vm-proofs.py` | what the workspace's VM must be for the Browser in it: sandboxes, the browser user, its device key, memory |
 | `integration/reviewer.py` | the visa run's reviewer endpoint, played by such a person |
 | `integration/seed-history.py` | the Lounge's chat history, posted through the API server (`up --seed`) |
