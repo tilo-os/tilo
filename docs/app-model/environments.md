@@ -357,18 +357,36 @@ that workspace environment's own, never in a guest sharing the host's kernel
   more VM, the always-up one first. Each host reports the memory its awake VMs
   really take — what the kernel measures each Firecracker process at, not the
   size the VM may grow into — and what waiting wakes ask for. The placer
-  starts another host once the awake VMs pass three quarters of the hosts'
+  starts another machine once the awake VMs pass three quarters of the hosts'
   memory, or a VM waits, and never takes one away itself. A wake with no room
   waits, a person's and an agent's alike, after one line ("Starting another
   machine for it, about 3 minutes."); it is never refused for room.
 - **Eviction:** a host the cloud takes back at short notice (an Azure Spot
   VM, about 30 seconds) is told by a file appearing (`--evict-notice`, written
   by whatever watches the cloud's notice). It then wakes no more VMs, saying
-  the VM is moving to another host, and suspends every awake one at once onto
+  the VM is moving to another machine, and suspends every awake one at once onto
   its state directory, which lives on storage that outlives the host. The
   next host to open that directory restores each VM on its next command. A VM
   lost before its suspend has no valid snapshot and boots afresh from its
   disk, so old memory never meets a newer disk.
+- **Moving a VM:** a machine told to drain — the same entry the eviction notice
+  uses, asked for by an action, so a rolling update calls it — takes no more
+  wakes and suspends every awake VM onto its state directory, then moves each
+  VM, its disk, its snapshot and its meter, to the machine the placer names. The
+  bytes go over the connection the two machines already keep, a block at a time: a
+  transfer cut short carries on from its last whole block, a disk's holes arrive
+  as holes, and the machine taking a file uses it only once every block and the
+  file's digest are what was offered. The VM arrives asleep and restores on its
+  next command; one whose suspend failed moves its disk alone and boots afresh.
+  The machine it left keeps the fact that it left, so a wake placed there says the
+  VM moved rather than making an empty machine in its place.
+- **A lost machine:** each VM's disk and latest snapshot are copied in the
+  background to a second machine, a block at a time, so only the blocks that
+  changed since the copy before travel. A VM that is running is paused for its
+  copy and goes on, so its copy is a disk and no snapshot; one that was asleep
+  sends its snapshot too. A restore never pairs an old snapshot with a newer
+  disk — taking a newer disk drops the memory that came before it — and boots
+  the disk afresh. Losing a machine loses the work since the last copy.
 - **Files:** the environment's granted directories, at the same paths, served
   over vsock (the agent mounts them as FUSE). Each is served by its own host
   process held to that directory by Landlock, in user, mount, network and IPC

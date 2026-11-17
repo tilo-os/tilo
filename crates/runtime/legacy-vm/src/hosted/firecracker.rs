@@ -570,7 +570,7 @@ pub fn grow_disk(disk: &Path, size: VmSize) -> io::Result<()> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use std::os::unix::fs::{FileExt as _, PermissionsExt as _};
 
     use super::*;
@@ -682,7 +682,7 @@ mod tests {
         );
     }
 
-    fn files(dir: &Path) -> VmFiles {
+    pub(crate) fn files(dir: &Path) -> VmFiles {
         VmFiles {
             state: dir.join("state"),
             run: dir.join("run"),
