@@ -45,8 +45,49 @@ impl Contacts {
         &self,
         item: Option<&tilo_resource::Id>,
     ) -> Result<serde_json::Value, String> {
+        if let Some(place) = item.and_then(|item| place_named(item.as_str())) {
+            return self.read_place(place);
+        }
         tilo_resource::read::fields(self, item)
     }
+
+    /// The contacts of the place `place`: the favorites, or the members of
+    /// a group, each as the book's own read answers it.
+    fn read_place(&self, place: &str) -> Result<serde_json::Value, String> {
+        let group = place.strip_prefix(GROUP_PLACE).map(group_place);
+        let members: Vec<serde_json::Value> = self
+            .contacts
+            .iter()
+            .filter(|contact| match &group {
+                Some(group) => contact
+                    .groups
+                    .iter()
+                    .any(|entry| group_place(&entry.value) == *group),
+                None => contact.favorite,
+            })
+            .map(tilo_resource::Model::to_json)
+            .collect();
+        if members.is_empty() && group.is_some() {
+            return Err(format!(
+                "no contact is in `{place}`; the book's groups: {}",
+                ordered_groups(&self.contacts).join(", ")
+            ));
+        }
+        Ok(serde_json::json!({ "place": place, "contacts": members }))
+    }
+}
+
+/// How a group's place starts: the group's name follows.
+const GROUP_PLACE: &str = "group:";
+
+/// The place a read's `item` names, the favorites or a group (`group:Investors`), given bare or
+/// as the resource the place is published as.
+fn place_named(item: &str) -> Option<&str> {
+    let place = item
+        .strip_prefix(<Contacts as tilo_resource::Resource>::KIND)
+        .and_then(|rest| rest.strip_prefix("/derived/"))
+        .unwrap_or(item);
+    (place == FAVORITES_PLACE || place.starts_with(GROUP_PLACE)).then_some(place)
 }
 
 #[resource(
@@ -75,17 +116,23 @@ impl Contacts {
     /// Add contacts.
     ///
     /// Whole cards, written in the form or imported, added as one change.
-    /// Each id is new to the book: neither a contact's nor a deleted
-    /// contact's.
+    /// A card names what it knows: a field left out is empty, and a card or
+    /// a row given no id gets a new one. An id that is given is new to the
+    /// book: neither a contact's nor a deleted contact's.
     #[action]
     pub fn add_contacts(
         &mut self,
-        #[param("The contacts")] contacts: Vec<Contact>,
+        cx: &mut ActionCx,
+        #[param(
+            "The contacts: each a card of what is known of it, such as first, last, org, notes, emails and groups"
+        )]
+        contacts: Vec<Contact>,
     ) -> Result<(), Refusal> {
         if contacts.is_empty() {
             return Err(Refusal::new("no contacts to add"));
         }
-        for contact in contacts {
+        for mut contact in contacts {
+            contact.mint_ids(|| cx.uuid());
             if self.removed.contains(&contact.id) || self.contact(contact.id).is_some() {
                 return Err(Refusal::new(
                     "a contact with this id is in the book or was deleted",

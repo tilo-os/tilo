@@ -335,12 +335,26 @@ fn malformed_and_oversized_contacts_are_refused() {
         ..person("Ada", "")
     };
     assert!(book.apply(Contacts::add(&oversized)).is_err());
+    // A row that came with no id is given one where its card is added; the
+    // rule that every row has one still refuses an edit that would leave a
+    // row without.
     let mut unnamed_row = person("Ada", "");
     unnamed_row.phones.push(Labeled {
         id: Uuid::nil(),
         ..Labeled::new("home", "+1 555 0110")
     });
-    assert!(book.apply(Contacts::add(&unnamed_row)).is_err());
+    book.apply(Contacts::add(&unnamed_row)).unwrap();
+    let held = contact(&book, unnamed_row.id).expect("the card is held");
+    assert!(held.phones.iter().all(|row| !row.id.is_nil()), "{held:?}");
+    let mut left_unnamed = held.clone();
+    left_unnamed.emails.push(Labeled {
+        id: Uuid::nil(),
+        ..Labeled::new("work", "ada@example.test")
+    });
+    assert!(
+        save(&mut book, &held, &left_unnamed).is_err(),
+        "an edit cannot leave a row without an id"
+    );
     let impossible = Contact {
         birthday: Some(Birthday::Full {
             year: 2023,
@@ -678,4 +692,85 @@ fn the_window_bars_sidebar_button_flips_the_sidebar() {
         ui::framework::testing::TestApp::<ContactsShell>::capture(None)
     })
     .unwrap_or_else(|error| panic!("{error}"));
+}
+
+#[test]
+fn cards_written_out_are_added_in_one_step_and_read_back_by_their_group() {
+    let mut app = TestApp::<ContactsShell>::new().unwrap();
+    // Fifty cards as someone writes them out: what is known of each, and no ids.
+    let cards: Vec<serde_json::Value> = (0..50)
+        .map(|n| {
+            serde_json::json!({
+                "first": format!("Person{n}"),
+                "notes": format!("Met at stand {n}"),
+                "emails": [{ "label": "work", "value": format!("p{n}@example.test") }],
+                "groups": [{ "value": if n % 2 == 0 { "Investors" } else { "Customers" } }],
+            })
+        })
+        .collect();
+    app.call("add-contacts", serde_json::json!({ "contacts": cards }))
+        .expect("cards that name no id are added");
+    let held = app.state().contacts;
+    assert_eq!(held.len(), 50);
+    let mut ids: Vec<Uuid> = held
+        .iter()
+        .flat_map(|contact| {
+            std::iter::once(contact.id)
+                .chain(contact.emails.iter().map(|row| row.id))
+                .chain(contact.groups.iter().map(|row| row.id))
+        })
+        .collect();
+    assert!(
+        ids.iter().all(|id| !id.is_nil()),
+        "every card and row has an id"
+    );
+    ids.sort();
+    ids.dedup();
+    assert_eq!(ids.len(), 150, "and each id is its own");
+    let seventh = held
+        .iter()
+        .find(|contact| contact.first == "Person7")
+        .expect("the card is held");
+    assert_eq!(seventh.notes, "Met at stand 7");
+    assert_eq!(seventh.last, "", "a field a card leaves out is empty");
+
+    // A group's members are read by the place the book lists the group as.
+    let investors = app
+        .call(
+            "read",
+            serde_json::json!({ "item": place_resource_id(&group_place("Investors")) }),
+        )
+        .unwrap()
+        .unwrap();
+    let members = investors["contacts"].as_array().unwrap();
+    assert_eq!(members.len(), 25, "{investors}");
+    assert!(
+        members
+            .iter()
+            .all(|member| member["groups"][0]["value"] == "Investors"),
+        "{investors}"
+    );
+    let customers = app
+        .call("read", serde_json::json!({ "item": "group:Customers" }))
+        .unwrap()
+        .unwrap();
+    assert_eq!(customers["contacts"].as_array().unwrap().len(), 25);
+    let nobody = app
+        .call("read", serde_json::json!({ "item": "group:Nobody" }))
+        .unwrap_err()
+        .to_string();
+    assert!(nobody.contains("Customers, Investors"), "{nobody}");
+
+    // An id a card does name is still new to the book.
+    let taken = seventh.id.to_string();
+    assert!(
+        app.call(
+            "add-contacts",
+            serde_json::json!({ "contacts": [{ "id": taken, "first": "Again" }] }),
+        )
+        .is_err()
+    );
+    assert_eq!(app.state().contacts.len(), 50);
+    assert!(app.undo(), "cards added together are one step");
+    assert_eq!(app.state().contacts.len(), 0);
 }

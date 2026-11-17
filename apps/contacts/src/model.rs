@@ -57,8 +57,10 @@ pub type ContactId = Uuid;
 pub struct Labeled {
     /// The row's identity, the same on every replica.
     #[model(readonly)]
+    #[serde(default)]
     pub id: Uuid,
     /// Type
+    #[serde(default)]
     pub label: String,
     /// Value
     #[model(label)]
@@ -95,19 +97,26 @@ impl Default for Labeled {
 pub struct Address {
     /// The row's identity, the same on every replica.
     #[model(readonly)]
+    #[serde(default)]
     pub id: Uuid,
     /// Type
+    #[serde(default)]
     pub label: String,
     /// Street
     #[model(label)]
+    #[serde(default)]
     pub street: String,
     /// City
+    #[serde(default)]
     pub city: String,
     /// Region
+    #[serde(default)]
     pub region: String,
     /// Postal code
+    #[serde(default)]
     pub postal: String,
     /// Country
+    #[serde(default)]
     pub country: String,
 }
 
@@ -122,6 +131,7 @@ impl Identified for Address {
 pub struct GroupEntry {
     /// The row's identity, the same on every replica.
     #[model(readonly)]
+    #[serde(default)]
     pub id: Uuid,
     /// Group
     #[model(label)]
@@ -359,6 +369,7 @@ pub const MAX_CONTACT_ROWS: usize = 256;
 /// One person or organization.
 #[derive(Model, Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[model(check = Contact::valid)]
+#[serde(default)]
 pub struct Contact {
     /// The contact's identity, the same on every replica and in its vCard.
     #[model(readonly)]
@@ -397,6 +408,25 @@ pub struct Contact {
     #[model(readonly)]
     #[serde(default)]
     pub photo: String,
+}
+
+/// `rows` with an id from `mint` on each row that has none.
+fn identified<T: Model + Identified + Clone>(
+    rows: &Ordered<T>,
+    id_of: impl Fn(&mut T) -> &mut Uuid,
+    mint: &mut impl FnMut() -> Uuid,
+) -> Ordered<T> {
+    rows.iter()
+        .cloned()
+        .map(|mut row| {
+            let id = id_of(&mut row);
+            if id.is_nil() {
+                *id = mint();
+            }
+            row
+        })
+        .collect::<Vec<_>>()
+        .into()
 }
 
 impl Identified for Contact {
@@ -478,6 +508,27 @@ impl Contact {
         Self {
             id: Uuid::new_v4(),
             ..Default::default()
+        }
+    }
+
+    /// Give the contact, and each of its rows, the id it lacks, from `mint`:
+    /// a card someone wrote out names what it knows, and its identities are
+    /// made where it is added.
+    pub fn mint_ids(&mut self, mut mint: impl FnMut() -> Uuid) {
+        if self.id.is_nil() {
+            self.id = mint();
+        }
+        if self.phones.iter().any(|row| row.id.is_nil()) {
+            self.phones = identified(&self.phones, |row| &mut row.id, &mut mint);
+        }
+        if self.emails.iter().any(|row| row.id.is_nil()) {
+            self.emails = identified(&self.emails, |row| &mut row.id, &mut mint);
+        }
+        if self.addresses.iter().any(|row| row.id.is_nil()) {
+            self.addresses = identified(&self.addresses, |row| &mut row.id, &mut mint);
+        }
+        if self.groups.iter().any(|row| row.id.is_nil()) {
+            self.groups = identified(&self.groups, |row| &mut row.id, &mut mint);
         }
     }
 
