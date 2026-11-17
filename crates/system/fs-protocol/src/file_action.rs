@@ -127,68 +127,8 @@ impl FileAction {
     pub fn write(&self, doc: &mut Doc) -> Result<(), ActionError> {
         let nodes = tree_nodes(doc)?;
         match self {
-            Self::Create {
-                node,
-                document_id,
-                parent,
-                name,
-                kind,
-                hash,
-                size,
-                mtime,
-                author,
-            } => {
-                check_name(name)?;
-                let obj = doc.put_object(&nodes, node.as_str(), ObjType::Map)?;
-                doc.put(&obj, PARENT_KEY, parent.as_str())?;
-                doc.put(&obj, PREV_PARENT_KEY, parent.as_str())?;
-                doc.put(&obj, NAME_KEY, name.0.clone())?;
-                doc.put(&obj, PLACEMENT_NAME_KEY, name.0.clone())?;
-                doc.put(
-                    &obj,
-                    KIND_KEY,
-                    match kind {
-                        FileNodeKind::Directory => "dir",
-                        FileNodeKind::File => "file",
-                    },
-                )?;
-                if let Some(hash) = hash {
-                    doc.put(&obj, HASH_KEY, hash.as_str())?;
-                }
-                doc.put(&obj, SIZE_KEY, *size)?;
-                doc.put(&obj, MTIME_KEY, *mtime)?;
-                doc.put(&obj, AUTHOR_KEY, author.as_str())?;
-                doc.put(&obj, DOCUMENT_ID_KEY, document_id.0.to_string())?;
-            }
-            Self::Write {
-                node,
-                hash,
-                size,
-                mtime,
-                author,
-                revision,
-                keep_preview,
-            } => {
-                let obj = node_obj(doc, &nodes, node)?;
-                match revision {
-                    Some(revision) => doc.put(
-                        &obj,
-                        CONTENT_REVISION_KEY,
-                        automerge::ScalarValue::Bytes(revision.clone()),
-                    )?,
-                    None => clear(doc, &obj, CONTENT_REVISION_KEY)?,
-                }
-                match hash {
-                    Some(hash) => doc.put(&obj, HASH_KEY, hash.as_str())?,
-                    None => clear(doc, &obj, HASH_KEY)?,
-                }
-                if !keep_preview {
-                    clear(doc, &obj, THUMB_KEY)?;
-                }
-                doc.put(&obj, SIZE_KEY, *size)?;
-                doc.put(&obj, MTIME_KEY, *mtime)?;
-                doc.put(&obj, AUTHOR_KEY, author.as_str())?;
-            }
+            Self::Create { .. } => self.write_create(doc, &nodes),
+            Self::Write { .. } => self.write_content(doc, &nodes),
             Self::Move {
                 node,
                 parent,
@@ -208,9 +148,93 @@ impl FileAction {
                 doc.put(&obj, PLACEMENT_NAME_KEY, name.0.clone())?;
                 doc.put(&obj, NAME_KEY, name.0.clone())?;
                 doc.put(&obj, MTIME_KEY, *mtime)?;
+                Ok(())
             }
+            Self::Trash { .. } | Self::Restore { .. } => self.write_trash(doc, &nodes),
+        }
+    }
+
+    /// [`Self::write`] of a [`Self::Create`].
+    fn write_create(&self, doc: &mut Doc, nodes: &ObjId) -> Result<(), ActionError> {
+        let Self::Create {
+            node,
+            document_id,
+            parent,
+            name,
+            kind,
+            hash,
+            size,
+            mtime,
+            author,
+        } = self
+        else {
+            return Ok(());
+        };
+        check_name(name)?;
+        let obj = doc.put_object(nodes, node.as_str(), ObjType::Map)?;
+        doc.put(&obj, PARENT_KEY, parent.as_str())?;
+        doc.put(&obj, PREV_PARENT_KEY, parent.as_str())?;
+        doc.put(&obj, NAME_KEY, name.0.clone())?;
+        doc.put(&obj, PLACEMENT_NAME_KEY, name.0.clone())?;
+        doc.put(
+            &obj,
+            KIND_KEY,
+            match kind {
+                FileNodeKind::Directory => "dir",
+                FileNodeKind::File => "file",
+            },
+        )?;
+        if let Some(hash) = hash {
+            doc.put(&obj, HASH_KEY, hash.as_str())?;
+        }
+        doc.put(&obj, SIZE_KEY, *size)?;
+        doc.put(&obj, MTIME_KEY, *mtime)?;
+        doc.put(&obj, AUTHOR_KEY, author.as_str())?;
+        doc.put(&obj, DOCUMENT_ID_KEY, document_id.0.to_string())?;
+        Ok(())
+    }
+
+    /// [`Self::write`] of a [`Self::Write`].
+    fn write_content(&self, doc: &mut Doc, nodes: &ObjId) -> Result<(), ActionError> {
+        let Self::Write {
+            node,
+            hash,
+            size,
+            mtime,
+            author,
+            revision,
+            keep_preview,
+        } = self
+        else {
+            return Ok(());
+        };
+        let obj = node_obj(doc, nodes, node)?;
+        match revision {
+            Some(revision) => doc.put(
+                &obj,
+                CONTENT_REVISION_KEY,
+                automerge::ScalarValue::Bytes(revision.clone()),
+            )?,
+            None => clear(doc, &obj, CONTENT_REVISION_KEY)?,
+        }
+        match hash {
+            Some(hash) => doc.put(&obj, HASH_KEY, hash.as_str())?,
+            None => clear(doc, &obj, HASH_KEY)?,
+        }
+        if !keep_preview {
+            clear(doc, &obj, THUMB_KEY)?;
+        }
+        doc.put(&obj, SIZE_KEY, *size)?;
+        doc.put(&obj, MTIME_KEY, *mtime)?;
+        doc.put(&obj, AUTHOR_KEY, author.as_str())?;
+        Ok(())
+    }
+
+    /// [`Self::write`] of a [`Self::Trash`] or a [`Self::Restore`].
+    fn write_trash(&self, doc: &mut Doc, nodes: &ObjId) -> Result<(), ActionError> {
+        match self {
             Self::Trash { node } => {
-                let obj = node_obj(doc, &nodes, node)?;
+                let obj = node_obj(doc, nodes, node)?;
                 match doc.str_at(&obj, HASH_KEY) {
                     Some(hash) => doc.put(&obj, DELETED_HASH_KEY, hash)?,
                     None => clear(doc, &obj, DELETED_HASH_KEY)?,
@@ -222,7 +246,7 @@ impl FileAction {
                 doc.put(&obj, PARENT_KEY, TRASH_ID)?;
             }
             Self::Restore { node, parent } => {
-                let obj = node_obj(doc, &nodes, node)?;
+                let obj = node_obj(doc, nodes, node)?;
                 if doc.str_at(&obj, PARENT_KEY).as_deref() != Some(TRASH_ID) {
                     return Err(ActionError::Refused("it is not in the trash".into()));
                 }
@@ -233,6 +257,7 @@ impl FileAction {
                     .unwrap_or_else(|| ROOT_ID.to_owned());
                 doc.put(&obj, PARENT_KEY, back)?;
             }
+            _ => {}
         }
         Ok(())
     }
@@ -344,7 +369,7 @@ mod tests {
     use crate::tree::{FilesTree, Placing, Tree, place};
 
     /// The action the declaration `id` builds from `args`, as the API builds it for a caller.
-    fn declared(id: &str, args: serde_json::Value) -> FileAction {
+    fn declared(id: &str, args: &serde_json::Value) -> FileAction {
         let declaration = FilesTree::declarations()
             .into_iter()
             .find(|declaration| declaration.id == id)
@@ -393,7 +418,7 @@ mod tests {
         let mut replica = Replica::<FilesTree>::from_doc(doc).as_agent_for("helper", "ada");
         let moved = declared(
             verbs::MOVE,
-            json!({"node": plan, "parent": ROOT_ID, "name": "final.md"}),
+            &json!({"node": plan, "parent": ROOT_ID, "name": "final.md"}),
         );
         replica.apply_action(&moved).unwrap();
         let state = replica.state().unwrap();
@@ -427,12 +452,12 @@ mod tests {
         let (doc, docs, plan) = tree_with_a_file();
         let mut replica = Replica::<FilesTree>::from_doc(doc).as_author("ada");
         replica
-            .apply_action(&declared(verbs::TRASH, json!({"node": docs})))
+            .apply_action(&declared(verbs::TRASH, &json!({"node": docs})))
             .unwrap();
         let state = replica.state().unwrap();
         assert!(state.trashed(&docs));
         assert!(!crate::tree::reaches_root(&state, &plan));
-        let restore = declared(verbs::RESTORE, json!({"node": docs}));
+        let restore = declared(verbs::RESTORE, &json!({"node": docs}));
         replica.apply_action(&restore).unwrap();
         let state = replica.state().unwrap();
         assert_eq!(state.node(&docs).unwrap().parent.as_deref(), Some(ROOT_ID));

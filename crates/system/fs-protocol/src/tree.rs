@@ -505,57 +505,16 @@ impl Resource for FilesTree {
     /// script that listed the tree acts on. A node is made where its chunk is chosen, by the
     /// mount or by Files' verbs on a path, and those write [`FileAction::Create`] themselves.
     fn declarations() -> Vec<ActionDecl<Self>> {
-        let node =
-            || ActionParam::required("node", ParamType::Text, "The key of the file or folder");
-        let create = |id: &'static str, label: &'static str, kind: FileNodeKind| {
-            ActionDecl::new(
-                id,
-                label,
-                vec![
-                    ActionParam::required(
-                        "parent",
-                        ParamType::Text,
-                        "The key of the folder it goes into; ROOT for the workspace's own",
-                    ),
-                    ActionParam::required("name", ParamType::Text, "Its name"),
-                    ActionParam::optional(
-                        "document",
-                        ParamType::Text,
-                        "The document id it takes, which names the chunk it lives in; a new one \
-                         in the first chunk when not named",
-                    ),
-                ],
-                move |args, now_ms| {
-                    let document_id = match args.text("document") {
-                        Some(id) => uuid::Uuid::parse_str(id.trim())
-                            .map(FileDocumentId)
-                            .map_err(|_| format!("`{id}` is no document id"))?,
-                        None => FileDocumentId::in_chunk(crate::files::FIRST_TREE_CHUNK),
-                    };
-                    Ok(FileAction::Create {
-                        node: document_node_id(document_id),
-                        document_id,
-                        parent: text(args, "parent")?,
-                        name: FileNameV1::from(text(args, "name")?.as_str()),
-                        kind,
-                        hash: None,
-                        size: 0,
-                        mtime: u64::try_from(now_ms).unwrap_or_default(),
-                        author: String::new(),
-                    })
-                },
-            )
-        };
         vec![
-            create(verbs::NEW_FOLDER, "New folder", FileNodeKind::Directory)
+            create_declaration(verbs::NEW_FOLDER, "New folder", FileNodeKind::Directory)
                 .describe("Make an empty folder."),
-            create(verbs::NEW_FILE, "New file", FileNodeKind::File)
+            create_declaration(verbs::NEW_FILE, "New file", FileNodeKind::File)
                 .describe("Make an empty file; write its content with `write`."),
             ActionDecl::new(
                 verbs::MOVE,
                 "Move or rename",
                 vec![
-                    node(),
+                    node_param(),
                     ActionParam::required(
                         "parent",
                         ParamType::Text,
@@ -573,42 +532,19 @@ impl Resource for FilesTree {
                 },
             )
             .describe("Put a file or folder into another folder, under another name, or both."),
+            write_declaration().describe("Give a file new content the workspace keeps."),
             ActionDecl::new(
-                verbs::WRITE,
-                "Write",
-                vec![
-                    node(),
-                    ActionParam::required(
-                        "content",
-                        ParamType::Text,
-                        "The new content, as its `tilo.content:<hash>` reference",
-                    ),
-                    ActionParam::required("size", ParamType::Integer, "Its length in bytes"),
-                ],
-                |args, now_ms| {
-                    let content = text(args, "content")?;
-                    let hash = tilo_actions::content_hash(&content)
-                        .ok_or_else(|| format!("`{content}` names no content"))?
-                        .to_owned();
-                    Ok(FileAction::Write {
+                verbs::TRASH,
+                "Move to trash",
+                vec![node_param()],
+                |args, _| {
+                    Ok(FileAction::Trash {
                         node: text(args, "node")?,
-                        hash: Some(hash),
-                        size: args.whole("size").unwrap_or_default(),
-                        mtime: u64::try_from(now_ms).unwrap_or_default(),
-                        author: String::new(),
-                        revision: None,
-                        keep_preview: false,
                     })
                 },
             )
-            .describe("Give a file new content the workspace keeps."),
-            ActionDecl::new(verbs::TRASH, "Move to trash", vec![node()], |args, _| {
-                Ok(FileAction::Trash {
-                    node: text(args, "node")?,
-                })
-            })
             .describe("Put a file or folder in the trash, with what it holds."),
-            ActionDecl::new(verbs::RESTORE, "Restore", vec![node()], |args, _| {
+            ActionDecl::new(verbs::RESTORE, "Restore", vec![node_param()], |args, _| {
                 Ok(FileAction::Restore {
                     node: text(args, "node")?,
                     parent: None,
@@ -617,6 +553,88 @@ impl Resource for FilesTree {
             .describe("Take a file or folder out of the trash, back where it was."),
         ]
     }
+}
+
+/// The parameter naming the node an action of the tree acts on.
+fn node_param() -> ActionParam {
+    ActionParam::required("node", ParamType::Text, "The key of the file or folder")
+}
+
+/// The declaration `id` that makes an empty node of `kind`.
+fn create_declaration(
+    id: &'static str,
+    label: &'static str,
+    kind: FileNodeKind,
+) -> ActionDecl<FilesTree> {
+    ActionDecl::new(
+        id,
+        label,
+        vec![
+            ActionParam::required(
+                "parent",
+                ParamType::Text,
+                "The key of the folder it goes into; ROOT for the workspace's own",
+            ),
+            ActionParam::required("name", ParamType::Text, "Its name"),
+            ActionParam::optional(
+                "document",
+                ParamType::Text,
+                "The document id it takes, which names the chunk it lives in; a new one \
+                     in the first chunk when not named",
+            ),
+        ],
+        move |args, now_ms| {
+            let document_id = match args.text("document") {
+                Some(id) => uuid::Uuid::parse_str(id.trim())
+                    .map(FileDocumentId)
+                    .map_err(|_| format!("`{id}` is no document id"))?,
+                None => FileDocumentId::in_chunk(crate::files::FIRST_TREE_CHUNK),
+            };
+            Ok(FileAction::Create {
+                node: document_node_id(document_id),
+                document_id,
+                parent: text(args, "parent")?,
+                name: FileNameV1::from(text(args, "name")?.as_str()),
+                kind,
+                hash: None,
+                size: 0,
+                mtime: u64::try_from(now_ms).unwrap_or_default(),
+                author: String::new(),
+            })
+        },
+    )
+}
+
+/// The declaration that gives a file new content.
+fn write_declaration() -> ActionDecl<FilesTree> {
+    ActionDecl::new(
+        verbs::WRITE,
+        "Write",
+        vec![
+            node_param(),
+            ActionParam::required(
+                "content",
+                ParamType::Text,
+                "The new content, as its `tilo.content:<hash>` reference",
+            ),
+            ActionParam::required("size", ParamType::Integer, "Its length in bytes"),
+        ],
+        |args, now_ms| {
+            let content = text(args, "content")?;
+            let hash = tilo_actions::content_hash(&content)
+                .ok_or_else(|| format!("`{content}` names no content"))?
+                .to_owned();
+            Ok(FileAction::Write {
+                node: text(args, "node")?,
+                hash: Some(hash),
+                size: args.whole("size").unwrap_or_default(),
+                mtime: u64::try_from(now_ms).unwrap_or_default(),
+                author: String::new(),
+                revision: None,
+                keep_preview: false,
+            })
+        },
+    )
 }
 
 /// The text argument `name`, trimmed, which the action cannot do without.
