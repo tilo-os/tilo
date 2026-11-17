@@ -1723,3 +1723,30 @@ async fn a_sheet_closed_unanswered_answers_the_agent_unavailable_not_declined() 
     assert!(reason.contains("without the person's answer"), "{reason}");
     assert!(app.try_recv().is_err(), "nothing runs");
 }
+
+/// One app takes another app's action only as a person lets it. With nobody
+/// to ask, no workspace, nowhere to keep the answer or no such action offered,
+/// the call is refused with what to say, never served unasked.
+#[tokio::test]
+async fn an_app_taking_another_apps_action_nobody_can_allow_is_refused() {
+    use super::app_consent::ConsentStep;
+    let (state, person, _app) = fixture();
+    let refusal = |caller: &Caller, request: &InvokeRequest| match state.app_action_consent(
+        caller,
+        "so.tilo.other",
+        request,
+    ) {
+        ConsentStep::Refuse(refused) => refused.to_string(),
+        ConsentStep::Serve => panic!("served unasked"),
+        ConsentStep::Ask(_) => panic!("asked"),
+    };
+    let nobody = Caller::local_agent("scribe").in_workspace(person.workspace().unwrap());
+    assert!(refusal(&nobody, &request()).contains("no person"));
+    let nowhere = Caller::local_person("a1".repeat(32));
+    assert!(refusal(&nowhere, &request()).contains("no workspace"));
+    let mut unoffered = request();
+    unoffered.target.address = tilo_actions::ActionAddress::new("test:block-a", "erase");
+    let unknown = ActionCallError::UnknownAction.to_string();
+    assert_eq!(refusal(&person, &unoffered), unknown);
+    assert!(refusal(&person, &request()).contains("keeps no answers"));
+}

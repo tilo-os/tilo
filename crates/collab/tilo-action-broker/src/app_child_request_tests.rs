@@ -571,13 +571,12 @@ async fn an_apps_own_change_of_another_app_is_asked_once_and_runs_as_allowed() {
             let env = Environment::new();
             let mut services = env.membership.services();
             services.workspace_grants = Some(Arc::new(TreeGrants(env.membership.clone())));
-            // The person's answers for one app's use of another app's actions.
-            services.app_consents = Some(Arc::new(crate::services::PersonalAppConsents {
-                source: Arc::new(settings_store::HostDocument::new(
-                    serde_json::Map::new(),
-                    |_| Ok(()),
-                )),
-            }));
+            // The person's settings, which keep their answers for one app's
+            // use of another app's actions.
+            services.settings = Some(Arc::new(settings_store::HostDocument::new(
+                serde_json::Map::new(),
+                |_| Ok(()),
+            )));
             // The app declares that it takes other apps' actions.
             services.app_action_access =
                 Some(Arc::new(|_: &str| crate::app_actions::AppActionAccess {

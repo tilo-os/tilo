@@ -18,7 +18,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use tilo_action_broker::services::{
-    AppConsents, ApplicationServices, AudioOutputServices, BrowserServiceSessionServices,
+    ApplicationServices, AudioOutputServices, BrowserServiceSessionServices,
     DisplayControlServices, DriveServices, FileClipboardServices, LauncherServices,
     NearbyTransferServices, ProcessServices, PublishedResources, RealtimeServices,
     ShortcutLibraryServices, SpeakerServices, WifiContinuityServices, WorkspaceControlServices,
@@ -144,7 +144,6 @@ broker_services! {
     app_action_access: tilo_broker_core::access::AppActionAccessResolver,
     app_resource_kinds: tilo_broker_core::access::AppResourceKindsResolver,
     workspace_grants: Arc<dyn WorkspaceGrants>,
-    app_consents: Arc<dyn AppConsents>,
     launchable_catalogue: PathBuf,
     document_content: Arc<tilo_action_broker::document_content::RouteContent>,
     group_keys: KeyProvider,

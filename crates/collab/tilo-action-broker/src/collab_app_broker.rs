@@ -2738,10 +2738,10 @@ pub struct AppBrokerState {
     /// time for each action an app asks for, so an app cannot bury the person
     /// in sheets, while the two apps one action of it changes are asked about
     /// in turn.
-    app_action_consent_pending: Mutex<std::collections::HashSet<app_consent::ConsentKey>>,
+    app_action_consent_pending: Mutex<std::collections::BTreeSet<app_consent::ConsentKey>>,
     /// The app actions the person let an app take for this session alone,
     /// which their settings do not keep.
-    app_consent_session: Mutex<std::collections::HashSet<app_consent::ConsentKey>>,
+    app_consent_session: Mutex<std::collections::BTreeSet<app_consent::ConsentKey>>,
     /// Bumped whenever a pending or completed invocation changes, so hosts
     /// can refresh retained invocation projections exactly when needed and
     /// a waiter on a running invocation wakes when it may have moved.
@@ -3507,8 +3507,8 @@ impl AppBrokerState {
                 ),
                 app_resource_kinds: RwLock::new(services.app_resource_kinds.clone()),
                 app_action_consent: RwLock::new(None),
-                app_action_consent_pending: Mutex::new(std::collections::HashSet::new()),
-                app_consent_session: Mutex::new(std::collections::HashSet::new()),
+                app_action_consent_pending: Mutex::default(),
+                app_consent_session: Mutex::default(),
                 invocation_generation: tokio::sync::watch::Sender::new(0),
                 execution_activity: ActivityBus::default(),
                 admission_lock: Mutex::new(()),
