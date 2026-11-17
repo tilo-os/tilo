@@ -62,7 +62,7 @@ async fn every_computers_session_of_one_named_agent_is_that_one_agent() {
     let state = crate::support::scratch_dir();
     let hosted = start(&root, &host, state.path()).await;
     let mut browser = Browser::open(&hosted, &browser_device, &host).await;
-    let notes = browser.create(NOTES);
+    browser.create(NOTES);
     browser.peer.barrier().unwrap().recv().unwrap().unwrap();
 
     note_by(&hosted, &laptop, &host, "Claude Code", "From the laptop").await;
@@ -84,7 +84,13 @@ async fn every_computers_session_of_one_named_agent_is_that_one_agent() {
     let deadline = tilo_test_env::hang_deadline();
     loop {
         browser.pump();
-        let by = invokers(browser.documents.get(&notes).map_or(&[][..], Vec::as_slice));
+        // Notes keeps each note in a part of its own, so who wrote them is read from every
+        // document the page holds, not the notes alone.
+        let by: Vec<_> = browser
+            .documents
+            .values()
+            .flat_map(|changes| invokers(changes))
+            .collect();
         let of = |agent: &str| {
             by.iter()
                 .filter(|invoker| {

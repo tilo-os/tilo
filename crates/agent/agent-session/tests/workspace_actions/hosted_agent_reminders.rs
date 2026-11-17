@@ -9,7 +9,7 @@ use tilo_actions::remote::person_events::{self, Ended, EventView, Events, Sort};
 use tilo_server::{
     ServerConfig as Config,
     agents::start_serving_documents_and_events,
-    daemon::{Server as Server, ServerIdentity as Identity},
+    daemon::{Server, ServerIdentity as Identity},
     workspace_bots::events::PersonEvents,
     workspaces::Workspaces,
 };
