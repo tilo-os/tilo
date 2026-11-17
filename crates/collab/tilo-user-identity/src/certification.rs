@@ -35,6 +35,32 @@ pub const CERTIFICATION_REQUEST_TAG: &[u8] = b"tilo-device-certification-request
 pub const CERTIFICATION_SCHEMA_VERSION: u16 = 2;
 /// Longest a request stays answerable.
 pub const MAX_CERTIFICATION_REQUEST_LIFETIME_NS: u64 = 10 * 60 * 1_000_000_000;
+/// How far the clocks of the devices in one certification may differ: 60
+/// seconds.
+///
+/// The new device dates its request by its own clock. The host that queues
+/// the request and the device that approves it each check it by theirs, and
+/// the host and the new device then read the certificate by theirs again. No
+/// two of those clocks agree to the nanosecond: 20 ms between a laptop and
+/// the machine beside it turned away half of all pairings. So
+///
+/// - a request dated up to this far ahead of the clock that checks it is
+///   taken ([`CertificationRequest::verify_at`]). Dated further ahead it is
+///   refused as [`CertificationError::NotYetValid`], which names the clocks
+///   and never reads as a link that expired;
+/// - a certificate the person's root issues for a request is valid from this
+///   long before the issuer's clock ([`prepare_device_cert`]), so the host
+///   and the device it names can use it the moment it arrives. Every
+///   verifier of a certificate keeps its exact not-before check.
+///
+/// It grants nothing. A request still ends at the expiry its device signed,
+/// at most [`MAX_CERTIFICATION_REQUEST_LIFETIME_NS`] after its date, so the
+/// longest a checker takes one for grows from ten minutes to eleven. A
+/// certificate lasts what its policy says, counted from the earlier start.
+/// Who may approve, the pairing code and the single use of a pairing link
+/// read no clock and are untouched. It is the allowance enrolment and signed
+/// peer actions already use.
+pub const CERTIFICATION_CLOCK_ALLOWANCE_NS: u64 = 60 * 1_000_000_000;
 /// Longest device label a request may carry, in bytes.
 pub const MAX_CERTIFICATION_LABEL_BYTES: usize = 80;
 
@@ -123,10 +149,21 @@ impl CertificationRequest {
         self.with_signature(signature)
     }
 
-    /// Verify shape, proof of possession and the validity window.
+    /// Verify shape, proof of possession and the validity window at
+    /// `now_ns`, the checker's own clock. The request may be dated up to
+    /// [`CERTIFICATION_CLOCK_ALLOWANCE_NS`] ahead of it; its expiry is exact.
+    ///
+    /// # Errors
+    ///
+    /// [`CertificationError::NotYetValid`] when it is dated further ahead
+    /// than that, [`CertificationError::Expired`] at or past its expiry, or
+    /// what its shape and signature fail with.
     pub fn verify_at(&self, now_ns: u64) -> Result<(), CertificationError> {
         self.verify_signature()?;
-        if now_ns < self.issued_at_ns || now_ns >= self.expires_at_ns {
+        if self.issued_at_ns > now_ns.saturating_add(CERTIFICATION_CLOCK_ALLOWANCE_NS) {
+            return Err(CertificationError::NotYetValid);
+        }
+        if now_ns >= self.expires_at_ns {
             return Err(CertificationError::Expired);
         }
         Ok(())
@@ -259,12 +296,37 @@ impl CertificationPolicy {
 /// The unsigned certificate an approver would issue for `request` at
 /// `now_ns`. Sign it with [`sign_device_cert`], or have an external root
 /// signer sign [`crate::device_cert_signing_digest`] of it.
+///
+/// It is valid from [`CERTIFICATION_CLOCK_ALLOWANCE_NS`] before `now_ns` and
+/// lasts `policy`'s lifetime from there: the host that relays it and the
+/// device it names read it by their own clocks, exactly, and either may run
+/// behind the approver's.
 pub fn prepare_device_cert(
     request: &CertificationRequest,
     user_public_key: [u8; 32],
     policy: &CertificationPolicy,
     revocations: &RevocationList,
     now_ns: u64,
+) -> Result<DeviceCert, CertificationError> {
+    prepare_valid_from(
+        request,
+        user_public_key,
+        policy,
+        revocations,
+        now_ns,
+        now_ns.saturating_sub(CERTIFICATION_CLOCK_ALLOWANCE_NS),
+    )
+}
+
+/// [`prepare_device_cert`] for a certificate whose validity starts at
+/// `valid_from_ns`, checked against `request` at `now_ns`.
+fn prepare_valid_from(
+    request: &CertificationRequest,
+    user_public_key: [u8; 32],
+    policy: &CertificationPolicy,
+    revocations: &RevocationList,
+    now_ns: u64,
+    valid_from_ns: u64,
 ) -> Result<DeviceCert, CertificationError> {
     request.verify_at(now_ns)?;
     if request.user_public_key != user_public_key {
@@ -278,8 +340,8 @@ pub fn prepare_device_cert(
         device_public_key: request.device_public_key,
         device_label: request.device_label.clone(),
         capabilities: policy.clamp(&request.requested),
-        issued_at_ns: now_ns,
-        expires_at_ns: Some(now_ns.saturating_add(policy.lifetime_ns)),
+        issued_at_ns: valid_from_ns,
+        expires_at_ns: Some(valid_from_ns.saturating_add(policy.lifetime_ns)),
         signature: [0; 64],
         issuer: None,
     })
@@ -358,11 +420,17 @@ pub fn issue_device_cert_as_stand_in(
     if revocations.refuses_at(stand_in_cert, now_ns) {
         return Err(CertificationError::Revoked);
     }
-    let mut cert = prepare_device_cert(
+    // Dated exactly, unlike what a root issues: the host that keeps the
+    // stand-in is the host that reads the certificate first, by this same
+    // clock, and the time a stand-in certified at is what tells its
+    // certificates from those it could not issue (before its own validity,
+    // from its revocation on).
+    let mut cert = prepare_valid_from(
         request,
         stand_in_cert.user_public_key,
         &CertificationPolicy::browser(),
         revocations,
+        now_ns,
         now_ns,
     )?;
     cert.issuer = Some(Box::new(stand_in_cert.clone()));
@@ -413,9 +481,15 @@ pub enum CertificationError {
     /// The request signature does not verify under its device key.
     #[error("certification request signature is invalid")]
     Signature,
-    /// The request is outside its validity window.
-    #[error("certification request is expired or not yet valid")]
+    /// The request is at or past its expiry.
+    #[error("certification request has expired")]
     Expired,
+    /// The request is dated further ahead of the checker's clock than
+    /// [`CERTIFICATION_CLOCK_ALLOWANCE_NS`]: the two clocks differ.
+    #[error(
+        "certification request is dated more than 60 seconds ahead: the clocks of the two devices differ"
+    )]
+    NotYetValid,
     /// A key does not belong to the requested device.
     #[error("certificate or key belongs to another device")]
     WrongDevice,
@@ -477,7 +551,8 @@ mod tests {
             let cert = issue_device_cert(&request, &root, &policy, &revocations, NOW + 1).unwrap();
             assert_eq!(cert.capabilities, DeviceCapabilities::member());
             assert!(!cert.capabilities.can_admit_devices);
-            assert_eq!(cert.expires_at_ns, Some(NOW + 1 + policy.lifetime_ns));
+            assert_eq!(cert.issued_at_ns, NOW + 1 - CERTIFICATION_CLOCK_ALLOWANCE_NS);
+            assert_eq!(cert.expires_at_ns, Some(cert.issued_at_ns + policy.lifetime_ns));
             verify_issued_cert(&request, &cert, &policy, &revocations, NOW + 2).unwrap();
             assert_eq!(request.pairing_code().unwrap().len(), 6);
         }
@@ -582,6 +657,8 @@ mod tests {
                 issue_device_cert_as_stand_in(&request, &stand_in_key, &stand_in, &none, NOW + 1)
                     .unwrap();
             assert_eq!(cert.capabilities, DeviceCapabilities::member());
+            // A stand-in dates what it certifies exactly: no earlier start.
+            assert_eq!(cert.issued_at_ns, NOW + 1);
             assert_eq!(cert.expires_at_ns, Some(NOW + 1 + policy.lifetime_ns));
             assert_eq!(cert.issuer.as_deref(), Some(&stand_in));
             verify_issued_cert(&request, &cert, &policy, &none, NOW + 2).unwrap();
@@ -650,6 +727,103 @@ mod tests {
             assert_eq!(
                 verify_issued_cert(&request, &cert, &policy, &revocations, NOW + 2),
                 Err(CertificationError::Revoked)
+            );
+        }
+    }
+
+    tilo_test_env::scenario! {
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
+        )]
+        fn certification_allows_the_clock_difference_real_devices_have;
+
+        phase a_pairing_passes_clocks_twenty_milliseconds_apart;
+        {
+            // What a laptop and the machine beside it differed by.
+            const APART_NS: u64 = 20_000_000;
+            let (root, user) = UserIdentity::generate("Ada", 1);
+            let device = ed25519_dalek::SigningKey::generate(&mut UnwrapErr(SysRng));
+            // Dated NOW, by the new device's clock.
+            let request = request(user.public_key, &device);
+            let policy = CertificationPolicy::browser();
+            let none = RevocationList::new();
+            // The host that queues it reads a clock a little behind.
+            assert_eq!(request.verify_at(NOW - APART_NS), Ok(()));
+            // So does the device that approves it,
+            let cert = issue_device_cert(&request, &root, &policy, &none, NOW - APART_NS).unwrap();
+            // and the host and the new device read its certificate by clocks
+            // behind the approver's in turn.
+            assert_eq!(
+                verify_issued_cert(&request, &cert, &policy, &none, NOW - 2 * APART_NS),
+                Ok(())
+            );
+        }
+
+        phase a_request_dated_ahead_is_taken_within_the_allowance_and_refused_for_its_date_beyond;
+        {
+            let (_, user) = UserIdentity::generate("Ada", 1);
+            let device = ed25519_dalek::SigningKey::generate(&mut UnwrapErr(SysRng));
+            let request = request(user.public_key, &device);
+            assert_eq!(
+                request.verify_at(NOW - CERTIFICATION_CLOCK_ALLOWANCE_NS),
+                Ok(())
+            );
+            // Beyond it the refusal is about the date, and names the clocks.
+            assert_eq!(
+                request.verify_at(NOW - CERTIFICATION_CLOCK_ALLOWANCE_NS - 1),
+                Err(CertificationError::NotYetValid)
+            );
+            assert_eq!(
+                CertificationError::NotYetValid.to_string(),
+                "certification request is dated more than 60 seconds ahead: the clocks of the two devices differ"
+            );
+            assert_eq!(
+                CERTIFICATION_CLOCK_ALLOWANCE_NS,
+                60 * 1_000_000_000,
+                "the sentence names the allowance"
+            );
+            // The allowance moves no expiry.
+            assert_eq!(request.verify_at(NOW + 60_000_000_000 - 1), Ok(()));
+            assert_eq!(
+                request.verify_at(NOW + 60_000_000_000),
+                Err(CertificationError::Expired)
+            );
+            // Nor does it lengthen what a device may sign: ten minutes from
+            // its own date.
+            let mut long = request;
+            long.expires_at_ns = long.issued_at_ns + MAX_CERTIFICATION_REQUEST_LIFETIME_NS + 1;
+            assert_eq!(long.sign(&device), Err(CertificationError::InvalidRequest));
+        }
+
+        phase a_root_certificate_starts_before_its_issuers_clock_and_every_reader_stays_exact;
+        {
+            let (root, user) = UserIdentity::generate("Ada", 1);
+            let device = ed25519_dalek::SigningKey::generate(&mut UnwrapErr(SysRng));
+            let request = request(user.public_key, &device);
+            let policy = CertificationPolicy::browser();
+            let none = RevocationList::new();
+            let cert = issue_device_cert(&request, &root, &policy, &none, NOW + 1).unwrap();
+            let starts = NOW + 1 - CERTIFICATION_CLOCK_ALLOWANCE_NS;
+            assert_eq!(cert.issued_at_ns, starts);
+            // It lasts what the policy says, no longer for the earlier start.
+            assert_eq!(cert.expires_at_ns, Some(starts + policy.lifetime_ns));
+            // A reader whose clock is the whole allowance behind the
+            // issuer's takes it,
+            assert_eq!(verify_device_cert_at(&cert, starts), Ok(()));
+            assert_eq!(
+                verify_issued_cert(&request, &cert, &policy, &none, starts),
+                Ok(())
+            );
+            // and one further behind refuses it, by the exact check every
+            // reader of a certificate makes.
+            assert_eq!(
+                verify_device_cert_at(&cert, starts - 1),
+                Err(crate::DeviceCertError::NotYetValid)
+            );
+            assert_eq!(
+                verify_issued_cert(&request, &cert, &policy, &none, starts - 1),
+                Err(CertificationError::Certificate)
             );
         }
     }
