@@ -520,15 +520,11 @@ impl WorkspaceActions {
     /// window once an open's record exists.
     #[must_use]
     pub fn observe(&self, caller: &Caller, id: &InvocationId) -> Option<InvocationState> {
-        let update = {
-            let log = self.log();
-            log.entries
-                .get(id)
-                .filter(|entry| entry.caller == *caller)?
-                .update
-                .clone()
-        };
-        Some(InvocationState::new(*id, update))
+        self.log()
+            .entries
+            .get(id)
+            .filter(|entry| entry.caller == *caller)
+            .map(|entry| InvocationState::new(*id, entry.update.clone()).linked(entry.link.clone()))
     }
 
     fn log(&self) -> std::sync::MutexGuard<'_, InvocationLog> {
@@ -2355,6 +2351,12 @@ impl Worker {
         };
         timing_done("action.total", everything);
         log_outcome(&request.target, &outcome);
+        if let Ok((output, _)) = &outcome {
+            let link = self.changed_link(workspace_id, &caller, &request, output);
+            if let Some(entry) = self.log().entries.get_mut(&invocation) {
+                entry.link = link;
+            }
+        }
         let left = outcome
             .as_ref()
             .ok()

@@ -183,23 +183,6 @@ enum Done {
     },
 }
 
-impl Done {
-    /// The action `descriptor` ran on what `at` names, at `path`, answering `value`.
-    fn invoked(value: Value, path: String, descriptor: ActionDescriptor, at: &Resolved) -> Self {
-        let (app, provider) = (at.app_id.clone(), at.provider.clone());
-        let descriptor = Box::new(descriptor);
-        let history = at.history();
-        Self::Invoked {
-            value,
-            path,
-            descriptor,
-            app,
-            provider,
-            history,
-        }
-    }
-}
-
 pub(super) struct Reply {
     text: String,
     failed: bool,
@@ -1513,16 +1496,16 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
     /// the workspace serves it as a record (`record:<app>:<record>`). A call
     /// whose resource no record provider answers leaves the last one named:
     /// the agent still acts there.
-    fn acted_in(&self, resolved: &Resolved) {
-        let Some((app, record)) = tilo_actions::remote::resource_parts(&resolved.provider) else {
+    fn acted_in(&self, provider: &str, app_id: &str) {
+        let Some((app, document)) = tilo_actions::remote::resource_parts(provider) else {
             return;
         };
-        if app != resolved.app_id {
+        if app != app_id {
             return;
         }
         *self.acted.lock_recover() = Some(super::ActedRecord {
             app: app.to_owned(),
-            record: record.to_owned(),
+            record: document.to_owned(),
         });
     }
 
@@ -1561,7 +1544,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             Ok(resolved) => resolved,
             Err(note) => return Ok(Reply::ok(note)),
         };
-        self.acted_in(&resolved);
+        self.acted_in(&resolved.provider, &resolved.app_id);
         let called = |action: &ActionDescriptor| forms.called(action, &resolved.app_id);
         if let Some(action) = &parsed.action {
             let (named_at, found) = self.pick_action_in(action, &resolved).await?;
@@ -1831,7 +1814,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             (Ok(resolved), forms) => (resolved, forms),
             (Err(note), _) => return Ok(Reply::ok(note)),
         };
-        self.acted_in(&resolved);
+        self.acted_in(&resolved.provider, &resolved.app_id);
         // A typed read of an app, with no resource named, answers what the app publishes: the
         // surface its resources and actions are declared in, which a generated SDK's types are
         // read from (`tilo sdk gen -w`).
@@ -2237,13 +2220,16 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         }
     }
 
-    async fn do_in_app(
+    /// The action `path` names, as its app publishes it now; or how the call
+    /// ended when it named the app itself (started or opened it).
+    async fn resolve_action(
         &self,
         path: &str,
         arguments: serde_json::Map<String, Value>,
         invocation: Option<String>,
         wait_ms: Option<u64>,
-    ) -> Result<Done, Failure> {
+    ) -> Result<Resolution, Failure> {
+        let answered = |done: Done| Resolution::Done(Box::new(done));
         let parsed = parse_path(path).map_err(|why| format!("invalid_arguments: {why}"))?;
         let action = parsed.action.clone().ok_or_else(|| {
             format!(
@@ -2261,7 +2247,8 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
                 return Err(format!("{} started while it was asked to", parsed.app).into());
             };
             return (self.launched((&parsed, &app_id, &action), arguments, invocation, wait_ms))
-                .await;
+                .await
+                .map(answered);
         };
         // A path names a type the way a listing does (`tasks.Task`), so an action is found on
         // the resource a listing showed: such a segment is read by the program form first, and
@@ -2297,7 +2284,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
                     .await?
             };
         }
-        self.acted_in(&resolved);
+        self.acted_in(&resolved.provider, &resolved.app_id);
         let (named_at, descriptor) =
             if let Some(descriptor) = self.action_named(&resolved, &action).await? {
                 (resolved.path.clone(), descriptor)
@@ -2323,7 +2310,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
                 // There it names the app's own verb, never an action whose id only begins with it
                 // (Notes' `open-link`): one by its whole id was asked above.
                 if opens && starts_app(&action) {
-                    return self.running(&resolved, &action).await;
+                    return self.running(&resolved, &action).await.map(answered);
                 }
                 // With arguments the word that starts an app is no other action's either: it names
                 // an action of the running app only where the app calls one that, by its id or its
@@ -2341,29 +2328,25 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
                     // is run.
                     Err(_) if starts && (opens_a_file(&arguments) || !begins_another) => {
                         let opening = (&parsed, resolved.app_id.as_str(), action.as_str());
-                        return self.launched(opening, arguments, invocation, wait_ms).await;
+                        return self
+                            .launched(opening, arguments, invocation, wait_ms)
+                            .await
+                            .map(answered);
                     }
                     Err(error) => {
                         return Err(format!("{error}; tilo_ls {} lists them", resolved.path).into());
                     }
                 }
             };
-        let value = Box::pin(self.invoke_one(OneCall {
-            provider: Addressed {
-                provider: resolved.provider.clone(),
-                app_id: Some(resolved.app_id.clone()),
-            },
-            workspace: false,
-            revision: None,
-            resource: descriptor.address.resource.clone(),
-            action: descriptor.address.action.clone(),
-            arguments,
-            invocation_id: invocation,
-            wait_ms,
-        }))
-        .await?;
-        self.show_activated(&descriptor, &value, &resolved).await?;
-        Ok(Done::invoked(value, named_at, descriptor, &resolved))
+        let history = resolved.history();
+        let known = ResolvedAction {
+            app_id: resolved.app_id,
+            provider: resolved.provider,
+            path: named_at,
+            descriptor,
+            history,
+        };
+        Ok(Resolution::At(Box::new(known), arguments))
     }
 
     /// The action `name` means in what `resolved` names, with the path to
@@ -2565,6 +2548,10 @@ fn pinned_window(
 
 #[path = "mcp_agent_level.rs"]
 mod level;
+
+#[path = "mcp_agent_resolved.rs"]
+pub(super) mod resolved;
+use resolved::{Resolution, ResolvedAction};
 
 #[cfg(test)]
 #[path = "mcp_agent_tests.rs"]

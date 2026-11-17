@@ -43,6 +43,7 @@ impl WorkspaceActions {
                 .map(|entry| {
                     InvocationState::new(invocation, entry.update.clone())
                         .left_at(entry.left_at.clone())
+                        .linked(entry.link.clone())
                 })
         };
         let Some(wait) = wait_ms
@@ -71,6 +72,7 @@ impl WorkspaceActions {
                             log.owned(&caller, &invocation).map(|entry| {
                                 InvocationState::new(invocation, entry.update.clone())
                                     .left_at(entry.left_at.clone())
+                                    .linked(entry.link.clone())
                             }),
                             log.moves(),
                         )

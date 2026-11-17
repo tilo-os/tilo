@@ -121,6 +121,8 @@ pub use content_put::{
 pub use nodes::{
     NODE_PERMITS_ACTION, NODE_RESOURCE_PREFIX, SHARE_NODE_ACTION, UNSHARE_NODE_ACTION, node_target,
 };
+mod execution_lease;
+pub use execution_lease::ExecutionLease;
 pub use pending::{Abandoned, Completer, Pending, PendingPoll, pending};
 pub use readings::Readings;
 pub use resource_read::{
@@ -154,45 +156,6 @@ pub const MAX_CONTENT_FRAME_BYTES: usize = 384 * 1024;
 
 /// Default number of invocations an [`InvocationLog`] remembers.
 pub const DEFAULT_LOG_CAPACITY: usize = 1024;
-
-/// Provider-owned execution lifetime. Clones share closure, never authority.
-/// Equality and hashing use the immutable minted identity, not liveness.
-#[derive(Clone, Debug)]
-pub struct ExecutionLease {
-    id: uuid::Uuid,
-    live: std::sync::Arc<std::sync::atomic::AtomicBool>,
-}
-impl PartialEq for ExecutionLease {
-    fn eq(&self, other: &Self) -> bool {
-        self.id == other.id
-    }
-}
-impl Eq for ExecutionLease {}
-impl std::hash::Hash for ExecutionLease {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        self.id.hash(state);
-    }
-}
-impl ExecutionLease {
-    /// A new execution, live until [`Self::close`]: the provider that admitted a
-    /// connection mints one for it.
-    #[must_use]
-    pub fn mint() -> Self {
-        Self {
-            id: uuid::Uuid::new_v4(),
-            live: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
-        }
-    }
-
-    #[must_use]
-    pub fn is_live(&self) -> bool {
-        self.live.load(std::sync::atomic::Ordering::Acquire)
-    }
-    /// Retire observation of this run. This does not cancel any app operation.
-    pub fn close(&self) {
-        self.live.store(false, std::sync::atomic::Ordering::Release);
-    }
-}
 
 /// Which published action an invocation names on the provider.
 ///
@@ -566,6 +529,11 @@ pub struct InvocationState {
     /// actor working highlights for the people watching.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub left_at: Option<ActorPlace>,
+    /// The link that opens what the invocation made or changed, for a person
+    /// to review it, minted where it was invoked once it succeeded: the
+    /// caller is answered it with the change and asks for nothing more.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub link: Option<String>,
 }
 
 /// A caret or selection in a record, as the live session's selection anchors
@@ -584,6 +552,7 @@ impl InvocationState {
             update: update.with_invocation(invocation),
             untrusted: false,
             left_at: None,
+            link: None,
         }
     }
 
@@ -591,6 +560,13 @@ impl InvocationState {
     #[must_use]
     pub fn left_at(mut self, place: Option<ActorPlace>) -> Self {
         self.left_at = place;
+        self
+    }
+
+    /// This state, naming the link that opens what it made or changed.
+    #[must_use]
+    pub fn linked(mut self, link: Option<String>) -> Self {
+        self.link = link;
         self
     }
 

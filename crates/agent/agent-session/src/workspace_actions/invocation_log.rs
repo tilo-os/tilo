@@ -20,6 +20,8 @@ pub(super) struct Entry {
     pub(super) update: InvocationUpdate,
     /// Where the invocation left its actor in the record it acted on.
     pub(super) left_at: Option<ActorPlace>,
+    /// The link that opens what it made or changed ([`super::Worker::changed_link`]).
+    pub(super) link: Option<String>,
     /// Set while the host's shell runs this invocation: what a cancel of it,
     /// or a Ctrl+C in the session it runs in, stops.
     pub(super) stop: Option<Arc<AtomicBool>>,
@@ -126,6 +128,7 @@ impl InvocationLog {
                 request,
                 update: InvocationUpdate::Accepted { invocation },
                 left_at: None,
+                link: None,
                 stop: None,
                 asked: false,
                 saving: false,
