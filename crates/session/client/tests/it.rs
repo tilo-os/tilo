@@ -28,6 +28,8 @@ mod support;
 
 #[path = "agent_login.rs"]
 mod agent_login;
+#[path = "barrier_of_workspace.rs"]
+mod barrier_of_workspace;
 #[path = "browser_root.rs"]
 mod browser_root;
 #[path = "carriers.rs"]

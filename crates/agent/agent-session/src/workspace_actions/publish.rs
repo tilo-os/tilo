@@ -441,10 +441,12 @@ impl Worker {
     /// Every write, whoever it was made for, is answered by this one rule:
     /// done only once the host holds it.
     pub(super) fn saving(&mut self, workspace_id: WorkspaceId) -> Saving {
-        let written: Vec<Written> = std::mem::take(&mut self.handed)
-            .into_values()
-            .flatten()
-            .collect();
+        let handed = std::mem::take(&mut self.handed);
+        // Asked of the workspaces the request wrote to and of no other: the service's one
+        // session carries every workspace's writes, and a write that waits in another
+        // workspace says nothing about these.
+        let workspaces: Vec<WorkspaceId> = handed.keys().copied().collect();
+        let written: Vec<Written> = handed.into_values().flatten().collect();
         if written.is_empty() {
             return Saving::Saved;
         }
@@ -455,7 +457,7 @@ impl Worker {
             .and_then(|workspace| {
                 workspace
                     .peer
-                    .barrier()
+                    .barrier_of(&workspaces)
                     .map_err(|closed| closed.to_string())
             }) {
             Ok(saved) => saved,
@@ -509,7 +511,7 @@ impl Worker {
             let Some(saved) = self
                 .workspaces
                 .get(&workspace_id)
-                .and_then(|workspace| workspace.peer.barrier().ok())
+                .and_then(|workspace| workspace.peer.barrier_of(&[workspace_id]).ok())
             else {
                 continue;
             };
