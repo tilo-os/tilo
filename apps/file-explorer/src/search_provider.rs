@@ -579,11 +579,11 @@ mod tests {
                     .collect();
                 let remote = RemoteAccountSearch::new(&accounts);
                 let provider = source(remote.entries());
-                let first = provider.search_page(&ui::search::SearchQuery::new("record"), None, 3, 3);
+                let first = provider.search_page(&ui::search::SearchQuery::new("resource"), None, 3, 3);
                 assert_eq!(first.inspected, 3);
                 assert_eq!(first.results.len(), 3);
                 let second = provider.search_page(
-                    &ui::search::SearchQuery::new("record"),
+                    &ui::search::SearchQuery::new("resource"),
                     first.next.as_ref(),
                     3,
                     3,
@@ -674,11 +674,11 @@ mod tests {
                     "the exact late hit exhausted its posting"
                 );
 
-                let first = provider.search_page(&ui::search::SearchQuery::new("record"), None, 7, 7);
+                let first = provider.search_page(&ui::search::SearchQuery::new("resource"), None, 7, 7);
                 assert_eq!(first.inspected, 7);
                 assert_eq!(first.results.len(), 7);
                 let second = provider.search_page(
-                    &ui::search::SearchQuery::new("record"),
+                    &ui::search::SearchQuery::new("resource"),
                     first.next.as_ref(),
                     7,
                     7,
