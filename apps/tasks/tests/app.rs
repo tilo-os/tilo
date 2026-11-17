@@ -594,11 +594,11 @@ tilo_test_env::scenario! {
             .expect("create");
         let issue = only(&app);
         // An issue already labelled makes that label one the picker offers.
-        app.call_on(&chain(), "create", json!({ "title": "Book the room" }))
+        app.call_on(&chain(), "create", json!({ "title": "Book the hall" }))
             .expect("create");
         let other = held(&app)
             .iter()
-            .find(|(_, shown)| shown.title == "Book the room")
+            .find(|(_, shown)| shown.title == "Book the hall")
             .map(|(id, _)| id)
             .expect("the other issue");
         app.call_on(&chain(), "add-label", json!({ "issue": other, "label": "launch" }))
@@ -1470,4 +1470,67 @@ fn a_projects_page_offers_to_delete_it_and_undo_brings_it_back() {
         Some("Launch")
     );
     assert!(bar_menu_entry(&mut app, "Delete project").is_some());
+}
+
+/// An agent's comment, as its step lands, is drawn on its words in the issue's thread: the
+/// agent's caret there says what it did.
+#[test]
+fn an_agents_comment_is_drawn_on_its_words_in_the_thread() {
+    let mut app = open();
+    app.call_on(&chain(), "create", json!({ "title": "Book the hall" }))
+        .expect("create");
+    let issue = only(&app);
+    app.call_on(&issue_resource(&issue), "open", json!({}))
+        .expect("open the issue");
+    // The comment answers the comment it made, under its issue: where its step landed.
+    let made = app
+        .call_on_finished(
+            &chain(),
+            "comment",
+            json!({ "issue": issue.as_str(), "text": "Hall 4 is free" }),
+        )
+        .expect("comment")
+        .resources;
+    let comment = held(&app)
+        .get(&issue)
+        .and_then(|issue| issue.comments.iter().next().map(|(id, _)| id.clone()))
+        .expect("the comment");
+    assert_eq!(
+        made,
+        vec![format!(
+            "tasks.issues/issues/{}/comments/{}",
+            issue.as_str(),
+            comment.as_str()
+        )]
+    );
+    let mut event = ui::headless::agent_acting("tasks.tracker", "comment");
+    event.actor = ui::tilo_actions::Acting::agent("scribe");
+    event.phase = ui::tilo_actions::InteractionPhase::Committed;
+    event.action.step = Some(ui::tilo_actions::StepKind::Write);
+    event.anchor = ui::tilo_actions::InteractionAnchor::Text {
+        region: "comments".into(),
+        ranges: vec![ui::tilo_actions::InteractionTextRange {
+            block: format!("{}/{}", issue.as_str(), comment.as_str()),
+            start: 0,
+            end: 14,
+        }],
+    };
+    {
+        let presence = app.harness().presence_mut();
+        presence.set_display_name(ui::permissions::MemberId::agent("scribe"), "Scribe");
+        presence.apply_interaction(event).expect("it applies");
+    }
+    app.settle();
+    app.harness().render_rgba();
+    let tags: Vec<String> = app
+        .harness()
+        .presence()
+        .caret_tags()
+        .into_iter()
+        .map(|tag| tag.label)
+        .collect();
+    assert!(
+        tags.contains(&"Scribe: wrote".to_owned()),
+        "its caret on the comment's words: {tags:?}"
+    );
 }

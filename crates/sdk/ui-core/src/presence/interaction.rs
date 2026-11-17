@@ -707,7 +707,8 @@ impl PresenceCtx {
         if matches!(
             interaction.anchor,
             tilo_actions::InteractionAnchor::ListItems { .. }
-        ) {
+        ) || written_under(&interaction.anchor).is_some()
+        {
             return self.interaction_status_label_written(interaction);
         }
         self.interaction_status_label_doing(interaction, &step_line(interaction))
@@ -2545,6 +2546,17 @@ impl PresenceCtx {
         }
         writers
     }
+}
+
+/// The item the words a write names stand under, where they are an item of its own inside it (a
+/// comment in an issue's thread, its block `<issue>/<comment>`): a view showing the item but not
+/// the words shows the write on the item.
+pub(crate) fn written_under(anchor: &tilo_actions::InteractionAnchor) -> Option<&str> {
+    let tilo_actions::InteractionAnchor::Text { ranges, .. } = anchor else {
+        return None;
+    };
+    let (item, _) = ranges.first()?.block.split_once('/')?;
+    (!item.is_empty()).then_some(item)
 }
 
 /// The characters an invocation writes into the text `text` of block `block` (in `region`, when

@@ -2435,10 +2435,6 @@ pub(crate) fn control_draft_identity(
     Ok(control_identity_from_spec(resource, spec, continuation))
 }
 
-/// The item resources the action in `envelope` created: the ids it minted
-/// that its change stored as keys of a collection, in minting order. Read
-/// from the action changes since `before`, never a diff of the whole
-/// document, so an edit costs the same however large the record is.
 /// The item resources the action in `envelope` created, each with its id and
 /// the address it is published under, in minting order: what a write answers
 /// its caller, so nothing reads an id out of a rendered address. `minted`
@@ -2477,23 +2473,30 @@ pub fn minted_items(
     } else {
         minted.to_vec()
     };
-    ids.into_iter()
+    // Each item it stored, under the path of map keys down to it from the document's root: `issues`, or
+    // `issues/<issue>/comments` for one inside an item.
+    let made: Vec<(String, String)> = ids
+        .into_iter()
         .filter_map(|id| {
             let obj = doc.import_obj(&stored.get(id.as_str())?.to_string()).ok()?;
             automerge::ReadDoc::get(&*doc, &obj, id.as_str())
                 .ok()
                 .flatten()?;
-            let parent = automerge::ReadDoc::parents(&*doc, &obj).ok()?.next()?;
-            // Only the record's own collections publish items: a field
-            // inside an item (an issue's body blocks) is part of the item the
-            // write made, not a second thing it made.
-            if parent.obj != automerge::ROOT {
-                return None;
-            }
-            match parent.prop {
-                automerge::Prop::Map(field) => Some((id.clone(), format!("{kind}/{field}/{id}"))),
-                automerge::Prop::Seq(_) => None,
-            }
+            let path = tilo_resource::collection::path_to(&*doc, &obj)?;
+            Some((id, path.join("/")))
+        })
+        .collect();
+    // The document's own collections publish items. What a write that made one stored inside it
+    // (an issue's body blocks) is part of that item; one that made none made the item it added
+    // to a collection of an item (a comment in an issue's `comments`), named under it. Deeper
+    // keys (a text's blocks) are the item's content, not items.
+    let depth = |path: &str| path.split('/').count();
+    let top = made.iter().any(|(_, path)| depth(path) == 1);
+    made.into_iter()
+        .filter(|(_, path)| depth(path) == 1 || (!top && depth(path) == 3))
+        .map(|(id, path)| {
+            let address = format!("{kind}/{path}/{id}");
+            (id, address)
         })
         .collect()
 }

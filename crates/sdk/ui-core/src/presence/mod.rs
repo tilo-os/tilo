@@ -30,6 +30,7 @@ pub use chat::{
 pub use draft::DraftSaid;
 pub use faces::{Face, FaceStack};
 pub use geom::{EdgeMist, MistEdge, edge_mist_for};
+pub(crate) use interaction::written_under;
 pub use interaction::{
     ACTIVE_INTERACTION_EXPIRY, AgentActionMarker, InteractionCardPlacement, MarkerPlace,
     TERMINAL_INTERACTION_DWELL, interaction_card_slots,

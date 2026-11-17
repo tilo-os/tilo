@@ -123,6 +123,9 @@ pub(super) struct ShownActor {
     /// action and the caller's own argument say: the record or item it acts on,
     /// or the characters of a text it writes.
     pub(super) anchor: tilo_actions::InteractionAnchor,
+    /// The field of the item it acts on that it adds to, and the characters it writes there: a
+    /// comment's thread and its words.
+    adds: Option<(String, u64)>,
     /// The run or task it works in, whose label names an actor the workspace's
     /// roster does not know (a Shortcut's run).
     pub(super) group: Option<tilo_actions::WorkGroup>,
@@ -213,12 +216,14 @@ fn written_text(
 fn written_chars(
     action: &PublishedAction,
     argument: &serde_json::Map<String, serde_json::Value>,
+    item: Option<&str>,
 ) -> u64 {
     action
         .params
         .iter()
         .filter(|param| param.ty == tilo_actions::ParamType::Text)
         .filter_map(|param| argument.get(param.name.as_ref())?.as_str())
+        .filter(|text| Some(*text) != item)
         .map(|text| text.chars().count() as u64)
         .next()
         .unwrap_or(0)
@@ -306,7 +311,7 @@ fn anchor_of(
     else {
         return InteractionAnchor::Resource;
     };
-    let written = written_chars(action, &argument);
+    let written = written_chars(action, &argument, None);
     match (offset("start"), offset("end"), offset("at")) {
         // The range it writes: the characters it replaces, or the characters
         // it inserts where a caret was.
@@ -393,11 +398,7 @@ fn item_named<'a>(
     surface: &'a PublishedSurface,
     argument: Option<&str>,
 ) -> Option<(String, &'a str)> {
-    let tilo_actions::remote::InvokeArgument::Json(argument) =
-        tilo_actions::remote::InvokeArgument::from_slot(argument)
-    else {
-        return None;
-    };
+    let argument = json_argument(argument)?;
     surface.actions.iter().find_map(|descriptor| {
         // The same verb on an item of this record, by the item resource the app
         // published for it: what a person reads it by.
@@ -467,10 +468,89 @@ impl ShownActor {
                 argument,
                 named.as_ref().map(|(item, _)| item.as_str()),
             ),
+            adds: adds_of(
+                action,
+                argument,
+                named.as_ref().map(|(item, _)| item.as_str()),
+            ),
             resource,
             group: context.and_then(|context| context.group.clone()),
             sequence: Arc::default(),
         })
+    }
+}
+
+impl ShownActor {
+    /// It, at the place its step landed once it applied ([`landed_anchor`]); `None` keeps the
+    /// place it named as it began.
+    pub(super) fn landed(&self, output: &tilo_actions::ActionOutput) -> Option<Self> {
+        Some(Self {
+            anchor: landed_anchor(&self.anchor, self.adds.as_ref(), output)?,
+            ..self.clone()
+        })
+    }
+}
+
+/// The field of the item it names that `action` adds to, and the characters its argument writes
+/// there: a comment's thread and its words. `None` for an action that names no field.
+fn adds_of(
+    action: &PublishedAction,
+    argument: Option<&str>,
+    item: Option<&str>,
+) -> Option<(String, u64)> {
+    let field = action.contract.field.clone()?;
+    let written =
+        json_argument(argument).map_or(0, |argument| written_chars(action, &argument, item));
+    Some((field, written))
+}
+
+/// The named values a caller's argument holds, where it holds them so.
+fn json_argument(argument: Option<&str>) -> Option<serde_json::Map<String, serde_json::Value>> {
+    match tilo_actions::remote::InvokeArgument::from_slot(argument) {
+        tilo_actions::remote::InvokeArgument::Json(argument) => Some(argument),
+        _ => None,
+    }
+}
+
+/// Where a step that began at `anchor` stands once it applied, from what it answered: the
+/// characters it says it wrote; else the one item it made, which is where it acted. A comment
+/// added to an issue's thread (`adds`) is its words there, under the issue
+/// (`<issue>/<comment>`), so the thread draws them and a row showing the issue stands for them;
+/// an item a verb of the tracker made (an issue created) is its row.
+fn landed_anchor(
+    anchor: &tilo_actions::InteractionAnchor,
+    adds: Option<&(String, u64)>,
+    output: &tilo_actions::ActionOutput,
+) -> Option<tilo_actions::InteractionAnchor> {
+    use tilo_actions::InteractionAnchor;
+    if let Some(wrote) = output.wrote() {
+        return Some(wrote);
+    }
+    let [made] = output.resources.as_slice() else {
+        return None;
+    };
+    let (collection, id) = made.rsplit_once('/')?;
+    let field = collection
+        .rsplit_once('/')
+        .map_or(collection, |(_, field)| field);
+    match (anchor, adds) {
+        (InteractionAnchor::ListItems { ids }, Some((adds, chars))) if adds == field => {
+            let [item] = ids.as_slice() else {
+                return None;
+            };
+            Some(InteractionAnchor::Text {
+                region: field.to_owned(),
+                ranges: vec![tilo_actions::InteractionTextRange {
+                    block: format!("{item}/{id}"),
+                    start: 0,
+                    end: *chars,
+                }],
+            })
+        }
+        (InteractionAnchor::Resource, _) => Some(InteractionAnchor::ListItems {
+            ids: vec![id.to_owned()],
+        }),
+        _ => None,
     }
 }
 
@@ -1016,6 +1096,35 @@ mod anchor_tests {
                 tilo_actions::InteractionAnchor::ListItems {
                     ids: vec!["7d2b".into()]
                 },
+            );
+            // Once it applied, the comment is the words it added under the issue: the thread
+            // draws them, and a row showing the issue stands for them.
+            let adds = adds_of(&comment, Some(&said), Some("7d2b"));
+            assert_eq!(adds, Some(("comments".to_owned(), 14)), "its words, not the issue's id");
+            let made = tilo_actions::ActionOutput {
+                value: None,
+                resources: vec!["tasks.issues/issues/7d2b/comments/c9f1".into()],
+            };
+            let at_issue = tilo_actions::InteractionAnchor::ListItems {
+                ids: vec!["7d2b".into()],
+            };
+            assert_eq!(
+                text_range(&landed_anchor(&at_issue, adds.as_ref(), &made).expect("it landed")),
+                ("comments".into(), "7d2b/c9f1".into(), 0, 14),
+            );
+            // An issue made from the tracker's own control is its new row once it applied.
+            assert_eq!(
+                landed_anchor(
+                    &tilo_actions::InteractionAnchor::Resource,
+                    None,
+                    &tilo_actions::ActionOutput {
+                        value: None,
+                        resources: vec!["tasks.issues/issues/e41a".into()],
+                    },
+                ),
+                Some(tilo_actions::InteractionAnchor::ListItems {
+                    ids: vec!["e41a".into()]
+                }),
             );
             // A verb under a field whose text parameter is something else (a comment under
             // `comments`) acts on the item.

@@ -2099,18 +2099,8 @@ impl ListRow {
                 (Some(field), item, &self.title),
                 None,
                 &mut |text, _, start, end| {
-                    let (bands, caret, ink) = face.title_span(band, (start, end), text, theme);
-                    let caret = caret.unwrap_or_else(|| {
-                        let last = ink.last().copied().unwrap_or(band);
-                        Rect::new(last.x1, last.y0, last.x1 + 1.5, last.y1)
-                    });
-                    (
-                        bands,
-                        Some(
-                            crate::presence::LabeledCaret::within(caret, band.y0)
-                                .among(ink, band.x1),
-                        ),
-                    )
+                    let (bands, caret) = face.title_span(band, (start, end), text, theme);
+                    (bands, Some(caret))
                 },
             );
         });

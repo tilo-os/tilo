@@ -160,6 +160,11 @@ fn draw_frame_content_owning(
     // that shows it and paints nothing of its own (or paints in a part)
     // leaves the widgets' damage the whole change.
     let history_shown = history_changed || (app.history.is_some() && !app_live);
+    // The carets and tags this frame draws are the ones its widgets note now: kept from an
+    // earlier frame, a write's caret long gone still stood on its row, and the agent's next
+    // step there was taken for wearing its tag already and drew none.
+    app.presence_ctx.clear_caret_tags();
+    app.presence_ctx.clear_presence_marks();
     if app_live {
         // What stands over the widgets and takes the keys (an open menu, a
         // dialog, the send box) holds the keyboard: the field under it keeps

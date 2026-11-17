@@ -580,18 +580,27 @@ fn thread(cx: &ViewCx<IssuePart>, id: &Id) -> Element {
         move |part: &IssuePart| {
             part.issues
                 .get(&id)
-                .map(|issue| issue.comments.values().cloned().collect::<Vec<Message>>())
-                .unwrap_or_default()
+                .map(|issue| {
+                    let comments = issue.comments.iter();
+                    comments.map(|(comment, message)| (comment.clone(), message.clone()))
+                })
+                .into_iter()
+                .flatten()
+                .collect::<Vec<(Id, Message)>>()
         }
     });
     let people = cx.people();
+    let issue = id.clone();
     let list = cx.switch(&messages, move |cx, messages| {
         let mut column = Column::new()
             .with_no_padding()
             .with_intrinsic_height()
             .with_rhythm(ui::tokens::Rhythm::Related);
-        for message in messages {
-            column = column.push(message_row(cx, &people, message));
+        for (comment, message) in messages {
+            // Its words are the comment's own, under the issue: an agent's comment is drawn on
+            // them as it lands.
+            let place = format!("{}/{}", issue.as_str(), comment.as_str());
+            column = column.push(message_row(cx, &people, message, &place));
         }
         Box::new(column) as Element
     });
@@ -631,6 +640,7 @@ fn message_row(
     cx: &ViewCx<IssuePart>,
     people: &ui::framework::People,
     message: &Message,
+    place: &str,
 ) -> Element {
     // A comment moved from another tracker reads as its author's there, on
     // its day there; any other as its author's here, by the name they acted
@@ -699,6 +709,6 @@ fn message_row(
             .with_intrinsic_height()
             .with_rhythm(ui::tokens::Rhythm::Tight)
             .push(Box::new(heading))
-            .push(Box::new(Text::new(&message.text))),
+            .push(Box::new(Text::new(&message.text).edits("comments", place))),
     )
 }

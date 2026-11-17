@@ -119,6 +119,22 @@ impl Model for Id {
 pub(crate) const ORDER: &str = "k";
 pub(crate) const VALUE: &str = "v";
 
+/// The keys from the document's root down to the map `obj`, as a model names its fields: an
+/// item's id for each collection on the way, never the entry key its value is kept under (`issues/<issue>/comments`
+/// for the comments of an issue). `None` where a list stands on the way.
+pub fn path_to(doc: &impl ReadDoc, obj: &ObjId) -> Option<Vec<String>> {
+    let mut path = Vec::new();
+    for parent in doc.parents(obj).ok()? {
+        match parent.prop {
+            automerge::Prop::Map(key) if key == VALUE => {}
+            automerge::Prop::Map(key) => path.push(key),
+            automerge::Prop::Seq(_) => return None,
+        }
+    }
+    path.reverse();
+    Some(path)
+}
+
 /// An ordered collection of items addressed by [`Id`].
 ///
 /// Stored as a map from id to `{ k: order key, v: value }`. Editing an item

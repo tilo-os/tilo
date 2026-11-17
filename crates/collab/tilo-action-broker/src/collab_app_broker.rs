@@ -5676,15 +5676,10 @@ impl AppBrokerState {
                 tilo_actions::InteractionPhase::Cancelled { message: None }
             }
         };
-        // What it wrote is known once it applied: the characters, where they landed, rather
-        // than the record it named.
+        // What it wrote is known once it applied: the characters, or the item it made, where
+        // they landed, rather than the place it named.
         let landed = match update {
-            tilo_actions::InvocationUpdate::Succeeded { output, .. } => {
-                output.wrote().map(|anchor| execution_activity::ShownActor {
-                    anchor,
-                    ..shown.clone()
-                })
-            }
+            tilo_actions::InvocationUpdate::Succeeded { output, .. } => shown.landed(output),
             _ => None,
         };
         let shown = landed.as_ref().unwrap_or(shown);
