@@ -2237,6 +2237,10 @@ impl Widget for DesktopSurface {
         drop(shared);
         self.draw_embeds(scene, transform, text, theme, presence);
         self.draw_overlays(scene, transform, text, theme, presence);
+        // A window's first frame presents as it is drawn, after this frame's update pass: noted
+        // here, the status published for this frame says it is drawn, and no later pass has to
+        // come for it.
+        self.sync_drawn();
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
