@@ -111,54 +111,7 @@ impl From<crate::a11y::Role> for String {
     }
 }
 
-pub(super) fn role_name(role: crate::a11y::Role) -> &'static str {
-    use crate::a11y::Role;
-    match role {
-        Role::Window => "window",
-        Role::Dialog => "dialog",
-        Role::Group => "group",
-        Role::Generic => "generic",
-        Role::Toolbar => "toolbar",
-        Role::TabBar => "tab_bar",
-        Role::Tab => "tab",
-        Role::TabPanel => "tab_panel",
-        Role::List => "list",
-        Role::ListItem => "list_item",
-        Role::Table => "table",
-        Role::Row => "row",
-        Role::Cell => "cell",
-        Role::Tree => "tree",
-        Role::TreeItem => "tree_item",
-        Role::Menu => "menu",
-        Role::MenuItem => "menu_item",
-        Role::ListBox => "list_box",
-        Role::ListBoxOption => "list_box_option",
-        Role::Button => "button",
-        Role::ToggleButton => "toggle_button",
-        Role::Checkbox => "checkbox",
-        Role::RadioButton => "radio_button",
-        Role::Switch => "switch",
-        Role::Slider => "slider",
-        Role::Separator => "separator",
-        Role::SpinButton => "spin_button",
-        Role::ComboBox => "combo_box",
-        Role::TextInput => "text_input",
-        Role::MultilineTextInput => "multiline_text_input",
-        Role::Link => "link",
-        Role::ProgressBar => "progress_bar",
-        Role::Spinner => "spinner",
-        Role::Tooltip => "tooltip",
-        Role::Image => "image",
-        Role::Label => "label",
-        Role::StaticText => "static_text",
-        Role::Heading { .. } => "heading",
-        Role::Paragraph => "paragraph",
-        Role::Document => "document",
-        Role::Terminal => "terminal",
-        Role::Canvas => "canvas",
-        Role::Unknown => "unknown",
-    }
-}
+pub(super) use crate::a11y::role_name;
 
 pub(super) fn collect_targets(
     w: &dyn Widget,

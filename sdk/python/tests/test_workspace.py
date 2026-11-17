@@ -250,6 +250,19 @@ async def test_any_path_has_a_link_and_a_bad_one_is_refused(workspace, api):
         await workspace.link("notes/Nothing")
 
 
+async def test_a_window_shows_what_a_resource_looks_like_and_its_picture(workspace, api):
+    view = await workspace.view(TODO)
+
+    assert 'static_text "Todo"' in view["text"]
+    assert len(view["tree"]) == 2
+    assert view["nodes"] == 2
+    assert api.asked("GET", "/v1/workspaces/")[-1]["query"] == {"path": TODO}
+
+    pictured = await workspace.view(TODO, picture=True)
+    assert pictured["picture"] == "tilo.content:look"
+    assert api.asked("GET", "/v1/workspaces/")[-1]["query"] == {"path": TODO, "picture": "true"}
+
+
 async def test_a_run_group_is_undone_as_its_run(workspace, api):
     async with workspace.run("Fill Jane's application") as group:
         await workspace.do(f"{TODO}#append-paragraph", text="Buy milk")

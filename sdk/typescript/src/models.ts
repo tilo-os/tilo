@@ -443,6 +443,30 @@ export class RunList {
 }
 
 /** One search hit: a path the other calls take, and what it offers. */
+/**
+ * What an app's window shows for a resource: the view's semantic lines —
+ * every label, value and control in reading order — the same tree, and a
+ * picture of it when one was asked for.
+ */
+export interface View {
+  /** The lines, one node each: `<role> "<name>" = "<value>" [state]`, indented. */
+  text: string;
+  path: string;
+  /** The app whose window shows it. */
+  app: string;
+  /** `resource` when the window shows the resource, `window` when it could not. */
+  shown: string;
+  /** The same view as a tree: role, name, value, state, bounds and action of each node. */
+  tree: unknown[];
+  nodes?: number;
+  omitted?: number;
+  viewport?: [number, number];
+  window_origin?: [number, number];
+  revision?: string;
+  /** A `tilo.content:<hash>` of the picture, when one was asked for. */
+  picture?: string;
+}
+
 export interface Hit {
   path: string;
   kind: string;

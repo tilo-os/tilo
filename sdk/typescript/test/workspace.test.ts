@@ -71,6 +71,21 @@ describe("reading a workspace", () => {
     expect(api.last()?.query).toEqual({ q: "todo", app: "notes", limit: "5" });
   });
 
+  it("answers what the window shows for a resource, and its picture", async () => {
+    const api = new FakeApi();
+    const workspace = open(api).workspace("jane-doe");
+    const view = await workspace.view(TODO);
+
+    expect(view.text).toContain('static_text "Todo"');
+    expect(view.tree).toHaveLength(2);
+    expect(view.nodes).toBe(2);
+    expect(api.last()?.query).toEqual({ path: TODO });
+
+    const pictured = await workspace.view(TODO, { picture: true });
+    expect(pictured.picture).toBe("tilo.content:look");
+    expect(api.last()?.query).toEqual({ path: TODO, picture: "true" });
+  });
+
   it("answers a record's link", async () => {
     const api = new FakeApi();
     const link = await open(api).workspace("jane-doe").link(TODO, { mode: "app" });

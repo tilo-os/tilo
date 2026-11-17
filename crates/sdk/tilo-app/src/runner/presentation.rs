@@ -4,7 +4,6 @@ use super::RENDER_TYPE;
 use crate::framework::ViewCx;
 use std::cell::Cell;
 use tilo_resource::Resource;
-use ui_core::automerge::transaction::Transactable;
 use ui_core::presence::PresenceCtx;
 use ui_core::vello::{
     Scene,
@@ -81,8 +80,41 @@ impl Presentation {
                 Ok(Some(tilo_actions::remote::activation_requested()))
             }
             RENDER_TYPE => self.render(request.payload, doc, content).map(Some),
+            super::OUTLINE_TYPE => {
+                let theme = self.drawn_theme.clone().unwrap_or_else(Theme::dark);
+                let output = super::outline::answer(&*content, doc, &theme);
+                self.outline_picture(request.payload, doc, content, output)
+                    .map(Some)
+            }
             _ => Ok(None),
         }
+    }
+
+    /// The outline `output` as the operation answers it, with the view as a picture when
+    /// `payload` asks for one (as `render` draws it).
+    fn outline_picture(
+        &mut self,
+        payload: &[u8],
+        doc: &AutoCommit,
+        content: &mut dyn ui_core::widget::Widget,
+        mut output: tilo_actions::ActionOutput,
+    ) -> Result<tilo_actions::ActionOutput, String> {
+        let (picture, _) = super::outline::asked(payload)?;
+        if !picture {
+            return Ok(output);
+        }
+        let drawn = self.render(payload, doc, content)?;
+        output.resources = drawn.resources;
+        if let (Some(fields), Some(serde_json::Value::Object(made))) = (
+            output
+                .value
+                .as_mut()
+                .and_then(serde_json::Value::as_object_mut),
+            drawn.value,
+        ) {
+            fields.extend(made);
+        }
+        Ok(output)
     }
 
     fn render(
@@ -150,7 +182,7 @@ impl Presentation {
                 &rect,
             );
             content.draw_child(&mut scene, transform, text, &theme, &PresenceCtx::empty());
-            revision(doc)
+            super::outline::revision(doc)
         };
         // On the GPU, only a frame that kept all of its geometry; without an
         // adapter (a confined app worker, a machine with no GPU), on the CPU.
@@ -191,7 +223,11 @@ impl Presentation {
 }
 
 pub(crate) fn operation_types() -> &'static [&'static str] {
-    &[RENDER_TYPE, tilo_actions::remote::APPLICATION_ACTIVATE_TYPE]
+    &[
+        RENDER_TYPE,
+        super::OUTLINE_TYPE,
+        tilo_actions::remote::APPLICATION_ACTIVATE_TYPE,
+    ]
 }
 
 pub(crate) fn with_native_presentations(
@@ -270,24 +306,5 @@ fn render_spec() -> tilo_actions::ActionSpec {
     spec
 }
 
-/// The `render` payload's parameter naming an item to show before drawing.
-const ANCHOR_PARAM: &str = "anchor";
-
-/// The item a `render` payload asks to be shown first, when it asks for one.
-pub(crate) fn rendered_anchor(payload: &[u8]) -> Option<String> {
-    let args: serde_json::Value = serde_json::from_slice(payload).ok()?;
-    args.get(ANCHOR_PARAM)
-        .and_then(serde_json::Value::as_str)
-        .filter(|anchor| !anchor.is_empty())
-        .map(str::to_owned)
-}
-
-fn revision(doc: &AutoCommit) -> String {
-    let mut heads: Vec<String> = doc
-        .base_heads()
-        .iter()
-        .map(|head| head.to_string().chars().take(12).collect())
-        .collect();
-    heads.sort();
-    heads.join("+")
-}
+/// The `anchor` parameter, which the shared outline names for both actions.
+use super::outline::ANCHOR_PARAM;

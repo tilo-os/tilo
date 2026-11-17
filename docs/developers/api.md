@@ -102,6 +102,7 @@ same id is one run, one undo step per app (`POST …/runs/{run}/undo` takes it b
 | `GET /v1/workspaces/{workspace}/resources/{path}?cursor=` | one resource: `{"path", "kind", "fields": {...}, "children": [...], "cursor", "text"}` |
 | `GET /v1/workspaces/{workspace}/search?q=&limit=` | `{"hits": [{"path", "kind", "label", "action"}], "query"}`, best first |
 | `GET /v1/workspaces/{workspace}/links?path=&mode=` | `{"path", "link"}`: the link a person opens it with (invite them first) |
+| `GET /v1/workspaces/{workspace}/views?path=&picture=&scale=` | what the app's window shows for `path`: `{"path", "app", "shown", "text", "tree", "nodes", "viewport", "window_origin", "revision"}`, and `picture` (a `tilo.content:` of a PNG) with `picture=true` |
 
 A row of `rows` is `{"path", "name", "label", "kind", "has_children", "actions"}`, its `actions`
 the ids of the actions it offers. `kinds` describes them once for each kind of row on the page

@@ -71,34 +71,57 @@ pub use without_runner::{run, run_or_exit};
 /// request path reads the same everywhere.
 pub(crate) const RENDER_TYPE: &str = "tilo.app.render";
 
+/// The `outline` operation: the app's answer to "what does this window
+/// show", the view's semantic tree as lines an agent reads, and, asked for,
+/// the same view as a picture.
+pub(crate) const OUTLINE_TYPE: &str = "tilo.app.outline";
+
+mod outline;
+
+/// Every app's window answers what it shows ([`outline`]), on every host: a computer draws
+/// the view as a picture when asked, a page reads it as lines.
+pub(crate) fn with_view_operations(
+    mut resource: tilo_actions::ResourceSpec,
+) -> tilo_actions::ResourceSpec {
+    let spec = outline::spec();
+    if !resource
+        .actions
+        .iter()
+        .any(|existing| existing.id == spec.id)
+    {
+        resource = resource.with_action(spec);
+    }
+    resource
+}
 #[cfg(not(target_family = "wasm"))]
 mod presentation;
 #[cfg(not(target_family = "wasm"))]
-pub(crate) use presentation::{
-    DrawPast, Presentation, operation_types, rendered_anchor, with_native_presentations,
-};
+pub(crate) use presentation::{DrawPast, Presentation, operation_types, with_native_presentations};
+
+/// The item a payload of [`OUTLINE_TYPE`] or [`RENDER_TYPE`] asks to be shown first, when
+/// it asks for one: the app stages that item before it reads its view.
+pub(crate) use outline::rendered_anchor;
 
 #[cfg(target_family = "wasm")]
-pub(crate) struct Presentation;
-
-/// A wasm build publishes no `render`, so it answers no request with one.
-#[cfg(target_family = "wasm")]
-pub(crate) fn rendered_anchor(_: &[u8]) -> Option<String> {
-    None
+#[derive(Default)]
+pub(crate) struct Presentation {
+    /// The theme the window draws in, which a line's look and the answer name.
+    theme: Option<ui_core::Theme>,
 }
 
 #[cfg(target_family = "wasm")]
 #[expect(
     clippy::unused_self,
     clippy::needless_pass_by_ref_mut,
-    clippy::unnecessary_wraps,
-    reason = "a no-op stand-in with the native presentation's signatures"
+    reason = "stand-ins for the native presentation's methods that a page has no use for"
 )]
 impl Presentation {
     pub(crate) fn new<R: tilo_resource::Resource>(_: &crate::framework::ViewCx<R>) -> Self {
-        Self
+        Self::default()
     }
-    pub(crate) fn track_theme(&mut self, _: &ui_core::Theme) {}
+    pub(crate) fn track_theme(&mut self, theme: &ui_core::Theme) {
+        self.theme = Some(theme.clone());
+    }
     pub(crate) fn needs_redraw(&self) -> bool {
         false
     }
@@ -106,19 +129,41 @@ impl Presentation {
         false
     }
     pub(crate) fn without_ground(&mut self) {}
+    /// What this page's view shows, as lines: a page draws no picture of its own view for
+    /// a caller, and says so where one was asked for rather than leaving it unexplained.
     pub(crate) fn start_operation(
         &mut self,
-        _: &ui_core::host_operation::ResourceOperation<'_>,
-        _: &ui_core::automerge::AutoCommit,
-        _: &mut dyn ui_core::widget::Widget,
+        op: &ui_core::host_operation::ResourceOperation<'_>,
+        doc: &ui_core::automerge::AutoCommit,
+        content: &mut dyn ui_core::widget::Widget,
     ) -> Result<Option<tilo_actions::ActionOutput>, String> {
-        Ok(None)
+        let Some(request) = op
+            .unscoped()
+            .filter(|request| request.type_id == OUTLINE_TYPE)
+        else {
+            return Ok(None);
+        };
+        let (picture, _) = outline::asked(request.payload)?;
+        let theme = self.theme.clone().unwrap_or_else(ui_core::Theme::dark);
+        let mut output = outline::answer(&*content, doc, &theme);
+        if picture
+            && let Some(fields) = output
+                .value
+                .as_mut()
+                .and_then(serde_json::Value::as_object_mut)
+        {
+            fields.insert(
+                outline::PICTURE_UNAVAILABLE.into(),
+                "a page cannot picture its own view; the lines are what it shows".into(),
+            );
+        }
+        Ok(Some(output))
     }
 }
 
 #[cfg(target_family = "wasm")]
 pub(crate) fn operation_types() -> &'static [&'static str] {
-    &[]
+    &[OUTLINE_TYPE]
 }
 
 #[cfg(target_family = "wasm")]

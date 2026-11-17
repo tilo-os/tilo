@@ -23,6 +23,7 @@ pub enum Surface {
 enum Call {
     Ls,
     Read,
+    View,
     Do,
     Find,
     Link,
@@ -115,6 +116,7 @@ const MCP: &[(&str, &Call)] = &[
     ("tilo_status", &Call::Status),
     ("tilo_find", &Call::Find),
     ("tilo_link", &Call::Link),
+    ("tilo_view", &Call::View),
     ("tilo_read", &Call::Read),
     ("tilo_do", &Call::Do),
     ("tilo_ls", &Call::Ls),
@@ -123,6 +125,7 @@ const MCP: &[(&str, &Call)] = &[
 /// The command's verbs, longest first.
 const CLI: &[(&str, &Call)] = &[
     ("tilo read", &Call::Read),
+    ("tilo view", &Call::View),
     ("tilo do", &Call::Do),
     ("tilo ls", &Call::Ls),
 ];
@@ -155,6 +158,14 @@ fn rest_mention(text: &str) -> Option<Mention> {
             let (arg, used) = token(arg);
             return Some(Mention {
                 call: Call::Find,
+                arg: (!arg.is_empty()).then(|| arg.to_owned()),
+                len: text.len().saturating_sub(used.len()),
+            });
+        }
+        if let Some(arg) = rest.strip_prefix("/views?path=") {
+            let (arg, used) = token(arg);
+            return Some(Mention {
+                call: Call::View,
                 arg: (!arg.is_empty()).then(|| arg.to_owned()),
                 len: text.len().saturating_sub(used.len()),
             });
@@ -245,6 +256,7 @@ fn render(call: Call, arg: Option<&str>, surface: Surface) -> String {
         Surface::Mcp => named(match call {
             Call::Ls => "tilo_ls",
             Call::Read => "tilo_read",
+            Call::View => "tilo_view",
             Call::Do => "tilo_do",
             Call::Find => "tilo_find",
             Call::Link => "tilo_link",
@@ -253,6 +265,7 @@ fn render(call: Call, arg: Option<&str>, surface: Surface) -> String {
         Surface::Cli => match call {
             Call::Ls => named("tilo ls"),
             Call::Read => named("tilo read"),
+            Call::View => named("tilo view"),
             Call::Do => named("tilo do"),
             // The command has no verb of its own for these: it says what
             // they are instead of naming a tool its reader does not have.
@@ -268,6 +281,10 @@ fn render(call: Call, arg: Option<&str>, surface: Surface) -> String {
             Call::Read => arg.map_or_else(
                 || format!("GET /v1/workspaces/{WORKSPACE}/resources"),
                 |arg| format!("GET /v1/workspaces/{WORKSPACE}/resources/{arg}"),
+            ),
+            Call::View => arg.map_or_else(
+                || format!("GET /v1/workspaces/{WORKSPACE}/views"),
+                |arg| format!("GET /v1/workspaces/{WORKSPACE}/views?path={arg}"),
             ),
             Call::Do => arg.map_or_else(
                 || format!("POST /v1/workspaces/{WORKSPACE}/resources/{{path}}/actions/{{action}}"),

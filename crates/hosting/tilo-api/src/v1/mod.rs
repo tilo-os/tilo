@@ -421,7 +421,7 @@ impl<'a> Caller<'a> {
             | "listKeys" | "mintKey" | "revokeKey" => self.account_operation(operation.id).await,
             "branchWorkspace" => self.branch_workspace().await,
             "setUnattended" => self.set_unattended().await,
-            "listResources" | "readResource" | "search" | "getLink" => {
+            "listResources" | "readResource" | "search" | "getLink" | "viewResource" => {
                 self.resource_operation(operation.id).await
             }
             "runAction" | "listRuns" | "getRun" | "cancelRun" | "undoRun" | "runOutput" => {
@@ -571,6 +571,23 @@ impl<'a> Caller<'a> {
                     said,
                 ))
                 .map(Answer::ok)
+            }
+            "viewResource" => {
+                let path = self
+                    .query("path")
+                    .ok_or_else(|| ApiError::new("invalid_arguments", "`path` is required"))?;
+                let picture = self
+                    .query("picture")
+                    .is_some_and(|picture| matches!(picture, "1" | "true" | "on" | "yes"));
+                let scale = self
+                    .query("scale")
+                    .and_then(|scale| scale.parse::<f64>().ok());
+                let args = with(
+                    with(json!({"path": path}), "picture", Some(picture)),
+                    "scale",
+                    scale,
+                );
+                shaped::<answers::View>(self.call("tilo_view", args).await?).map(Answer::ok)
             }
             "search" => {
                 let query = self

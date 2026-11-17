@@ -8,7 +8,7 @@ use std::sync::Arc;
 use tilo_actions::ResourceSpec;
 use ui_core::widget::{AppModel, ModelPath};
 
-use crate::runner::with_native_presentations;
+use crate::runner::{with_native_presentations, with_view_operations};
 use tilo_resource::{Resource, SearchEntry};
 use ui_core::PresencePayload;
 use ui_core::application_view::{
@@ -351,7 +351,7 @@ pub fn reserved_action_ids() -> Vec<String> {
     ids.push(tilo_resource::share::SHARE_INVITE_LINK.to_owned());
     ids.extend(super::history::specs().iter().map(|spec| spec.id.clone()));
     ids.extend(
-        with_native_presentations(ResourceSpec::new("", "", ""))
+        with_native_presentations(with_view_operations(ResourceSpec::new("", "", "")))
             .actions
             .iter()
             .map(|spec| spec.id.clone()),
@@ -1261,7 +1261,8 @@ fn framework_specs() -> Rc<FrameworkSpecs> {
             return Rc::clone(specs);
         }
         let specs = Rc::new(FrameworkSpecs {
-            native: with_native_presentations(ResourceSpec::new("", "", "")).actions,
+            native: with_native_presentations(with_view_operations(ResourceSpec::new("", "", "")))
+                .actions,
             read: tilo_resource::read::spec(None),
             facts: facts::facts_spec(),
             history: super::history::specs(),
@@ -1788,9 +1789,13 @@ impl RootModel for ResourceRoot {
     ) -> Result<Option<ui_core::host_operation::ResourceOperationStart>, String> {
         // A view of a resource the system asked for: show that item first, so
         // the picture is of the item and not of whatever the window happened
-        // to show. `render` is the app's answer to "show me this resource".
+        // to show. `render` is the app's answer to "show me this resource",
+        // and `outline` the same request answered as lines.
         if let Some(request) = op.unscoped()
-            && request.type_id == crate::runner::RENDER_TYPE
+            && matches!(
+                request.type_id,
+                crate::runner::RENDER_TYPE | crate::runner::OUTLINE_TYPE
+            )
             && !request.payload.is_empty()
             && let Some(anchor) = crate::runner::rendered_anchor(request.payload)
         {

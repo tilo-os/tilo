@@ -266,6 +266,8 @@ impl Notes {
                 Some(("new-note", "New note", vec![text("title", false)], Effect)),
                 false,
             ),
+            // Every app's window answers what it shows, as lines.
+            viewing::outline_row(self),
         ];
         let placed = *self.placed.lock().unwrap();
         for (page, _, label) in self.notes() {
@@ -1105,6 +1107,7 @@ impl ActionHost for Notes {
                 },
             },
             "append-paragraph" => succeeded(Some(json!({"block": "b9", "note": null}))),
+            "outline" => viewing::outline_answer(*id, &arguments),
             "history" => succeeded(Some(json!({
                 "history": self.history.lock().unwrap().clone(),
             }))),
@@ -1202,7 +1205,7 @@ where
 }
 
 #[test]
-fn an_agent_is_offered_eight_small_tools_and_no_classic_ones() {
+fn an_agent_is_offered_nine_small_tools_and_no_classic_ones() {
     let host = Notes::new(true);
     run(async {
         let reply = agent(&host)
@@ -1221,6 +1224,7 @@ fn an_agent_is_offered_eight_small_tools_and_no_classic_ones() {
                 "tilo_read",
                 "tilo_do",
                 "tilo_link",
+                "tilo_view",
                 "tilo_find",
                 "tilo",
                 "tilo_watch",
@@ -1228,7 +1232,7 @@ fn an_agent_is_offered_eight_small_tools_and_no_classic_ones() {
             ]
         );
         let size = serde_json::to_string(tools).unwrap().len();
-        assert!(size < 4_500, "the tool list is {size} bytes");
+        assert!(size < 5_000, "the tool list is {size} bytes");
         let classic = McpServer::new(host.clone(), "workspace".into(), "owner".into())
             .handle(json!({"jsonrpc":"2.0","id":1,"method":"tools/list"}))
             .await
@@ -2873,6 +2877,8 @@ mod opening;
 mod runs;
 #[path = "mcp_status_tests.rs"]
 mod status;
+#[path = "mcp_agent_view_tests.rs"]
+mod viewing;
 
 #[cfg(test)]
 #[path = "mcp_agent_address_tests.rs"]

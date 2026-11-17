@@ -207,6 +207,18 @@ pub static OPERATIONS: std::sync::LazyLock<Vec<Operation>> = std::sync::LazyLock
         .query(&[("cursor", "Where the previous page ended")])
         .json(200, "Resource"),
         op(
+            "viewResource",
+            Method::GET,
+            "/v1/workspaces/{workspace}/views",
+            "What an app's window shows for a resource: its view as lines, and a picture with `picture`",
+        )
+        .query(&[
+            ("path", "The resource whose view to read"),
+            ("picture", "`true` to answer a picture too, kept as content"),
+            ("scale", "Pixels per point of that picture, 0.5 to 2"),
+        ])
+        .json(200, "View"),
+        op(
             "runAction",
             Method::POST,
             "/v1/workspaces/{workspace}/resources/{path}/actions/{action}",

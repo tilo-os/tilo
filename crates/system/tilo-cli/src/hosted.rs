@@ -521,6 +521,39 @@ fn runs_text(listed: &Value) -> String {
     said
 }
 
+/// `tilo view <path> -w <workspace>`: what the app's window shows for the
+/// resource, as `tilo_view` reads it, and a picture of it when asked.
+pub fn view(
+    reach: Reach<'_>,
+    workspace: &str,
+    path: &str,
+    picture: Option<&std::path::Path>,
+) -> ExitCode {
+    run(async {
+        let client = Client::open(reach)?;
+        let workspace = workspace_id(&client, workspace).await?;
+        let mut route = format!(
+            "/v1/workspaces/{workspace}/views?path={}",
+            api::encode_query(path.trim())
+        );
+        if picture.is_some() {
+            route.push_str("&picture=true");
+        }
+        let view = client.get(&route).await?;
+        let mut said = text(&view, "text").to_owned();
+        if let (Some(file), Some(content)) = (picture, view.get("picture").and_then(Value::as_str))
+        {
+            let mut written = std::fs::File::create(file).context("making the picture's file")?;
+            client
+                .download(&workspace, content, &mut written, &mut |_, _| {})
+                .await?;
+            let _ = write!(said, "\npicture: {}", file.display());
+            said = said.trim_start().to_owned();
+        }
+        Ok(show(reach.json, &view, &said))
+    })
+}
+
 /// A listing as a person reads it: the lines `tilo_ls` prints, or the same
 /// built from its rows when the host sent no text.
 fn listing_text(listed: &Value) -> String {

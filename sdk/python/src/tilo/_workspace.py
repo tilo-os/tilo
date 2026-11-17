@@ -338,6 +338,35 @@ class Workspace:
             raise ProtocolError(f"the workspace answered no link for {path}")
         return link
 
+    def view(
+        self, path: str, *, picture: bool = False, scale: float | None = None
+    ) -> Any:
+        """What the app's window shows for `path`, as the person sees it.
+
+        Every label, value and control in reading order, each control's
+        action and where it stands. With `picture`, the same view as a PNG,
+        named by a `tilo.content:` reference that `files.download` fetches.
+        The app is started without a window when it does not run.
+        """
+        return self.client.handoff(self._view(path, picture, scale))
+
+    async def _view(
+        self, path: str, picture: bool, scale: float | None
+    ) -> Mapping[str, Any]:
+        endpoint = await self._endpoint()
+        answer = await endpoint.json(
+            "GET",
+            endpoint.path("views"),
+            query={
+                "path": path,
+                "picture": "true" if picture else None,
+                "scale": scale,
+            },
+        )
+        if not isinstance(answer.get("text"), str):
+            raise ProtocolError(f"the workspace answered no view for {path}")
+        return answer
+
     def export(self) -> Any:
         """Everything the workspace holds, read whole: a `WorkspaceExport`.
 

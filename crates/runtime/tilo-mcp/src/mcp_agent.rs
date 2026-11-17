@@ -46,6 +46,8 @@ mod status;
 mod tilo;
 #[path = "mcp_undo_run.rs"]
 mod undo_run;
+#[path = "mcp_agent_view.rs"]
+mod view;
 pub(super) use undo_run::Undoable;
 #[path = "mcp_watch.rs"]
 pub(super) mod watch;
@@ -146,6 +148,13 @@ fn tools() -> Vec<Value> {
             "tilo_link",
             "A link a person opens to see what a path names (`notes/Todo`); only workspace members can open it. mode: app or desktop.",
             json!({"path":string,"mode":{"enum":["app","desktop"]}}),
+            json!(["path"]),
+            read.clone(),
+        ),
+        (
+            "tilo_view",
+            "What a person's window shows for `path`: its labels, values and controls in reading order, each with its action. picture: the view as a PNG. Starts the app when it is not running.",
+            json!({"path":string,"picture":{"type":"boolean"},"scale":{"type":"number"}}),
             json!(["path"]),
             read.clone(),
         ),
@@ -287,6 +296,9 @@ pub(super) struct Reply {
     failed: bool,
     /// The typed answer, for a caller that asked for it (a structured read).
     structured: Option<Value>,
+    /// The pictures the answer shows, as MCP image content: what a view the agent looked
+    /// at rendered, taken out of its output so a model is sent the picture, not an address.
+    images: Vec<Value>,
 }
 
 impl Reply {
@@ -295,6 +307,7 @@ impl Reply {
             text,
             failed: false,
             structured: None,
+            images: Vec::new(),
         }
     }
 
@@ -303,6 +316,7 @@ impl Reply {
             text,
             failed: true,
             structured: None,
+            images: Vec::new(),
         }
     }
 }
@@ -1857,6 +1871,10 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             },
             "tilo_link" => match parse(args) {
                 Ok(args) => self.agent_link(args, structured).await,
+                Err(error) => Err(error.into()),
+            },
+            "tilo_view" => match parse(args) {
+                Ok(args) => Box::pin(self.agent_view(args, structured)).await,
                 Err(error) => Err(error.into()),
             },
             "tilo_find" => match parse(args) {

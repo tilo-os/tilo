@@ -16,6 +16,7 @@ import {
   type MintedKey,
   type ProgramAnswer,
   RunList,
+  type View,
   type WorkspaceExport,
   type WorkspaceInfo,
   resultOf,
@@ -329,6 +330,34 @@ export class Workspace {
       throw new ProtocolError(`the workspace answered no link for ${path}`);
     }
     return answer.link;
+  }
+
+  /**
+   * What the app's window shows for `path`, as the person sees it: every
+   * label, value and control in reading order, each control's action and
+   * where it stands. With `picture`, the same view as a PNG, named by a
+   * `tilo.content:` reference that `files.download` fetches.
+   *
+   * The app is started without a window when it does not run.
+   */
+  async view(
+    path: string,
+    options: { picture?: boolean; scale?: number | null } = {},
+  ): Promise<View> {
+    const endpoint = await this.endpoint();
+    const answer = await endpoint.answer(
+      "GET",
+      `${routes.views(endpoint.id)}${queryOf({
+        path,
+        picture: options.picture === true ? true : null,
+        scale: options.scale ?? null,
+      })}`,
+      { idempotent: false },
+    );
+    if (typeof answer.text !== "string") {
+      throw new ProtocolError(`the workspace answered no view for ${path}`);
+    }
+    return answer as unknown as View;
   }
 
   /**

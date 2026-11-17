@@ -621,6 +621,7 @@ pub use physical_input_trace::Trace as NativePhysicalInputTrace;
 #[cfg(feature = "native")]
 pub mod input_frame;
 pub mod semantic_document_read;
+pub mod semantic_outline;
 pub mod synthetic_input;
 
 pub mod bound_dispatch;

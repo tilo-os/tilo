@@ -223,6 +223,17 @@ enum Cmd {
         #[arg(long)]
         cursor: Option<String>,
     },
+    /// What an app shows of a resource: its view, line by line.
+    #[command(
+        after_help = "Examples:\n  tilo view notes/Notebook/Todo -w jane-doe   What the Notes window shows for the note\n                        tilo view tasks -w jane-doe                  What the Tasks window shows\n                        tilo view notes/Todo --picture todo.png -w   And a picture of it\n\n                      Every label, value and control, in reading order, each control's action."
+    )]
+    View {
+        /// The app or resource whose view to read: a path `tilo ls` printed.
+        resource: String,
+        /// Also write a picture of the view to this file.
+        #[arg(long, value_name = "FILE")]
+        picture: Option<std::path::PathBuf>,
+    },
     /// Your workspaces on this desktop.
     Workspace {
         #[command(subcommand)]
@@ -601,7 +612,7 @@ fn command_here(here: Here) -> clap::Command {
 /// The tree completion offers: every noun and verb, the shortcuts too.
 fn completing(here: Here) -> clap::Command {
     command_here(here).mut_subcommands(|sub| match sub.get_name() {
-        "open" | "do" | "ls" | "read" | "actions" | "update" | "status" | "rollback" => {
+        "open" | "do" | "ls" | "read" | "view" | "actions" | "update" | "status" | "rollback" => {
             sub.hide(false)
         }
         _ => sub,
@@ -1009,6 +1020,9 @@ fn run_hosted(
         Cmd::Read { resource, cursor } => workspace
             .ok_or_else(needs_workspace)
             .map(|workspace| hosted::read(reach, &workspace, &resource, cursor.as_deref())),
+        Cmd::View { resource, picture } => workspace
+            .ok_or_else(needs_workspace)
+            .map(|workspace| hosted::view(reach, &workspace, &resource, picture.as_deref())),
         Cmd::Keys { cmd } => Ok(hosted::keys(reach, workspace.as_deref(), cmd)),
         Cmd::Members { cmd } => workspace
             .ok_or_else(needs_workspace)
@@ -1076,6 +1090,11 @@ fn workspace_or_entered(cli: &Cli) -> Result<Option<String>> {
     }))
 }
 
+/// `tilo actions [filter]`: every action this desktop offers, as the palette lists them.
+fn list_actions(filter: Vec<String>, spelling: &tilo_control::front::Spelling) -> ExitCode {
+    desktop::run_action(desktop::ActionCmd::List { filter }, spelling)
+}
+
 fn run(cli: Cli) -> Result<ExitCode> {
     let spelling = tilo_control::front::Spelling::tilo();
     let workspace = workspace_or_entered(&cli)?;
@@ -1094,6 +1113,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
         Cmd::Do { .. }
         | Cmd::Ls { .. }
         | Cmd::Read { .. }
+        | Cmd::View { .. }
         | Cmd::Keys { .. }
         | Cmd::Members { .. }
         | Cmd::Account { .. }
@@ -1103,10 +1123,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
         | Cmd::Sdk { .. } => bail!("run_hosted answers the hosted commands"),
         Cmd::Open { app, items } => Ok(desktop::run_open(&app, &items, &spelling)),
         Cmd::Action { cmd } => Ok(desktop::run_action(cmd, &spelling)),
-        Cmd::Actions { filter } => Ok(desktop::run_action(
-            desktop::ActionCmd::List { filter },
-            &spelling,
-        )),
+        Cmd::Actions { filter } => Ok(list_actions(filter, &spelling)),
         Cmd::Workspace { cmd } => Ok(desktop::run_workspace(cmd, &spelling)),
         Cmd::Complete { what, prefix } => Ok(desktop::complete(
             what,
@@ -1987,7 +2004,7 @@ mod tests {
                 has: |_| true,
             };
             let command = command_here(everything);
-            for name in ["do", "ls", "read", "files"] {
+            for name in ["do", "ls", "read", "view", "files"] {
                 let sub = command
                     .get_subcommands()
                     .find(|sub| sub.get_name() == name)
@@ -2238,6 +2255,7 @@ mod tests {
                     "do",
                     "ls",
                     "read",
+                    "view",
                     "workspace",
                     "keys",
                     "members",
@@ -2265,6 +2283,7 @@ mod tests {
                     "  do         Do one thing this desktop, or a hosted workspace (-w), can do\n",
                     "  ls         List what a hosted workspace (-w) holds: its apps, or what a path holds\n",
                     "  read       Read one resource of a hosted workspace (-w)\n",
+                    "  view       What an app shows of a resource: its view, line by line\n",
                     "  workspace  Your workspaces on this desktop\n",
                     "  keys       Keys to your hosted workspaces, for your code and its agents\n",
                     "  members    The people in a hosted workspace, inviting more, and how it names you\n",
@@ -2319,8 +2338,8 @@ mod tests {
             assert_eq!(
                 listed(elsewhere),
                 [
-                    "app", "do", "ls", "read", "keys", "members", "account", "files", "run", "runs",
-                    "sdk", "login", "folders", "migrate"
+                    "app", "do", "ls", "read", "view", "keys", "members", "account", "files",
+                    "run", "runs", "sdk", "login", "folders", "migrate"
                 ]
             );
             let help = command_here(elsewhere).render_help().to_string();
@@ -2339,7 +2358,8 @@ mod tests {
             assert_eq!(
                 listed(nothing),
                 [
-                    "do", "ls", "read", "keys", "members", "account", "files", "run", "runs",
+                    "do", "ls", "read", "view", "keys", "members", "account", "files", "run",
+                    "runs",
                     "sdk", "login", "folders", "migrate"
                 ]
             );

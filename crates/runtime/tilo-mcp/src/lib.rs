@@ -167,7 +167,9 @@ pub enum Surface {
 const AGENT_INSTRUCTIONS: &str = "These tools act in the person's Tilo workspace, as them, and \
      History keeps what you do as your run. tilo_ls lists the workspace's apps and what is in \
      them; tilo_read reads a resource; tilo_do runs an action, and answers the link to a record \
-     it changed; tilo_link answers the link to what a path names, for the person to open it. \
+     it changed; tilo_link answers the link to what a path names, for the person to open it; \
+     tilo_view reads what a person's window shows, as lines of its labels, values and \
+     controls, and a picture of it with picture: true. \
      To run a shell command in the \
      workspace (ls, git, cargo build, npm test), call tilo_do with path \"terminal#run\" and \
      args {command: \"...\"}: it answers with the command line, the directory it ran in, its \

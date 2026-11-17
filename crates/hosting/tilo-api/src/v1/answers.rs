@@ -513,6 +513,39 @@ pub struct Link {
     pub link: String,
 }
 
+/// What an app's window shows for a resource: its view's semantic lines, the
+/// same ones an MCP client's `tilo_view` prints, and a picture with `picture`.
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct View {
+    /// The lines, in reading order, one node each:
+    /// `<role> "<name>" = "<value>" [state]`, indented by depth.
+    pub text: String,
+    pub path: String,
+    /// The app whose window shows it.
+    pub app: String,
+    /// Whether the lines are of the resource or of the window it could not show.
+    pub shown: String,
+    /// The same view as a tree: each node's role, name, value, state, bounds and action.
+    #[serde(default)]
+    pub tree: Value,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nodes: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub omitted: Option<u64>,
+    /// The view's size, in logical pixels.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub viewport: Option<[f64; 2]>,
+    /// Where the view stands in the app's window, in logical pixels.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub window_origin: Option<[f64; 2]>,
+    /// The revision of the document the view shows.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub revision: Option<String>,
+    /// Where the picture is kept, as a content address, when one was asked for.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub picture: Option<String>,
+}
+
 /// The workspace's people, each with their role, and the invitations still
 /// open.
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
@@ -698,6 +731,7 @@ pub fn schemas(generator: &mut schemars::SchemaGenerator) -> Vec<(&'static str, 
         InvocationList,
         SearchHits,
         Link,
+        View,
         Members,
         NewInvitation,
         NewMember,

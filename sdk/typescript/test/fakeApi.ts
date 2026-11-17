@@ -296,6 +296,31 @@ export class FakeApi {
             { path: `${TODO}#append-paragraph`, kind: "notes.Page", label: "Add paragraph", action: "append-paragraph" },
           ],
         });
+      case "views": {
+        const path = call.query.path ?? "";
+        if (!(path in this.fields)) {
+          return this.refuse("not_found", 404, `${path} names nothing`);
+        }
+        const view: Answer = {
+          path,
+          app: "so.tilo.notes",
+          shown: "resource",
+          text: 'document\n  static_text "Todo"\n  button "Rename" #{action: notes.rename}',
+          tree: [
+            { role: "static_text", name: "Todo", rect: [0, 0, 40, 20] },
+            { role: "button", name: "Rename", rect: [0, 24, 60, 24], action: "notes.rename" },
+          ],
+          nodes: 2,
+          omitted: 0,
+          viewport: [1280, 760],
+          window_origin: [0, 40],
+          revision: "abc",
+        };
+        if (call.query.picture === "true") {
+          view.picture = "tilo.content:look";
+        }
+        return this.json(view);
+      }
       case "links": {
         const path = call.query.path ?? "";
         if (!(path in this.fields)) {

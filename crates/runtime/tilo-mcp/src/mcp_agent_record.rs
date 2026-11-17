@@ -56,6 +56,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             text,
             failed: false,
             structured: Some(answer),
+            images: Vec::new(),
         })
     }
 }

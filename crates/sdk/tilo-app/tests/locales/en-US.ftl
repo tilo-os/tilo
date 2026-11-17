@@ -330,3 +330,7 @@ test-workspace-arrival-board-add = Add a card
 test-note-write = Write the note
 test-review-replay = test.review-replay
 test-blob-store = Keep the bytes a file holds
+
+## crates/sdk/tilo-app/tests/view_outline.rs
+test-outline-notebook = Notebook
+test-outline-notebook-write = Write a page

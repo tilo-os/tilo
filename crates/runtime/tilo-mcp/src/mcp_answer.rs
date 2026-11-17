@@ -17,13 +17,20 @@ pub(super) fn text_result(
     structured: bool,
     retry_safe: bool,
 ) -> Value {
+    /// The answer's content: what it says, and the pictures it shows.
+    fn content(text: &str, images: Vec<Value>) -> Vec<Value> {
+        let mut content = vec![json!({"type":"text","text":text})];
+        content.extend(images);
+        content
+    }
     match result {
         Ok(Reply {
             structured: Some(answer),
             failed,
+            images,
             ..
         }) => json!({
-            "content":[{"type":"text","text":answer.to_string()}],
+            "content":content(&answer.to_string(), images),
             "structuredContent":answer,
             "isError":failed
         }),
@@ -34,16 +41,19 @@ pub(super) fn text_result(
                 "text": reply.text
             });
             json!({
-                "content":[{"type":"text","text":answer.to_string()}],
+                "content":content(&answer.to_string(), reply.images),
                 "structuredContent":answer,
                 "isError":reply.failed
             })
         }
-        Ok(reply) => json!({"content":[{"type":"text","text":reply.text}],"isError":reply.failed}),
+        Ok(reply) => json!({
+            "content":content(&reply.text, reply.images),
+            "isError":reply.failed
+        }),
         Err(failure) if structured => {
             let answer = refused(&failure, retry_safe);
             json!({
-                "content":[{"type":"text","text":answer.to_string()}],
+                "content":content(&answer.to_string(), Vec::new()),
                 "structuredContent":answer,
                 "isError":true
             })
@@ -53,14 +63,15 @@ pub(super) fn text_result(
         Err(failure) if failure.host.is_some() => {
             let typed = refused(&failure, retry_safe);
             json!({
-                "content":[{"type":"text","text":String::from(failure)}],
+                "content":content(&String::from(failure), Vec::new()),
                 "structuredContent":typed,
                 "isError":true
             })
         }
-        Err(failure) => {
-            json!({"content":[{"type":"text","text":String::from(failure)}],"isError":true})
-        }
+        Err(failure) => json!({
+            "content":content(&String::from(failure), Vec::new()),
+            "isError":true
+        }),
     }
 }
 
@@ -309,5 +320,6 @@ pub(super) fn outcome(value: &Value) -> Reply {
         failed: state != "succeeded",
         text,
         structured: None,
+        images: Vec::new(),
     }
 }

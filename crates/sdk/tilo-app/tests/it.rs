@@ -116,6 +116,8 @@ pub mod type_history;
 pub mod typed_edit_labels;
 #[path = "unreadable.rs"]
 pub mod unreadable;
+#[path = "view_outline.rs"]
+pub mod view_outline;
 #[path = "window_content.rs"]
 pub mod window_content;
 #[path = "window_view.rs"]

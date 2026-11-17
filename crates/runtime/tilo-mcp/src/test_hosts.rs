@@ -298,7 +298,7 @@ pub struct StoredByTestApp;
 impl crate::MediaReader for StoredByTestApp {
     fn read(&self, app_id: &str, hash: &str) -> std::io::Result<Option<Vec<u8>>> {
         Ok(match (app_id, hash) {
-            ("so.tilo.test", "look") => Some(PNG.to_vec()),
+            ("so.tilo.test" | "so.tilo.notes", "look") => Some(PNG.to_vec()),
             ("so.tilo.test", "next-look") => Some(JPEG.to_vec()),
             ("so.tilo.test", "notes") => Some(b"plain text".to_vec()),
             _ => None,

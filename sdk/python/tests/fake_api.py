@@ -296,6 +296,8 @@ class FakeApi:
             return self.search(call)
         if after == "links":
             return self.link(call)
+        if after == "views":
+            return self.view(call)
         if after == "members":
             return self.answer(
                 200,
@@ -773,6 +775,31 @@ class FakeApi:
                 ],
             },
         )
+
+    def view(self, call: dict[str, Any]) -> httpx.Response:
+        path = call["query"].get("path")
+        if path is None:
+            return self.refuse(400, "invalid_arguments", "`path` is required")
+        if path not in self.fields:
+            return self.refuse(404, "not_found", f"{path} names nothing")
+        view: dict[str, Any] = {
+            "path": path,
+            "app": "so.tilo.notes",
+            "shown": "resource",
+            "text": 'document\n  static_text "Todo"\n  button "Rename" {notes.rename}',
+            "tree": [
+                {"role": "static_text", "name": "Todo", "rect": [0, 0, 40, 20]},
+                {"role": "button", "name": "Rename", "rect": [0, 24, 60, 24], "action": "notes.rename"},
+            ],
+            "nodes": 2,
+            "omitted": 0,
+            "viewport": [1280, 760],
+            "window_origin": [0, 40],
+            "revision": "abc",
+        }
+        if call["query"].get("picture") == "true":
+            view["picture"] = "tilo.content:look"
+        return self.answer(200, view)
 
     def link(self, call: dict[str, Any]) -> httpx.Response:
         path = call["query"].get("path")
