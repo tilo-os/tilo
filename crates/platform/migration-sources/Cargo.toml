@@ -45,6 +45,8 @@ tempfile.workspace = true
 tilo-net = { workspace = true, features = ["blocking"] }
 # The stored RRULE spelling and the time-zone names a calendar keeps.
 tilo-recurrence = { version = "0.1.0", path = "../../sdk/tilo-recurrence" }
+# Whole-or-not-at-all writes of the entries the inbox keeps.
+tilo-files = { path = "../tilo-files" }
 url.workspace = true
 uuid.workspace = true
 zeroize.workspace = true

@@ -376,6 +376,7 @@ tilo_test_env::scenario! {
                 !files
                     .state()
                     .entry_resource(entry)
+                    .into_resource()
                     .actions
                     .iter()
                     .any(|action| action.id == "import-once")

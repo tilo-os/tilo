@@ -321,16 +321,13 @@ impl Envelopes {
             envelope: publish.envelope,
         })
         .map_err(|_| Refusal::Storage)?;
-        write_atomic(&self.dir, &path, &bytes).map_err(|error| {
-            tracing::warn!(%error, kind = self.kind.name(), "member record not kept");
-            Refusal::Storage
-        })
+        tilo_files::native::atomic::write_creating_parent_with_mode(&path, &bytes, 0o644).map_err(
+            |error| {
+                tracing::warn!(%error, kind = self.kind.name(), "member record not kept");
+                Refusal::Storage
+            },
+        )
     }
-}
-
-fn write_atomic(dir: &Path, path: &Path, bytes: &[u8]) -> std::io::Result<()> {
-    std::fs::create_dir_all(dir)?;
-    tilo_files::native::atomic::write_with_mode(path, bytes, 0o644)
 }
 
 #[cfg(test)]

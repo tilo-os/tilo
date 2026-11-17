@@ -50,7 +50,7 @@ pub(crate) fn pure(spec: ActionSpec, handler: &'static str, domain: Parts) -> Ac
 
 #[cfg(test)]
 mod tests {
-    use tilo_actions::{ContinuationArguments, ContinuationQuery, ResourceSpec};
+    use tilo_actions::{ContinuationArguments, ContinuationQuery};
 
     #[test]
     fn writer_continuation_read_text_stays_dynamic_and_encodes() {
@@ -70,12 +70,13 @@ mod tests {
             )))
             .is_some()
         );
-        let resource = ResourceSpec::new(
+        let resource = ui::framework::LiveRow::new(
             "word-processor.document",
             "word-processor.document",
             "Document",
         )
-        .with_action(read);
+        .operation(read)
+        .into_resource();
         let address = resource
             .action_address("read-text")
             .expect("the document publishes its read");

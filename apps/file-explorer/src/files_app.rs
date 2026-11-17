@@ -22,6 +22,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 use thumbnail::{ThumbKey, ThumbnailService};
 use ui::SelectionModel;
+use ui::framework::LiveRow;
 use ui::lock::MutexRecover as _;
 #[cfg(test)]
 use ui::tilo_actions::{ActionKind, ConfirmationPolicy, ExecutionMode, OperationKind, ResultSpec};
@@ -305,18 +306,18 @@ pub(crate) fn template_resource_id(path: &str) -> String {
 
 const RETRY_ROW: &str = "files.retry";
 
-fn retry_row(may_pass: bool) -> ResourceSpec {
+fn retry_row(may_pass: bool) -> LiveRow {
     let (effect, label) = if may_pass {
         (crate::effects::FilesEffect::Refresh, t("files-try-again"))
     } else {
         (crate::effects::FilesEffect::Up, t("files-open-enclosing"))
     };
-    ResourceSpec::new(RETRY_ROW, RETRY_ROW, label.clone())
-        .with_action(crate::effects::row_action(&effect, "invoke", label))
+    LiveRow::new(RETRY_ROW, RETRY_ROW, label.clone())
+        .operation(crate::effects::row_action(&effect, "invoke", label))
 }
 
 fn failure_state(title: String, detail: String, may_pass: bool) -> EmptyState {
-    let row = retry_row(may_pass);
+    let row = retry_row(may_pass).into_resource();
     let state = EmptyState::error(title, detail)
         .with_icon(ui::icons::Icon::FolderOpen)
         .with_action(row.label.clone())
@@ -329,7 +330,7 @@ fn failure_state(title: String, detail: String, may_pass: bool) -> EmptyState {
     }
 }
 
-pub(crate) fn published_place_resources(favorites: &[favorites::Favorite]) -> Vec<ResourceSpec> {
+pub(crate) fn published_place_resources(favorites: &[favorites::Favorite]) -> Vec<LiveRow> {
     favorites
         .iter()
         .map(|favorite| {
@@ -341,12 +342,12 @@ pub(crate) fn published_place_resources(favorites: &[favorites::Favorite]) -> Ve
                 crate::search_provider::OPEN_ACTION,
                 crate::i18n::CATALOG.t("files-shortcuts-open"),
             );
-            ResourceSpec::new(resource_id, "files.place", favorite.label.clone()).with_action(open)
+            LiveRow::new(resource_id, "files.place", favorite.label.clone()).operation(open)
         })
         .collect()
 }
 
-pub(crate) fn published_template_resources(templates: Vec<PathBuf>) -> Vec<ResourceSpec> {
+pub(crate) fn published_template_resources(templates: Vec<PathBuf>) -> Vec<LiveRow> {
     templates
         .into_iter()
         .map(|template| {
@@ -359,12 +360,12 @@ pub(crate) fn published_template_resources(templates: Vec<PathBuf>) -> Vec<Resou
                 "create",
                 templates::menu_label(&template),
             );
-            ResourceSpec::new(
+            LiveRow::new(
                 template_id,
                 "files.template",
                 templates::menu_label(&template),
             )
-            .with_action(create)
+            .operation(create)
         })
         .collect()
 }
@@ -7310,21 +7311,18 @@ impl FilesState {
         answer
     }
 
-    fn append_nearby_receiver_resources(&self, folder: &mut ResourceSpec) {
-        for transfer in self.nearby_send.transfers() {
-            folder
-                .children
-                .push(self.nearby_receiver_resource(transfer));
-        }
+    fn nearby_receiver_rows(&self) -> Vec<LiveRow> {
+        self.nearby_send
+            .transfers()
+            .iter()
+            .map(|transfer| self.nearby_receiver_row(transfer))
+            .collect()
     }
 
-    fn nearby_receiver_resource(
-        &self,
-        transfer: &ui::collaboration::NearbyTransferStatus,
-    ) -> ResourceSpec {
+    fn nearby_receiver_row(&self, transfer: &ui::collaboration::NearbyTransferStatus) -> LiveRow {
         use ui::collaboration::NearbyTransferPhase;
 
-        let mut resource = ResourceSpec::new(
+        let mut resource = LiveRow::new(
             format!(
                 "nearby-transfer:{}",
                 nearby_action_locator("transfer", transfer.handle.as_bytes())
@@ -7340,10 +7338,12 @@ impl FilesState {
             t("files-nearby-status"),
         );
         inspect.type_mut().description = Some(t("files-nearby-status-detail"));
-        resource.actions.push(inspect);
-        self.append_nearby_decision_actions(&mut resource, transfer);
+        resource = resource.operation(inspect);
+        for action in self.nearby_decision_actions(transfer) {
+            resource = resource.operation(action);
+        }
         if transfer.phase == NearbyTransferPhase::Failed {
-            resource.actions.push(crate::effects::row_action(
+            resource = resource.operation(crate::effects::row_action(
                 &crate::effects::FilesEffect::RetryNearby {
                     transfer: transfer.handle,
                 },
@@ -7355,7 +7355,7 @@ impl FilesState {
             transfer.phase,
             NearbyTransferPhase::Queued | NearbyTransferPhase::Transferring
         ) {
-            resource.actions.push(crate::effects::row_action(
+            resource = resource.operation(crate::effects::row_action(
                 &crate::effects::FilesEffect::CancelNearby {
                     transfer: transfer.handle,
                 },
@@ -7366,11 +7366,10 @@ impl FilesState {
         resource
     }
 
-    fn append_nearby_decision_actions(
+    fn nearby_decision_actions(
         &self,
-        resource: &mut ResourceSpec,
         transfer: &ui::collaboration::NearbyTransferStatus,
-    ) {
+    ) -> Vec<ui::tilo_actions::ActionSpec> {
         use ui::collaboration::{NearbyTransferDirection, NearbyTransferPhase};
 
         if transfer.direction != NearbyTransferDirection::Receiving
@@ -7379,10 +7378,11 @@ impl FilesState {
                 NearbyTransferPhase::AwaitingConsent | NearbyTransferPhase::AwaitingDestination
             )
         {
-            return;
+            return Vec::new();
         }
+        let mut actions = Vec::new();
         for destination in self.nearby_send.destinations() {
-            resource.actions.push(crate::effects::row_action(
+            actions.push(crate::effects::row_action(
                 &crate::effects::FilesEffect::AcceptNearby {
                     transfer: transfer.handle,
                     destination: destination.handle,
@@ -7397,13 +7397,14 @@ impl FilesState {
                 ),
             ));
         }
-        resource.actions.push(crate::effects::row_action(
+        actions.push(crate::effects::row_action(
             &crate::effects::FilesEffect::DeclineNearby {
                 transfer: transfer.handle,
             },
             "decline",
             t("files-nearby-declined"),
         ));
+        actions
     }
 
     fn live_filesystem_extras(&self) -> Vec<ResourceSpec> {
@@ -7414,41 +7415,27 @@ impl FilesState {
     }
 
     pub(crate) fn published_live_rows(&self) -> Vec<ui::framework::LiveRow> {
-        use ui::framework::LiveRow;
-        let mut rows: Vec<LiveRow> = published_place_resources(&self.favorites())
-            .into_iter()
-            .chain(published_template_resources(self.available_templates()))
-            .map(LiveRow::from_resource)
-            .collect();
+        let mut rows: Vec<LiveRow> = published_place_resources(&self.favorites());
+        rows.extend(published_template_resources(self.available_templates()));
         rows.extend(self.live_entry_rows());
-        rows.extend(
-            self.live_other_resources()
-                .into_iter()
-                .map(LiveRow::from_resource),
-        );
+        rows.extend(self.live_other_resources());
         rows
     }
 
-    fn live_other_resources(&self) -> Vec<ResourceSpec> {
+    fn live_other_resources(&self) -> Vec<LiveRow> {
         let mut extras = self.live_remote_account_resources();
         extras.extend(self.live_drive_resources());
         if ui::bound_dispatch::local_person_invocation_permitted() {
             extras.extend(self.cloud_resources());
         }
-        let mut nearby_root = ResourceSpec::new(
-            "files.nearby",
-            "files.nearby",
-            crate::i18n::CATALOG.t("files-resource-nearby"),
-        );
-        self.append_nearby_receiver_resources(&mut nearby_root);
-        extras.extend(nearby_root.children);
+        extras.extend(self.nearby_receiver_rows());
         if let Some((failure, _)) = self.folder_failure() {
             extras.push(retry_row(failure.may_pass()));
         }
         extras
     }
 
-    fn live_remote_account_resources(&self) -> Vec<ResourceSpec> {
+    fn live_remote_account_resources(&self) -> Vec<LiveRow> {
         // Account discovery belongs to the host person, not to whoever owns
         // the workspace. Checked resource reads install this trusted scope too.
         if !ui::bound_dispatch::local_person_invocation_permitted() {
@@ -7459,13 +7446,6 @@ impl FilesState {
             .map(|account| {
                 let resource_id = crate::remote_accounts::resource_id(&account.id);
                 let availability = remote_folder_availability(&account);
-                let mut resource =
-                    ResourceSpec::new(resource_id, "files.remote-account", account.label.clone());
-                resource.presentation = Some(tilo_actions::ResourcePresentation {
-                    detail: Some(format!("{} at {}", account.kind.label(), account.host)),
-                    badge: account.badge(),
-                    preview: None,
-                });
                 let account_id = account.id.to_string();
                 let mut open = crate::effects::row_action(
                     &crate::effects::FilesEffect::OpenAccount {
@@ -7475,22 +7455,27 @@ impl FilesState {
                     crate::i18n::CATALOG.t("files-shortcuts-open"),
                 );
                 open.type_mut().contract.availability = availability;
-                resource.actions.push(open);
-                resource.actions.push(crate::effects::row_action(
-                    &crate::effects::FilesEffect::AccountDetails {
-                        account: account_id.clone(),
-                    },
-                    "details",
-                    crate::i18n::CATALOG.t("files-account-status"),
-                ));
-                resource.actions.push(crate::effects::row_action(
-                    &crate::effects::FilesEffect::Reauthenticate {
-                        account: account_id,
-                    },
-                    "reauthenticate",
-                    crate::i18n::CATALOG.t("files-account-reauthenticate"),
-                ));
-                resource
+                LiveRow::new(resource_id, "files.remote-account", account.label.clone())
+                    .presentation(tilo_actions::ResourcePresentation {
+                        detail: Some(format!("{} at {}", account.kind.label(), account.host)),
+                        badge: account.badge(),
+                        preview: None,
+                    })
+                    .operation(open)
+                    .operation(crate::effects::row_action(
+                        &crate::effects::FilesEffect::AccountDetails {
+                            account: account_id.clone(),
+                        },
+                        "details",
+                        crate::i18n::CATALOG.t("files-account-status"),
+                    ))
+                    .operation(crate::effects::row_action(
+                        &crate::effects::FilesEffect::Reauthenticate {
+                            account: account_id,
+                        },
+                        "reauthenticate",
+                        crate::i18n::CATALOG.t("files-account-reauthenticate"),
+                    ))
             })
             .collect()
     }
@@ -8171,7 +8156,7 @@ impl FilesState {
             return Some(found);
         }
         self.entry_by_resource_id(id)
-            .map(|entry| self.entry_resource(entry))
+            .map(|entry| self.entry_resource(entry).into_resource())
             .or_else(|| {
                 self.places_search
                     .resource(id)
@@ -8185,7 +8170,7 @@ impl FilesState {
             .or_else(|| {
                 self.folder_failure()
                     .filter(|_| id == RETRY_ROW)
-                    .map(|(failure, _)| retry_row(failure.may_pass()))
+                    .map(|(failure, _)| retry_row(failure.may_pass()).into_resource())
             })
     }
 }

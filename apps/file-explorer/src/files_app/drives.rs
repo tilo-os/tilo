@@ -204,7 +204,7 @@ impl FilesState {
             .map_err(|error| error.to_string())
     }
 
-    pub(super) fn live_drive_resources(&self) -> Vec<ResourceSpec> {
+    pub(super) fn live_drive_resources(&self) -> Vec<LiveRow> {
         if !ui::bound_dispatch::local_person_invocation_permitted() {
             return Vec::new();
         }
@@ -213,32 +213,31 @@ impl FilesState {
             .iter()
             .map(|drive| {
                 let place = drive_place(drive);
-                let mut resource = ResourceSpec::new(
-                    format!("files.drive:{}", drive.id),
-                    "files.drive",
-                    place.label,
-                );
                 let where_ = if drive.internal {
                     t("files-drive-internal")
                 } else {
                     t("files-drive-external")
                 };
-                resource.presentation = Some(tilo_actions::ResourcePresentation {
+                LiveRow::new(
+                    format!("files.drive:{}", drive.id),
+                    "files.drive",
+                    place.label,
+                )
+                .presentation(tilo_actions::ResourcePresentation {
                     detail: Some(format!(
                         "{where_} — {}",
                         crate::i18n::format_bytes(drive.size_bytes)
                     )),
                     badge: drive.open_at.is_some().then(|| t("files-drive-open")),
                     preview: None,
-                });
-                resource.actions.push(crate::effects::row_action(
+                })
+                .operation(crate::effects::row_action(
                     &crate::effects::FilesEffect::OpenDrive {
                         drive: drive.id.clone(),
                     },
                     "open",
                     t("files-drive-open-action"),
-                ));
-                resource
+                ))
             })
             .collect()
     }

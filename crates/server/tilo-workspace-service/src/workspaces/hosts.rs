@@ -68,7 +68,7 @@ impl Workspaces {
 
     /// Whether `workspace`'s governance names the device `device` among its
     /// hosts.
-    pub(crate) async fn names_host(&self, workspace: &str, device: [u8; 32]) -> bool {
+    pub(crate) async fn names_server(&self, workspace: &str, device: [u8; 32]) -> bool {
         let Ok(governed) = self.workspace(workspace).await else {
             return false;
         };
@@ -192,7 +192,7 @@ impl Workspaces {
     }
 
     /// Have the host `device`, at `addr`, hold `workspace` as well, as its
-    /// owners chose ([`Workspaces::chooses_hosts`]): hand the workspace over with [`HOST_WORKSPACE`] and name the
+    /// owners chose ([`Workspaces::chooses_servers`]): hand the workspace over with [`HOST_WORKSPACE`] and name the
     /// address it answers among the workspace's hosts. A host of this host's
     /// own person is admitted to the workspace as one of the owner's devices
     /// first; another person's host takes the workspace only when its
@@ -368,7 +368,7 @@ impl Workspaces {
     /// acts for them from a script or a command. Never an agent's grant, and
     /// never a device for being of the person whose host this is: every
     /// holder answers it alike.
-    pub(super) fn chooses_hosts(governed: &GovernedWorkspace, caller: &DeviceCert) -> bool {
+    pub(super) fn chooses_servers(governed: &GovernedWorkspace, caller: &DeviceCert) -> bool {
         let person = caller.user_public_key;
         let speaks_for_person =
             caller.capabilities.agent.is_none() || caller.capabilities.server_key;
@@ -387,7 +387,7 @@ impl Workspaces {
     /// # Errors
     ///
     /// The workspace is not held here.
-    pub async fn host_list(&self, workspace: &str) -> Result<Vec<WorkspaceHost>, String> {
+    pub async fn server_list(&self, workspace: &str) -> Result<Vec<WorkspaceHost>, String> {
         let hosts = self
             .hosts(workspace)
             .await
@@ -412,7 +412,7 @@ impl Workspaces {
     /// # Errors
     ///
     /// As [`Self::attach_host`], or the origin did not say who it is.
-    pub async fn add_host(&self, workspace: &str, origin: &str) -> Result<TransportHint, String> {
+    pub async fn add_server(&self, workspace: &str, origin: &str) -> Result<TransportHint, String> {
         let (device, addr) = host_at(origin, self.site_reach()).await?;
         self.attach_host(workspace, device, addr).await
     }
@@ -430,7 +430,7 @@ impl Workspaces {
     }
 
     /// Stop having the holder `named` hold `workspace`: named by its site's
-    /// origin, or by its device key (64 hex) as [`Self::host_list`] names it.
+    /// origin, or by its device key (64 hex) as [`Self::server_list`] names it.
     /// Answers whether the holder confirmed it let the workspace go
     /// ([`Self::detach_host`]).
     ///
@@ -438,7 +438,7 @@ impl Workspaces {
     ///
     /// The holder is not one of the workspace's, or the origin did not say
     /// who it is.
-    pub async fn remove_host(&self, workspace: &str, named: &str) -> Result<bool, String> {
+    pub async fn remove_server(&self, workspace: &str, named: &str) -> Result<bool, String> {
         let named = named.trim();
         let (device, addr) = if let Some(device) = device_key(named) {
             (device, None)
@@ -446,7 +446,7 @@ impl Workspaces {
             let (device, addr) = host_at(named, self.site_reach()).await?;
             (device, Some(addr))
         };
-        if !self.names_host(workspace, device).await {
+        if !self.names_server(workspace, device).await {
             return Err(format!("{named} does not hold the workspace"));
         }
         self.detach_host(workspace, device, addr).await
@@ -548,7 +548,7 @@ fn hex_postcard(value: &impl serde::Serialize) -> Result<String, String> {
         .map_err(|error| error.to_string())
 }
 
-/// One host of a workspace, as its owners list them ([`Workspaces::host_list`]).
+/// One host of a workspace, as its owners list them ([`Workspaces::server_list`]).
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct WorkspaceHost {
     /// The host's device key, hex: what removing it may name it by.

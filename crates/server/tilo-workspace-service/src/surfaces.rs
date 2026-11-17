@@ -125,10 +125,7 @@ pub(crate) fn keep(hash: &str, bytes: &[u8]) -> bool {
 
 /// Write `bytes` as `name` under `dir`, whole or not at all.
 fn write(dir: &Path, name: &str, bytes: &[u8]) -> std::io::Result<()> {
-    std::fs::create_dir_all(dir)?;
-    let part = dir.join(format!("{name}.part"));
-    std::fs::write(&part, bytes)?;
-    std::fs::rename(&part, dir.join(name))
+    tilo_files::native::atomic::write_creating_parent(&dir.join(name), bytes)
 }
 
 /// The [u8; 32] address `hash` names, when it names one.

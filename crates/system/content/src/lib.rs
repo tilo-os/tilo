@@ -275,6 +275,17 @@ pub trait ContentBackend: Send + Sync {
     /// Quota, integrity or I/O failures. Nothing is stored on error.
     fn put(&self, reader: &mut dyn Read, mime: &str) -> Result<Stored, ContentError>;
 
+    /// Store many items, answering each address in order: what [`Self::put`]
+    /// does for each, done together where a backend can (one index update, one
+    /// flush), so a folder of small files costs its bytes rather than its
+    /// calls. A failing item leaves the others' answers in place.
+    fn put_many(&self, items: &[(&[u8], &str)]) -> Vec<Result<Stored, ContentError>> {
+        items
+            .iter()
+            .map(|(bytes, mime)| self.put(&mut &bytes[..], mime))
+            .collect()
+    }
+
     fn open(&self, hash: &str) -> Result<Option<ContentReader>, ContentError>;
 
     fn has(&self, hash: &str) -> bool;
@@ -568,6 +579,25 @@ impl ContentStore {
         self.backend
             .put(&mut reader, &sniff(bytes).mime)
             .map(|stored| stored.hash)
+    }
+
+    /// Keep many items, answering each one's address in order: [`Self::put_public`]
+    /// for each, one store write where the backend can make it.
+    ///
+    /// # Errors
+    /// Each item its own, as [`Self::put_public`] refuses it.
+    pub fn put_public_many(&self, items: &[&[u8]]) -> Vec<Result<String, ContentError>> {
+        let mimes: Vec<String> = items.iter().map(|bytes| sniff(bytes).mime).collect();
+        let with_mime: Vec<(&[u8], &str)> = items
+            .iter()
+            .zip(&mimes)
+            .map(|(bytes, mime)| (*bytes, mime.as_str()))
+            .collect();
+        self.backend
+            .put_many(&with_mime)
+            .into_iter()
+            .map(|stored| stored.map(|stored| stored.hash))
+            .collect()
     }
 
     /// Keep `bytes` as the content `reference` names: sealed under its key when it carries one, so

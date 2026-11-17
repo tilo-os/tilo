@@ -279,6 +279,83 @@ tilo_test_env::scenario! {
 }
 
 tilo_test_env::scenario! {
+    /// The servers keeping the workspace, which its owners alone choose.
+    fn the_general_tab_lists_the_servers_keeping_the_workspace;
+
+    phase an_owner_sees_the_servers_keeping_the_workspace;
+    {
+        let mut owner = staged("general");
+        for text in ["Servers", "Made here", "3f2b1c00", "8d4e0a11"] {
+            assert!(says(&mut owner, text), "{text:?} is shown");
+        }
+        // Only the server that is not the one the workspace was made on can be let go here.
+        assert_eq!(
+            owner
+                .harness()
+                .a11y_nodes()
+                .iter()
+                .filter(|(_, node)| node.label() == Some("Remove"))
+                .count(),
+            1,
+            "one remove button, for the server that is not the one it was made on"
+        );
+
+        let mut viewer = staged("general-viewer");
+        assert!(!says(&mut viewer, "Servers"), "a viewer sees no servers");
+    }
+
+    phase removing_a_server_asks_the_shell_for_it;
+    {
+        let (mut app, state) = mounted("general");
+        press(&mut app, "ws-general-server-remove-8d4e0a11");
+        assert_eq!(
+            state.take_asked(),
+            [WorkspaceSettingsEffect::RemoveServer {
+                server: "8d4e0a11".to_owned()
+            }]
+        );
+    }
+
+    phase a_typed_site_is_asked_for_by_add_and_by_enter;
+    {
+        let (mut app, state) = mounted("general");
+        app.harness()
+            .perform_named(
+                "ws-general-server-origin",
+                &A11yAction::SetValue("https://tilo.sh".to_owned()),
+            )
+            .unwrap();
+        app.settle();
+        press(&mut app, "ws-general-server-add");
+        assert_eq!(
+            state.take_asked(),
+            [WorkspaceSettingsEffect::AddServer {
+                origin: "https://tilo.sh".to_owned()
+            }]
+        );
+
+        app.harness()
+            .perform_named(
+                "ws-general-server-origin",
+                &A11yAction::SetValue("https://eu1.tilo.sh".to_owned()),
+            )
+            .unwrap();
+        app.settle();
+        app.harness()
+            .perform_named("ws-general-server-origin", &A11yAction::Focus)
+            .unwrap();
+        app.harness().key("Enter");
+        app.settle();
+        assert_eq!(
+            state.take_asked(),
+            [WorkspaceSettingsEffect::AddServer {
+                origin: "https://eu1.tilo.sh".to_owned()
+            }]
+        );
+    }
+}
+
+tilo_test_env::scenario! {
     /// The People tab of workspace settings.
     fn the_people_tab_lists_members_and_asks_before_removing_one;
 

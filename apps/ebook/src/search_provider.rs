@@ -13,6 +13,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 
 use tilo_actions::ResourceSpec;
+use ui::framework::LiveRow;
 use ui::icons::Icon;
 use ui::search::SearchResult;
 use ui::tilo_resource::{Derived, SearchBody, SearchPiece, SearchText, SearchWeight};
@@ -564,17 +565,18 @@ impl BookSearch {
         chapter_data.blocks.get(block)?;
         let chapter_title = chapter_label(chapter_data, chapter);
         Some(
-            ResourceSpec::new(
+            LiveRow::new(
                 id,
                 "ebook.location",
                 format!("{chapter_title} in {}", Self::book_title(book)),
             )
-            .with_action(crate::actions::open_at(
+            .operation(crate::actions::open_at(
                 &book.id,
                 chapter,
                 Some(block),
                 "Open match",
-            )),
+            ))
+            .into_resource(),
         )
     }
 
@@ -586,8 +588,9 @@ impl BookSearch {
                 let book = self.books.get(book)?;
                 book.chapters.get(chapter)?;
                 return Some(
-                    ResourceSpec::new(id, "ebook.chapter", &entry.result.title)
-                        .with_action(crate::actions::open_at(&book.id, chapter, None, "Open")),
+                    LiveRow::new(id, "ebook.chapter", &entry.result.title)
+                        .operation(crate::actions::open_at(&book.id, chapter, None, "Open"))
+                        .into_resource(),
                 );
             }
             SearchTarget::Book(index) => self.books.get(index)?.id.clone(),

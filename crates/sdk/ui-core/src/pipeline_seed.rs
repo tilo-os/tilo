@@ -83,15 +83,10 @@ pub fn publish(
     let Some(data) = cache.get_data() else {
         return Ok(false);
     };
-    std::fs::create_dir_all(dir)?;
-    let staging = file.with_extension("tmp");
-    std::fs::write(&staging, &data)?;
     #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt as _;
-        std::fs::set_permissions(&staging, std::fs::Permissions::from_mode(0o644))?;
-    }
-    std::fs::rename(&staging, &file)?;
+    tilo_files::native::atomic::write_creating_parent_with_mode(&file, &data, 0o644)?;
+    #[cfg(not(unix))]
+    tilo_files::native::atomic::write_creating_parent(&file, &data)?;
     Ok(true)
 }
 

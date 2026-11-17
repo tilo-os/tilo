@@ -7,7 +7,7 @@ use ui::tilo_resource::Atom;
 use vello::kurbo::Rect;
 
 fn registry() -> ui::tilo_actions::ActionRegistry {
-    ui::tilo_actions::ActionRegistry::with(<PrintDefaults as ui::tilo_resource::Resource>::register)
+    ui::tilo_actions::ActionRegistry::with(ui::tilo_resource::group::register::<PrintDefaults>)
 }
 
 thread_local! {

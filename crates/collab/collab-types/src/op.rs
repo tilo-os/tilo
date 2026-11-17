@@ -25,10 +25,9 @@ use crate::role::OpKind;
 
 pub(crate) const DOCUMENT_MUTATION_V2_PREFIX: &[u8] = b"tilo-document-mutation-v2\0";
 pub(crate) const DOCUMENT_SNAPSHOT_TAG: u8 = 1;
-/// An incremental change set, deflated: the changes of one gesture repeat
-/// their history entry, actor and marks nearly byte for byte, and travel and
-/// stay stored at a fraction of their size. (Tag 2 was the same changes
-/// uncompressed.)
+/// An incremental change set, as its writer saved the changes. A session's
+/// delta coding carries the bytes it repeats from one keystroke to the next,
+/// so the set travels as it was written.
 pub(crate) const DOCUMENT_INCREMENTAL_TAG: u8 = 4;
 /// One piece of a mutation too large for a single frame; see
 /// [`crate::document_transfer`].
@@ -37,15 +36,12 @@ pub(crate) const DOCUMENT_SEGMENT_TAG: u8 = 3;
 /// split into segments (see [`crate::document_transfer`]) up to
 /// [`crate::document_transfer::MAX_DOCUMENT_TRANSFER_BYTES`].
 pub const MAX_DOCUMENT_MUTATION_BYTES: usize = 3 * 1024 * 1024;
-/// Deflate never grows its input by more than five bytes per 64 KiB block
-/// it stores, so the largest transfer's frame body stays under this.
+/// A body is its mutation's bytes behind the prefix and tag, so the largest
+/// transfer's frame stays under this.
 const MAX_ENCODED_DOCUMENT_MUTATION_BYTES: usize = DOCUMENT_MUTATION_V2_PREFIX.len()
     + crate::document_transfer::MAX_DOCUMENT_TRANSFER_BYTES
     + crate::document_transfer::MAX_DOCUMENT_TRANSFER_BYTES / 1024
     + 16;
-/// Deflate level of an incremental frame: the fastest, which compresses a
-/// gesture's changes as well as the best does.
-const INCREMENTAL_DEFLATE_LEVEL: u8 = 1;
 const DOCUMENT_ARTIFACT_DOMAIN: &[u8] = b"tilo-document-artifact-v1\0";
 const DOCUMENT_ATTESTATION_DOMAIN: &[u8] = b"tilo-document-attestation-v1\0";
 const LIVE_ARTIFACT_DOMAIN: &[u8] = b"tilo-live-artifact-v1\0";
@@ -88,10 +84,6 @@ pub enum DocumentMutationError {
     /// A segment header is inconsistent with the bytes it carries.
     #[error("document segment is invalid: {0}")]
     InvalidSegment(&'static str),
-    /// An incremental frame's deflated changes do not inflate within the
-    /// transfer budget.
-    #[error("document changes do not inflate")]
-    Inflate,
     /// The action commit carried inside the payload is not readable.
     #[error("workspace commit is invalid: {0}")]
     InvalidCommit(String),
@@ -144,7 +136,7 @@ impl DocumentMutation {
                 max: MAX_DOCUMENT_MUTATION_BYTES,
             });
         }
-        let body = self.wire_body();
+        let body = self.data();
         let mut encoded = Vec::with_capacity(
             DOCUMENT_MUTATION_V2_PREFIX
                 .len()
@@ -156,32 +148,15 @@ impl DocumentMutation {
             Self::Snapshot(_) => DOCUMENT_SNAPSHOT_TAG,
             Self::Incremental(_) => DOCUMENT_INCREMENTAL_TAG,
         });
-        encoded.extend_from_slice(&body);
+        encoded.extend_from_slice(body);
         Ok(encoded)
     }
 
-    /// The bytes a frame carries of this mutation, whole or split into
-    /// segments: a snapshot as Automerge saved it, whose columns are already
-    /// compressed, and an incremental change set deflated.
-    pub(crate) fn wire_body(&self) -> std::borrow::Cow<'_, [u8]> {
-        match self {
-            Self::Snapshot(data) => std::borrow::Cow::Borrowed(data),
-            Self::Incremental(data) => std::borrow::Cow::Owned(
-                miniz_oxide::deflate::compress_to_vec(data, INCREMENTAL_DEFLATE_LEVEL),
-            ),
-        }
-    }
-
-    /// The mutation a frame body of kind `tag` carries ([`Self::wire_body`]).
+    /// The mutation a frame body of kind `tag` carries.
     pub(crate) fn of_wire_body(tag: u8, body: &[u8]) -> Result<Self, DocumentMutationError> {
         match tag {
             DOCUMENT_SNAPSHOT_TAG => Ok(Self::Snapshot(body.to_vec())),
-            DOCUMENT_INCREMENTAL_TAG => miniz_oxide::inflate::decompress_to_vec_with_limit(
-                body,
-                crate::document_transfer::MAX_DOCUMENT_TRANSFER_BYTES,
-            )
-            .map(Self::Incremental)
-            .map_err(|_| DocumentMutationError::Inflate),
+            DOCUMENT_INCREMENTAL_TAG => Ok(Self::Incremental(body.to_vec())),
             DOCUMENT_SEGMENT_TAG => Err(DocumentMutationError::Segmented),
             other => Err(DocumentMutationError::UnknownKind(other)),
         }
@@ -1076,10 +1051,7 @@ mod tests {
             // valid endpoint mutation.
             let mut frame = DOCUMENT_MUTATION_V2_PREFIX.to_vec();
             frame.push(DOCUMENT_INCREMENTAL_TAG);
-            frame.extend(miniz_oxide::deflate::compress_to_vec(
-                &vec![0; MAX_DOCUMENT_MUTATION_BYTES.saturating_add(1)],
-                INCREMENTAL_DEFLATE_LEVEL,
-            ));
+            frame.extend(vec![0; MAX_DOCUMENT_MUTATION_BYTES.saturating_add(1)]);
             let (app, workspace, record) = ("notes", "workspace", "record");
             let op = SignedOp::new_unsigned(
                 frame,

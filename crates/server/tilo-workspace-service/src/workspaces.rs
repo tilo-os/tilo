@@ -1514,13 +1514,7 @@ impl Workspaces {
         let mut governed = governed.lock().await;
         // Recorded first: a host stopped halfway keeps it released.
         let marker = governed.path.with_extension(RELEASED);
-        let file = std::fs::File::create(&marker).map_err(|error| error.to_string())?;
-        file.sync_all().map_err(|error| error.to_string())?;
-        if let Some(dir) = marker.parent() {
-            std::fs::File::open(dir)
-                .and_then(|dir| dir.sync_all())
-                .map_err(|error| error.to_string())?;
-        }
+        tilo_files::native::atomic::write(&marker, b"").map_err(|error| error.to_string())?;
         self.inner.workspaces.lock().await.remove(workspace);
         self.inner.direct.release(governed.workspace_id());
         // Its sessions to the other holders end with it, and what it was

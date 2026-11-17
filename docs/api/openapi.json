@@ -1613,10 +1613,10 @@
         }
       }
     },
-    "/v1/workspaces/{workspace}/hosts": {
+    "/v1/workspaces/{workspace}/servers": {
       "get": {
-        "operationId": "listHosts",
-        "summary": "The hosts holding the workspace, the one that governs it first",
+        "operationId": "listServers",
+        "summary": "The servers keeping the workspace, the one that governs it first",
         "tags": [
           "Resources"
         ],
@@ -1639,11 +1639,11 @@
         ],
         "responses": {
           "200": {
-            "description": "The hosts holding the workspace, the one that governs it first",
+            "description": "The servers keeping the workspace, the one that governs it first",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Hosts"
+                  "$ref": "#/components/schemas/Servers"
                 }
               }
             }
@@ -1661,8 +1661,8 @@
         }
       },
       "post": {
-        "operationId": "addHost",
-        "summary": "Have another host hold the workspace as well, as that host's rules allow",
+        "operationId": "addServer",
+        "summary": "Have another server keep the workspace as well, as that server's rules allow",
         "tags": [
           "Resources"
         ],
@@ -1688,11 +1688,11 @@
         ],
         "responses": {
           "200": {
-            "description": "Have another host hold the workspace as well, as that host's rules allow",
+            "description": "Have another server keep the workspace as well, as that server's rules allow",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Hosts"
+                  "$ref": "#/components/schemas/Servers"
                 }
               }
             }
@@ -1713,17 +1713,17 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/NewHost"
+                "$ref": "#/components/schemas/NewServer"
               }
             }
           }
         }
       }
     },
-    "/v1/workspaces/{workspace}/hosts/{host}": {
+    "/v1/workspaces/{workspace}/servers/{server}": {
       "delete": {
-        "operationId": "removeHost",
-        "summary": "Have a host, by its site (percent-encoded) or its device key, hold the workspace no more",
+        "operationId": "removeServer",
+        "summary": "Have a server, by its site (percent-encoded) or its device key, keep the workspace no more",
         "tags": [
           "Resources"
         ],
@@ -1738,13 +1738,13 @@
             "description": "The workspace's id"
           },
           {
-            "name": "host",
+            "name": "server",
             "in": "path",
             "required": true,
             "schema": {
               "type": "string"
             },
-            "description": "The host's site (`https://tilo.sh`), or its device key as listing the hosts names it"
+            "description": "The server's site (`https://tilo.sh`), or its device key as listing the servers names it"
           },
           {
             "$ref": "#/components/parameters/Invocation"
@@ -1755,11 +1755,11 @@
         ],
         "responses": {
           "200": {
-            "description": "Have a host, by its site (percent-encoded) or its device key, hold the workspace no more",
+            "description": "Have a server, by its site (percent-encoded) or its device key, keep the workspace no more",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Hosts"
+                  "$ref": "#/components/schemas/Servers"
                 }
               }
             }
@@ -3789,23 +3789,23 @@
         "additionalProperties": true,
         "description": "The addresses left at the workspace's entry while it takes people by\ninvitation, oldest first, and whether the entry mails invitations."
       },
-      "Hosts": {
+      "Servers": {
         "type": "object",
         "additionalProperties": true,
-        "description": "The hosts holding the workspace (`hosts`, each its `device` key, the\n`person` it runs for, and whether it `governs` the workspace: the one it\nwas made on, first), and after a removal whether that host confirmed it let\nthe workspace go (`confirmed`)."
+        "description": "The servers keeping the workspace (`servers`, each its `device` key, the\n`person` it runs for, and whether it `governs` the workspace: the one it\nwas made on, first), and after a removal whether that server confirmed it\nlet the workspace go (`confirmed`)."
       },
-      "NewHost": {
+      "NewServer": {
         "type": "object",
         "properties": {
           "origin": {
             "type": "string",
-            "description": "The host's site, like `https://tilo.sh`. You must be let in there, and\nit may refuse by its own rules."
+            "description": "The server's site, like `https://tilo.sh`. You must be let in there,\nand it may refuse by its own rules."
           }
         },
         "required": [
           "origin"
         ],
-        "description": "Another host to hold the workspace as well."
+        "description": "Another server to keep the workspace as well."
       },
       "Invitation": {
         "type": "object",

@@ -2218,9 +2218,11 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             appearance: None,
         };
         let mut edited = None;
+        let admitting = timing_start();
         let mut started = self
             .start_confirmed(&mut request, wait, record, &mut edited)
             .await;
+        timing_done("call.admit", admitting);
         if current
             && matches!(
                 &started,
@@ -2237,10 +2239,12 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
                 .start_confirmed(&mut request, wait, record, &mut edited)
                 .await;
         }
+        let settling = timing_start();
         let mut value = match started? {
             Admission::Unanswered(patience) => unanswered_admission(invocation, patience),
             Admission::Answered => self.settled(invocation, wait).await?,
         };
+        timing_done("call.settle", settling);
         // The person changed what would run before allowing it: the agent
         // is told what ran, not left believing its own arguments did.
         if let (Some(arguments), Some(answer)) = (edited, value.as_object_mut()) {
@@ -2788,6 +2792,23 @@ const OPENED_NO_ACTION: &str = "the app offers no open action taking a path, so 
 /// than told the run is still pending after 30.
 const DEFAULT_WAIT_MS: u64 = 5_000;
 const MAX_WAIT_MS: u64 = 60_000;
+/// A clock read for timing one phase of a call, when the `tilo_mcp::timing`
+/// target is at debug: off, it reads no clock and costs one disabled check.
+pub(crate) fn timing_start() -> Option<std::time::Instant> {
+    tracing::enabled!(target: "tilo_mcp::timing", tracing::Level::DEBUG)
+        .then(std::time::Instant::now)
+}
+/// Time the phase `step`, begun at `started` ([`timing_start`]), in
+/// microseconds: `TIMING <step> <µs>` says where a slow call waited.
+pub(crate) fn timing_done(step: &'static str, started: Option<std::time::Instant>) {
+    if let Some(started) = started {
+        tracing::debug!(
+            target: "tilo_mcp::timing",
+            "TIMING {step} {}",
+            started.elapsed().as_micros()
+        );
+    }
+}
 /// Actions one `calls` batch runs. A document's edits and its save fit;
 /// more than this is several turns.
 const MAX_CALLS: usize = 32;

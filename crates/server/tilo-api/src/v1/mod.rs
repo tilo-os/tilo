@@ -716,25 +716,26 @@ impl<'a> Caller<'a> {
                 shaped::<answers::WaitList>(listed.get("result").cloned().unwrap_or_default())
                     .map(Answer::ok)
             }
-            "listHosts" => {
+            "listServers" => {
                 let listed = self
-                    .call("tilo_do", json!({"path": "workspace/hosts#list"}))
+                    .call("tilo_do", json!({"path": "workspace/servers#list"}))
                     .await?;
-                shaped::<answers::Hosts>(listed.get("result").cloned().unwrap_or_default())
+                shaped::<answers::Servers>(listed.get("result").cloned().unwrap_or_default())
                     .map(Answer::ok)
             }
-            "addHost" => {
-                let new: answers::NewHost = self.json_body()?;
-                let added = json!({"path": "workspace/hosts#add", "args": new});
+            "addServer" => {
+                let new: answers::NewServer = self.json_body()?;
+                let added = json!({"path": "workspace/servers#add", "args": new});
                 let listed = self.call("tilo_do", added).await?;
-                shaped::<answers::Hosts>(listed.get("result").cloned().unwrap_or_default())
+                shaped::<answers::Servers>(listed.get("result").cloned().unwrap_or_default())
                     .map(Answer::ok)
             }
-            "removeHost" => {
-                let host = self.params.get("host").to_owned();
-                let removed = json!({"path": "workspace/hosts#remove", "args": {"host": host}});
+            "removeServer" => {
+                let server = self.params.get("server").to_owned();
+                let removed =
+                    json!({"path": "workspace/servers#remove", "args": {"server": server}});
                 let listed = self.call("tilo_do", removed).await?;
-                shaped::<answers::Hosts>(listed.get("result").cloned().unwrap_or_default())
+                shaped::<answers::Servers>(listed.get("result").cloned().unwrap_or_default())
                     .map(Answer::ok)
             }
             "invitePerson" => {

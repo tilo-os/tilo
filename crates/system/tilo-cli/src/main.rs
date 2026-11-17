@@ -589,7 +589,7 @@ fn command_here(here: Here) -> clap::Command {
         .mut_subcommands(|sub| {
             let absent = match sub.get_name() {
                 "open" | "action" => !here.desktop,
-                // A hosted workspace's hosts are chosen from anywhere; only
+                // A hosted workspace's servers are chosen from anywhere; only
                 // branching one is this desktop's.
                 "workspace" => {
                     return sub.mut_subcommand("branch", |branch| branch.hide(!here.desktop));
@@ -1051,10 +1051,10 @@ fn run_hosted(
             .map(|workspace| hosted::invocations(reach, &workspace, limit, cursor.as_deref())),
         Cmd::Sdk { cmd } => Ok(sdk::generate(reach, workspace.as_deref(), cmd)),
         Cmd::Workspace {
-            cmd: desktop::WorkspaceCmd::Hosts { cmd },
+            cmd: desktop::WorkspaceCmd::Servers { cmd },
         } => workspace
             .ok_or_else(needs_workspace)
-            .map(|workspace| hosted::hosts(reach, &workspace, cmd)),
+            .map(|workspace| hosted::servers(reach, &workspace, cmd)),
         // Only an explicit `-w` lands a migration in a hosted workspace: without one it comes
         // over this computer's own, through the session `tilo login` holds.
         Cmd::Migrate { json, cmd } if workspace.is_some() => {
@@ -2563,15 +2563,15 @@ mod tests {
                 Cli::try_parse_from(["tilo", "workspace", "branch", "Research"]).is_err(),
                 "a branch is named"
             );
-            let hosts = Cli::try_parse_from([
-                "tilo", "workspace", "hosts", "add", "https://tilo.sh", "-w", "Tilo",
+            let servers = Cli::try_parse_from([
+                "tilo", "workspace", "servers", "add", "https://tilo.sh", "-w", "Tilo",
             ])
-            .expect("workspace hosts add parses");
+            .expect("workspace servers add parses");
             assert!(matches!(
-                hosts.cmd,
+                servers.cmd,
                 Cmd::Workspace {
-                    cmd: desktop::WorkspaceCmd::Hosts {
-                        cmd: hosted::HostsCmd::Add { ref origin }
+                    cmd: desktop::WorkspaceCmd::Servers {
+                        cmd: hosted::ServersCmd::Add { ref origin }
                     }
                 } if origin == "https://tilo.sh"
             ));

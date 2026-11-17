@@ -194,7 +194,7 @@ pub struct PersistentArgs {
     #[arg(long = "operator-socket", value_name = "PATH")]
     pub operator_socket: Option<PathBuf>,
     /// The workspaces of other people this host holds whoever's they are, when
-    /// an owner has the host governing one hand it over (`tilo workspace hosts
+    /// an owner has the host governing one hand it over (`tilo workspace servers
     /// add`): `anyone`, or the workspaces' ids, comma-separated. Without it
     /// the host holds its own person's, and those of the people it let in.
     #[arg(long = "hold-for", value_name = "WORKSPACES")]
@@ -505,11 +505,7 @@ fn host_key(state: &Path) -> anyhow::Result<SigningKey> {
 
 /// Write `bytes` to `path` atomically, readable by this user only.
 fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
-    write_atomic(path, bytes, true)
-}
-
-fn write_atomic(path: &Path, bytes: &[u8], private: bool) -> std::io::Result<()> {
-    tilo_files::native::atomic::write_with_mode(path, bytes, if private { 0o600 } else { 0o644 })
+    tilo_files::native::atomic::write_with_mode(path, bytes, 0o600)
 }
 
 /// The workspace id kept in `id_file`.
@@ -571,7 +567,8 @@ async fn governed_workspace(
         .rename(&workspace, shown)
         .await
         .map_err(|error| anyhow::anyhow!("name the workspace {shown:?}: {error}"))?;
-    write_atomic(id_file, workspace.as_bytes(), false).context("write the workspace id file")?;
+    tilo_files::native::atomic::write_with_mode(id_file, workspace.as_bytes(), 0o644)
+        .context("write the workspace id file")?;
     Ok(workspace)
 }
 
@@ -1794,7 +1791,7 @@ async fn answer_operator_socket(context: OperatorContext, stream: tokio::net::Un
                 reason: format!(
                     "the operator socket takes state, not {}; owners and administrators let \
                      people in with `tilo members add` and `tilo members invite`, and owners \
-                     choose a workspace's hosts with `tilo workspace hosts`",
+                     choose a workspace's servers with `tilo workspace servers`",
                     other.to_line().trim()
                 ),
             }

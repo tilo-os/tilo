@@ -385,8 +385,8 @@ impl Worker {
     }
 }
 
-/// Whether `request` opens a file in Files: what puts it into the workspace's
-/// tree ([`super::tree_put`]).
+/// Whether `request` opens files in Files: what puts them into the
+/// workspace's tree ([`super::tree_put`]), one file or many at once.
 fn puts_into_the_tree(request: &InvokeRequest) -> bool {
     let target = &request.target;
     if provider_workspace(&target.provider).is_none() {
@@ -397,14 +397,15 @@ fn puts_into_the_tree(request: &InvokeRequest) -> bool {
     if super::tree_put::acts_on_tree(target) {
         return true;
     }
+    let arguments = super::invoke_arguments(&request.argument);
     target.address.action == APPLICATION_OPEN_ACTION
         && target
             .address
             .resource
             .strip_prefix(APPLICATION_RESOURCE_PREFIX)
             == Some(tilo_fs::tree_document::FILES_APP)
-        && super::opened_file::OpenedFile::named(&super::invoke_arguments(&request.argument))
-            .is_ok_and(|file| file.is_some())
+        && (arguments.contains_key("files")
+            || super::opened_file::OpenedFile::named(&arguments).is_ok_and(|file| file.is_some()))
 }
 
 #[cfg(test)]

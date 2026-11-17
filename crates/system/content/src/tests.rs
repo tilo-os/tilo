@@ -80,6 +80,36 @@ fn a_store_is_a_handle_not_a_process_global() {
 }
 
 #[test]
+fn many_items_are_kept_together_and_answer_in_order() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = ContentStore::in_dir(dir.path().join("plain"));
+    let items: Vec<Vec<u8>> = (0..40).map(|n| format!("item {n}").into_bytes()).collect();
+    let refs: Vec<&[u8]> = items.iter().map(Vec::as_slice).collect();
+    let kept = store.put_public_many(&refs);
+    assert_eq!(kept.len(), items.len(), "one answer for each item");
+    for (item, kept) in items.iter().zip(&kept) {
+        let kept = kept.as_ref().expect("the item is kept");
+        assert_eq!(store.read(kept), Some(item.clone()), "the bytes come back");
+    }
+    // The same set again is a no-op that answers the same addresses.
+    let again = store.put_public_many(&refs);
+    assert_eq!(again.len(), refs.len());
+    assert!(again.iter().all(Result::is_ok));
+
+    // A workspace's store keeps a batch through its wrapper.
+    let stores =
+        WorkspaceStores::in_dir(dir.path().join("workspaces"), limits(1024, 16 * 1024, 64));
+    let workspace = stores.get("6f1c2a3b-4d5e-4f60-8a7b-9c0d1e2f3a4b").unwrap();
+    let kept = workspace.put_public_many(&refs);
+    assert!(kept.iter().all(Result::is_ok), "the wrapper keeps a batch");
+    let first = kept.first().and_then(|kept| kept.as_ref().ok());
+    assert_eq!(
+        first.and_then(|hash| workspace.read(hash)),
+        items.first().cloned(),
+        "the first item reads back"
+    );
+}
+#[test]
 fn directory_writes_and_reads_stream() {
     let dir = tempfile::tempdir().unwrap();
     let store = ContentStore::in_dir(dir.path());

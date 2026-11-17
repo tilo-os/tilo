@@ -15,7 +15,7 @@
 //! a burst of shell changes publishes the newest list, and an unchanged list is neither rewritten
 //! nor published again.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -322,7 +322,7 @@ fn take_pending(inner: &Inner) -> Option<Vec<u8>> {
 /// The write is atomic: the daemon mounts this file and must never read a half-written list and
 /// conclude the person has no permissions.
 fn write_and_publish(inner: &Inner, bytes: &[u8]) -> Result<(), String> {
-    write_atomically(&inner.acl, bytes)
+    tilo_files::native::atomic::write_private(&inner.acl, bytes)
         .map_err(|error| format!("write the access list {}: {error}", inner.acl.display()))?;
     let Some(signer) = &inner.signer else {
         return Ok(());
@@ -352,38 +352,6 @@ fn write_and_publish(inner: &Inner, bytes: &[u8]) -> Result<(), String> {
     ))
 }
 
-fn write_atomically(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
-    use std::io::Write as _;
-    use std::os::unix::fs::{DirBuilderExt as _, OpenOptionsExt as _, PermissionsExt as _};
-    if let Some(parent) = path.parent() {
-        std::fs::DirBuilder::new()
-            .recursive(true)
-            .mode(0o700)
-            .create(parent)?;
-        if let Ok(metadata) = std::fs::metadata(parent)
-            && metadata.permissions().mode() & 0o077 != 0
-        {
-            std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700))?;
-        }
-    }
-    let temporary = path.with_extension(format!("new-{}", std::process::id()));
-    let result = (|| {
-        let mut file = std::fs::OpenOptions::new()
-            .create(true)
-            .truncate(true)
-            .write(true)
-            .mode(0o600)
-            .open(&temporary)?;
-        file.write_all(bytes)?;
-        file.sync_all()?;
-        std::fs::rename(&temporary, path)
-    })();
-    if result.is_err() {
-        let _ = std::fs::remove_file(&temporary);
-    }
-    result
-}
-
 #[cfg(test)]
 #[allow(
     clippy::unwrap_used,
@@ -396,6 +364,7 @@ mod tests {
     use super::*;
     use collab_types::caps::{Access, CapOverride, Effect, Expiry};
     use std::os::unix::fs::PermissionsExt as _;
+    use std::path::Path;
     use tilo_desktop_model::Workspace;
 
     const PERSON: &str = "1111111111111111111111111111111111111111111111111111111111111111";

@@ -422,17 +422,22 @@ impl Session {
     /// names one.
     async fn serve_in(&self, workspace: &str, program: Option<&str>, request: Value) -> Reply {
         let id = request.get("id").cloned().unwrap_or(Value::Null);
+        let looking = timing_start();
         match self.on_device(workspace, program).await {
             Ok(Some(held)) => {
-                return held
+                let handling = timing_start();
+                let answer = held
                     .0
                     .handle(request)
                     .await
                     .map_or_else(Reply::accepted, Reply::one);
+                timing_done("api.handle_on_device", handling);
+                return answer;
             }
             Ok(None) => {}
             Err(refused) => return Reply::one(error(&id, -32000, &refused)),
         }
+        timing_done("api.device", looking);
         if matches!(self.reach, Reach::Forwarded(_))
             && request.get("method").and_then(Value::as_str) == Some("tools/call")
         {
@@ -476,16 +481,21 @@ impl Session {
                 return Reply::one(result(&id, &answered));
             }
         }
-        let run = match self.served(workspace, program).await {
+        let entering = timing_start();
+        let served = match self.served(workspace, program).await {
             Ok(held) => held,
             Err(ServerError::NotFound) => {
                 return Reply::one(error(&id, -32602, "no such workspace"));
             }
             Err(other) => return Reply::one(error(&id, -32000, &other.to_string())),
         };
-        Box::pin(run.server.handle(request))
+        timing_done("api.enter", entering);
+        let handling = timing_start();
+        let answer = Box::pin(served.server.handle(request))
             .await
-            .map_or_else(Reply::accepted, Reply::one)
+            .map_or_else(Reply::accepted, Reply::one);
+        timing_done("api.handle", handling);
+        answer
     }
 
     /// The session in `workspace` when one of the person's devices hosts it, as
@@ -949,11 +959,11 @@ args: {role, email?}, workspace}` answers a `link` that signs them in and lands 
 `role` (viewer, commenter, editor or administrator); `workspace/members#list` names who is in it, and \
 `workspace/members#name {name}` sets how it names the key's own person, which is what their \
 invitations say. \
-A workspace can be held by more than one host: `tilo_do {path: \"workspace/hosts#add\", \
-args: {origin: \"https://tilo.sh\"}, workspace}` has that host keep it as well (both keep it, a change \
-on either reaches the other, and its people reach it at either; that host takes it only for an owner \
-it let in), `workspace/hosts#list` names the hosts holding it and `workspace/hosts#remove {host}` \
-lets one go; only its owners choose. \
+A workspace can be kept by more than one server: `tilo_do {path: \"workspace/servers#add\", \
+args: {origin: \"https://tilo.sh\"}, workspace}` has that server keep it as well (both keep it, a \
+change on either reaches the other, and its people reach it at either; that server takes it only \
+for an owner it let in), `workspace/servers#list` names the servers keeping it and \
+`workspace/servers#remove {server}` lets one go; only its owners choose. \
 A command an agent runs in a workspace's Linux machine (`terminal#run`) asks the person each \
 time; `tilo_do {path: \"workspace/unattended#set\", args: {on: true}, workspace}` asks them once \
 to let keys minted for that workspace alone run commands there without asking (and in branches \
@@ -1011,4 +1021,22 @@ fn with_workspace_argument(tool: &Value) -> Value {
         );
     }
     tool
+}
+
+/// A clock read for timing one phase of a call, when the `tilo_api::timing`
+/// target is at debug: off, it reads no clock.
+fn timing_start() -> Option<Instant> {
+    tracing::enabled!(target: "tilo_api::timing", tracing::Level::DEBUG).then(Instant::now)
+}
+
+/// Time the phase `step`, begun at `started` ([`timing_start`]), in
+/// microseconds: `TIMING <step> <µs>` says where a slow call waited.
+fn timing_done(step: &'static str, started: Option<Instant>) {
+    if let Some(started) = started {
+        tracing::debug!(
+            target: "tilo_api::timing",
+            "TIMING {step} {}",
+            started.elapsed().as_micros()
+        );
+    }
 }

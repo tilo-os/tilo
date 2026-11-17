@@ -1,37 +1,37 @@
-//! Which hosts hold a workspace, as the path `workspace/hosts` of every
+//! Which servers keep a workspace, as the path `workspace/servers` of every
 //! workspace a key acts in.
 //!
-//! - `workspace/hosts#list` (or `tilo_read workspace/hosts`) answers the hosts
-//!   holding it: the one it was made on, which governs it, first;
-//! - `workspace/hosts#add {origin}` has the host whose site is at `origin`
-//!   (`https://tilo.sh`) hold it as well: both keep it, a change on either
-//!   reaches the other, and its members reach it at either. That host takes
+//! - `workspace/servers#list` (or `tilo_read workspace/servers`) answers the
+//!   servers keeping it: the one it was made on, which governs it, first;
+//! - `workspace/servers#add {origin}` has the server whose site is at `origin`
+//!   (`https://tilo.sh`) keep it as well: both keep it, a change on either
+//!   reaches the other, and its members reach it at either. That server takes
 //!   it as its own rules say: only for an owner of it it let in, if it has capacity;
-//! - `workspace/hosts#remove {host}` has a host, named by its site or by its
-//!   device key as the list names it, hold it no more.
+//! - `workspace/servers#remove {server}` has a server, named by its site or by
+//!   its device key as the list names it, keep it no more.
 //!
 //! All are the workspace's own governance actions (`tilo.workspace`'s
-//! `host.list`, `host.add` and `host.remove`), asked of the host that governs
-//! it over the key's session, and only its owners have them: from a device of
-//! theirs, or a key they created reaching all their workspaces. Each answers
-//! the hosts as they are then.
+//! `server.list`, `server.add` and `server.remove`), asked of the server that
+//! governs it over the key's session, and only its owners have them: from a
+//! device of theirs, or a key they created reaching all their workspaces. Each
+//! answers the servers as they are then.
 
 use super::Session;
 use crate::account::{Outcome, answer, failed};
 use serde_json::{Map, Value, json};
 
-/// The path of a workspace's hosts.
-pub const ROOT: &str = "workspace/hosts";
+/// The path of a workspace's servers.
+pub const ROOT: &str = "workspace/servers";
 /// The workspace's governance actions this path asks.
-const LIST: &str = "host.list";
-const ADD: &str = "host.add";
-const REMOVE: &str = "host.remove";
+const LIST: &str = "server.list";
+const ADD: &str = "server.add";
+const REMOVE: &str = "server.remove";
 /// What a refusal names as the next step.
-const OWNERS_ONLY: &str = "an owner of the workspace chooses its hosts, from a device of theirs \
+const OWNERS_ONLY: &str = "an owner of the workspace chooses its servers, from a device of theirs \
                            or a key they created reaching all their workspaces; the other server \
                            keeps it only for an owner it let in: sign in there first";
 
-/// Whether `tool` with `arguments` is about the workspace's hosts.
+/// Whether `tool` with `arguments` is about the workspace's servers.
 pub(crate) fn addresses(tool: &str, arguments: &Value) -> bool {
     matches!(tool, "tilo_do" | "tilo_read")
         && arguments
@@ -41,7 +41,7 @@ pub(crate) fn addresses(tool: &str, arguments: &Value) -> bool {
 }
 
 impl Session {
-    /// Answer `tool` with `arguments` on `workspace`'s hosts, typed when
+    /// Answer `tool` with `arguments` on `workspace`'s servers, typed when
     /// `structured`.
     pub(super) async fn hosts(
         &self,
@@ -62,10 +62,10 @@ impl Session {
                 .filter(|text| !text.is_empty())
         };
         let outcome = match (tool, path) {
-            ("tilo_do", "workspace/hosts#list") | ("tilo_read", ROOT) => {
+            ("tilo_do", "workspace/servers#list") | ("tilo_read", ROOT) => {
                 self.ask_hosts(workspace, LIST, Map::new()).await
             }
-            ("tilo_do", "workspace/hosts#add") => match text("origin") {
+            ("tilo_do", "workspace/servers#add") => match text("origin") {
                 Some(origin) => {
                     let mut asked = Map::new();
                     asked.insert("origin".into(), json!(origin));
@@ -73,33 +73,33 @@ impl Session {
                 }
                 None => failed(
                     "invalid_arguments",
-                    "`origin` is the other host's site",
+                    "`origin` is the other server's site",
                     "pass args {origin: \"https://tilo.sh\"}",
                 ),
             },
-            ("tilo_do", "workspace/hosts#remove") => match text("host") {
-                Some(host) => {
+            ("tilo_do", "workspace/servers#remove") => match text("server") {
+                Some(server) => {
                     let mut asked = Map::new();
-                    asked.insert("host".into(), json!(host));
+                    asked.insert("server".into(), json!(server));
                     self.ask_hosts(workspace, REMOVE, asked).await
                 }
                 None => failed(
                     "invalid_arguments",
-                    "`host` is the host's site, or its device key as workspace/hosts#list names it",
-                    "pass args {host: \"https://tilo.sh\"}",
+                    "`server` is the server's site, or its device key as workspace/servers#list names it",
+                    "pass args {server: \"https://tilo.sh\"}",
                 ),
             },
             (_, other) => failed(
                 "not_found",
                 format!("the workspace has no action {other}"),
-                "its actions are workspace/hosts#list, workspace/hosts#add with the other host's \
-                 `origin`, and workspace/hosts#remove with the `host` to let go",
+                "its actions are workspace/servers#list, workspace/servers#add with the other \
+                 server's `origin`, and workspace/servers#remove with the `server` to let go",
             ),
         };
         answer(structured, path, outcome)
     }
 
-    /// The workspace's hosts after its governance action `verb`.
+    /// The workspace's servers after its governance action `verb`.
     async fn ask_hosts(&self, workspace: &str, verb: &str, asked: Map<String, Value>) -> Outcome {
         match self.govern_or(workspace, verb, asked, OWNERS_ONLY).await {
             Ok(hosts) => Outcome::Ok(hosts),

@@ -1588,9 +1588,9 @@ async fn only_an_owner_chooses_a_workspaces_holders() {
     let stranger = caller(&stranger);
     let site = Responder::handle(|_| Some(Reply::status(404)));
     for (verb, argument) in [
-        (super::HOSTS, json!({})),
-        (super::ADD_HOST, json!({ "origin": site.url() })),
-        (super::REMOVE_HOST, json!({ "host": site.url() })),
+        (super::SERVERS, json!({})),
+        (super::ADD_SERVER, json!({ "origin": site.url() })),
+        (super::REMOVE_SERVER, json!({ "server": site.url() })),
     ] {
         let asked = request(&workspace, verb, argument);
         holder_refused(invoke(&governance, workspace_id, &stranger, asked).await);
@@ -1630,15 +1630,15 @@ async fn a_holder_is_named_by_an_https_address_on_the_internet_and_nothing_else_
         "https://10.0.0.5:8500".to_owned(),
         "http://holder.example".to_owned(),
     ] {
-        let adding = request(&workspace, super::ADD_HOST, json!({ "origin": origin }));
+        let adding = request(&workspace, super::ADD_SERVER, json!({ "origin": origin }));
         let reason = holder_refused(invoke(&governance, workspace_id, &owner, adding).await);
         assert!(reason.contains("is no holder's address"), "{reason}");
         assert!(!reason.contains(SAID_INSIDE), "{reason}");
     }
     let removing = request(
         &workspace,
-        super::REMOVE_HOST,
-        json!({ "host": inside.url() }),
+        super::REMOVE_SERVER,
+        json!({ "server": inside.url() }),
     );
     let reason = holder_refused(invoke(&governance, workspace_id, &owner, removing).await);
     assert!(reason.contains("is no holder's address"), "{reason}");
@@ -1662,7 +1662,8 @@ async fn a_holders_site_sends_the_device_nowhere_else_and_its_refusal_is_not_han
     let (workspace, workspace_id, governance) = governed(server.workspaces()).await;
     server.workspaces().call_private_model_addresses(true);
     let owner = caller(&owner);
-    let adding = |origin: String| request(&workspace, super::ADD_HOST, json!({ "origin": origin }));
+    let adding =
+        |origin: String| request(&workspace, super::ADD_SERVER, json!({ "origin": origin }));
 
     let elsewhere = Responder::handle(|_| Some(Reply::status(403).body(SAID_INSIDE)));
     let onward = format!("{}/elsewhere", elsewhere.url());

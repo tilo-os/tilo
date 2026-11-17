@@ -175,8 +175,20 @@ impl Worker {
         if super::tree_put::acts_on_tree(target) {
             return self.in_tree(workspace_id, caller, request, named);
         }
+        // Many files at once (`files`) go into the workspace's folder, which
+        // is Files, in one change of its tree.
+        let arguments = super::invoke_arguments(&request.argument);
+        if arguments.contains_key("files") {
+            if self.asked_app(target).as_deref() == Some(fs_protocol::tree::FILES_APP) {
+                return self.put_in_workspace(workspace_id, caller, request, named);
+            }
+            return Err(refused(
+                "`files` puts many files into Files' folder: open them with `files#open`"
+                    .to_owned(),
+            ));
+        }
         // How a file lands is checked before any record is made for it.
-        let file = OpenedFile::named(&super::invoke_arguments(&request.argument))?;
+        let file = OpenedFile::named(&arguments)?;
         let landing = match &file {
             Some(file) => {
                 let app = self.asked_app(target).ok_or_else(super::unknown_action)?;

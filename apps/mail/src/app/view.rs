@@ -212,9 +212,7 @@ pub(crate) fn window(cx: &ViewCx<Mail>, mut window: MailApp) -> Element {
 fn draft_rows(mail: &Mail) -> Vec<ui::framework::LiveRow> {
     mail.drafts_listed()
         .into_iter()
-        .map(|(id, draft)| {
-            ui::framework::LiveRow::from_resource(crate::actions::draft_resource(&id, draft))
-        })
+        .map(|(id, draft)| crate::actions::draft_row(&id, draft))
         .collect()
 }
 
@@ -222,7 +220,7 @@ fn draft_row(mail: &Mail, id: &str) -> Option<ui::framework::LiveRow> {
     let id = crate::resource::draft_named(id);
     let draft = mail.draft_at(Some(id))?;
     (!crate::resource::is_composer_draft(id) || mail.has_draft())
-        .then(|| ui::framework::LiveRow::from_resource(crate::actions::draft_resource(id, draft)))
+        .then(|| crate::actions::draft_row(id, draft))
 }
 
 fn answer_effect(

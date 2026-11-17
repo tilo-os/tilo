@@ -88,32 +88,32 @@ pub enum KeysCmd {
 }
 
 #[derive(Debug, Subcommand)]
-pub enum HostsCmd {
-    /// The hosts holding the workspace (-w): the one it was made on, which
+pub enum ServersCmd {
+    /// The servers keeping the workspace (-w): the one it was made on, which
     /// governs it, first.
     Ls,
-    /// Have the host whose site is ORIGIN hold the workspace (-w) as well.
+    /// Have the server whose site is ORIGIN keep the workspace (-w) as well.
     #[command(
-        after_help = "Example:\n  tilo workspace hosts add https://tilo.sh -w Tilo\n\n\
-                      Both hosts keep the workspace from then on: a change on either reaches the \
-                      other, and its people reach it at either. Only its owners choose its \
-                      hosts, and the other host takes it only if it let you in and has capacity for \
-                      it: sign in there first."
+        after_help = "Example:\n  tilo workspace servers add https://tilo.sh -w Tilo\n\n\
+                      Both servers keep the workspace from then on: a change on either reaches \
+                      the other, and its people reach it at either. Only its owners choose its \
+                      servers, and the other server takes it only if it let you in and has \
+                      capacity for it: sign in there first."
     )]
     Add {
-        /// The other host's site, like `https://tilo.sh`.
+        /// The other server's site, like `https://tilo.sh`.
         origin: String,
     },
-    /// Have a host hold the workspace (-w) no more.
+    /// Have a server keep the workspace (-w) no more.
     #[command(
-        after_help = "Example:\n  tilo workspace hosts remove https://tilo.sh -w Tilo\n\n\
-                      HOST is its site, or its device key as `tilo workspace hosts ls` names it. \
-                      It is no longer named to anyone at once, and lets the workspace go when it \
-                      hears so; the host the workspace was made on stays."
+        after_help = "Example:\n  tilo workspace servers remove https://tilo.sh -w Tilo\n\n\
+                      SERVER is its site, or its device key as `tilo workspace servers ls` names \
+                      it. It is no longer named to anyone at once, and lets the workspace go when \
+                      it hears so; the server the workspace was made on stays."
     )]
     Remove {
-        /// The host's site, or its device key.
-        host: String,
+        /// The server's site, or its device key.
+        server: String,
     },
 }
 
@@ -914,39 +914,44 @@ async fn put_files(
         bail!("nothing to upload: those paths hold no files");
     }
     // Every byte goes up before any of it is imported: an app that cannot
-    // take one file does not stop the rest of the folder.
-    let mut uploaded = Vec::new();
-    for file in &files {
-        let mut progress = Progress::new(&file.name);
-        let put = client
-            .upload_file(workspace, &file.path, &mut |done, size| {
-                progress.told(done, size);
-            })
-            .await
-            .with_context(|| format!("uploading {}", file.name))?;
-        progress.done();
-        uploaded.push((file, text(&put, "content").to_owned()));
-    }
+    // take one file does not stop the rest of the folder. Many files go up
+    // side by side, a few at a time.
+    let uploaded = upload_all(client, workspace, files).await?;
     let mut rows = Vec::new();
     let mut failures = Vec::new();
-    for (file, content) in &uploaded {
-        let placed = if store {
-            Ok(None)
+    // The tree takes a folder in as few changes as its entries fit: one run
+    // and one History entry for a folder a request carries whole.
+    let parts = batches(&uploaded, to);
+    let count = parts.len();
+    for (part, batch) in parts.into_iter().enumerate() {
+        let paths = if store {
+            vec![None; batch.len()]
         } else {
-            put_in_tree(client, workspace, file, to, content).await
-        };
-        let path = match placed {
-            Ok(path) => path,
-            Err(why) => {
-                failures.push(format!("{}: {why:#}", file.name));
-                None
+            match put_in_tree(
+                client,
+                workspace,
+                &batch,
+                to,
+                (part.saturating_add(1), count),
+            )
+            .await
+            {
+                Ok(paths) => paths,
+                Err(why) => {
+                    for (file, _) in batch.iter().copied() {
+                        failures.push(format!("{}: {why:#}", file.name));
+                    }
+                    vec![None; batch.len()]
+                }
             }
         };
-        rows.push(json!({
-            "name": file.name,
-            "content": content,
-            "path": path.as_deref(),
-        }));
+        for ((file, content), path) in batch.iter().copied().zip(paths) {
+            rows.push(json!({
+                "name": file.name,
+                "content": content,
+                "path": path.as_deref(),
+            }));
+        }
     }
     if json {
         println!(
@@ -1027,43 +1032,186 @@ fn files_under(path: &Path) -> Result<Vec<Uploading>> {
     Ok(found)
 }
 
-/// Write `file` into `workspace`'s file tree, in the folder `to` when one is
-/// named, and answer its path there.
+/// How many files go up at once.
+const UPLOADS_AT_ONCE: usize = 32;
+/// How many files one action puts into the workspace's tree: a folder larger
+/// than this goes in a few runs, each answered well within the bound a
+/// workspace answers an action in.
+const TREE_BATCH_FILES: usize = 10_000;
+/// How many bytes of file entries one change carries: under the 64 MiB one
+/// upload carries, so a large folder goes in a few changes rather than one
+/// no request carries.
+const TREE_BATCH_BYTES: usize = 32 * 1024 * 1024;
+
+/// Upload `files`, [`UPLOADS_AT_ONCE`] at a time, telling a person at a
+/// terminal how far it is: each with the `tilo.content:` reference it went up
+/// as, in name order.
+async fn upload_all(
+    client: &Client,
+    workspace: &str,
+    files: Vec<Uploading>,
+) -> Result<Vec<(Uploading, String)>> {
+    use futures_util::StreamExt as _;
+    let total: u64 = files
+        .iter()
+        .map(|file| std::fs::metadata(&file.path).map_or(0, |meta| meta.len()))
+        .sum();
+    let count = files.len();
+    if files.len() == 1 {
+        // One file says how far it is as its pieces go up.
+        let file = files.into_iter().next().unwrap_or(Uploading {
+            path: PathBuf::new(),
+            name: String::new(),
+        });
+        let mut progress = Progress::new(&file.name);
+        let put = client
+            .upload_file(workspace, &file.path, &mut |done, size| {
+                progress.told(done, size);
+            })
+            .await
+            .with_context(|| format!("uploading {}", file.name))?;
+        progress.done();
+        return Ok(vec![(file, text(&put, "content").to_owned())]);
+    }
+    let mut progress = Progress::new(&format!("{count} files"));
+    let mut done = 0_u64;
+    let mut going = futures_util::stream::iter(files)
+        .map(|file| async move {
+            let put = client
+                .upload_file(workspace, &file.path, &mut |_, _| {})
+                .await
+                .with_context(|| format!("uploading {}", file.name))?;
+            let size = std::fs::metadata(&file.path).map_or(0, |meta| meta.len());
+            anyhow::Ok((file, text(&put, "content").to_owned(), size))
+        })
+        .buffer_unordered(UPLOADS_AT_ONCE);
+    let mut uploaded = Vec::with_capacity(count);
+    progress.told(0, total);
+    while let Some(put) = going.next().await {
+        let (file, content, size) = put?;
+        done = done.saturating_add(size);
+        progress.told(done.min(total), total);
+        uploaded.push((file, content));
+    }
+    progress.done();
+    uploaded.sort_by(|(a, _), (b, _)| a.name.cmp(&b.name));
+    Ok(uploaded)
+}
+
+/// `uploaded` in as few batches as the workspace takes: each a whole run and
+/// one History entry, under [`TREE_BATCH_FILES`] files and
+/// [`TREE_BATCH_BYTES`] bytes of entries.
+fn batches<'a>(
+    uploaded: &'a [(Uploading, String)],
+    to: Option<&str>,
+) -> Vec<Vec<&'a (Uploading, String)>> {
+    let size = |(file, content): &(Uploading, String)| {
+        content
+            .len()
+            .saturating_add(file.name.len())
+            .saturating_add(to.map_or(0, str::len))
+            .saturating_add(40)
+    };
+    let mut batches = Vec::new();
+    let mut batch = Vec::new();
+    let mut bytes = 0_usize;
+    for entry in uploaded {
+        let next = size(entry);
+        let full = batch.len() >= TREE_BATCH_FILES || bytes.saturating_add(next) > TREE_BATCH_BYTES;
+        if full && !batch.is_empty() {
+            batches.push(batch);
+            batch = Vec::new();
+            bytes = 0;
+        }
+        batch.push(entry);
+        bytes = bytes.saturating_add(next);
+    }
+    if !batch.is_empty() {
+        batches.push(batch);
+    }
+    batches
+}
+
+/// The folder `file` goes into under `to`, as the tree keeps it: the parts of
+/// both, no empty ones, joined by `/`.
+fn folder_of(file: &Uploading, to: Option<&str>) -> String {
+    let parent = parent_of(&file.name);
+    let mut kept: Vec<&str> = Vec::new();
+    for part in to.into_iter().chain([parent.as_str()]) {
+        for part in part.split('/') {
+            let part = part.trim();
+            if !part.is_empty() {
+                kept.push(part);
+            }
+        }
+    }
+    kept.join("/")
+}
+
+/// Write `files` into `workspace`'s file tree in one change, in the folder `to`
+/// when one is named, and answer each one's path there.
 ///
-/// The file's content is opened in Files (`files#open`), which is the
-/// workspace's folder: the bytes go where the workspace keeps its files, and
-/// the node names them, so every member's folder shows the file.
+/// Their content is opened in Files (`files#open`), which is the workspace's
+/// folder: the bytes go where the workspace keeps its files, and the nodes
+/// name them, so every member's folder shows the files. A folder's list goes
+/// up as content of its own, so the open carries one reference however many
+/// files it puts in the tree: one invocation, one History entry.
 async fn put_in_tree(
     client: &Client,
     workspace: &str,
-    file: &Uploading,
+    files: &[&(Uploading, String)],
     to: Option<&str>,
-    content: &str,
-) -> Result<Option<String>> {
-    let mut parts: Vec<&str> = Vec::new();
-    if let Some(to) = to.map(str::trim).filter(|to| !to.is_empty()) {
-        parts.push(to.trim_matches('/'));
-    }
-    let folder = parent_of(&file.name);
-    if !folder.is_empty() {
-        parts.push(&folder);
-    }
-    let dir = parts.join("/");
-    let name = file_base(&file.name);
-    let args = if dir.is_empty() {
-        json!({"content": content, "name": name})
+    (part, parts): (usize, usize),
+) -> Result<Vec<Option<String>>> {
+    let listed: Vec<Value> = files
+        .iter()
+        .map(|(file, content)| {
+            json!({"content": content, "name": file_base(&file.name),
+                   "dir": folder_of(file, to)})
+        })
+        .collect();
+    let title = if files.len() == 1 {
+        files.first().map_or_else(
+            || "Upload a file".to_owned(),
+            |(file, _)| format!("Upload {}", file.name),
+        )
+    } else if parts > 1 {
+        format!("Upload {} files ({part} of {parts})", files.len())
     } else {
-        json!({"content": content, "name": name, "dir": dir})
+        format!("Upload {} files", files.len())
     };
-    let title = format!("Upload {}", file.name);
+    let arguments = if files.len() == 1 {
+        // One file's entry is smaller than the reference that would name it.
+        json!({"files": listed})
+    } else {
+        let list = serde_json::to_vec(&listed)?;
+        let put = client.upload(workspace, list).await?;
+        json!({"files": text(&put, "content")})
+    };
     let answer = client
-        .act(workspace, "files", "open", &args, &title)
+        .act(workspace, "files", "open", &arguments, &title)
         .await?;
-    let path = answer
-        .pointer("/result/path")
-        .and_then(Value::as_str)
-        .ok_or_else(|| anyhow!("Files did not say where the file is: {answer}"))?;
-    Ok(Some(path.to_owned()))
+    // The open answers how many files it put, not each one: the paths are
+    // where the tree keeps what was asked for.
+    let counted = answer.pointer("/result/count").and_then(Value::as_u64);
+    if counted.is_some_and(|count| count != files.len() as u64) {
+        bail!(
+            "Files put {counted:?} of the {} files: {answer}",
+            files.len()
+        );
+    }
+    Ok(files
+        .iter()
+        .map(|(file, _)| {
+            let dir = folder_of(file, to);
+            let name = file_base(&file.name);
+            Some(if dir.is_empty() {
+                name
+            } else {
+                format!("{dir}/{name}")
+            })
+        })
+        .collect())
 }
 
 /// The folder part of an uploaded file's name in the workspace
@@ -1272,52 +1420,52 @@ pub fn members(reach: Reach<'_>, workspace: &str, cmd: MembersCmd) -> ExitCode {
     })
 }
 
-/// `tilo workspace hosts … -w <workspace>`: the hosts holding the workspace,
-/// and choosing them.
-pub fn hosts(reach: Reach<'_>, workspace: &str, cmd: HostsCmd) -> ExitCode {
+/// `tilo workspace servers … -w <workspace>`: the servers keeping the
+/// workspace, and choosing them.
+pub fn servers(reach: Reach<'_>, workspace: &str, cmd: ServersCmd) -> ExitCode {
     run(async {
         let client = Client::open(reach)?;
         let workspace = client.workspace_id(workspace).await?;
-        let path = format!("/v1/workspaces/{workspace}/hosts");
+        let path = format!("/v1/workspaces/{workspace}/servers");
         let listed = match cmd {
-            HostsCmd::Ls => client.get(&path).await?,
-            HostsCmd::Add { origin } => {
+            ServersCmd::Ls => client.get(&path).await?,
+            ServersCmd::Add { origin } => {
                 client
                     .post(&path, &serde_json::json!({ "origin": origin }))
                     .await?
             }
-            HostsCmd::Remove { host } => {
-                let host = percent_encoding::utf8_percent_encode(
-                    &host,
+            ServersCmd::Remove { server } => {
+                let server = percent_encoding::utf8_percent_encode(
+                    &server,
                     percent_encoding::NON_ALPHANUMERIC,
                 );
-                client.delete(&format!("{path}/{host}")).await?
+                client.delete(&format!("{path}/{server}")).await?
             }
         };
-        Ok(show(reach.json, &listed, &hosts_text(&listed)))
+        Ok(show(reach.json, &listed, &servers_text(&listed)))
     })
 }
 
-/// A workspace's hosts, as lines: each by its device key, the one governing
+/// A workspace's servers, as lines: each by its device key, the one governing
 /// it marked.
-fn hosts_text(listed: &Value) -> String {
-    let hosts = listed
-        .get("hosts")
+fn servers_text(listed: &Value) -> String {
+    let servers = listed
+        .get("servers")
         .and_then(Value::as_array)
         .cloned()
         .unwrap_or_default();
-    let mut said = String::from("held by:");
-    for host in &hosts {
-        let governs = if host.get("governs").and_then(Value::as_bool) == Some(true) {
+    let mut said = String::from("kept by:");
+    for server in &servers {
+        let governs = if server.get("governs").and_then(Value::as_bool) == Some(true) {
             "  (made here; governs it)"
         } else {
             ""
         };
-        let _ = write!(said, "\n  {}{governs}", text(host, "device"));
+        let _ = write!(said, "\n  {}{governs}", text(server, "device"));
     }
     if listed.get("confirmed").and_then(Value::as_bool) == Some(false) {
         said.push_str(
-            "\nthe host that was let go was not reached: it is no longer named, and lets the \
+            "\nthe server that was let go was not reached: it is no longer named, and lets the \
              workspace go once it hears so",
         );
     }
@@ -1826,7 +1974,7 @@ mod tests {
             ("POST", route) if route.ends_with("/actions/open") => json_reply(
                 200,
                 json!({"status": "ok", "path": "files#open", "invocation": "inv-1",
-                    "result": {"path": "passport.png", "content": "tilo.content:abc"}}),
+                    "result": {}}),
             ),
             ("GET", route) if route.contains("/content/") => {
                 Some(test_http::Reply::status(200).body(b"hello".to_vec()))
@@ -1985,8 +2133,8 @@ mod tests {
             );
             assert!(upload.header("idempotency-key").is_some());
             // The bytes are then written into the workspace's files: a Files
-            // open names the content and the name it takes, and answers the
-            // path it is at.
+            // open names the contents and the names they take, and answers
+            // the paths they are at.
             let placed = put
                 .iter()
                 .find(|request| request.target.ends_with("/actions/open"))
@@ -1997,7 +2145,54 @@ mod tests {
             );
             assert_eq!(
                 serde_json::from_slice::<Value>(&placed.body).unwrap(),
-                json!({"content": "tilo.content:abc", "name": "passport.png"})
+                json!({"files": [{"content": "tilo.content:abc", "name": "passport.png",
+                                  "dir": ""}]})
+            );
+
+            // A folder goes up as one open, however many files it holds: many
+            // uploads, one change of the workspace's tree.
+            let folder = dir.path().join("contracts");
+            std::fs::create_dir_all(folder.join("2026")).unwrap();
+            for name in ["nda.pdf", "2026/plan.md", "2026/signed.pdf"] {
+                std::fs::write(folder.join(name), b"hello").unwrap();
+            }
+            files(
+                reach,
+                "applicant-jane-doe",
+                FilesCmd::Put {
+                    paths: vec![folder],
+                    to: Some("docs".into()),
+                    store: false,
+                },
+            );
+            let folder_put = api_server.drain_requests();
+            let uploads: Vec<&test_http::Request> = folder_put
+                .iter()
+                .filter(|request| request.target.ends_with("/uploads"))
+                .collect();
+            assert_eq!(uploads.len(), 4, "every file goes up, and the list");
+            let listed = uploads
+                .iter()
+                .find(|request| request.body.starts_with(b"["))
+                .expect("the list of files goes up as content");
+            assert_eq!(
+                serde_json::from_slice::<Value>(&listed.body).unwrap(),
+                json!([
+                    {"content": "tilo.content:abc", "name": "plan.md", "dir": "docs/contracts/2026"},
+                    {"content": "tilo.content:abc", "name": "signed.pdf", "dir": "docs/contracts/2026"},
+                    {"content": "tilo.content:abc", "name": "nda.pdf", "dir": "docs/contracts"},
+                ]),
+                "each file keeps its place under the folder it came from"
+            );
+            let opened: Vec<&test_http::Request> = folder_put
+                .iter()
+                .filter(|request| request.target.ends_with("/actions/open"))
+                .collect();
+            assert_eq!(opened.len(), 1, "the folder is one change of the tree");
+            assert_eq!(
+                serde_json::from_slice::<Value>(&opened[0].body).unwrap(),
+                json!({"files": "tilo.content:abc"}),
+                "the open names the list, however many files it holds"
             );
 
             // An action is `POST …/resources/{path}/actions/{action}`: its

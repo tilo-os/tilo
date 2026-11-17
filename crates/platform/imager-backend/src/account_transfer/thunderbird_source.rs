@@ -5,7 +5,7 @@
 //! A transfer that stays on this computer streams the granted Home instead of building the bundle.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::io::{Read, Write};
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use accounts::email::{AccountConfig, AuthMethod};
@@ -1422,18 +1422,7 @@ fn atomic_private_write(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
         .ok_or_else(|| std::io::Error::other("Kept mail needs a parent"))?;
     ensure_private_dir(parent)
         .map_err(|_| std::io::Error::other("Kept mail folder is unavailable"))?;
-    let temporary = parent.join(format!(".tilo-{}.tmp", uuid::Uuid::new_v4()));
-    let mut options = std::fs::OpenOptions::new();
-    options.write(true).create_new(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
-    }
-    let mut file = options.open(&temporary)?;
-    file.write_all(bytes)?;
-    file.sync_all()?;
-    std::fs::rename(&temporary, path)
+    tilo_files::native::atomic::write_private(path, bytes)
 }
 
 fn write_file(path: &Path, bytes: &[u8]) -> Result<(), ConnectionError> {

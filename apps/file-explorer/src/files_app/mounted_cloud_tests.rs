@@ -102,7 +102,7 @@ fn synced_native_rows_describe_sources_and_choose_independent_editable_copies() 
                 .find(|entry| entry.name == name)
                 .unwrap()
                 .clone();
-            let row = files.state().entry_resource(&entry);
+            let row = files.state().entry_resource(&entry).into_resource();
             let presentation = row.presentation.unwrap();
             assert!(presentation.detail.unwrap().contains(source));
             assert!(presentation.preview.unwrap().contains("independent"));
@@ -131,6 +131,7 @@ fn synced_native_rows_describe_sources_and_choose_independent_editable_copies() 
             files
                 .state()
                 .entry_resource(&uploaded)
+                .into_resource()
                 .actions
                 .iter()
                 .all(|a| a.id != "import-converted")

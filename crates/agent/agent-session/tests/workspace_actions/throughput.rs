@@ -19,7 +19,7 @@
 //! target does not hold; either way it prints the table, and writes it as
 //! JSON to `TILO_THROUGHPUT_OUT` when set.
 
-use super::api::ISSUER;
+use super::api::{ISSUER, Mcp};
 use super::api_on_server::{api_on_server, approved_key, headers, json_of};
 use super::*;
 use serde_json::{Value, json};
@@ -411,6 +411,80 @@ async fn a_workspace_takes_records_and_files_at_the_same_speed_however_full() {
         channel(&agent, &base).await;
         let page = second_device(&on_server, &browser, &id).await;
 
+        // The calls an agent makes over MCP, as a key reaches them: listing a
+        // notebook, reading it, and making a note. The target is the same as a
+        // person's: local work and at most one round trip, so under 300 ms.
+        let mut mcp = Mcp {
+            api: &api,
+            path: format!("/w/{id}/mcp"),
+            token: agent.token.clone(),
+            session: None,
+        };
+        assert_eq!(mcp.initialize().await.0, 200);
+        let calls = 3;
+        let mut took = Vec::with_capacity(calls);
+        for _ in 0..calls {
+            let began = Instant::now();
+            let wrote = mcp
+                .tilo_do(json!({"path": "notes/Notes#new-note",
+                                 "args": {"title": format!("mcp-{size}")}}))
+                .await;
+            took.push(began.elapsed());
+            assert_eq!(wrote["result"]["isError"], false, "{wrote}");
+        }
+        let wrote = Row {
+            kind: "mcp write".into(),
+            size,
+            single_p50_ms: ms(quantile(&took, 0.5)),
+            single_p99_ms: ms(quantile(&took, 0.99)),
+            seed_per_s: 0.0,
+            bulk_per_s: 0.0,
+            second_device_p50_ms: None,
+        };
+        for path in ["notes/Notes", "notes"] {
+            let mut took = Vec::with_capacity(calls);
+            for _ in 0..calls {
+                let began = Instant::now();
+                let (status, listed) = mcp
+                    .post(json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                                 "params": {"name": "tilo_ls", "arguments": {"path": path},
+                                            "_meta": {"so.tilo.mcp": {"structured": true}}}}))
+                    .await;
+                took.push(began.elapsed());
+                assert_eq!(status, 200, "{listed}");
+            }
+            table.push(Row {
+                kind: format!("mcp ls {path}"),
+                size,
+                single_p50_ms: ms(quantile(&took, 0.5)),
+                single_p99_ms: ms(quantile(&took, 0.99)),
+                seed_per_s: 0.0,
+                bulk_per_s: 0.0,
+                second_device_p50_ms: None,
+            });
+        }
+        let mut took = Vec::with_capacity(calls);
+        for _ in 0..calls {
+            let began = Instant::now();
+            let read = mcp.tilo_read(json!({"path": "notes/Notes"})).await;
+            took.push(began.elapsed());
+            assert_eq!(read["result"]["isError"], false, "{read}");
+        }
+        table.push(Row {
+            kind: "mcp read".into(),
+            size,
+            single_p50_ms: ms(quantile(&took, 0.5)),
+            single_p99_ms: ms(quantile(&took, 0.99)),
+            seed_per_s: 0.0,
+            bulk_per_s: 0.0,
+            second_device_p50_ms: None,
+        });
+        eprintln!(
+            "{:>14} at {size:>6}: single p50 {:7.1} ms p99 {:7.1} ms",
+            "mcp write", wrote.single_p50_ms, wrote.single_p99_ms
+        );
+        table.push(wrote);
+
         for kind in KINDS {
             let resource = resource_of(&agent, &base, kind.app, kind.listed_as, kind.action).await;
             // The workspace filled to `size` of them, in bulk.
@@ -611,7 +685,14 @@ async fn a_workspace_takes_records_and_files_at_the_same_speed_however_full() {
             if row.kind.starts_with("upload") {
                 continue;
             }
-            if row.kind != "file put" && row.bulk_per_s < 1000.0 {
+            if row.kind.starts_with("mcp ") && row.single_p50_ms > 300.0 {
+                let _ = writeln!(
+                    failed,
+                    "{} at {}: single p50 {:.1} ms over 300 ms",
+                    row.kind, row.size, row.single_p50_ms
+                );
+            }
+            if !row.kind.starts_with("mcp ") && row.kind != "file put" && row.bulk_per_s < 1000.0 {
                 let _ = writeln!(
                     failed,
                     "{} at {}: bulk {:.0}/s < 1000/s",

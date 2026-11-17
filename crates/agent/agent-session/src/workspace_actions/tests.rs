@@ -102,7 +102,7 @@ fn a_full_log_forgets_only_settled_invocations() {
         on_behalf_of: None,
         invocation: InvocationId::new(),
         target: RemoteActionTarget {
-            provider: "record:so.tilo.notes".into(),
+            provider: "tilo.notes:page".into(),
             address: tilo_actions::api::ActionAddress::new("notes.page", "append"),
         },
         argument: tilo_actions::remote::InvokeArgument::default(),
@@ -234,7 +234,7 @@ fn a_pending_write_settles_as_its_save_does() {
         on_behalf_of: None,
         invocation: InvocationId::new(),
         target: RemoteActionTarget {
-            provider: "record:so.tilo.notes".into(),
+            provider: "tilo.notes:page".into(),
             address: tilo_actions::api::ActionAddress::new("notes.page", "append"),
         },
         argument: tilo_actions::remote::InvokeArgument::default(),
@@ -711,4 +711,203 @@ fn a_surface_request_is_answered_from_the_app_the_service_mounts() {
         } => {}
         other => panic!("an app the service mounts none of has no surface: {other:?}"),
     }
+}
+
+/// A follow of an invocation that has not moved is held and answered once it
+/// moves, or when its wait ends — not answered at once with what the caller
+/// already saw, which would have it ask again and again.
+#[test]
+fn a_follow_is_held_until_the_invocation_moves() {
+    use std::sync::Arc;
+    use std::time::Duration;
+    use tilo_actions::remote::{
+        Caller, InvokeRequest, RemoteActionMessage, RemoteActionTarget, UpdateMark,
+    };
+    use tilo_actions::{ActionOutput, InvocationId, InvocationUpdate};
+
+    let catalogue: super::CatalogueFactory = Arc::new(super::AppCatalogue::native);
+    let service = super::WorkspaceActions::new(catalogue);
+    let caller = Caller::local_person("ada");
+    let admitted = |invocation| {
+        let request = InvokeRequest {
+            on_behalf_of: None,
+            invocation,
+            target: RemoteActionTarget {
+                provider: "tilo.notes:page".into(),
+                address: tilo_actions::api::ActionAddress::new("notes.page", "append"),
+            },
+            argument: tilo_actions::remote::InvokeArgument::default(),
+            context: None,
+            confirmation: None,
+            revision: None,
+            wait_ms: None,
+            appearance: None,
+        };
+        assert!(service.log().insert(&caller, request));
+    };
+    let follow = |invocation, seen: UpdateMark, wait_ms: u32| {
+        service
+            .serve(
+                super::WorkspaceId::from_u128(1),
+                &caller,
+                RemoteActionMessage::Observe {
+                    invocation,
+                    wait_ms: Some(wait_ms),
+                    seen: Some(seen),
+                },
+            )
+            .expect("the service answers an observe")
+    };
+    let state = |answer: RemoteActionMessage| match answer {
+        RemoteActionMessage::Update {
+            state: Some(state), ..
+        } => state,
+        other => panic!("a follow answers the invocation's state: {other:?}"),
+    };
+
+    // Already past what the caller saw: answered now.
+    let invocation = InvocationId::new();
+    admitted(invocation);
+    let answered = follow(invocation, UpdateMark::Finished, 5_000)
+        .wait_timeout(Duration::from_secs(1))
+        .ok()
+        .flatten()
+        .expect("a follow already moved past answers at once");
+    assert_eq!(
+        UpdateMark::of(&state(answered).update),
+        UpdateMark::Accepted
+    );
+
+    // Where the caller already is: held, not answered with what they saw.
+    let held = follow(invocation, UpdateMark::Accepted, 5_000);
+    let Err(held) = held.wait_timeout(Duration::from_millis(20)) else {
+        panic!("a follow that has not moved answers at once");
+    };
+
+    // The invocation moves: the very follow that was waiting answers with
+    // where it moved to.
+    service.log().answered(
+        invocation,
+        &InvocationUpdate::Succeeded {
+            invocation,
+            output: ActionOutput::default(),
+        },
+        None,
+    );
+    let answered = held
+        .wait_timeout(Duration::from_secs(1))
+        .ok()
+        .flatten()
+        .expect("a follow answers once the invocation moved");
+    assert!(state(answered).is_terminal());
+
+    // Nothing moves: the follow answers by its own wait, with what it has.
+    let quiet = InvocationId::new();
+    admitted(quiet);
+    let answered = follow(quiet, UpdateMark::Accepted, 10)
+        .wait_timeout(Duration::from_secs(2))
+        .ok()
+        .flatten()
+        .expect("a follow answers once its wait ends");
+    assert_eq!(
+        UpdateMark::of(&state(answered).update),
+        UpdateMark::Accepted
+    );
+}
+
+/// A write whose save outlives the thread's wait is answered pending — its
+/// receipt says accepted, never done — and is done only once the server holds
+/// it: nothing reads it as done before it is durable.
+#[test]
+fn a_write_answered_pending_is_done_only_once_it_is_saved() {
+    use std::sync::{Arc, Barrier, Mutex};
+    use tilo_actions::remote::{
+        Caller, InvocationState, InvokeRequest, ReceiptStatus, RemoteActionTarget,
+    };
+    use tilo_actions::{ActionOutput, InvocationId, InvocationUpdate};
+
+    let caller = Caller::local_person("ada");
+    let invocation = InvocationId::new();
+    let asking = |invocation| InvokeRequest {
+        on_behalf_of: None,
+        invocation,
+        target: RemoteActionTarget {
+            provider: "tilo.notes:page".into(),
+            address: tilo_actions::api::ActionAddress::new("notes.page", "append"),
+        },
+        argument: tilo_actions::remote::InvokeArgument::default(),
+        context: None,
+        confirmation: None,
+        revision: None,
+        wait_ms: None,
+        appearance: None,
+    };
+    let log = Arc::new(Mutex::new(super::InvocationLog::default()));
+    {
+        let mut held = log.lock().unwrap();
+        assert!(held.insert(&caller, asking(invocation)));
+        held.entries.get_mut(&invocation).unwrap().saving = true;
+    }
+    let state = || {
+        let held = log.lock().unwrap();
+        InvocationState::new(
+            invocation,
+            held.entries.get(&invocation).unwrap().update.clone(),
+        )
+    };
+
+    // The receipt the thread answers with when its wait ran out: accepted,
+    // not done, and the invocation still open.
+    let pending = state().receipt();
+    assert!(
+        matches!(pending.status, ReceiptStatus::Accepted),
+        "a write still being saved is accepted, not done: {:?}",
+        pending.status
+    );
+    assert!(!state().is_terminal(), "an unsaved write is not done");
+
+    // The server's answer comes only once it holds the write; then, and not
+    // before, the invocation is done.
+    let (answer, saved) = tilo_session_client::answer();
+    let unsaved = super::publish::Unsaved::waiting(saved);
+    let settled = Arc::new(Barrier::new(2));
+    let answered = Arc::clone(&settled);
+    let shared = Arc::clone(&log);
+    unsaved.settle(move |saved| {
+        super::publish::settle_saved(&shared, invocation, ActionOutput::default(), saved);
+        answered.wait();
+    });
+    assert!(!state().is_terminal(), "nothing said it is saved yet");
+    let _ = answer.send(Ok(()));
+    settled.wait();
+    assert!(
+        matches!(state().update, InvocationUpdate::Succeeded { .. }),
+        "saved: the write is done"
+    );
+
+    // A save the server refuses is answered failed, and is never done.
+    let refused = InvocationId::new();
+    {
+        let mut held = log.lock().unwrap();
+        assert!(held.insert(&caller, asking(refused)));
+        held.entries.get_mut(&refused).unwrap().saving = true;
+    }
+    let (answer, saved) = tilo_session_client::answer();
+    let unsaved = super::publish::Unsaved::waiting(saved);
+    let settled = Arc::new(Barrier::new(2));
+    let answered = Arc::clone(&settled);
+    let shared = Arc::clone(&log);
+    unsaved.settle(move |saved| {
+        super::publish::settle_saved(&shared, refused, ActionOutput::default(), saved);
+        answered.wait();
+    });
+    let _ = answer.send(Err("workspace membership changed".into()));
+    settled.wait();
+    assert!(
+        matches!(
+            &log.lock().unwrap().entries.get(&refused).unwrap().update,
+            InvocationUpdate::Failed { .. }
+        ),
+        "a refused save is failed, never done"
+    );
 }

@@ -10,7 +10,7 @@
 use serde::{Deserialize, Serialize};
 use ui::tilo_resource::{self, Effect, JsonSchema};
 
-use tilo_actions::{ActionSpec, ResourceSpec};
+use tilo_actions::ActionSpec;
 use ui::framework::LiveRow;
 
 use crate::attachment_store;
@@ -879,18 +879,18 @@ pub(crate) fn attachment_row(
 /// The draft `id` as the item `draft-reply` and `read` name it
 /// (`mail.draft:<id>`): opening it shows it in a composer of its own, bound
 /// to it.
-pub(crate) fn draft_resource(id: &str, draft: &crate::resource::DraftState) -> ResourceSpec {
+pub(crate) fn draft_row(id: &str, draft: &crate::resource::DraftState) -> LiveRow {
     let target = if crate::resource::is_composer_draft(id) {
         MailTarget::Draft
     } else {
         MailTarget::DraftId(id.to_owned())
     };
-    ResourceSpec::new(
+    LiveRow::new(
         format!("mail.draft:{id}"),
         "mail.draft",
         crate::resource::draft_label(draft),
     )
-    .with_action(bound(&MailEffect::Open { target }, "Open draft"))
+    .operation(bound(&MailEffect::Open { target }, "Open draft"))
 }
 
 /// Open, preview, reply, reply all and forward, bound to the message

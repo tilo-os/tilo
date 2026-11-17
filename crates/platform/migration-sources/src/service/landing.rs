@@ -216,10 +216,9 @@ impl InboxLanding {
         bytes: &[u8],
     ) -> io::Result<()> {
         let root = self.inbox(app, directory);
-        std::fs::create_dir_all(&root)?;
         let digest = blake3::hash(key.as_bytes()).to_hex();
         let name = format!("{source}-{}.json", digest.get(..32).unwrap_or_default());
-        write_private(&root.join(name), bytes)
+        tilo_files::native::atomic::write_private(&root.join(name), bytes)
     }
 }
 
@@ -255,26 +254,4 @@ impl Landing for InboxLanding {
         .map_err(io::Error::other)?;
         self.write("so.tilo.tasks", "issues", &issue.source, &issue.key, &bytes)
     }
-}
-
-/// Write `bytes` to `path` owner-only, synced, replacing it whole.
-fn write_private(path: &Path, bytes: &[u8]) -> io::Result<()> {
-    use std::io::Write as _;
-    #[cfg(unix)]
-    use std::os::unix::fs::OpenOptionsExt as _;
-    let temporary = path.with_extension("json.tmp");
-    let mut options = std::fs::OpenOptions::new();
-    options.write(true).create(true).truncate(true);
-    #[cfg(unix)]
-    options
-        .mode(0o600)
-        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC);
-    let mut file = options.open(&temporary)?;
-    file.write_all(bytes)?;
-    file.sync_all()?;
-    std::fs::rename(&temporary, path)?;
-    if let Some(parent) = path.parent() {
-        std::fs::File::open(parent)?.sync_all()?;
-    }
-    Ok(())
 }

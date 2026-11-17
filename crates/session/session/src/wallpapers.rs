@@ -119,18 +119,13 @@ fn load_at(path: &Path) -> Records {
 
 fn save_at(path: &Path, records: &Records) {
     let written = (|| {
-        if let Some(dir) = path.parent() {
-            std::fs::create_dir_all(dir)?;
-        }
         let kept = Kept {
             schema: SCHEMA,
             records: records.clone(),
         };
         // Written beside and moved into place: a session that dies mid-write leaves the wallpapers
         // it had.
-        let beside = path.with_extension("json.tmp");
-        std::fs::write(&beside, serde_json::to_vec(&kept)?)?;
-        std::fs::rename(&beside, path)
+        tilo_files::native::atomic::write_creating_parent(path, &serde_json::to_vec(&kept)?)
     })();
     if let Err(error) = written {
         tracing::warn!(%error, "the wallpapers are not kept");

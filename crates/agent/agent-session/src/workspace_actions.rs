@@ -58,6 +58,7 @@ mod change;
 mod content;
 mod direct;
 mod feedback;
+mod follow;
 mod found;
 mod found_files;
 mod host_actions;
@@ -586,13 +587,11 @@ impl WorkspaceActions {
                     result: Ok(surface.map(|bytes| String::from_utf8_lossy(bytes).into_owned())),
                 })
             }
-            RemoteActionMessage::Observe { invocation, .. } => {
-                let state = self.log().owned(caller, &invocation).map(|entry| {
-                    InvocationState::new(invocation, entry.update.clone())
-                        .left_at(entry.left_at.clone())
-                });
-                Pending::ready(RemoteActionMessage::Update { invocation, state })
-            }
+            RemoteActionMessage::Observe {
+                invocation,
+                wait_ms,
+                seen,
+            } => self.follow(caller, invocation, seen, wait_ms),
             RemoteActionMessage::Cancel { invocation } => {
                 Pending::ready(RemoteActionMessage::CancelResponse {
                     invocation,
@@ -1300,6 +1299,14 @@ struct Worker {
     /// ([`listing`]): an agent lists at every step it takes, so a cause is
     /// logged once, not once per listing.
     unmounted: HashMap<DocumentRoute, String>,
+    /// How long this thread waits, once it served a write, for the server to
+    /// hold it before answering the caller pending: the pace of the saves it
+    /// served recently ([`publish::Worker::saving`]), so writes whose saves
+    /// are slower than the grace do not hold the thread that serves every
+    /// workspace of its share.
+    save_grace: Duration,
+    /// Writes served since the pace was last measured with the full grace.
+    save_probes: u32,
 }
 
 /// The API's answer for an action it has nothing by that address.
@@ -1345,6 +1352,25 @@ pub(super) fn commit_failed(message: String, retryable: bool) -> Outcome {
         details: None,
         retryable,
     })
+}
+
+/// A clock read for timing one phase of an action, when the
+/// `tilo_agent_session::timing` target is at debug: off, it reads no clock.
+fn timing_start() -> Option<Instant> {
+    tracing::enabled!(target: "tilo_agent_session::timing", tracing::Level::DEBUG)
+        .then(Instant::now)
+}
+
+/// Time the phase `step`, begun at `started` ([`timing_start`]), in
+/// microseconds: `TIMING <step> <µs>` says where a slow action waited.
+fn timing_done(step: &'static str, started: Option<Instant>) {
+    if let Some(started) = started {
+        tracing::debug!(
+            target: "tilo_agent_session::timing",
+            "TIMING {step} {}",
+            started.elapsed().as_micros()
+        );
+    }
 }
 
 /// Everything `app` changed since the last take, each with the route it
@@ -1432,6 +1458,8 @@ impl Worker {
             notes_followed: HashMap::new(),
             named: HashMap::new(),
             unmounted: HashMap::new(),
+            save_grace: publish::SAVE_GRACE,
+            save_probes: 0,
         }
     }
 
@@ -2248,6 +2276,7 @@ impl Worker {
         if let Some(receipt) = self.terminal(workspace_id, &caller, &request) {
             return receipt;
         }
+        let everything = timing_start();
         let (outcome, unsaved) = match self.invoke_or_ask(workspace_id, &caller, &request) {
             Ok(ran) => ran,
             Err(receipt) => {
@@ -2255,6 +2284,7 @@ impl Worker {
                 return receipt;
             }
         };
+        timing_done("action.total", everything);
         log_outcome(&request.target, &outcome);
         let left = outcome
             .as_ref()
@@ -2398,6 +2428,10 @@ impl Worker {
         clippy::result_large_err,
         reason = "the outcome becomes the receipt the host records"
     )]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one request dispatched in the order it is admitted through: appearance, keys, the document, action, save"
+    )]
     /// Invocation `request`: what it answered, and where it left its actor in the
     /// record it changed.
     fn perform(
@@ -2420,9 +2454,11 @@ impl Worker {
         // ([`Self::invoke_keys`], which the service's thread admitted this
         // request by).
         let keys = self.invoke_keys(request);
+        let refreshing = timing_start();
         let state = self
             .refresh(workspace_id, keys.needs())
             .map_err(Outcome::Rejected)?;
+        timing_done("action.refresh", refreshing);
         // A page names its source's revision: the workspace's, or a registered
         // read's committed source (checked where that source is read, below).
         let workspace = state.workspace.clone();
@@ -2461,8 +2497,10 @@ impl Worker {
         if stale_revision(request.revision.as_deref(), &state.revision.to_string()) {
             return Err(Outcome::Rejected(ActionCallError::StaleRevision));
         }
+        let mounting = timing_start();
         let mounted = self.mount(&route, &state).map_err(|_| unknown_action())?;
         withheld.refuses(&target.address.resource)?;
+        timing_done("action.mount", mounting);
         if target.address.action == ui::tilo_resource::share::SHARE_LINK {
             // Sharing asks the record for everything it lists, which is what
             // the link is chosen from.
@@ -2514,6 +2552,7 @@ impl Worker {
         let holder = self.holder_of(&route);
         let mounted = self.mounted.get_mut(&holder).ok_or_else(unknown_action)?;
         let context = caller_context(caller, request);
+        let running = timing_start();
         let output = mounted
             .app
             .invoke_in(
@@ -2524,13 +2563,18 @@ impl Worker {
                 confirmed,
             )
             .map_err(|error| api_outcome(&error))?;
+        timing_done("action.call", running);
         // Where the action left its actor, for the API that shows it
         // working: the text it wrote, the item it acted on.
         let left_at = mounted.app.presence().map(bounded::placed);
+        let taking = timing_start();
         let taken = take_all(&mounted.app, &holder)
             .map_err(|error| commit_failed(error.to_string(), false))?;
+        timing_done("action.take", taking);
+        let committing = timing_start();
         self.commit_taken(workspace_id, &route, taken)
             .map_err(|reason| commit_failed(reason, true))?;
+        timing_done("action.commit", committing);
         Ok((withheld.shown(output), left_at))
     }
 

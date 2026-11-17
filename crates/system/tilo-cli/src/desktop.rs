@@ -65,15 +65,15 @@ pub enum WorkspaceCmd {
         /// What to call the new workspace.
         name: String,
     },
-    /// The hosts holding a workspace (-w), and having another hold it as well:
-    /// both keep it, a change on either reaches the other, and its people
+    /// The servers keeping a workspace (-w), and having another keep it as
+    /// well: both keep it, a change on either reaches the other, and its people
     /// reach it at either.
-    #[command(after_help = "Examples:\n  tilo workspace hosts ls -w Tilo\n  \
-                      tilo workspace hosts add https://tilo.sh -w Tilo\n  \
-                      tilo workspace hosts remove https://tilo.sh -w Tilo")]
-    Hosts {
+    #[command(after_help = "Examples:\n  tilo workspace servers ls -w Tilo\n  \
+                      tilo workspace servers add https://tilo.sh -w Tilo\n  \
+                      tilo workspace servers remove https://tilo.sh -w Tilo")]
+    Servers {
         #[command(subcommand)]
-        cmd: crate::hosted::HostsCmd,
+        cmd: crate::hosted::ServersCmd,
     },
 }
 
@@ -97,8 +97,8 @@ pub fn run_workspace(cmd: WorkspaceCmd, spelling: &Spelling) -> ExitCode {
                 io,
             )
         }
-        // A hosted workspace's hosts, which `tilo`'s hosted commands answer.
-        WorkspaceCmd::Hosts { .. } => {
+        // A hosted workspace's servers, which `tilo`'s hosted commands answer.
+        WorkspaceCmd::Servers { .. } => {
             let _ = writeln!(io.err, "name the workspace: -w <name or id>");
             2
         }
