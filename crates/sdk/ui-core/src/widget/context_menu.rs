@@ -27,6 +27,7 @@ use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 use crate::widget::floating_surface::{self, PanelAlign, PopoverSide};
 
+mod editing;
 mod emoji_row;
 mod folding;
 mod placement;
@@ -35,6 +36,7 @@ mod query;
 mod rows;
 mod send_to_box;
 
+pub use editing::EditingCommand;
 pub use emoji_row::EmojiRow;
 pub use folding::MenuPick;
 use placement::is_point;
@@ -512,6 +514,28 @@ pub fn note_input(event: &WindowEvent) {
         }
         _ => {}
     }
+}
+
+/// Whether `event` is the keyboard's way to open a context menu: the Menu key, or Shift+F10
+/// with `modifiers` held. Whatever opens a menu of its own from the keyboard asks this, so the
+/// same two keys open every menu.
+#[must_use]
+pub fn opens_from_keyboard(
+    event: &WindowEvent,
+    modifiers: winit::keyboard::ModifiersState,
+) -> bool {
+    matches!(
+        event,
+        WindowEvent::KeyboardInput {
+            event: KeyEvent {
+                logical_key,
+                state: ElementState::Pressed,
+                ..
+            },
+            ..
+        } if matches!(logical_key, Key::Named(NamedKey::ContextMenu))
+            || (matches!(logical_key, Key::Named(NamedKey::F10)) && modifiers.shift_key())
+    )
 }
 
 #[crate::component::not_a_component(

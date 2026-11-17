@@ -11,8 +11,7 @@ use std::rc::Rc;
 
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
-use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
-use winit::keyboard::{Key, NamedKey};
+use winit::event::{ElementState, MouseButton, WindowEvent};
 
 use super::{ContextMenu, Element, EventCtx, MenuItem, Widget};
 use crate::presence::PresenceCtx;
@@ -569,17 +568,7 @@ impl ContextMenuArea {
                 let at = self.cursor;
                 Some((Rect::new(at.x, at.y, at.x, at.y), Some(at)))
             }
-            WindowEvent::KeyboardInput {
-                event:
-                    KeyEvent {
-                        logical_key,
-                        state: ElementState::Pressed,
-                        ..
-                    },
-                ..
-            } if (matches!(logical_key, Key::Named(NamedKey::ContextMenu))
-                || (matches!(logical_key, Key::Named(NamedKey::F10))
-                    && ctx.modifiers.state().shift_key()))
+            _ if super::context_menu::opens_from_keyboard(event, ctx.modifiers.state())
                 && focus_within(self.content.as_ref()) =>
             {
                 // The item that has the keyboard, as every platform opens a
@@ -956,6 +945,8 @@ impl crate::widget::controls::ActionControls for ContextMenuArea {
 #[cfg(test)]
 mod tests {
     use std::cell::Cell;
+
+    use winit::keyboard::{Key, NamedKey};
 
     use super::*;
     use crate::widget::Spacer;

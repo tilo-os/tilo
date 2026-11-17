@@ -3,14 +3,13 @@
 //! runs.
 
 use vello::kurbo::Point;
-use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
-use winit::keyboard::{Key, NamedKey};
+use winit::event::{ElementState, MouseButton, WindowEvent};
 
 use super::{BlockEditor, BlockKind, CursorPlacement, DocumentPosition};
 use crate::i18n::I18nManager;
 use crate::platform::Shortcut;
 use crate::text_selection::word_boundaries;
-use crate::widget::context_menu::{ContextMenu, MenuItem};
+use crate::widget::context_menu::{ContextMenu, EditingCommand, MenuItem};
 use crate::widget::marks::Mark;
 use crate::widget::{EventCtx, Widget};
 
@@ -18,7 +17,7 @@ const TEXT_MENU_TARGET: &str = "editor.text-menu:";
 
 #[derive(Clone, Debug, PartialEq)]
 enum TextMenuAction {
-    Clipboard(&'static str),
+    Clipboard(EditingCommand),
     Mark(Mark),
     List { ordered: bool },
     Heading(Option<u8>),
@@ -123,18 +122,8 @@ impl BlockEditor {
             self.dirty = true;
             return true;
         }
-        let menu_key = matches!(
-            event,
-            WindowEvent::KeyboardInput {
-                event: KeyEvent {
-                    state: ElementState::Pressed,
-                    logical_key,
-                    ..
-                },
-                ..
-            } if *logical_key == Key::Named(NamedKey::ContextMenu)
-                || (ctx.modifiers.state().shift_key() && *logical_key == Key::Named(NamedKey::F10))
-        );
+        let menu_key =
+            crate::widget::context_menu::opens_from_keyboard(event, ctx.modifiers.state());
         let opened = if secondary_press {
             self.open_text_menu(self.last_mouse_pos)
         } else if menu_key && self.is_focused {
@@ -253,45 +242,16 @@ impl BlockEditor {
     fn show_text_menu(&mut self, at: Point) {
         let label = |key: &str| I18nManager::lookup_plain(key);
         let selected = self.has_text_selection();
-        // Paste stays offered: reading the clipboard to find out would wait
-        // on the compositor while the menu opens, and use up a browser's
-        // one read of a paste. A paste of nothing changes nothing.
         let active = self.active_marks();
         let focused_kind = self
             .focused
             .and_then(|index| self.blocks.get(index))
             .map(|block| block.kind.clone());
-        let mut rows: Vec<(MenuItem, Option<TextMenuAction>)> = Vec::new();
-        let mut row = |item: MenuItem, action: TextMenuAction, enabled: bool| {
-            rows.push((item.with_enabled(enabled), Some(action)));
-        };
-        row(
-            MenuItem::action(label("text-menu-cut"), || {}).with_shortcut(Shortcut::command("X")),
-            TextMenuAction::Clipboard("cut"),
-            selected,
-        );
-        row(
-            MenuItem::action(label("text-menu-copy"), || {}).with_shortcut(Shortcut::command("C")),
-            TextMenuAction::Clipboard("copy"),
-            selected,
-        );
-        row(
-            MenuItem::action(label("text-menu-paste"), || {}).with_shortcut(Shortcut::command("V")),
-            TextMenuAction::Clipboard("paste"),
-            true,
-        );
-        row(
-            MenuItem::action(label("text-menu-paste-plain"), || {})
-                .with_shortcut(Shortcut::command("V").shift()),
-            TextMenuAction::Clipboard("paste-plain"),
-            true,
-        );
-        row(
-            MenuItem::action(label("text-menu-select-all"), || {})
-                .with_shortcut(Shortcut::command("A")),
-            TextMenuAction::Clipboard("select-all"),
-            true,
-        );
+        // The rows every text's menu begins with, then what this editor formats.
+        let mut rows: Vec<(MenuItem, Option<TextMenuAction>)> = EditingCommand::rows(selected)
+            .into_iter()
+            .map(|(item, command)| (item, Some(TextMenuAction::Clipboard(command))))
+            .collect();
         rows.push((MenuItem::separator(), None));
         for (key, mark, shortcut) in [
             ("text-menu-bold", Mark::Bold, Some("B")),
@@ -367,7 +327,7 @@ impl BlockEditor {
         };
         match action {
             TextMenuAction::Clipboard(command) => {
-                self.clipboard_command(command);
+                self.clipboard_command(command.id());
             }
             TextMenuAction::Mark(mark) => {
                 self.toggle_mark(mark);
