@@ -11,7 +11,7 @@ for line in sys.stdin:
  request=json.loads(line); method=request['method']; params=request.get('params',{})
  with open(log,'a') as file: file.write(method+'\n')
  error=None
- if method=='hello': result={'protocol':9,'daemon_version':'test','root':'test','arch':'x86_64'}
+ if method=='hello': result={'protocol':PROTOCOL,'daemon_version':'test','root':'test','arch':'x86_64'}
  elif method=='layer.upload.begin': result={'upload':'test'}; received=0
  elif method=='layer.upload.chunk':
   received+=len(base64.b64decode(params['data'])); result={'received':received}
@@ -34,6 +34,12 @@ for line in sys.stdin:
  print(json.dumps(response),flush=True)
 ";
 
+/// The fake daemon speaks the client's protocol, so a version bump does not leave this
+/// fixture behind at an old number.
+fn peer() -> String {
+    PEER.replace("PROTOCOL", &tilo_vm_protocol::PROTOCOL_VERSION.to_string())
+}
+
 #[test]
 fn imported_cohort_uses_verified_import_and_addressed_account_readback() {
     for case in [
@@ -55,7 +61,7 @@ fn imported_cohort_uses_verified_import_and_addressed_account_readback() {
             .find(|l| l.receipt.component == "apps+runtime")
             .unwrap();
         let log = dir.path().join("rpc.log");
-        let line = CommandLine::new("python3", &["-c", PEER])
+        let line = CommandLine::new("python3", &["-c", &peer()])
             .arg(case)
             .arg(log.display().to_string())
             .arg(&layer.receipt.layer_hash);
