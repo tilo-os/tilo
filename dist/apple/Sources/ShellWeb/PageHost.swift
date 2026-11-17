@@ -18,6 +18,12 @@ public protocol PageHostDelegate: AnyObject {
 /// It keeps the site's data: the page holds its device key as a browser key that WebKit
 /// wraps with a key from the app's keychain, so a person who signed in once stays signed in
 /// for as long as the app keeps its signature and its data.
+///
+/// In a build that shows one app it holds that app's page and nothing else of Tilo. The way
+/// in may lead anywhere in the site (its door, an invitation, a pairing link). Once the
+/// person is in, an address of the site that is not the app's own goes to the system like
+/// any other, and a page that is not the app's own is put out of sight and the app opened in
+/// its place.
 @MainActor
 public final class PageHost: NSObject {
     public let settings: ShellSettings
@@ -29,6 +35,16 @@ public final class PageHost: NSObject {
     private var permission: NoticePermission
     private var lastEnd: Date?
     private var titleWatch: NSKeyValueObservation?
+    private var addressWatch: NSKeyValueObservation?
+    /// The page said it is in: past its site's door.
+    private var entered = false
+    /// How often in a row the page was taken back to the app without getting there.
+    private var returns = 0
+    private var returning: Task<Void, Never>?
+    private var veiled = false
+    /// How long a page that just got in has to put away what a link gave it before the app
+    /// is opened in its place.
+    public var settling = Duration.seconds(1.5)
 
     /// - Parameters:
     ///   - keepsData: `false` only for a check that must leave nothing behind.
@@ -40,7 +56,7 @@ public final class PageHost: NSObject {
         self.permission = permission
         let configuration = WKWebViewConfiguration()
         configuration.websiteDataStore = keepsData ? .default() : .nonPersistent()
-        configuration.applicationNameForUserAgent = "TiloAssistant"
+        configuration.applicationNameForUserAgent = "TiloShell"
         // The page keeps its session and goes on telling the person what needs them while
         // its window is closed: that is what the menu-bar item is for.
         configuration.preferences.inactiveSchedulingPolicy = .none
@@ -66,28 +82,73 @@ public final class PageHost: NSObject {
         titleWatch = view.observe(\.title, options: [.new]) { [weak self] _, _ in
             Task { @MainActor in self?.titleChanged() }
         }
+        // A page moves within itself without asking anyone: its address says where it went.
+        addressWatch = view.observe(\.url, options: [.new]) { [weak self] _, _ in
+            Task { @MainActor in self?.hold(after: .zero) }
+        }
     }
 
-    /// Open the app the settings name.
+    /// Open what the settings name: Tilo as a whole, or the one app.
     public func open() {
         go(to: settings.start)
     }
 
     /// Open a link into the site: an invitation, a pairing link, a document.
     public func open(_ link: URL) {
-        guard policy.destination(of: link) == .inside else { return }
+        guard policy.destination(of: link) == .inside, !handsOn(link) else { return }
         go(to: link)
+    }
+
+    /// In a build that shows one app, whatever else the site has is the system's to open once
+    /// the person is in, like any address that is not Tilo's. Says whether `url` was handed on.
+    private func handsOn(_ url: URL) -> Bool {
+        guard entered, !policy.isOwn(url) else { return false }
+        delegate?.page(self, leavesFor: url)
+        return true
     }
 
     /// Load the page that is shown again, from the site.
     public func reload() {
-        if view.url == nil { open() } else { view.reload() }
+        returns = 0
+        if view.url == nil || veiled { open() } else { view.reload() }
+    }
+
+    /// Once the person is in, a page that is not what this build is for is put out of sight,
+    /// and the app is opened in its place after `wait`.
+    private func hold(after wait: Duration) {
+        guard entered, returning == nil, let shown = view.url, !policy.isOwn(shown) else { return }
+        veil(true)
+        returns += 1
+        // A site that leaves the app each time it is opened is said, not tried for ever.
+        guard returns <= 2 else {
+            delegate?.page(self, failed: PageAway())
+            return
+        }
+        returning = Task { [weak self] in
+            try? await Task.sleep(for: wait)
+            guard let self, !Task.isCancelled else { return }
+            self.go(to: self.settings.start)
+        }
+    }
+
+    /// Out of sight, or back. A page out of sight goes on running and keeps the keyboard.
+    private func veil(_ hidden: Bool) {
+        veiled = hidden
+        #if os(macOS)
+        view.alphaValue = hidden ? 0 : 1
+        #else
+        view.alpha = hidden ? 0 : 1
+        #endif
     }
 
     /// An address that differs from the one shown only after its `#` would leave the page as
     /// it is: a web view then moves within the document, and Tilo's page reads what a link
     /// carries only as it loads. So the page is taken there and loaded afresh.
     private func go(to address: URL) {
+        returning?.cancel()
+        returning = nil
+        // The page that is shown is on its way out: what it said of the door is over.
+        entered = false
         guard let shown = view.url, PageHost.sameDocument(shown, address) else {
             view.load(URLRequest(url: address))
             return
@@ -158,7 +219,12 @@ public final class PageHost: NSObject {
         guard message.frameInfo.isMainFrame, PageHost.text(of: message.frameInfo.securityOrigin) == settings.origin,
               let said = PageMessage(body: message.body)
         else { return }
+        if case .entry(let entry) = said {
+            entered = entry.state == "open"
+            if entered, let shown = view.url, policy.isOwn(shown) { returns = 0 }
+        }
         delegate?.page(self, said: said)
+        if case .entry = said { hold(after: settling) }
     }
 
     private func failed(_ error: any Error) {
@@ -197,6 +263,11 @@ struct PageStopped: LocalizedError {
     var errorDescription: String? { Words.pageStopped.said }
 }
 
+/// The site left the one app this build shows for another page, each time it was opened.
+struct PageAway: LocalizedError {
+    var errorDescription: String? { Words.pageAway.said }
+}
+
 /// The message handler holds its target weakly: a content controller keeps its handlers.
 private final class Door: NSObject, WKScriptMessageHandler {
     weak var host: PageHost?
@@ -217,6 +288,7 @@ extension PageHost: WKNavigationDelegate {
         }
         switch policy.destination(of: url) {
         case .inside:
+            if handsOn(url) { return .cancel }
             guard action.targetFrame == nil else { return .allow }
             // The page asked for a tab of its own. The shell has one place.
             webView.load(action.request)
@@ -244,6 +316,8 @@ extension PageHost: WKNavigationDelegate {
 
     public func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
         // Another page: whatever the last one said of the site's door is over.
+        entered = false
+        veil(false)
         delegate?.page(self, said: .entry(PageEntry(state: "")))
     }
 
@@ -278,7 +352,7 @@ extension PageHost: WKUIDelegate {
                         for action: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? {
         guard let url = action.request.url else { return nil }
         switch policy.destination(of: url) {
-        case .inside: webView.load(action.request)
+        case .inside: if !handsOn(url) { webView.load(action.request) }
         case .outside: delegate?.page(self, leavesFor: url)
         case .refused: break
         }

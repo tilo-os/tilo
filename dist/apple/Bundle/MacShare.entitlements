@@ -1,10 +1,11 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <!-- The Mac app's share extension: sandboxed as every app extension, with the one place it
-     shares with the app. It reaches no network. -->
+     shares with the app. It reaches no network. build.sh writes the signing team for __TEAM__
+     and the app's identifier for __ID__. -->
 <plist version="1.0"><dict>
   <key>com.apple.security.app-sandbox</key><true/>
   <key>com.apple.security.application-groups</key><array>
-    <string>__TEAM__.so.tilo.assistant.shell.shared</string>
+    <string>__TEAM__.__ID__.shared</string>
   </array>
 </dict></plist>

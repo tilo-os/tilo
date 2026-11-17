@@ -3,13 +3,16 @@ import Foundation
 /// Every sentence the native part shows, by its key in `Localizable.strings`, with its
 /// English. The page's own words are the page's; these are the menus, the screens the
 /// shell shows when there is no page, and what the system shows for it.
+///
+/// Two apps are built from these sources, so no sentence names one: where the app's own name
+/// belongs a sentence has `%@`, and the name is the bundle's.
 public enum Words: String, CaseIterable, Sendable {
     case about, settings, hide, hideOthers = "hide-others", showAll = "show-all", quit
     case fileMenu = "file-menu", openLink = "open-link", closeWindow = "close-window"
     case editMenu = "edit-menu", undo, redo, cut, copy, paste, selectAll = "select-all"
     case viewMenu = "view-menu", reload
     case windowMenu = "window-menu", minimize
-    case openAssistant = "open-assistant", dictate, openAtLogin = "open-at-login"
+    case openApp = "open-app", dictate, openAtLogin = "open-at-login"
     case unreachableTitle = "unreachable-title", unreachableBody = "unreachable-body", tryAgain = "try-again"
     case addressRefused = "address-refused", addressNotAnAddress = "address-not-an-address"
     case addressNotSecure = "address-not-secure", noLink = "no-link"
@@ -17,20 +20,22 @@ public enum Words: String, CaseIterable, Sendable {
     case dictationUnavailable = "dictation-unavailable", dictationNotAllowed = "dictation-not-allowed"
     case wordsWaiting = "words-waiting"
     case writeReply = "write-reply", replyButton = "reply-button", replyPlaceholder = "reply-placeholder"
-    case siteLabel = "site-label", siteHelp = "site-help", useSite = "use-site", showDesktop = "show-desktop"
+    case siteLabel = "site-label", siteHelp = "site-help", useSite = "use-site"
     case notificationsLabel = "notifications-label", openNotificationSettings = "open-notification-settings"
     case shareAdded = "share-added", shareNothing = "share-nothing", shareFailed = "share-failed", done
     case wayInMac = "way-in-mac", wayInPhone = "way-in-phone", pasteLink = "paste-link", scanCode = "scan-code"
     case codeNoLink = "code-no-link", cameraNotAllowed = "camera-not-allowed", pageStopped = "page-stopped"
+    case pageAway = "page-away"
 
+    /// The sentence in English, with `%@` where the app's own name goes.
     public var english: String {
         switch self {
-        case .about: "About Tilo Assistant"
+        case .about: "About %@"
         case .settings: "Settings…"
-        case .hide: "Hide Tilo Assistant"
+        case .hide: "Hide %@"
         case .hideOthers: "Hide others"
         case .showAll: "Show all"
-        case .quit: "Quit Tilo Assistant"
+        case .quit: "Quit %@"
         case .fileMenu: "File"
         case .openLink: "Open link from clipboard"
         case .closeWindow: "Close window"
@@ -45,7 +50,7 @@ public enum Words: String, CaseIterable, Sendable {
         case .reload: "Reload"
         case .windowMenu: "Window"
         case .minimize: "Minimize"
-        case .openAssistant: "Open Tilo Assistant"
+        case .openApp: "Open %@"
         case .dictate: "Dictate a message"
         case .openAtLogin: "Open at login"
         case .unreachableTitle: "Tilo cannot be reached"
@@ -59,33 +64,47 @@ public enum Words: String, CaseIterable, Sendable {
         case .insertWords: "Insert"
         case .cancel: "Cancel"
         case .dictationUnavailable: "Dictation is not available in this language on this device."
-        case .dictationNotAllowed: "Allow the microphone and speech recognition for Tilo Assistant in the system's settings, then try again."
+        case .dictationNotAllowed: "Allow the microphone and speech recognition for %@ in the system's settings, then try again."
         case .wordsWaiting: "Press where the words should go."
         case .writeReply: "Write a reply"
-        case .replyButton: "Open in Tilo"
+        case .replyButton: "Open in %@"
         case .replyPlaceholder: "Message"
         case .siteLabel: "Tilo site"
         case .siteHelp: "The address of the Tilo site this app opens."
         case .useSite: "Use this site"
-        case .showDesktop: "Show the whole desktop"
         case .notificationsLabel: "Notifications"
         case .openNotificationSettings: "Open notification settings"
         case .shareAdded: "Added to your message"
         case .shareNothing: "Nothing here can go into a message."
-        case .shareFailed: "Tilo Assistant could not take this."
+        case .shareFailed: "%@ could not take this."
         case .done: "Done"
         case .wayInMac: "Paste an invitation link, or the link that “Pair a new device” gives on a device where you are signed in."
         case .wayInPhone: "Scan the code or paste the link that “Pair a new device” gives on a device where you are signed in, or paste an invitation link."
         case .pasteLink: "Paste link"
         case .scanCode: "Scan code"
         case .codeNoLink: "That code is no link to this Tilo site."
-        case .cameraNotAllowed: "Allow the camera for Tilo in the system's settings to scan a code."
+        case .cameraNotAllowed: "Allow the camera for %@ in the system's settings to scan a code."
         case .pageStopped: "The page stopped while it loaded."
+        case .pageAway: "This Tilo site keeps leaving %@ for another page."
         }
     }
 
-    /// The sentence in the person's language, or its English where the bundle has none.
+    /// The app's own name, as its bundle says it: "Tilo Shell", or "Tilo Assistant". The
+    /// share extension's bundle carries the name of its app.
+    public static func appName(info: [String: Any]? = Bundle.main.infoDictionary) -> String {
+        let named = ["CFBundleDisplayName", "CFBundleName"].compactMap { info?[$0] as? String }
+        return named.first { !$0.isEmpty } ?? "Tilo Shell"
+    }
+
+    /// The sentence in the person's language, or its English where the bundle has none, with
+    /// the app's own name in it.
     public var said: String {
-        NSLocalizedString(rawValue, bundle: .main, value: english, comment: "")
+        said(as: Words.appName())
+    }
+
+    /// The sentence as an app named `name` says it.
+    public func said(as name: String, in bundle: Bundle = .main) -> String {
+        NSLocalizedString(rawValue, bundle: bundle, value: english, comment: "")
+            .replacingOccurrences(of: "%@", with: name)
     }
 }

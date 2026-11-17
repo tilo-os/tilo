@@ -19,7 +19,7 @@ final class RootViewController: UIViewController {
     private var hint: UIView?
     private var wayIn: UIView?
     private var pageBottom: NSLayoutConstraint?
-    /// The person is following a link from the door, and belongs in the assistant once in.
+    /// The person is following a link from the door, and belongs where the app starts once in.
     private var returnsToStart = false
     /// Asked for from the app's icon before the page was there.
     private var asked: QuickAction?
@@ -365,8 +365,8 @@ extension RootViewController: PageHostDelegate {
             guard entry.state == "open", returnsToStart else { return }
             returnsToStart = false
             Task {
-                // In. A moment for the page to put away what the link gave it, then the assistant.
-                try? await Task.sleep(for: .seconds(1.5))
+                // In. A moment for the page to put away what the link gave it, then the start.
+                try? await Task.sleep(for: host.settling)
                 host.open()
             }
         }

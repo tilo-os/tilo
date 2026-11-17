@@ -8,10 +8,8 @@ import XCTest
 /// does. No window is opened and nothing is fetched: the page is given as text under the
 /// site's address.
 @MainActor
-final class PageHostTests: XCTestCase {
+final class PageHostTests: PageCase {
     private static let site = "https://tilo.test"
-    private var host: PageHost!
-    private var seen: Seen!
 
     override func setUp() async throws {
         host = PageHost(settings: try ShellSettings(site: Self.site), permission: .notAsked, keepsData: false)
@@ -212,14 +210,131 @@ final class PageHostTests: XCTestCase {
         XCTAssertEqual(PageHost.freePlace(for: "../../Library/x", in: folder).path, folder.appendingPathComponent("x").path)
         XCTAssertEqual(PageHost.freePlace(for: "..", in: folder).lastPathComponent, "download")
     }
+}
 
-    // MARK: -
+/// A build that shows one app and nothing else of Tilo, against pages given as text under
+/// addresses of the site. The site itself does not exist, so a page the shell asks it for is
+/// a load that is asked for and fails.
+@MainActor
+final class OneAppTests: PageCase {
+    private static let own = "https://tilo.test/app/#/me/so.tilo.assistant"
+    private static let desktop = "https://tilo.test/#/me"
+    private let addresses = Addresses()
+    private var addressWatch: NSKeyValueObservation?
+    /// Every address the web view was at or on its way to, in order.
+    private var asked: [String] { addresses.all }
 
-    private func run(_ script: String) async throws {
+    private func show(at address: String) async throws {
+        host = PageHost(settings: try ShellSettings(site: "https://tilo.test", app: "so.tilo.assistant", alone: true),
+                        permission: .notAsked, keepsData: false)
+        host.settling = .milliseconds(80)
+        seen = Seen()
+        host.delegate = seen
+        addressWatch = host.view.observe(\.url, options: [.new]) { [addresses] _, change in
+            guard let address = change.newValue??.absoluteString else { return }
+            Task { @MainActor in addresses.all.append(address) }
+        }
+        try await give(address, arrival: 1)
+    }
+
+    /// The site answers with a page at `address`.
+    private func give(_ address: String, arrival: Int) async throws {
+        host.view.loadHTMLString("<!doctype html><title>Tilo</title>", baseURL: URL(string: address))
+        try await until("the page arrives") { self.seen.arrivals == arrival }
+    }
+
+    /// As web/entry-page.mjs says it once the person is past the site's door.
+    private func getIn() async throws {
+        try await run("document.documentElement.dataset.entry = 'open'")
+        try await until("getting in is told") { self.seen.entry == PageEntry(state: "open") }
+    }
+
+    func testOnceInWhateverElseTheSiteHasGoesToTheSystem() async throws {
+        try await show(at: Self.own)
+        try await getIn()
+        // The desktop, as the one-app page's own bar offers it.
+        try await run("location.href = 'https://tilo.test/#/me/so.tilo.assistant'")
+        try await until("the desktop is handed to the system") {
+            self.seen.left.map(\.absoluteString) == ["https://tilo.test/#/me/so.tilo.assistant"]
+        }
+        try await run("window.open('https://tilo.test/app/#/me/so.tilo.chat')")
+        try await until("another app goes the same way") { self.seen.left.count == 2 }
+        // A link the person brings is held to the same.
+        host.open(try XCTUnwrap(URL(string: Self.desktop)))
+        XCTAssertEqual(seen.left.last?.absoluteString, Self.desktop)
+        // The app's own page moves within itself, and stays in view.
+        try await run("location.href = '\(Self.own)/-/thread'")
+        try await expect("location.hash", "#/me/so.tilo.assistant/-/thread")
+        XCTAssertEqual(seen.left.count, 3)
+        XCTAssertEqual(seen.arrivals + seen.failures.count, 1)
+        XCTAssertEqual(host.view.alphaValue, 1)
+    }
+
+    func testTheWayInMayLeadAnywhereInTheSite() async throws {
+        try await show(at: Self.own)
+        // Not in yet: where an invitation or a pairing link leads is followed.
+        try await run("location.href = 'https://tilo.test/#/@host/w/ws?pair=abc'")
+        try await until("the load is asked for") { self.seen.arrivals + self.seen.failures.count == 2 }
+        XCTAssertEqual(seen.left, [])
+        XCTAssertEqual(host.view.alphaValue, 1)
+    }
+
+    func testGettingInOnAnotherPageOpensTheAppInItsPlace() async throws {
+        // Where a pairing link made on a desktop leads.
+        try await show(at: "https://tilo.test/#/@host/w/ws")
+        XCTAssertEqual(host.view.alphaValue, 1)
+        try await getIn()
+        // Out of sight at once, and the app is asked for in its place.
+        XCTAssertEqual(host.view.alphaValue, 0)
+        try await until("the app is asked for") { self.seen.failures.count == 1 }
+        XCTAssertTrue(asked.contains(Self.own), "\(asked)")
+        XCTAssertEqual(seen.left, [])
+    }
+
+    func testAnAddressThePageWritesForItselfIsHeldToo() async throws {
+        try await show(at: Self.own)
+        try await getIn()
+        // A page writes its address without asking anyone, as Tilo's router does.
+        try await run("history.pushState(null, '', '/app/#/me/so.tilo.chat')")
+        try await until("the page is put out of sight") { self.host.view.alphaValue == 0 }
+        try await until("the app is asked for again") { self.seen.arrivals + self.seen.failures.count == 2 }
+        XCTAssertEqual(asked.last, Self.own, "\(asked)")
+        XCTAssertEqual(seen.left, [])
+    }
+
+    func testASiteThatKeepsLeavingTheAppIsSaidAndNotTriedForEver() async throws {
+        try await show(at: Self.desktop)
+        for round in 1...2 {
+            try await getIn()
+            try await until("the app is asked for") { self.seen.failures.count == round }
+            // The site answers the app's address with its desktop once more.
+            try await give(Self.desktop, arrival: round + 1)
+        }
+        try await getIn()
+        try await until("it is said") { self.seen.failures.count == 3 }
+        XCTAssertEqual(seen.failures.last, Words.pageAway.said)
+        XCTAssertEqual(host.view.alphaValue, 0)
+        // Nothing more is asked of the site until the person asks.
+        try await Task.sleep(for: .milliseconds(400))
+        XCTAssertEqual(seen.arrivals + seen.failures.count, 6)
+        XCTAssertEqual(asked.filter { $0 == Self.own }.count, 2, "\(asked)")
+        host.reload()
+        try await until("the app is asked for again") { self.seen.failures.count == 4 }
+        XCTAssertEqual(asked.filter { $0 == Self.own }.count, 3, "\(asked)")
+    }
+}
+
+/// A page host with nothing on screen, what its app hears from it, and the page asked.
+@MainActor
+class PageCase: XCTestCase {
+    var host: PageHost!
+    fileprivate var seen: Seen!
+
+    func run(_ script: String) async throws {
         _ = try await host.view.callAsyncJavaScript(script, arguments: [:], in: nil, contentWorld: .page)
     }
 
-    private func expect<Value: Equatable>(_ expression: String, _ expected: Value,
+    func expect<Value: Equatable>(_ expression: String, _ expected: Value,
                                           file: StaticString = #filePath, line: UInt = #line) async throws {
         var last: Any?
         for _ in 0..<150 {
@@ -232,7 +347,7 @@ final class PageHostTests: XCTestCase {
         XCTFail("\(expression) is \(String(describing: last)), not \(expected)", file: file, line: line)
     }
 
-    private func until(_ what: String, file: StaticString = #filePath, line: UInt = #line,
+    func until(_ what: String, file: StaticString = #filePath, line: UInt = #line,
                        _ holds: @MainActor () -> Bool) async throws {
         for _ in 0..<400 {
             if holds() { return }
@@ -240,6 +355,11 @@ final class PageHostTests: XCTestCase {
         }
         XCTFail("waited in vain until \(what)", file: file, line: line)
     }
+}
+
+@MainActor
+private final class Addresses {
+    var all: [String] = []
 }
 
 @MainActor

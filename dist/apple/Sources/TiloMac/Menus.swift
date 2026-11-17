@@ -61,7 +61,7 @@ enum Menus {
 
         let window = submenu(Words.windowMenu.said)
         add(.minimize, #selector(NSWindow.performMiniaturize(_:)), key: "m", to: window)
-        add(.openAssistant, #selector(AppDelegate.showWindow(_:)), key: "0", to: window, target: app)
+        add(.openApp, #selector(AppDelegate.showWindow(_:)), key: "0", to: window, target: app)
         NSApp.windowsMenu = window
         return main
     }

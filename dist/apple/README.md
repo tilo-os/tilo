@@ -1,27 +1,98 @@
-# Tilo Assistant for Mac and iPhone
+# Tilo Shell and Tilo Assistant for Mac and iPhone
 
-Two apps from one Swift package: a native shell around Tilo's own page.
+Two apps, each for the Mac and the iPhone, from one Swift package: a native shell around
+Tilo's own page.
+
+- **Tilo Shell** shows Tilo as a whole: the site as a browser opens it, with the desktop and
+  every app.
+- **Tilo Assistant** shows the Assistant app (`so.tilo.assistant`) and nothing else of Tilo:
+  no desktop, no other app, and no setting that leads to them.
 
 Only Tilo's web runtime draws a live document or a live view inside a conversation, so these
-apps do not draw the conversation a second time. They show the page that a link to one app
-opens ("Links opened full tab" in
-[the web runtime's guide](../../crates/browser/tilo-browser-runtime/WEB_RUNTIME.md)) in the
-system web view, and add what only the system can do. An iPhone has no other way to draw Tilo:
-no native runtime exists for it.
+apps draw nothing of Tilo a second time. They show Tilo's page in the system web view
+("Links opened full tab" in
+[the web runtime's guide](../../crates/browser/tilo-browser-runtime/WEB_RUNTIME.md) is the
+page that shows one app) and add what only the system can do. An iPhone has no other way to
+draw Tilo: no native runtime exists for it.
+
+Both apps are the same programs. `build.sh` gives a bundle its name, its identifier and what
+it shows; no source file and no file of a bundle names one of the two, and a test keeps it so.
 
 ```
 Package.swift        the targets, and the oldest system the apps run on
-Sources/ShellCore    decided without a web view: the site, which addresses stay inside, what
-                     the page's title says, the hand-over from the share sheet, the sentences,
-                     the script that joins page and system
+Sources/ShellCore    decided without a web view: the site and what of it is shown, which
+                     addresses stay inside, what the page's title says, the hand-over from the
+                     share sheet, the sentences, the script that joins page and system
 Sources/ShellWeb     the web view that holds the page, notifications, dictation, the check
 Sources/TiloMac      the Mac app: one window, the menu-bar item, settings
 Sources/TiloPhone    the iPhone app
 Sources/TiloShare    the share extension of both
-Bundle/              what the bundles carry: Info.plists, entitlements, the English sentences,
-                     the phone's page in Settings
-build.sh             builds, signs, checks, installs
+Bundle/              what the bundles carry, with room for an app's name and identifier:
+                     Info.plists, entitlements, the English sentences, the phone's page in
+                     Settings, the icon's one drawing
+build.sh             builds either app, signs, checks, installs
 ```
+
+## The two apps
+
+|                 | Tilo Shell                                      | Tilo Assistant                        |
+| --------------- | ----------------------------------------------- | ------------------------------------- |
+| Built by        | `build.sh shell …`, or `build.sh …`             | `build.sh assistant …`                |
+| Identifier      | `so.tilo.assistant.shell` (see below)           | `so.tilo.assistant`                   |
+| Opens           | `<site>/`: Tilo as the site opens it            | `<site>/app/#/me/so.tilo.assistant`   |
+| What is shown   | everything of the site                          | that app's own page                   |
+| Its bundle says | `TiloAlone` false, `TiloApp` empty              | `TiloAlone` true, `TiloApp` the app   |
+
+Each app keeps its own data, its own keys and its own place shared with its share extension,
+so a person is signed in to each by itself.
+
+**Tilo Shell** opens the site's own entry, as a browser tab does. `TILO_SHELL_APP` at build
+time, or `-TiloApp <id>` once on the command line, names an app that is in front on the
+desktop when it opens.
+
+**Tilo Assistant** shows one app, and the build says which: a bundle whose `Info.plist` has
+`TiloAlone` shows `TiloApp` alone, whatever a setting or the command line names
+(`ShellSettings.swift`). The page it opens is the one-app page, which has no desktop. Beyond
+that the web view is held to it (`PageHost.swift`, `SitePolicy.isOwn`):
+
+- The way in may lead anywhere in the site, because that is how a person gets in: its door,
+  an invitation, a pairing link made on a desktop.
+- Once the page says the person is in, an address of the site that is not the app's own page
+  goes to the system's browser, like any address that is not Tilo's. That is where "Open in
+  Tilo" in the one-app page's bar leads, and a link to another app's document.
+- A page writes its own address without asking anyone. If the address it shows is no longer
+  the app's own, or the person got in on another page, the page is put out of sight and the
+  app is opened in its place. A site that leaves the app each time it is opened is said after
+  the second time, not tried for ever.
+
+It shows whatever the site's `so.tilo.assistant` shows: on a site whose web bundle has no
+such app, it shows what the one-app page says of an app it does not have.
+
+## Tilo Shell's identifier
+
+Tilo Shell was first built under the other app's name, and it still carries the identifier
+from then: `so.tilo.assistant.shell`. That is on purpose, for now. The identifier is what the
+system keeps an app's data under. The site's storage is in the Mac's sandbox container and in
+the iPhone's app data, and the keychain item WebKit wraps the page's device key with belongs
+to the app that made it. A build under another identifier is another app to the system: it
+starts with nothing, so everyone who uses Tilo Shell today would be signed out on that device.
+
+Giving it an identifier of its own (`so.tilo.shell`) takes:
+
+- One line, `id` of `shell` in `build.sh`. The share extension's identifier, the shared
+  place, the keychain groups and the entitlements follow from it.
+- Every device gets in once more. The device key cannot be carried over: it is a key that
+  cannot be taken out, wrapped for the old app. A person pairs the new app from a device
+  where they are signed in, and removes the old device from their devices.
+- On an iPhone the new app installs beside the old one, which the person then deletes; the
+  site typed into the old app's page in Settings is typed again. On a Mac the old container
+  (`~/Library/Containers/so.tilo.assistant.shell`) and its group container stay until someone
+  removes them.
+- The system asks again for notifications, the microphone, speech recognition and the camera,
+  and "Open at login" is chosen again.
+
+The moment for it is the first build for the App Store, which needs an App ID of its own in
+any case (see "Before the App Store"): then people pair once more, not twice.
 
 ## What the system adds
 
@@ -33,8 +104,8 @@ While the site keeps a device out, a bar under the page offers the way in: paste
 on a phone scan the code, that "Pair a new device" shows on a device where the person is
 signed in. The page says where it stands at the door on its root element
 (`data-entry`); the bar goes when it is in, and a person who came in by such a link is taken
-back to the app. A link is also opened from the File menu on the Mac, from a long press on
-the phone's icon, or by sharing it to the app.
+back to where the app starts. A link is also opened from the File menu on the Mac, from a long
+press on the phone's icon, or by sharing it to the app.
 
 **One site.** The app shows the origin its settings name and nothing else
 (`SitePolicy.swift`). Any other address goes to the system's browser. The script below runs in
@@ -71,16 +142,18 @@ by line, a line break would send a message. Where nothing has the caret the word
 next field the person presses, and never go into a password field.
 
 **When there is no page**, the app says what is wrong and offers the one thing to do: try
-again, or change the site. The site is a setting (the Mac app's Settings, the phone's page in
-the system's Settings), and `-TiloSite <origin>` on the command line is kept from then on.
-
-**One app, or the desktop.** The app opens the link to one app, alone. A page that shows one
-app draws no live windows inside a conversation yet; the desktop does. Until it does,
-"Show the whole desktop" in the settings (`TiloDesktop`) opens the desktop with the app in
-front instead.
+again, or change the site. The site is the one setting (the Mac app's Settings, the phone's
+page in the system's Settings), and `-TiloSite <origin>` on the command line is kept from then
+on.
 
 ## What the page and the host still owe
 
+- **Live windows in the one-app page.** A page that shows one app draws no live windows
+  inside a conversation yet; the desktop does. Tilo Shell shows the desktop, so it has them.
+  Tilo Assistant has them when the one-app page draws them.
+- **The one-app page's bar.** The page that shows one app draws a bar over it with Share and
+  "Open in Tilo". In Tilo Assistant the second leads to the system's browser. A page that
+  knew it was shown as an app of its own could leave the bar out.
 - **Answers in a notification.** The page names no `actions` today, so a notification has no
   answer buttons of its own. When it does, they appear with no change here.
 - **Being told while nothing runs.** A notice is shown while the app runs, because the page
@@ -109,33 +182,40 @@ front instead.
 
 ## Build, check, run
 
+`build.sh` takes the app first, `shell` or `assistant`; without one it builds Tilo Shell.
+
 ```sh
-dist/apple/build.sh test                    # the package's tests; they open no window
-dist/apple/build.sh mac --check --live      # build, sign, and ask the app what it can tell
-dist/apple/build.sh simulator --live        # the iPhone app, asked in a simulator with no window
-dist/apple/build.sh iphone --install        # build, sign, and put it on the one reachable iPhone
-open "target/apple.noindex/mac/Tilo Assistant.app"  # start the Mac app
+dist/apple/build.sh test                         # the package's tests; they open no window
+dist/apple/build.sh shell mac --check --live     # build, sign, and ask the app what it can tell
+dist/apple/build.sh shell simulator --live       # the iPhone app, asked in a simulator with no window
+dist/apple/build.sh shell iphone --install       # build, sign, and put it on the one reachable iPhone
+dist/apple/build.sh assistant mac --check        # the same for Tilo Assistant
+open "target/apple.noindex/shell/mac/Tilo Shell.app"  # start the Mac app
 ```
 
-Builds land in `target/apple.noindex/`, where Spotlight does not look: a build is offered to a
-person as an app only once someone puts it where apps go. A bundle that is open is never
-replaced; quit it first.
+Builds land in `target/apple.noindex/<app>/`, where Spotlight does not look: a build is
+offered to a person as an app only once someone puts it where apps go. A bundle that is open
+is never replaced; quit it first.
 
 `build.sh` reads who signs from `TILO_APPLE_SIGNING_IDENTITY`, the iPhone app's provisioning
-profile from `TILO_APPLE_PROFILE`, the site from `TILO_SHELL_SITE` (default `https://tilo.sh`)
-and the app from `TILO_SHELL_APP` (default `so.tilo.chat`); its head lists the rest. The
-signing team is read from the identity and written into the bundles, never into the sources.
-Without an identity the Mac app is signed by nobody: it runs on the Mac that built it, a later
-build cannot read the keys it kept, and it has no share extension. The icon is one drawing,
-`Bundle/AppIcon.svg`, drawn at every size a bundle carries when the bundle is made.
+profile from `TILO_APPLE_PROFILE` and the site from `TILO_SHELL_SITE` (default
+`https://tilo.sh`); its head lists the rest. The signing team is read from the identity and
+written into the bundles, never into the sources. Without an identity the Mac app is signed by
+nobody: it runs on the Mac that built it, a later build cannot read the keys it kept, and it
+has no share extension.
+
+The icon of both apps is one drawing, `Bundle/AppIcon.svg`: Tilo's mark. The repository keeps
+no pictures, so `build.sh` draws it at every size a bundle carries when the bundle is made:
+the Mac's icon, and the two files the iPhone's `Info.plist` names.
 
 `--check` runs the app with nothing on screen and prints one line per fact: who signed it,
 whether it is sandboxed, whether the web view offers a secure context, WebGPU with an adapter,
 WebTransport and its datagrams, whether a key the page stored is still there on a second run,
-whether a notice and words cross between page and system, and whether the site and its host
-answer. `--live` also opens and closes one WebTransport session at the host the site names; it
-opens no stream, so no person and no workspace is touched. A simulator has no graphics
-adapter, so it fails that one line and cannot show Tilo; a real iPhone is asked from a Mac:
+whether a notice and words cross between page and system, what the build opens with the
+settings kept for it on this device, and whether the site and its host answer. `--live` also
+opens and closes one WebTransport session at the host the site names; it opens no stream, so
+no person and no workspace is touched. A simulator has no graphics adapter, so it fails that
+one line and cannot show Tilo; a real iPhone is asked from a Mac:
 
 ```sh
 xcrun devicectl device process launch --console --device <id> so.tilo.assistant.shell --check --quit
@@ -143,19 +223,23 @@ xcrun devicectl device process launch --console --device <id> so.tilo.assistant.
 
 ## Before the App Store
 
-The Mac app is sandboxed from the start with the entitlements `Bundle/Mac.entitlements`
-explains; it listens on nothing, and updates nothing of itself. Still to do for a store build:
-an App ID of its own (push, and an app group in place of the keychain group the phone's share
-extension uses under a development profile), a universal Mac binary, an icon drawn for each
-platform, the usage descriptions in every language the app ships, and review notes that say
-what the page is and name each native part above.
+The Mac apps are sandboxed from the start with the entitlements `Bundle/Mac.entitlements`
+explains; they listen on nothing, and update nothing of themselves. Still to do for a store
+build of either: an App ID of its own (push, and an app group in place of the keychain group
+the phone's share extension uses under a development profile; for Tilo Shell this is the
+moment its identifier changes), a universal Mac binary, an icon drawn for each platform, the
+usage descriptions in every language the app ships, and review notes that say what the page is
+and name each native part above.
 
 ## What is checked, and what is not
 
-Checked with no window: the tests (settings, policy, the hand-over, the sentences against
-their catalogue, the script against a page that speaks as Tilo's does), the Mac app's
-`--check` in its real signature and sandbox, and the iPhone app's in a simulator.
+Checked with no window: the tests (the settings and what a build of one app is held to, the
+policy, the hand-over, the sentences against their catalogue and under both apps' names, the
+script against a page that speaks as Tilo's does, and the web view of a one-app build against
+pages that leave the app), the Mac apps' `--check` in their real signature and sandbox, and
+the iPhone apps' in a simulator.
 
 Not checked by anything here, because it needs a window or the system's own interface: how
 the page looks in the window, the menu-bar item, the settings window, dictation, the share
-extension at run time, and a notification shown and answered through the system.
+extension at run time, a notification shown and answered through the system, and Tilo
+Assistant against a site that has the Assistant app.

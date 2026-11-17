@@ -1,21 +1,22 @@
 import Foundation
 
-/// Where the shell finds Tilo: the site it opens and the one app it shows there.
+/// Where the app finds Tilo and what of it the app shows: the site it opens and, there, Tilo
+/// as a whole or one app alone.
 ///
 /// The site is never written into the source. A build names it in the bundle's
 /// `Info.plist` (`TiloSite`), and a person changes it in Settings or with
-/// `-TiloSite <origin>` on the command line.
+/// `-TiloSite <origin>` on the command line. That a build shows one app and nothing else of
+/// Tilo is the build's alone (`TiloAlone` with `TiloApp`): no setting and no argument leads
+/// such a build to the desktop or to another app.
 public struct ShellSettings: Equatable, Sendable {
     /// The key of the site, in the defaults and in `Info.plist`.
     public static let siteKey = "TiloSite"
     /// The key of the app, in the defaults and in `Info.plist`.
     public static let appKey = "TiloApp"
-    /// The key of "show the whole desktop", in the defaults and in `Info.plist`.
-    public static let desktopKey = "TiloDesktop"
+    /// The key of "this build shows one app and nothing else of Tilo", in `Info.plist` only.
+    public static let aloneKey = "TiloAlone"
     /// The site a build that names none opens.
     public static let productionSite = "https://tilo.sh"
-    /// The app a build that names none shows: Chat, until the Assistant is in the page.
-    public static let defaultApp = "so.tilo.chat"
 
     /// Why an address is not a Tilo site.
     public enum Refusal: Error, Equatable, Sendable {
@@ -24,20 +25,19 @@ public struct ShellSettings: Equatable, Sendable {
         /// Plain `http` to anything but this computer: a page there is no secure
         /// context, so it has neither its keys nor WebGPU.
         case notSecure
-        /// Not an application id.
+        /// Not an application id, or none where one app is all a build shows.
         case notAnApp
     }
 
     /// The site's origin, as `scheme://host[:port]` with no path.
     public let site: URL
-    /// The id of the app the shell shows.
-    public let app: String
-    /// Whether the whole desktop is shown, with the app in front, in place of the app alone.
-    /// A page that shows one app draws no live windows inside a conversation yet; the
-    /// desktop does.
-    public let desktop: Bool
+    /// The id of the app that is shown alone, or that is in front on the desktop. Without
+    /// one the site opens Tilo as it does in a browser.
+    public let app: String?
+    /// Whether the app is all that is shown of Tilo: no desktop, no other app.
+    public let alone: Bool
 
-    public init(site: String, app: String = ShellSettings.defaultApp, desktop: Bool = false) throws(Refusal) {
+    public init(site: String, app: String? = nil, alone: Bool = false) throws(Refusal) {
         let written = site.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let parts = URLComponents(string: written), let scheme = parts.scheme?.lowercased(),
               let host = parts.host?.lowercased(), !host.isEmpty,
@@ -46,7 +46,11 @@ public struct ShellSettings: Equatable, Sendable {
         else { throw .notAnAddress }
         guard scheme == "https" || scheme == "http" else { throw .notAnAddress }
         guard scheme == "https" || ShellSettings.isThisComputer(host) else { throw .notSecure }
-        guard app.wholeMatch(of: /[a-z0-9]+(\.[a-z0-9][a-z0-9-]*)+/) != nil else { throw .notAnApp }
+        if let app {
+            guard app.wholeMatch(of: /[a-z0-9]+(\.[a-z0-9][a-z0-9-]*)+/) != nil else { throw .notAnApp }
+        } else if alone {
+            throw .notAnApp
+        }
         var origin = URLComponents()
         origin.scheme = scheme
         origin.host = host
@@ -55,22 +59,23 @@ public struct ShellSettings: Equatable, Sendable {
         guard let url = origin.url else { throw .notAnAddress }
         self.site = url
         self.app = app
-        self.desktop = desktop
+        self.alone = alone
     }
 
-    /// The settings a launch runs with: what the person or the command line chose, else what
-    /// the bundle names, else the production site.
+    /// The settings a launch runs with. The site: what the person or the command line chose,
+    /// else what the bundle names, else the production site. What is shown: in a build of one
+    /// app, the bundle's app and nothing else; otherwise Tilo as a whole, with the app in
+    /// front that the command line or the bundle names.
     public static func load(defaults: UserDefaults = .standard,
                             info: [String: Any]? = Bundle.main.infoDictionary) -> Result<ShellSettings, Refusal> {
         // An empty choice is no choice: the field in the phone's Settings starts empty.
-        let named = { (key: String) -> String? in
-            [defaults.string(forKey: key), info?[key] as? String].compactMap(\.self).first { !$0.isEmpty }
-        }
+        let chosen = { (key: String) -> String? in defaults.string(forKey: key).flatMap { $0.isEmpty ? nil : $0 } }
+        let built = { (key: String) -> String? in (info?[key] as? String).flatMap { $0.isEmpty ? nil : $0 } }
+        let alone = info?[aloneKey] as? Bool ?? false
         do {
-            let desktop = defaults.object(forKey: desktopKey) == nil
-                ? info?[desktopKey] as? Bool ?? false : defaults.bool(forKey: desktopKey)
-            return .success(try ShellSettings(site: named(siteKey) ?? productionSite,
-                                              app: named(appKey) ?? defaultApp, desktop: desktop))
+            return .success(try ShellSettings(site: chosen(siteKey) ?? built(siteKey) ?? productionSite,
+                                              app: alone ? built(appKey) : chosen(appKey) ?? built(appKey),
+                                              alone: alone))
         } catch {
             return .failure(error)
         }
@@ -78,17 +83,16 @@ public struct ShellSettings: Equatable, Sendable {
 
     /// Keep a site or an app named on the command line (`-TiloSite <origin>`), so that it is
     /// given once, by whoever installs a build, and not again by the person who opens it.
-    /// What cannot be used is not kept.
-    public static func keepArguments(in defaults: UserDefaults = .standard) {
+    /// What cannot be used is not kept, and a build of one app keeps no other.
+    public static func keepArguments(in defaults: UserDefaults = .standard,
+                                     info: [String: Any]? = Bundle.main.infoDictionary) {
         let given = defaults.volatileDomain(forName: UserDefaults.argumentDomain)
         if let site = given[siteKey] as? String, let named = try? ShellSettings(site: site) {
             defaults.set(named.origin, forKey: siteKey)
         }
+        guard info?[aloneKey] as? Bool != true else { return }
         if let app = given[appKey] as? String, (try? ShellSettings(site: productionSite, app: app)) != nil {
             defaults.set(app, forKey: appKey)
-        }
-        if given[desktopKey] != nil {
-            defaults.set(defaults.bool(forKey: desktopKey), forKey: desktopKey)
         }
     }
 
@@ -97,11 +101,12 @@ public struct ShellSettings: Equatable, Sendable {
         site.absoluteString.hasSuffix("/") ? String(site.absoluteString.dropLast()) : site.absoluteString
     }
 
-    /// The link the shell opens: the app in the person's own workspace, alone or in front on
-    /// the desktop.
+    /// The link the app opens: Tilo as the site opens it, the desktop with one app of the
+    /// person's own workspace in front, or that app alone.
     public var start: URL {
-        // The link grammar's `entry ["app/"] "#" route`, with the route `/me/<app>`.
-        URL(string: "\(origin)/\(desktop ? "" : "app/")#/me/\(app)") ?? site
+        // The link grammar's `entry ["app/"] ["#" route]`, with the route `/me/<app>`.
+        guard let app else { return URL(string: "\(origin)/") ?? site }
+        return URL(string: "\(origin)/\(alone ? "app/" : "")#/me/\(app)") ?? site
     }
 
     /// Whether `host` is this computer, as the link grammar reads it: `localhost`, a name

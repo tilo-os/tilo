@@ -1,11 +1,12 @@
 /* The native part's sentences in English. Sources/ShellCore/Words.swift holds the same
-   table; a test fails when the two differ. */
-"about" = "About Tilo Assistant";
+   table; a test fails when the two differ. %@ is the app's own name, which its bundle
+   gives. */
+"about" = "About %@";
 "settings" = "Settings…";
-"hide" = "Hide Tilo Assistant";
+"hide" = "Hide %@";
 "hide-others" = "Hide others";
 "show-all" = "Show all";
-"quit" = "Quit Tilo Assistant";
+"quit" = "Quit %@";
 "file-menu" = "File";
 "open-link" = "Open link from clipboard";
 "close-window" = "Close window";
@@ -20,7 +21,7 @@
 "reload" = "Reload";
 "window-menu" = "Window";
 "minimize" = "Minimize";
-"open-assistant" = "Open Tilo Assistant";
+"open-app" = "Open %@";
 "dictate" = "Dictate a message";
 "open-at-login" = "Open at login";
 "unreachable-title" = "Tilo cannot be reached";
@@ -34,25 +35,25 @@
 "insert-words" = "Insert";
 "cancel" = "Cancel";
 "dictation-unavailable" = "Dictation is not available in this language on this device.";
-"dictation-not-allowed" = "Allow the microphone and speech recognition for Tilo Assistant in the system's settings, then try again.";
+"dictation-not-allowed" = "Allow the microphone and speech recognition for %@ in the system's settings, then try again.";
 "words-waiting" = "Press where the words should go.";
 "write-reply" = "Write a reply";
-"reply-button" = "Open in Tilo";
+"reply-button" = "Open in %@";
 "reply-placeholder" = "Message";
 "site-label" = "Tilo site";
 "site-help" = "The address of the Tilo site this app opens.";
 "use-site" = "Use this site";
-"show-desktop" = "Show the whole desktop";
 "notifications-label" = "Notifications";
 "open-notification-settings" = "Open notification settings";
 "share-added" = "Added to your message";
 "share-nothing" = "Nothing here can go into a message.";
-"share-failed" = "Tilo Assistant could not take this.";
+"share-failed" = "%@ could not take this.";
 "done" = "Done";
 "way-in-mac" = "Paste an invitation link, or the link that “Pair a new device” gives on a device where you are signed in.";
 "way-in-phone" = "Scan the code or paste the link that “Pair a new device” gives on a device where you are signed in, or paste an invitation link.";
 "paste-link" = "Paste link";
 "scan-code" = "Scan code";
 "code-no-link" = "That code is no link to this Tilo site.";
-"camera-not-allowed" = "Allow the camera for Tilo in the system's settings to scan a code.";
+"camera-not-allowed" = "Allow the camera for %@ in the system's settings to scan a code.";
 "page-stopped" = "The page stopped while it loaded.";
+"page-away" = "This Tilo site keeps leaving %@ for another page.";

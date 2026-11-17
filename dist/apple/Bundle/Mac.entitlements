@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <!-- The Mac app, in the App Sandbox from the start: the Mac App Store takes nothing else.
-     build.sh writes the signing team for __TEAM__, and leaves the group out of a build
-     signed by nobody. -->
+     build.sh writes the signing team for __TEAM__ and the app's identifier for __ID__, and
+     leaves the group out of a build signed by nobody. -->
 <plist version="1.0"><dict>
   <key>com.apple.security.app-sandbox</key><true/>
   <!-- The page: its site, its host, the live connection. The app listens on nothing. -->
@@ -16,6 +16,6 @@
   <key>com.apple.security.files.downloads.read-write</key><true/>
   <!-- Where the share extension leaves what it was given. -->
   <key>com.apple.security.application-groups</key><array>
-    <string>__TEAM__.so.tilo.assistant.shell.shared</string>
+    <string>__TEAM__.__ID__.shared</string>
   </array>
 </dict></plist>

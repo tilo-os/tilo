@@ -82,10 +82,12 @@ public struct FolderHandOver: HandOver {
 /// on a phone hands over this way.
 public struct KeychainHandOver: HandOver {
     public let group: String
-    private let service = "so.tilo.assistant.shell.shared"
+    /// The name the items are kept under: the place's own.
+    public let service: String
 
-    public init(group: String) {
+    public init(group: String, service: String) {
         self.group = group
+        self.service = service
     }
 
     private var all: [CFString: Any] {
@@ -121,23 +123,28 @@ public struct KeychainHandOver: HandOver {
     }
 }
 
-/// The names a build shares between the app and its extension. Both come from the team that
-/// signed it, which the build writes into `Info.plist` (`TiloTeam`); an unsigned build has none.
+/// The one place an app shares with its own extension, and with no other app. The build
+/// writes its two names into the `Info.plist` of both: the place's own, which is the app's
+/// identifier with `.shared` (`TiloShared`), and the team that signed the build (`TiloTeam`).
+/// An unsigned build has no team, and so no place.
 public enum SharedPlace {
     public static let teamKey = "TiloTeam"
-    public static let name = "so.tilo.assistant.shell.shared"
+    public static let nameKey = "TiloShared"
 
-    /// The app group (Mac) and keychain group (iPhone) of the team that signed this build.
+    /// The app group (Mac) and keychain group (iPhone) of this build: the place's name under
+    /// the team that signed it.
     public static func group(info: [String: Any]? = Bundle.main.infoDictionary) -> String? {
-        guard let team = info?[teamKey] as? String, !team.isEmpty else { return nil }
+        guard let team = info?[teamKey] as? String, !team.isEmpty,
+              let name = info?[nameKey] as? String, !name.isEmpty
+        else { return nil }
         return "\(team).\(name)"
     }
 
     /// The hand-over this build can use, or `nil` when it is entitled to none.
     public static func handOver(info: [String: Any]? = Bundle.main.infoDictionary) -> (any HandOver)? {
-        guard let group = group(info: info) else { return nil }
+        guard let group = group(info: info), let name = info?[nameKey] as? String else { return nil }
         #if os(iOS)
-        return KeychainHandOver(group: group)
+        return KeychainHandOver(group: group, service: name)
         #else
         return FolderHandOver(group: group)
         #endif

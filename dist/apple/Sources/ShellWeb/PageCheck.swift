@@ -34,7 +34,13 @@ public final class PageCheck {
     }
 
     public func run() async -> [Line] {
-        await device() + [shared()] + site()
+        await device() + [shared(), opens()] + site()
+    }
+
+    /// What this build, with the settings kept for it on this device, shows of Tilo.
+    private func opens() -> Line {
+        let shown = settings.alone ? "one app alone" : settings.app == nil ? "Tilo as a whole" : "Tilo as a whole, one app in front"
+        return Line(name: "it opens", value: "\(settings.start.absoluteString), which is \(shown)", passed: nil)
     }
 
     /// The app and its share extension are two programs. This asks whether the build holds the

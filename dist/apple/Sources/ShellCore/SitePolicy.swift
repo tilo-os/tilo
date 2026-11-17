@@ -14,9 +14,12 @@ public enum Destination: Equatable, Sendable {
 /// the system never meets another site's content.
 public struct SitePolicy: Equatable, Sendable {
     public let origin: String
+    /// The one app of a build that shows nothing else of Tilo.
+    public let only: String?
 
     public init(settings: ShellSettings) {
         origin = settings.origin
+        only = settings.alone ? settings.app : nil
     }
 
     public func destination(of url: URL) -> Destination {
@@ -34,6 +37,29 @@ public struct SitePolicy: Equatable, Sendable {
         default:
             return .refused
         }
+    }
+
+    /// Whether `url` is what this build is for. A build that shows Tilo as a whole is for
+    /// everything in its site. A build that shows one app is for that app's own page: the
+    /// link grammar's one-app entry (`app/`) with a route that names the app, in the person's
+    /// own workspace (`/me/<app>`) or in a named one (`[/@<host>]/w/<workspace>/<app>`).
+    public func isOwn(_ url: URL) -> Bool {
+        guard destination(of: url) == .inside else { return false }
+        // What is no page of the site (a blank page, a blob of the page's) shows nothing of Tilo.
+        guard let only, SitePolicy.origin(of: url) != nil else { return true }
+        guard url.path(percentEncoded: true) == "/app/", let fragment = url.fragment(percentEncoded: true),
+              let route = fragment.split(separator: "?", maxSplits: 1, omittingEmptySubsequences: false).first
+        else { return false }
+        let parts = route.split(separator: "/", omittingEmptySubsequences: false)
+        guard parts.count > 1, parts[0].isEmpty else { return false }
+        let app: Int
+        switch parts[1] {
+        case "me": app = 2
+        case "w": app = 3
+        case let host where host.hasPrefix("@") && parts.count > 2 && parts[2] == "w": app = 4
+        default: return false
+        }
+        return parts.count > app && parts[app] == only
     }
 
     /// The link in `text` when it is one into this site: what a person pasted or shared to

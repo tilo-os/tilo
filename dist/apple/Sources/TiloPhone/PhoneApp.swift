@@ -4,8 +4,8 @@ import UIKit
 
 /// What a long press on the app's icon offers.
 enum QuickAction: String {
-    case dictate = "so.tilo.assistant.shell.dictate"
-    case openLink = "so.tilo.assistant.shell.open-link"
+    case dictate = "tilo.dictate"
+    case openLink = "tilo.open-link"
 }
 
 @MainActor

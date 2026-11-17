@@ -1,13 +1,14 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<!-- The share extension of the Mac app: words and one web link. -->
+<!-- The share extension of the Mac app: words and one web link. build.sh writes its app's
+     name and identifier for __NAME__ and __ID__. -->
 <plist version="1.0"><dict>
   <key>CFBundleDevelopmentRegion</key><string>en</string>
-  <key>CFBundleDisplayName</key><string>Tilo Assistant</string>
+  <key>CFBundleDisplayName</key><string>__NAME__</string>
   <key>CFBundleExecutable</key><string>TiloShare</string>
-  <key>CFBundleIdentifier</key><string>so.tilo.assistant.shell.share</string>
+  <key>CFBundleIdentifier</key><string>__ID__.share</string>
   <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
-  <key>CFBundleName</key><string>Tilo Assistant</string>
+  <key>CFBundleName</key><string>__NAME__</string>
   <key>CFBundlePackageType</key><string>XPC!</string>
   <key>CFBundleShortVersionString</key><string>0.0.0</string>
   <key>CFBundleSupportedPlatforms</key><array><string>MacOSX</string></array>
@@ -23,5 +24,6 @@
     <key>NSExtensionPointIdentifier</key><string>com.apple.share-services</string>
     <key>NSExtensionPrincipalClass</key><string>ShareViewController</string>
   </dict>
+  <key>TiloShared</key><string>__ID__.shared</string>
   <key>TiloTeam</key><string></string>
 </dict></plist>

@@ -9,7 +9,7 @@ import ShellWeb
 /// person what needs them.
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
-    private let name = Bundle.main.object(forInfoDictionaryKey: "CFBundleName") as? String ?? "Tilo Assistant"
+    private let name = Words.appName()
     private var window: NSWindow?
     private var host: PageHost?
     private var arrived = false
@@ -21,7 +21,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     private var hint: HintView?
     private var wayIn: WayInBar?
     private var pageBottom: NSLayoutConstraint?
-    /// The person is following a link from the door, and belongs in the assistant once in.
+    /// The person is following a link from the door, and belongs where the app starts once in.
     private var returnsToStart = false
     private var settings: SettingsWindow?
     private var dictation: DictationPanel?
@@ -107,7 +107,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         window.minSize = NSSize(width: 380, height: 480)
         window.contentView = NSView()
         window.center()
-        window.setFrameAutosaveName("TiloAssistant")
+        window.setFrameAutosaveName("TiloPage")
         return window
     }
 
@@ -187,8 +187,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         follow(link)
     }
 
-    /// Open a link into the site. From the door it is the way in, and the person belongs in
-    /// the assistant afterwards; from anywhere else it is what they asked to see.
+    /// Open a link into the site. From the door it is the way in, and the person belongs
+    /// where the app starts afterwards; from anywhere else it is what they asked to see.
     private func follow(_ link: URL) {
         returnsToStart = wayIn != nil
         showWindow(nil)
@@ -275,7 +275,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         let line = NSMenuItem(title: "", action: nil, keyEquivalent: "")
         line.isHidden = true
         menu.addItem(line)
-        Menus.add(.openAssistant, #selector(showWindow(_:)), to: menu, target: self)
+        Menus.add(.openApp, #selector(showWindow(_:)), to: menu, target: self)
         Menus.add(.dictate, #selector(dictate(_:)), to: menu, target: self)
         menu.addItem(.separator())
         Menus.add(.openAtLogin, #selector(toggleOpenAtLogin(_:)), to: menu, target: self)
@@ -336,8 +336,8 @@ extension AppDelegate: PageHostDelegate {
             guard entry.state == "open", returnsToStart else { return }
             returnsToStart = false
             Task {
-                // In. A moment for the page to put away what the link gave it, then the assistant.
-                try? await Task.sleep(for: .seconds(1.5))
+                // In. A moment for the page to put away what the link gave it, then the start.
+                try? await Task.sleep(for: host.settling)
                 host.open()
             }
         }

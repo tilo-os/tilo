@@ -1,16 +1,17 @@
 // swift-tools-version: 6.0
 import PackageDescription
 
-// The Mac and iPhone app: a native shell around Tilo's own page. README.md says what each
-// part is for; build.sh turns the products into signed app bundles.
+// Tilo Shell and Tilo Assistant for the Mac and the iPhone: a native shell around Tilo's own
+// page, as a whole or held to one app. Both apps are these same programs; build.sh gives a
+// bundle its name, its identifier and what it shows. README.md says what each part is for.
 let package = Package(
     name: "TiloShell",
     // The page draws with WebGPU and reaches its host over WebTransport. The system web view
     // has the first from OS 26 and the second from OS 26.4, so nothing older can show Tilo.
     platforms: [.macOS("26.4"), .iOS("26.4")],
     targets: [
-        // What the shell decides without a web view: which site and app it opens, which
-        // addresses stay inside, what the page's title says, what a share hands over.
+        // What the shell decides without a web view: which site it opens and what of it it
+        // shows, which addresses stay inside, what the page's title says, what a share hands over.
         .target(name: "ShellCore"),
         // The web view that holds the page, the script that joins the page to the system,
         // notifications and dictation. Shared by the Mac and the iPhone app.

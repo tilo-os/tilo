@@ -129,12 +129,11 @@ final class SettingsWindow: NSObject {
     private let window: NSWindow
     private let site = NSTextField(string: "")
     private let help = NSTextField(wrappingLabelWithString: Words.siteHelp.said)
-    private let desktop = NSButton(checkboxWithTitle: Words.showDesktop.said, target: nil, action: nil)
     private let changed: () -> Void
 
     init(changed: @escaping () -> Void) {
         self.changed = changed
-        window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 440, height: 240),
+        window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 440, height: 210),
                           styleMask: [.titled, .closable], backing: .buffered, defer: false)
         super.init()
         window.title = Words.settings.said.replacingOccurrences(of: "…", with: "")
@@ -149,7 +148,7 @@ final class SettingsWindow: NSObject {
         let notifications = NSTextField(labelWithString: Words.notificationsLabel.said)
         let open = NSButton(title: Words.openNotificationSettings.said, target: self,
                             action: #selector(openNotificationSettings))
-        let stack = NSStackView(views: [label, site, help, desktop, use, NSBox.separator(), notifications, open])
+        let stack = NSStackView(views: [label, site, help, use, NSBox.separator(), notifications, open])
         stack.orientation = .vertical
         stack.alignment = .leading
         stack.spacing = 8
@@ -172,7 +171,6 @@ final class SettingsWindow: NSObject {
     func show() {
         if case .success(let settings) = ShellSettings.load() {
             site.stringValue = settings.origin
-            desktop.state = settings.desktop ? .on : .off
         }
         help.stringValue = Words.siteHelp.said
         window.center()
@@ -184,7 +182,6 @@ final class SettingsWindow: NSObject {
         do {
             let chosen = try ShellSettings(site: site.stringValue)
             UserDefaults.standard.set(chosen.origin, forKey: ShellSettings.siteKey)
-            UserDefaults.standard.set(desktop.state == .on, forKey: ShellSettings.desktopKey)
             window.close()
             changed()
         } catch {
