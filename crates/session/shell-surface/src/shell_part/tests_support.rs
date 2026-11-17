@@ -261,7 +261,7 @@ fn part_at(
         i32::try_from(width).unwrap(),
         i32::try_from(height).unwrap(),
     );
-    part.outputs_changed(&[tilo_session_core::surface::HostedOutput {
+    part.outputs_changed(&[tilo_session_core::surface::SurfaceOutput {
         rect: (0, 0, w, h),
         scale: 1.0,
     }]);
@@ -272,8 +272,8 @@ fn part_at(
     (part, link)
 }
 
-pub(super) fn key(keysym: u32, pressed: bool) -> HostKey {
-    HostKey {
+pub(super) fn key(keysym: u32, pressed: bool) -> SurfaceKey {
+    SurfaceKey {
         keycode: 0,
         at: std::time::Instant::now(),
         pressed,
@@ -287,8 +287,8 @@ pub(super) fn key(keysym: u32, pressed: bool) -> HostKey {
 }
 
 /// Tab, held with Alt (`pressed` is Alt's, not Tab's); Shift walks the other way.
-pub(super) fn tab(alt: bool, shift: bool) -> HostKey {
-    HostKey {
+pub(super) fn tab(alt: bool, shift: bool) -> SurfaceKey {
+    SurfaceKey {
         modifiers: KeyModifiers {
             alt,
             shift,
@@ -299,8 +299,8 @@ pub(super) fn tab(alt: bool, shift: bool) -> HostKey {
 }
 
 /// The key above Tab, held with Alt: the walk over the app in front's windows.
-pub(super) fn grave(shift: bool) -> HostKey {
-    HostKey {
+pub(super) fn grave(shift: bool) -> SurfaceKey {
+    SurfaceKey {
         modifiers: KeyModifiers {
             alt: true,
             shift,
@@ -311,8 +311,8 @@ pub(super) fn grave(shift: bool) -> HostKey {
 }
 
 /// `Alt_L`, held (`true`) or let go.
-pub(super) fn alt(pressed: bool) -> HostKey {
-    HostKey {
+pub(super) fn alt(pressed: bool) -> SurfaceKey {
+    SurfaceKey {
         modifiers: KeyModifiers {
             alt: pressed,
             ..KeyModifiers::default()

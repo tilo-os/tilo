@@ -1,12 +1,12 @@
 //! What a key no widget took does: the host's fallbacks for Tab, arrows, Enter and Space, range steps
 //! and the shell's tab chords, written once for the native and headless app hosts. Each host lends
-//! its keyboard state and focus through [`KeyHost`].
+//! its keyboard state and focus through [`KeyCore`].
 
 use taffy::{NodeId, TaffyTree};
 use winit::event::{ElementState, KeyEvent, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
-use super::HostCore;
+use super::AppCore;
 use crate::focus_navigation::Direction;
 
 /// The app root and what dispatching an event to it needs.
@@ -59,7 +59,7 @@ fn pressed_named(event: &WindowEvent) -> Option<NamedKey> {
     }
 }
 
-pub(crate) trait KeyHost: HostCore {
+pub(crate) trait KeyCore: AppCore {
     /// The modifier keys held now.
     fn modifiers(&self) -> &winit::event::Modifiers;
 

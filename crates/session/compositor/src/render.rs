@@ -1,6 +1,6 @@
 //! The scene of one output: what is drawn where, front first.
 //! Everything on screen is a buffer: client surfaces (their popups and subsurfaces included) and
-//! the layers of hosted surfaces. The scene is renderer-generic, so the same elements feed the CPU
+//! the layers of surfaces. The scene is renderer-generic, so the same elements feed the CPU
 //! renderer of a headless output and the GPU of a real one, and their damage tracking decides what
 //! is redrawn.
 
@@ -29,7 +29,7 @@ use crate::effects::WindowEffect;
 use crate::state::State;
 use crate::uploads::{Placed, Uploads};
 
-use tilo_session_core::surface::HostLayer;
+use tilo_session_core::surface::SurfaceLayer;
 
 /// The colour behind every window: the desktop's background before a wallpaper surface covers it.
 pub const BACKGROUND: [f32; 4] = [0.102, 0.106, 0.149, 1.0];
@@ -39,21 +39,21 @@ smithay::backend::renderer::element::render_elements! {
     pub OutputRenderElement<R> where R: ImportAll + ImportMem;
     /// A client surface.
     Surface=WaylandSurfaceRenderElement<R>,
-    /// A hosted surface's layer drawn on the CPU, or a client surface's HDR rendition where the
+    /// A surface's layer drawn on the CPU, or a client surface's HDR rendition where the
     /// surface itself would be.
     Memory=MemoryRenderBufferRenderElement<R>,
-    /// A hosted surface's layer drawn on the GPU, shown from the dma-buf it was drawn into.
+    /// A surface's layer drawn on the GPU, shown from the dma-buf it was drawn into.
     Hosted=TextureRenderElement<R::TextureId>,
-    /// A hosted surface's layer drawn on the GPU, under the magnifier.
+    /// A surface's layer drawn on the GPU, under the magnifier.
     ZoomedGpuHosted=RescaleRenderElement<TextureRenderElement<R::TextureId>>,
-    /// A hosted surface's layer drawn on the GPU, inside the magnifier's lens.
+    /// A surface's layer drawn on the GPU, inside the magnifier's lens.
     LensHosted=CropRenderElement<RescaleRenderElement<TextureRenderElement<R::TextureId>>>,
     /// The idle dim over everything, where no backlight dims.
     Dim=SolidColorRenderElement,
     /// A client surface drawn scaled: under the magnifier, or as the lock screen filling a display
     /// it was not made for.
     ScaledSurface=RescaleRenderElement<WaylandSurfaceRenderElement<R>>,
-    /// A hosted surface's layer, or a client surface's HDR rendition, under the magnifier.
+    /// A surface's layer, or a client surface's HDR rendition, under the magnifier.
     ZoomedHosted=RescaleRenderElement<MemoryRenderBufferRenderElement<R>>,
     /// A client surface inside the magnifier's lens.
     LensSurface=CropRenderElement<RescaleRenderElement<WaylandSurfaceRenderElement<R>>>,
@@ -73,7 +73,7 @@ smithay::backend::renderer::element::render_elements! {
     LensSnapshot=CropRenderElement<RescaleRenderElement<crate::effects::SnapshotElement<R::TextureId>>>,
     /// A solid area inside the magnifier's lens.
     LensDim=CropRenderElement<RescaleRenderElement<SolidColorRenderElement>>,
-    /// A window drawn moved, scaled or faded, or pictured by a hosted surface.
+    /// A window drawn moved, scaled or faded, or pictured by a surface.
     Transformed=crate::effects::TransformedElement<R>,
     /// A closed window's last frame, drawn moved, scaled or faded.
     Snapshot=crate::effects::SnapshotElement<R::TextureId>,
@@ -244,14 +244,14 @@ where
     ))
 }
 
-/// A hosted surface's layer, drawn at `scale` with the layer's top left corner at `location`
+/// A surface's layer, drawn at `scale` with the layer's top left corner at `location`
 /// (physical), in the pose the layer asks for: the part of the frame it shows, at the pixel of the
 /// output the layer covers, so a layer the size of a display that paints a bar costs its bar rather
 /// than the display. `None` when the layer shows nothing there is to draw.
-fn hosted_layer<R>(
+fn surface_layer<R>(
     renderer: &mut R,
     uploads: &Uploads,
-    layer: &HostLayer,
+    layer: &SurfaceLayer,
     location: Point<f64, Physical>,
     scale: f64,
 ) -> Result<Option<OutputRenderElement<R>>, R::Error>
@@ -308,13 +308,13 @@ where
     )
 }
 
-/// What lies below hosted surface `host` , front first: the hosts beneath it and the windows, drawn
+/// What lies below surface `index` , front first: the surfaces beneath it and the windows, drawn
 /// at `scale` with `origin` (logical) at the top left of the area `bounds` (physical), as its
 /// backdrop sees them — the windows where their effects draw them, framed as they are drawn.
-pub(crate) fn below_host<R>(
+pub(crate) fn below_surface<R>(
     renderer: &mut R,
     state: &State,
-    host: usize,
+    surface: usize,
     origin: Point<f64, Logical>,
     scale: f64,
     bounds: Rectangle<i32, Physical>,
@@ -327,14 +327,14 @@ where
     if state.locked() {
         return elements;
     }
-    for below in state.hosts.iter().take(host).rev() {
+    for below in state.surfaces.iter().take(surface).rev() {
         for layer in below.layers().into_iter().rev() {
             let location =
                 (Point::<i32, Logical>::from(layer.location).to_f64() - origin).to_physical(scale);
-            match hosted_layer(renderer, &state.uploads, &layer, location, scale) {
+            match surface_layer(renderer, &state.uploads, &layer, location, scale) {
                 Ok(Some(element)) => elements.push(element),
                 Ok(None) => {}
-                Err(error) => tracing::warn!(?error, "hosted layer: buffer not imported"),
+                Err(error) => tracing::warn!(?error, "surface layer: buffer not imported"),
             }
         }
     }
@@ -592,18 +592,20 @@ where
     let window_of = |id: u64| state.mapped_window(id);
     let locked = state.locked();
     let mut elements: Vec<OutputRenderElement<R>> = dim.into_iter().collect();
-    let hosted = |renderer: &mut R, elements: &mut Vec<OutputRenderElement<R>>, below: bool| {
-        for host in state.hosts.iter().rev().filter(|host| {
+    let shell_surfaces = |renderer: &mut R,
+                          elements: &mut Vec<OutputRenderElement<R>>,
+                          below: bool| {
+        for surface in state.surfaces.iter().rev().filter(|surface| {
             if locked {
                 // While locked only what stands over the lock shows, over the lock client: the
                 // session's own lock view when the lock screen's app cannot show it, and the
                 // readout that answers a hardware key pressed there.
-                host.above_lock()
+                surface.above_lock()
             } else {
-                host.below_windows() == below
+                surface.below_windows() == below
             }
         }) {
-            for picture in host.window_pictures().iter().rev() {
+            for picture in surface.window_pictures().iter().rev() {
                 if let Some(window) = window_of(picture.window) {
                     elements.extend(crate::effects::pictured(
                         renderer,
@@ -616,10 +618,10 @@ where
                     ));
                 }
             }
-            for layer in host.layers().into_iter().rev() {
+            for layer in surface.layers().into_iter().rev() {
                 let location: Point<i32, Physical> =
                     (Point::from(layer.location) - geometry.loc).to_physical_precise_round(scale);
-                match hosted_layer(
+                match surface_layer(
                     renderer,
                     &state.uploads,
                     &layer,
@@ -628,7 +630,7 @@ where
                 ) {
                     Ok(Some(element)) => elements.push(element),
                     Ok(None) => {}
-                    Err(error) => tracing::warn!(?error, "hosted layer: buffer not imported"),
+                    Err(error) => tracing::warn!(?error, "surface layer: buffer not imported"),
                 }
             }
         }
@@ -636,7 +638,7 @@ where
     if locked {
         // The session's own readout answers a key pressed on the lock screen and shows over the
         // lock: the elements are front first, so it comes before the lock client's surfaces.
-        hosted(renderer, &mut elements, false);
+        shell_surfaces(renderer, &mut elements, false);
         elements.extend(state.lock_elements(renderer, output));
         return elements;
     }
@@ -644,7 +646,7 @@ where
     elements.extend(state.input_popup_elements(renderer, output));
     // The layer surfaces above the windows: the bar and its panels.
     elements.extend(state.layer_elements(renderer, output, true, geometry, output_scale));
-    hosted(renderer, &mut elements, false);
+    shell_surfaces(renderer, &mut elements, false);
     elements.extend(window_elements(
         renderer,
         state,
@@ -658,7 +660,7 @@ where
             .cloned()
             .collect(),
     ));
-    hosted(renderer, &mut elements, true);
+    shell_surfaces(renderer, &mut elements, true);
     // The layer surfaces below the windows: the shell.
     elements.extend(state.layer_elements(renderer, output, false, geometry, output_scale));
     elements

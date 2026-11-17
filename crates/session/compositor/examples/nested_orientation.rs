@@ -2,7 +2,7 @@
 //!
 //! The nested backend draws the scene into a window; the window is a client of
 //! a compositor with no display, so the run needs no desktop and nothing it
-//! draws reaches one. Three pictures of the same hosted layer must have its
+//! draws reaches one. Three pictures of the same surface layer must have its
 //! red half above its blue one: the window's output as the backend reads it
 //! back, the same window as the compositor around it shows it, and a headless
 //! output.
@@ -39,7 +39,7 @@ mod nested {
     use tilo_compositor::{
         Compositor, NestedBackend, NestedConfig, OutputConfig, Screenshot, StackPolicy,
     };
-    use tilo_session_core::surface::{HostFrame, HostLayer, SurfaceHost};
+    use tilo_session_core::surface::{ShellSurface, SurfaceFrame, SurfaceLayer};
 
     const WIDTH: i32 = 320;
     const HEIGHT: i32 = 200;
@@ -70,13 +70,16 @@ mod nested {
         }
     }
 
-    impl SurfaceHost for Marker {
-        fn layers(&self) -> Vec<HostLayer> {
-            vec![HostLayer {
+    impl ShellSurface for Marker {
+        fn layers(&self) -> Vec<SurfaceLayer> {
+            vec![SurfaceLayer {
                 pose: tilo_session_core::surface::LayerPose::SETTLED,
                 location: (0, 0),
                 size: (WIDTH, HEIGHT),
-                frame: HostFrame::from_pixels((WIDTH as u32, HEIGHT as u32), self.pixels.clone()),
+                frame: SurfaceFrame::from_pixels(
+                    (WIDTH as u32, HEIGHT as u32),
+                    self.pixels.clone(),
+                ),
             }]
         }
 
@@ -98,7 +101,7 @@ mod nested {
         outer
             .add_output(&OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT))
             .expect("output");
-        outer.add_host(Rc::new(RefCell::new(Marker::new())));
+        outer.add_surface(Rc::new(RefCell::new(Marker::new())));
         let socket = outer.listen().expect("socket");
         // By its full path: the window's process gets a runtime directory of its own, so it cannot
         // find the socket by name.
@@ -188,7 +191,7 @@ mod nested {
             Ok(compositor) => compositor,
             Err(error) => panic!("the window did not open on the output here: {error}"),
         };
-        window.add_host(Rc::new(RefCell::new(Marker::new())));
+        window.add_surface(Rc::new(RefCell::new(Marker::new())));
         for _ in 0..10 {
             window.dispatch(Duration::from_millis(16)).expect("wait");
             window.render().expect("render");
@@ -244,7 +247,7 @@ mod nested {
         compositor
             .add_output(&OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT))
             .expect("output");
-        compositor.add_host(Rc::new(RefCell::new(Marker::new())));
+        compositor.add_surface(Rc::new(RefCell::new(Marker::new())));
         compositor.render().expect("render");
         compositor.screenshot("HEADLESS-1").expect("screenshot")
     }

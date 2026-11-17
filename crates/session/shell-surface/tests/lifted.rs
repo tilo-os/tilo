@@ -12,9 +12,9 @@ use std::cell::Cell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use tilo_session_core::surface::SurfaceHost as _;
+use tilo_session_core::surface::ShellSurface as _;
 
-use tilo_surface_host::{Placement, WidgetHost};
+use tilo_shell_surface::{Placement, WidgetSurface};
 use ui::kurbo::{Affine, Rect};
 use ui::peniko::{Color, Fill};
 use ui::taffy::{NodeId, Style, TaffyTree};
@@ -85,7 +85,7 @@ fn a_fading_part_is_drawn_once_and_posed_by_the_compositor() {
     let _settled = ui::motion::testing::settled();
     let opacity = Rc::new(Cell::new(0.25));
     let under = Rc::new(Cell::new(false));
-    let mut host = WidgetHost::new(
+    let mut host = WidgetSurface::new(
         Box::new(Fader {
             opacity: Rc::clone(&opacity),
             under: Rc::clone(&under),

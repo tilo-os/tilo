@@ -70,7 +70,7 @@ fn click(part: &mut ShellPart, name: &str) {
 fn type_into(part: &mut ShellPart, text: &str) {
     for letter in text.chars() {
         for pressed in [true, false] {
-            let key = tilo_session_core::surface::HostKey {
+            let key = tilo_session_core::surface::SurfaceKey {
                 keycode: 0,
                 at: std::time::Instant::now(),
                 pressed,
@@ -81,7 +81,7 @@ fn type_into(part: &mut ShellPart, text: &str) {
                 text: pressed.then(|| letter.to_string()),
                 modifiers: tilo_session_core::surface::KeyModifiers::default(),
             };
-            tilo_session_core::surface::SurfaceHost::key(part, &key);
+            tilo_session_core::surface::ShellSurface::key(part, &key);
             part.prepare_frame();
         }
     }
@@ -650,18 +650,18 @@ fn a_field_put_in_focus_takes_the_keys_and_a_press_elsewhere_hands_them_back() {
         part.draw();
     }
     assert!(
-        !SurfaceHost::wants_keyboard(&part),
+        !ShellSurface::wants_keyboard(&part),
         "a part nobody typed in leaves the keys to the window in front"
     );
     click(&mut part, "Showing Strips");
     click(&mut part, "Frames");
     click(&mut part, CANVAS);
     assert!(
-        SurfaceHost::text_input(&part).is_some(),
+        ShellSurface::text_input(&part).is_some(),
         "the press on the canvas's free ground put the caret there"
     );
     assert!(
-        SurfaceHost::wants_keyboard(&part),
+        ShellSurface::wants_keyboard(&part),
         "the caret takes the keys: what is typed goes to the part"
     );
     type_into(&mut part, "groceries");
@@ -672,14 +672,14 @@ fn a_field_put_in_focus_takes_the_keys_and_a_press_elsewhere_hands_them_back() {
     );
     // A press on a window over the shell (or anywhere off the part) hands the keys back: what
     // is typed next reaches what the person pressed on, and the entry keeps its words.
-    SurfaceHost::pressed_elsewhere(&mut part, 300.0, 300.0);
+    ShellSurface::pressed_elsewhere(&mut part, 300.0, 300.0);
     part.prepare_frame();
     assert!(
-        SurfaceHost::text_input(&part).is_none(),
+        ShellSurface::text_input(&part).is_none(),
         "the field gave the keyboard up"
     );
     assert!(
-        !SurfaceHost::wants_keyboard(&part),
+        !ShellSurface::wants_keyboard(&part),
         "the part leaves the keys to the window again"
     );
     assert!(
@@ -701,7 +701,7 @@ fn a_part_whose_display_went_stands_nowhere_until_it_comes_back() {
         "the API reaches the bars still there, not this one"
     );
     // The compositor tells it of the outputs left: it does not stretch over them.
-    part.outputs_changed(&[tilo_session_core::surface::HostedOutput {
+    part.outputs_changed(&[tilo_session_core::surface::SurfaceOutput {
         rect: (1280, 0, 1280, 800),
         scale: 1.0,
     }]);
@@ -1083,7 +1083,7 @@ fn every_letter_typed_into_the_launcher_reaches_its_search() {
     click(&mut part, LAUNCHER_SEARCH);
     for letter in "quarterly".chars() {
         for pressed in [true, false] {
-            let key = tilo_session_core::surface::HostKey {
+            let key = tilo_session_core::surface::SurfaceKey {
                 keycode: 0,
                 at: std::time::Instant::now(),
                 pressed,
@@ -1094,7 +1094,7 @@ fn every_letter_typed_into_the_launcher_reaches_its_search() {
                 text: pressed.then(|| letter.to_string()),
                 modifiers: tilo_session_core::surface::KeyModifiers::default(),
             };
-            tilo_session_core::surface::SurfaceHost::key(&mut part, &key);
+            tilo_session_core::surface::ShellSurface::key(&mut part, &key);
             part.prepare_frame();
         }
     }
@@ -1142,7 +1142,7 @@ fn a_part_told_its_display_after_it_settled_lays_out_at_the_displays_width() {
         part.prepare_frame();
     }
     assert!(!part.due(), "the part settled");
-    part.outputs_changed(&[tilo_session_core::surface::HostedOutput {
+    part.outputs_changed(&[tilo_session_core::surface::SurfaceOutput {
         rect: (0, 0, 1280, 800),
         scale: 1.0,
     }]);
@@ -1247,7 +1247,7 @@ fn the_switcher_pictures_each_window_above_its_own_title() {
         part.prepare_frame();
         part.draw();
     }
-    let pictures = tilo_session_core::surface::SurfaceHost::window_pictures(&part);
+    let pictures = tilo_session_core::surface::ShellSurface::window_pictures(&part);
     let picture = pictures
         .first()
         .unwrap_or_else(|| panic!("the switcher pictures the window it may: {pictures:?}"));
@@ -1422,7 +1422,7 @@ fn the_overview_pictures_every_window_of_a_strip_at_its_share() {
 fn a_part_on_a_scaled_output_paints_at_that_scale() {
     let packages = compiled();
     let (mut plain, _link) = part_of(&packages, reading(), (1280, 800));
-    plain.outputs_changed(&[tilo_session_core::surface::HostedOutput {
+    plain.outputs_changed(&[tilo_session_core::surface::SurfaceOutput {
         rect: (0, 0, 1280, 800),
         scale: 1.0,
     }]);
@@ -1431,7 +1431,7 @@ fn a_part_on_a_scaled_output_paints_at_that_scale() {
     let one = plain.widgets_mut().placement();
 
     let (mut twice, _link) = part_of(&packages, reading(), (1280, 800));
-    twice.outputs_changed(&[tilo_session_core::surface::HostedOutput {
+    twice.outputs_changed(&[tilo_session_core::surface::SurfaceOutput {
         rect: (0, 0, 1280, 800),
         scale: 2.0,
     }]);
@@ -1599,7 +1599,7 @@ fn the_canvas_pans_to_a_window_arriving_past_its_edge_carrying_every_well() {
         if let (Some(one), Some(two)) = (wells.well("p1"), wells.well("p2")) {
             frames.push((one, two));
         }
-        if !drew && !part.due() && SurfaceHost::next_deadline(&part).is_none() {
+        if !drew && !part.due() && ShellSurface::next_deadline(&part).is_none() {
             break;
         }
         std::thread::sleep(std::time::Duration::from_millis(8));

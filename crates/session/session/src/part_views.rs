@@ -60,7 +60,7 @@ impl PartViews {
             })
         });
         let host = Rc::new(RefCell::new(PartView::new(part, self.scale, focused)));
-        compositor.add_host(host.clone());
+        compositor.add_surface(host.clone());
         self.hosts.insert(part, Rc::clone(&host));
         host
     }

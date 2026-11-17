@@ -242,7 +242,7 @@ paths = [
     "crates/session/render-service/src/service.rs",
     "crates/session/render-service/tests/service.rs",
     "crates/session/session/examples/latency_client.rs",
-    "crates/session/surface-host/src/frames.rs",
+    "crates/session/shell-surface/src/frames.rs",
     "crates/session/window-share/src/encoder/mod.rs",
     "crates/session/window-share/src/encoder/nv12.rs",
     "crates/session/window-share/src/flatpak_share.rs",

@@ -3,7 +3,7 @@
 
 use super::FrameHarness;
 use crate::action_palette::ActionPaletteBox;
-use crate::host_core::HostCore as _;
+use crate::app_core::AppCore as _;
 
 /// What waits on the palette's code.
 #[derive(Default)]

@@ -2,7 +2,7 @@
 //! among them), by the rule every host shares ([`crate::widget::cursor`]); the page shows it as the
 //! canvas's cursor.
 
-use crate::host_core::HostCore as _;
+use crate::app_core::AppCore as _;
 use vello::kurbo::Point;
 
 use super::FrameHarness;

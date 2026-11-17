@@ -13,7 +13,7 @@ use tilo_ui::widget::{Button, Widget};
 fn provider_payloads_enter_and_drop_under_their_originating_component() {
     {
         use crate::support::application::{enable_provider_probe, instantiate_probe};
-        let host = ProbeHost::new();
+        let host = ProbeHarness::new();
         let observed = enable_provider_probe();
         let mut component =
             instantiate_probe(&host, 11, LaunchTarget::New, RestoreInput::None).unwrap();
@@ -57,7 +57,7 @@ fn provider_payloads_enter_and_drop_under_their_originating_component() {
 
     {
         use crate::support::application::{enable_provider_probe, existing, instantiate_probe};
-        let host = ProbeHost::new();
+        let host = ProbeHarness::new();
         let observed = enable_provider_probe();
         let component =
             instantiate_probe(&host, 11, LaunchTarget::New, RestoreInput::None).unwrap();
@@ -104,7 +104,7 @@ fn provider_payloads_enter_and_drop_under_their_originating_component() {
 
     {
         use crate::support::application::{enable_provider_probe, instantiate_probe};
-        let host = ProbeHost::new();
+        let host = ProbeHarness::new();
         let observed = enable_provider_probe();
         let component =
             instantiate_probe(&host, 11, LaunchTarget::New, RestoreInput::None).unwrap();
@@ -200,7 +200,7 @@ fn component_mounts_capture_their_descendants_for_dispatch_and_layout() {
     }
 
     {
-        let host = ProbeHost::new();
+        let host = ProbeHarness::new();
         let mut component = component(&host, 1);
         let checkout = component.record().clone();
         let (sender, receiver) = std::sync::mpsc::channel();
@@ -275,7 +275,7 @@ fn component_mounts_capture_their_descendants_for_dispatch_and_layout() {
     }
 
     {
-        let host = ProbeHost::new();
+        let host = ProbeHarness::new();
         let mut component = component(&host, 1);
         let (sender, receiver) = std::sync::mpsc::channel();
         component
@@ -408,7 +408,7 @@ fn component_mounts_capture_their_descendants_for_dispatch_and_layout() {
     }
 
     {
-        let host = ProbeHost::new();
+        let host = ProbeHarness::new();
         LAYOUT_ONLY.set(true);
         let mut first = component(&host, 1);
         let first_resource = first.record().id.as_str().to_owned();
@@ -475,7 +475,7 @@ fn component_mounts_capture_their_descendants_for_dispatch_and_layout() {
     }
 }
 
-use crate::support::application::{ProbeHost, definition};
+use crate::support::application::{ProbeHarness, definition};
 use automerge::{AutoCommit, ObjId, ReadDoc, transaction::Transactable};
 use std::cell::{Cell, RefCell};
 use tilo_ui::application::{
@@ -1009,7 +1009,7 @@ fn factory(
         tilo_actions::ActionRegistry::new(),
     ))
 }
-fn component(host: &ProbeHost, instance: u64) -> AppComponent {
+fn component(host: &ProbeHarness, instance: u64) -> AppComponent {
     let definition = definition(factory);
     let context = host
         .prepare(&definition, instance, &LaunchTarget::New)
@@ -1026,7 +1026,7 @@ fn component(host: &ProbeHost, instance: u64) -> AppComponent {
 #[test]
 fn reentry_and_replacement_respect_record_borrows_and_retry_failures() {
     {
-        let host = ProbeHost::new();
+        let host = ProbeHarness::new();
         let first = component(&host, 1);
         let checkout = first.record().clone();
         let definition = definition(factory);
@@ -1126,7 +1126,7 @@ fn reentry_and_replacement_respect_record_borrows_and_retry_failures() {
     }
 
     {
-        let host = ProbeHost::new();
+        let host = ProbeHarness::new();
         let mut tile = TileHost::from_component(component(&host, 1));
         let mut tree = taffy::TaffyTree::new();
         let mut nodes = HashMap::new();
@@ -1179,7 +1179,7 @@ fn reentry_and_replacement_respect_record_borrows_and_retry_failures() {
     }
 
     {
-        let host = ProbeHost::new();
+        let host = ProbeHarness::new();
         let component = component(&host, 1);
         let checkout = component.record().clone();
         let replace = std::rc::Rc::new(Cell::new(false));
@@ -1276,7 +1276,7 @@ fn driver_tiles_route_root_callbacks_and_paint_with_current_permissions() {
             Poll,
         }
 
-        let host = ProbeHost::new();
+        let host = ProbeHarness::new();
         let mut component = component(&host, 1);
         let (sender, receiver) = std::sync::mpsc::channel();
         component
@@ -1422,7 +1422,7 @@ fn driver_tiles_route_root_callbacks_and_paint_with_current_permissions() {
     }
 
     {
-        let host = ProbeHost::new();
+        let host = ProbeHarness::new();
         let definition = definition(factory);
         let permissions = crate::support::application::permissions();
         let context = ProcessContext::prepare(
@@ -1464,7 +1464,7 @@ fn driver_tiles_route_root_callbacks_and_paint_with_current_permissions() {
 
     {
         for viewport in [(400, 300), (900, 600)] {
-            let host = ProbeHost::new();
+            let host = ProbeHarness::new();
             let definition = definition(fill_factory);
             let component = definition
                 .instantiate(
@@ -1535,7 +1535,7 @@ fn assert_closed_reentry() {
 fn operation_captures_are_destroyed_under_the_closed_owner_on_every_exit() {
     {
         for panic_cancel in [false, true] {
-            let host = ProbeHost::new();
+            let host = ProbeHarness::new();
             let mut component = component(&host, 1);
             let (tx, rx) = std::sync::mpsc::channel();
             component
@@ -1578,7 +1578,7 @@ fn operation_captures_are_destroyed_under_the_closed_owner_on_every_exit() {
     }
 
     {
-        let host = ProbeHost::new();
+        let host = ProbeHarness::new();
         let mut tile = TileHost::from_component(component(&host, 1));
         let id = tilo_actions::InvocationId::new();
         let mut doc = AutoCommit::new();
@@ -1607,7 +1607,7 @@ fn operation_captures_are_destroyed_under_the_closed_owner_on_every_exit() {
     }
 
     {
-        let host = ProbeHost::new();
+        let host = ProbeHarness::new();
         for create in [
             factory_then_error as tilo_ui::application::ComponentFactory,
             factory_then_unwind,
@@ -1650,7 +1650,7 @@ fn operation_captures_are_destroyed_under_the_closed_owner_on_every_exit() {
     }
 
     {
-        let host = ProbeHost::new();
+        let host = ProbeHarness::new();
         let mut tile = TileHost::from_component(component(&host, 1));
         CLOSED_DROPS.set(0);
         PANIC_VIEW.set(true);
@@ -1716,7 +1716,7 @@ fn nested_factory(
 )]
 fn nested_close_replacement_and_mount_failures_report_each_original_once() {
     {
-        let host = ProbeHost::new();
+        let host = ProbeHarness::new();
         let child = component(&host, 2);
         NESTED.with_borrow_mut(|nested| *nested = Some(child));
         let definition = definition(nested_factory);
@@ -1751,7 +1751,7 @@ fn nested_close_replacement_and_mount_failures_report_each_original_once() {
 
     {
         for native in [false, true] {
-            let host = ProbeHost::new();
+            let host = ProbeHarness::new();
             NESTED.with_borrow_mut(|nested| *nested = Some(component(&host, 2)));
             let definition = definition(nested_factory);
             let mut parent = definition
@@ -1797,7 +1797,7 @@ fn nested_close_replacement_and_mount_failures_report_each_original_once() {
     }
 
     {
-        let child_host = ProbeHost::new();
+        let child_host = ProbeHarness::new();
         let child = component(&child_host, 2);
         let checkout = child.record().clone();
         child_host.records.try_flush().unwrap();
@@ -1822,7 +1822,7 @@ fn nested_close_replacement_and_mount_failures_report_each_original_once() {
         NESTED.with_borrow_mut(|n| *n = Some(child));
         let replace = std::rc::Rc::new(Cell::new(false));
         NESTED_REPLACE.with_borrow_mut(|n| *n = Some(replace.clone()));
-        let parent_host = ProbeHost::new();
+        let parent_host = ProbeHarness::new();
         let definition = definition(nested_factory);
         let mut parent = definition
             .instantiate(
@@ -2084,7 +2084,7 @@ fn fill_factory(
 fn bound_resources_list_and_look_up_what_the_component_permissions_admit() {
     use crate::support::application::action_probe_factory;
     use tilo_ui::permissions::{PermissionContext, Role};
-    let host = ProbeHost::new();
+    let host = ProbeHarness::new();
     let definition = definition(action_probe_factory);
     let driver = |instance, role| {
         let permissions = tilo_ui::permissions::SharedPermissions::new(
@@ -2152,7 +2152,7 @@ fn bound_resources_list_and_look_up_what_the_component_permissions_admit() {
 fn driver_controls_resolve_bound_targets_to_their_record_owner() {
     {
         use crate::support::application::{action_probe_factory, existing, operation_observations};
-        let host = ProbeHost::new();
+        let host = ProbeHarness::new();
         let definition = definition(action_probe_factory);
         let permissions = tilo_ui::permissions::SharedPermissions::new(
             tilo_ui::permissions::PermissionContext::member(
@@ -2262,7 +2262,7 @@ fn driver_controls_resolve_bound_targets_to_their_record_owner() {
                 .with_writer(move || Capture(writer.clone()))
                 .finish();
             let _subscriber = tracing::subscriber::set_default(subscriber);
-            let host = ProbeHost::new();
+            let host = ProbeHarness::new();
             let definition = definition(action_probe_factory);
             let mut column = tilo_ui::widget::Column::new();
             let mut records = Vec::new();

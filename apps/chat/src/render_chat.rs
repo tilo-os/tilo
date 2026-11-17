@@ -404,7 +404,7 @@ impl ChatApp {
     ) {
         if m.author.is_bot()
             || !m.author.is_person()
-            || crate::host_model::is_provider_output(m)
+            || crate::model_stream::is_provider_output(m)
             || m.cause.as_ref().is_some_and(|cause| !cause.by_person())
         {
             return;
@@ -467,7 +467,7 @@ impl ChatApp {
                 linked_color: linked.map(|user| self.identity_colour(&user.id)),
                 image: shown,
             }
-        } else if crate::host_model::is_provider_output(m) {
+        } else if crate::model_stream::is_provider_output(m) {
             Author::Agent {
                 name,
                 for_person: Some(initiator),

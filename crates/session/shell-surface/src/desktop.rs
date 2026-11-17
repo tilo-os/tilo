@@ -1,7 +1,7 @@
 //! The desktop under the windows, and the window policy it answers.
 //!
 //! [`desktop`] makes the pair the compositor runs a session with: a
-//! [`DesktopHost`] drawing the portable desktop surface (its strips, window
+//! [`ShellDesktop`] drawing the portable desktop surface (its strips, window
 //! bars and edges) under every window, and a [`StripPolicy`] placing each
 //! window where that surface lays its tab out ([`tilo_desktop_policy`]).
 //! Both share one desktop, so a window opened, focused, closed or panned in
@@ -17,14 +17,16 @@ use tilo_compositor::{
     GestureEvent, LayoutPoint, LayoutRect, TouchSample, WindowInfo, WindowPlacement, WindowPolicy,
     WindowRequest,
 };
-use tilo_session_core::surface::{HostIme, HostKey, HostLayer, HostTextInput, Scroll, SurfaceHost};
+use tilo_session_core::surface::{
+    Scroll, ShellSurface, SurfaceIme, SurfaceKey, SurfaceLayer, SurfaceTextInput,
+};
 
 use tilo_desktop_policy::displays::Output;
 use tilo_desktop_policy::floating::centred;
 use tilo_desktop_policy::{DesktopPolicy, Window};
 use tilo_desktop_surface::{DesktopHandle, DesktopSurface};
 
-use crate::{Placement, WidgetHost};
+use crate::{Placement, WidgetSurface};
 
 /// Where a window not shown waits: left of every output, out of sight and
 /// out of the pointer's reach.
@@ -162,7 +164,7 @@ impl GestureReader {
 /// The desktop both halves share.
 struct Desktop {
     policy: DesktopPolicy,
-    host: WidgetHost,
+    host: WidgetSurface,
     /// What the gestures the desktop took asked, for its host to carry out.
     gestures: Vec<ShellGesture>,
     /// How the desktop reads touchpad gestures; `None` leaves every one to
@@ -311,7 +313,7 @@ fn placed(rect: ui::kurbo::Rect, (ox, oy): (i32, i32)) -> (i32, i32, i32, i32) {
 
 /// The desktop drawn under every window; a clone is the same desktop.
 #[derive(Clone)]
-pub struct DesktopHost {
+pub struct ShellDesktop {
     desktop: Rc<RefCell<Desktop>>,
 }
 
@@ -363,7 +365,7 @@ pub trait PointerSamples {
 /// drawn at `scale`: the surface under the windows and the policy placing
 /// them. The compositor hosts the one and runs with the other.
 #[must_use]
-pub fn desktop(salt: u16, scale: f64) -> (DesktopHost, StripPolicy) {
+pub fn desktop(salt: u16, scale: f64) -> (ShellDesktop, StripPolicy) {
     desktop_with(salt, scale, |surface, _| Box::new(surface))
 }
 
@@ -375,7 +377,7 @@ pub fn desktop_with(
     salt: u16,
     scale: f64,
     root: impl FnOnce(DesktopSurface, &DesktopHandle) -> Box<dyn ui::Widget>,
-) -> (DesktopHost, StripPolicy) {
+) -> (ShellDesktop, StripPolicy) {
     let (policy, surface) = DesktopPolicy::new(salt);
     let handle = policy.handle().clone();
     let root = root(surface, policy.handle());
@@ -391,7 +393,7 @@ pub fn desktop_with(
     let keyboard = Rc::new(move || handle.wants_keyboard());
     let desktop = Rc::new(RefCell::new(Desktop {
         policy,
-        host: WidgetHost::new(root, placement, true)
+        host: WidgetSurface::new(root, placement, true)
             .named(crate::i18n::t("desktop"))
             .with_keyboard(keyboard),
         gestures: Vec::new(),
@@ -406,7 +408,7 @@ pub fn desktop_with(
     let asked = desktop.borrow().host.asking();
     waking_handle.set_wake(Rc::new(move || asked.set(true)));
     (
-        DesktopHost {
+        ShellDesktop {
             desktop: Rc::clone(&desktop),
         },
         StripPolicy {
@@ -420,7 +422,7 @@ pub fn desktop_with(
     )
 }
 
-impl DesktopHost {
+impl ShellDesktop {
     /// The desktop's policy, for everything else a session drives on it
     /// (strips and workspaces, the tree it keeps).
     pub fn with_policy<R>(&self, read: impl FnOnce(&mut DesktopPolicy) -> R) -> R {
@@ -506,7 +508,7 @@ impl DesktopHost {
     /// Ctrl+K and an agent all ask the platform to search, and the platform's
     /// search is the one that knows the person's apps, their files, what apps
     /// hold and the desktop's windows. The desktop's palette is drawn over the
-    /// windows by the chrome ([`crate::desktop::DesktopHost`]'s
+    /// windows by the chrome ([`crate::desktop::ShellDesktop`]'s
     /// `SearchOverlay`), which is the one surface that may cover a window in
     /// front; opening it here means the same search every way into search
     /// reaches.
@@ -577,12 +579,12 @@ impl DesktopHost {
 
     /// The desktop's widget tree as hosted: what it publishes, its
     /// accessibility tree, the actions it accepts.
-    pub fn with_widgets<R>(&self, read: impl FnOnce(&mut WidgetHost) -> R) -> R {
+    pub fn with_widgets<R>(&self, read: impl FnOnce(&mut WidgetSurface) -> R) -> R {
         read(&mut self.desktop.borrow_mut().host)
     }
 }
 
-impl crate::well_policy::WindowModel for DesktopHost {
+impl crate::well_policy::WindowModel for ShellDesktop {
     fn policy(&self) -> std::cell::RefMut<'_, DesktopPolicy> {
         std::cell::RefMut::map(self.desktop.borrow_mut(), |desktop| &mut desktop.policy)
     }
@@ -604,7 +606,7 @@ impl crate::well_policy::WindowModel for DesktopHost {
     }
 }
 
-impl crate::Published for DesktopHost {
+impl crate::Published for ShellDesktop {
     fn resources(&mut self) -> Vec<ui::tilo_actions::ResourceSpec> {
         crate::Published::resources(&mut self.desktop.borrow_mut().host)
     }
@@ -800,12 +802,12 @@ impl crate::Published for DesktopHost {
     }
 
     fn wants_keyboard(&self) -> bool {
-        SurfaceHost::wants_keyboard(self)
+        ShellSurface::wants_keyboard(self)
     }
 }
 
-impl SurfaceHost for DesktopHost {
-    fn layers(&self) -> Vec<HostLayer> {
+impl ShellSurface for ShellDesktop {
+    fn layers(&self) -> Vec<SurfaceLayer> {
         self.desktop.borrow().host.layers()
     }
 
@@ -887,18 +889,18 @@ impl SurfaceHost for DesktopHost {
     }
 
     fn wants_keyboard(&self) -> bool {
-        SurfaceHost::wants_keyboard(&self.desktop.borrow().host)
+        ShellSurface::wants_keyboard(&self.desktop.borrow().host)
     }
 
-    fn key(&mut self, key: &HostKey) {
+    fn key(&mut self, key: &SurfaceKey) {
         self.desktop.borrow_mut().host.key(key);
     }
 
-    fn text_input(&self) -> Option<HostTextInput> {
+    fn text_input(&self) -> Option<SurfaceTextInput> {
         self.desktop.borrow().host.text_input()
     }
 
-    fn ime(&mut self, event: HostIme) {
+    fn ime(&mut self, event: SurfaceIme) {
         self.desktop.borrow_mut().host.ime(event);
     }
 
@@ -930,7 +932,7 @@ impl SurfaceHost for DesktopHost {
         self.desktop.borrow_mut().host.set_frame_interval(interval);
     }
 
-    fn outputs_changed(&mut self, outputs: &[tilo_session_core::surface::HostedOutput]) {
+    fn outputs_changed(&mut self, outputs: &[tilo_session_core::surface::SurfaceOutput]) {
         // The desktop draws at the scale of the first display there is, the one
         // it covers: its strips and the windows' bars paint the pixels that
         // display shows, rather than one scale's worth stretched over a
@@ -1399,19 +1401,19 @@ mod tests {
         use ui::window_targets::{TargetAction, WindowTarget};
 
         let (mut desktop, mut policy) = desktop(7, 1.0);
-        SurfaceHost::outputs_changed(
+        ShellSurface::outputs_changed(
             &mut desktop,
-            &[tilo_session_core::surface::HostedOutput {
+            &[tilo_session_core::surface::SurfaceOutput {
                 rect: (0, 0, 1280, 800),
                 scale: 1.0,
             }],
         );
         policy.map(&window(1, "so.tilo.file-explorer", Some(4242)), &[output()]);
         for _ in 0..8 {
-            SurfaceHost::prepare_frame(&mut desktop);
+            ShellSurface::prepare_frame(&mut desktop);
         }
         assert!(
-            !SurfaceHost::prepare_frame(&mut desktop),
+            !ShellSurface::prepare_frame(&mut desktop),
             "the desktop is at rest before the app describes its content"
         );
         let handle = desktop.with_policy(|policy| policy.handle().clone());
@@ -1438,7 +1440,7 @@ mod tests {
             "nothing of it is read before the frame that reads it"
         );
 
-        SurfaceHost::prepare_frame(&mut desktop);
+        ShellSurface::prepare_frame(&mut desktop);
 
         let listed = handle.window_controls();
         assert_eq!(
@@ -1462,9 +1464,9 @@ mod hidpi {
     #[test]
     fn the_shell_draws_at_its_displays_scale() {
         let (mut desktop, _policy) = desktop(7, 1.0);
-        SurfaceHost::outputs_changed(
+        ShellSurface::outputs_changed(
             &mut desktop,
-            &[tilo_session_core::surface::HostedOutput {
+            &[tilo_session_core::surface::SurfaceOutput {
                 rect: (0, 0, 1472, 920),
                 scale: 2.0,
             }],

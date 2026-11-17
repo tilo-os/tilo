@@ -24,7 +24,7 @@ use std::time::Duration;
 
 use serde_json::{Map, Value, json};
 use tilo_session::{Options, Session};
-use tilo_surface_host::shell_part::OVERLAYS;
+use tilo_shell_surface::shell_part::OVERLAYS;
 
 use crate::common::{
     Agent, Api, CANVAS, HEIGHT, MAIL, PERSON, SUBJECT, WIDTH, on_screen, placed_resources,

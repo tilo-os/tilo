@@ -2,9 +2,9 @@
 //!
 //! The top bar, the launcher and the panels are ordinary toolkit apps. An
 //! [`AppProcess`] shows one of them on a rectangle of the desktop: it drives the
-//! app as any host does (input in, frames out), has each frame drawn where it
+//! app as any surface does (input in, frames out), has each frame drawn where it
 //! changed the way the app's own frames are, and hands the compositor the
-//! buffer as a [`SurfaceHost`] layer. The compositor knows nothing of the app;
+//! buffer as a [`SurfaceLayer`]. The compositor knows nothing of the app;
 //! the app knows nothing of the compositor.
 
 #![cfg(target_os = "linux")]
@@ -20,17 +20,17 @@ mod well_policy;
 mod widget;
 
 pub use desktop::{
-    DesktopHost, PointerSamples, ShellGesture, StripPolicy, WindowObserver, desktop, desktop_with,
+    PointerSamples, ShellDesktop, ShellGesture, StripPolicy, WindowObserver, desktop, desktop_with,
 };
 pub use shell_part::{SessionLink, ShellPart, ShellWork};
-pub use well_policy::{WellHost, WellPolicy, WindowModel, well_policy};
-pub use widget::WidgetHost;
+pub use well_policy::{WellDesktop, WellPolicy, WindowModel, well_policy};
+pub use widget::WidgetSurface;
 
 use std::cell::Cell;
 
 use tilo_session_core::surface::{
-    BackdropImage, BackdropRequest, CursorIcon, HostDrag, HostIme, HostKey, HostLayer,
-    HostTextInput, Scroll, SurfaceHost,
+    BackdropImage, BackdropRequest, CursorIcon, Scroll, ShellSurface, SurfaceDrag, SurfaceIme,
+    SurfaceKey, SurfaceLayer, SurfaceTextInput,
 };
 
 use ui::App;
@@ -132,7 +132,7 @@ pub struct AppProcess {
 
 impl AppProcess {
     /// Show `app` at `placement`. Nothing is drawn before the first
-    /// [`SurfaceHost::prepare_frame`].
+    /// [`ShellSurface::prepare_frame`].
     pub fn new(app: App, placement: Placement) -> Self {
         // Drags the app starts come to the compositor through this host.
         ui::dnd::host_drags_in_process();
@@ -288,7 +288,7 @@ impl Published for AppProcess {
     }
 
     fn wants_keyboard(&self) -> bool {
-        SurfaceHost::wants_keyboard(self)
+        ShellSurface::wants_keyboard(self)
     }
 
     fn accessible_labels(&mut self) -> Vec<String> {
@@ -378,13 +378,13 @@ impl Published for AppProcess {
     }
 }
 
-impl SurfaceHost for AppProcess {
-    fn layers(&self) -> Vec<HostLayer> {
+impl ShellSurface for AppProcess {
+    fn layers(&self) -> Vec<SurfaceLayer> {
         let size = (
             i32::try_from(self.placement.size.0).unwrap_or(i32::MAX),
             i32::try_from(self.placement.size.1).unwrap_or(i32::MAX),
         );
-        vec![HostLayer {
+        vec![SurfaceLayer {
             location: self.placement.origin,
             size,
             frame: self.frames.frame(),
@@ -441,7 +441,7 @@ impl SurfaceHost for AppProcess {
         self.input(mouse_wheel(scroll, self.placement.scale));
     }
 
-    fn key(&mut self, key: &HostKey) {
+    fn key(&mut self, key: &SurfaceKey) {
         let modifiers = key.modifiers.state();
         if modifiers != self.modifiers {
             self.modifiers = modifiers;
@@ -453,13 +453,13 @@ impl SurfaceHost for AppProcess {
     /// The field the app keeps the focus in, if it takes typing: an input
     /// method composes into it as into a client's field, its candidate window
     /// under the caret.
-    fn text_input(&self) -> Option<HostTextInput> {
+    fn text_input(&self) -> Option<SurfaceTextInput> {
         let field = self.app.ime_window_state()?;
         let (hint, purpose) = field.content.wayland();
         let (ox, oy) = self.placement.origin;
         let scale = self.placement.scale;
         let edge = |v: u32, at: i32| f64::from(at) + f64::from(v) / scale;
-        Some(HostTextInput {
+        Some(SurfaceTextInput {
             hint,
             purpose,
             x: edge(field.x, ox),
@@ -469,7 +469,7 @@ impl SurfaceHost for AppProcess {
         })
     }
 
-    fn ime(&mut self, event: HostIme) {
+    fn ime(&mut self, event: SurfaceIme) {
         self.input(WindowEvent::Ime(ime_event(event)));
     }
 
@@ -537,8 +537,8 @@ impl SurfaceHost for AppProcess {
         self.full = true;
     }
 
-    fn take_drag(&mut self) -> Option<HostDrag> {
-        ui::dnd::take_hosted_drag().map(|offer| HostDrag { offer, icon: None })
+    fn take_drag(&mut self) -> Option<SurfaceDrag> {
+        ui::dnd::take_hosted_drag().map(|offer| SurfaceDrag { offer, icon: None })
     }
 
     /// The pointer may have moved anywhere while it carried the drag; the
@@ -656,7 +656,7 @@ pub(crate) fn mouse_input(button: u32, pressed: bool) -> WindowEvent {
 }
 
 /// The toolkit's key event for a key the compositor's keymap resolved.
-pub(crate) fn key_event(key: &HostKey) -> WindowEvent {
+pub(crate) fn key_event(key: &SurfaceKey) -> WindowEvent {
     let text = key
         .pressed
         .then_some(key.text.as_deref())
@@ -696,12 +696,12 @@ pub(crate) fn key_event(key: &HostKey) -> WindowEvent {
 
 /// The toolkit's IME event for what the input method serving a hosted field
 /// sent.
-pub(crate) fn ime_event(event: HostIme) -> Ime {
+pub(crate) fn ime_event(event: SurfaceIme) -> Ime {
     match event {
-        HostIme::Commit(text) => Ime::Commit(text),
-        HostIme::Preedit(text, cursor) => Ime::Preedit(text, cursor),
-        HostIme::Enabled => Ime::Enabled,
-        HostIme::Disabled => Ime::Disabled,
+        SurfaceIme::Commit(text) => Ime::Commit(text),
+        SurfaceIme::Preedit(text, cursor) => Ime::Preedit(text, cursor),
+        SurfaceIme::Enabled => Ime::Enabled,
+        SurfaceIme::Disabled => Ime::Disabled,
     }
 }
 

@@ -4,7 +4,7 @@
 //! and the actions it publishes); the host only lays it out, hands it the
 //! region's input and draws it where it sits.
 
-use crate::host_core::HostCore as _;
+use crate::app_core::AppCore as _;
 use std::cell::{Cell, RefCell};
 
 use super::{
@@ -1680,7 +1680,7 @@ mod saving_resource_wake_tests {
     use super::*;
     use crate::application::{LaunchTarget, RestoreInput};
     use crate::application_test_support::{
-        ProbeHost, runner_inputs, runner_permissions, runner_probe_definition,
+        ProbeHarness, runner_inputs, runner_permissions, runner_probe_definition,
     };
     use crate::resource::ResourceSaveStatus;
 
@@ -1730,7 +1730,7 @@ mod saving_resource_wake_tests {
         // would land it on its own after its debounce: on a loaded machine
         // that falls inside the pumps below that check a save still under
         // way. The store writes only when the test flushes it.
-        let host = ProbeHost::holding_writes();
+        let host = ProbeHarness::holding_writes();
         let component = runner_probe_definition()
             .instantiate(
                 host.prepare_with_permissions(

@@ -1,7 +1,7 @@
 //! Original checked activation: actual Scene ink versus final focus and IME. TEST-only.
 use super::*;
 use crate::application::{AppComponent, LaunchTarget, ProcessContext, RestoreInput};
-use crate::application_test_support::{self as probe, ProbeHost};
+use crate::application_test_support::{self as probe, ProbeHarness};
 use crate::owner_wake::OwnerWakeQueue;
 use crate::view::{ViewContribution, capability::ViewState};
 use crate::widget::{AppKind, AppWidget, BoundAppWidget, Column, IconDescriptor, TextInput};
@@ -297,7 +297,7 @@ fn factory(
     ))
 }
 fn prepared(
-    host: &ProbeHost,
+    host: &ProbeHarness,
     queue: &OwnerWakeQueue,
     id: u64,
     name: &'static str,
@@ -379,7 +379,7 @@ impl ViewState for Pair {
 }
 struct Fixture {
     frame: FrameHarness,
-    _host: ProbeHost,
+    _host: ProbeHarness,
     old: Seen,
     selected: Seen,
     tail: Tail,
@@ -389,7 +389,7 @@ impl Fixture {
         Self::with_history(false)
     }
     fn with_history(managed_history: bool) -> Self {
-        let host = ProbeHost::new();
+        let host = ProbeHarness::new();
         let queue = OwnerWakeQueue::default();
         let (old, old_seen) = prepared(&host, &queue, OLD, "activation-old");
         let (selected, selected_seen) = prepared(&host, &queue, SELECTED, "activation-selected");

@@ -6,11 +6,11 @@
 //!
 //! - the *proxy*, an override-redirect window that is `XdndAware`. While an
 //!   X11 client drags and the pointer is over something that is not an X11
-//!   window (a Wayland window, a hosted surface, the desktop), it is raised
+//!   window (a Wayland window, a surface, the desktop), it is raised
 //!   over the whole root, so the X11 source finds it under the pointer and
 //!   sends it the drag. The compositor never shows it.
 //! - the *source window*, unmapped, which owns `XdndSelection` and sends
-//!   the XDND messages while a Wayland or hosted drag is over an X11 window.
+//!   the XDND messages while a Wayland or surface drag is over an X11 window.
 //!
 //! The bridge only speaks the protocol and moves bytes; what a drag means
 //! (which target is under the pointer, who serves the data) is the state's,
@@ -395,7 +395,7 @@ impl XdndBridge {
         }
     }
 
-    // The source window as the source of a Wayland or hosted drag.
+    // The source window as the source of a Wayland or surface drag.
 
     /// Our drag entered X11 window `target` , offering `types` ; false when it takes no XDND drops.
     pub(crate) fn source_enter(&mut self, target: Window, types: &[String]) -> bool {

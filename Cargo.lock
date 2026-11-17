@@ -18867,7 +18867,7 @@ dependencies = [
  "tilo-resource",
  "tilo-session-core",
  "tilo-sort",
- "tilo-surface-host",
+ "tilo-shell-surface",
  "tilo-system-stats",
  "tilo-test-env",
  "tilo-tts",
@@ -22038,7 +22038,7 @@ dependencies = [
  "tilo-sheets",
  "tilo-speaker-service",
  "tilo-startup-metrics",
- "tilo-surface-host",
+ "tilo-shell-surface",
  "tilo-system-service",
  "tilo-system-stats",
  "tilo-test-env",
@@ -22422,7 +22422,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "tilo-surface-host"
+name = "tilo-shell-surface"
 version = "0.1.0"
 dependencies = [
  "app-catalogue",
@@ -29229,7 +29229,7 @@ dependencies = [
  "tilo-staging-reclaim",
  "tilo-startup-metrics",
  "tilo-subject",
- "tilo-surface-host",
+ "tilo-shell-surface",
  "tilo-system-info",
  "tilo-system-service",
  "tilo-system-stats",

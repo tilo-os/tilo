@@ -9,7 +9,7 @@ use tilo_desktop_model::{
     Layout, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace, WorkspaceId,
 };
 use tilo_desktop_surface::{DesktopHandle, DesktopSurface};
-use tilo_surface_host::WidgetHost;
+use tilo_shell_surface::WidgetSurface;
 use ui::headless::FrameHarness;
 use ui::kurbo::Affine;
 use ui::synthetic_input::{char_key, key_press};
@@ -147,7 +147,7 @@ pub fn type_text(frame: &mut FrameHarness, text: &str) {
     }
 }
 
-pub fn send_chord(host: &mut WidgetHost) {
+pub fn send_chord(host: &mut WidgetSurface) {
     host.host_mut()
         .send_host_event(&WindowEvent::ModifiersChanged(Modifiers::from(
             ModifiersState::SUPER,

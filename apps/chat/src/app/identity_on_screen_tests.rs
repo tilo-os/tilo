@@ -337,7 +337,7 @@ fn an_agents_answer_reads_by_the_name_the_member_list_gives_it() {
         "an agent's answer is drawn as an agent, not as a person"
     );
     assert!(
-        !crate::host_model::is_provider_output(&answer),
+        !crate::model_stream::is_provider_output(&answer),
         "an agent's own answer is the agent's, not a model's output"
     );
 

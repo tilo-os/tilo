@@ -1,17 +1,17 @@
 //! Control dispatch: what the native and headless app hosts do with the control intents their tree
-//! queued, written once. Each host lends the APIs an intent finally enters through [`ControlHost`].
+//! queued, written once. Each host lends the APIs an intent finally enters through [`ControlCore`].
 
 use crate::bound_dispatch::local_target::LocalResourceTarget;
 use crate::bound_dispatch::{BoundActionTarget, ControlContinuationArguments, Origin};
 use crate::widget::ResourceOperationStart;
 use tilo_actions::{ActionAddress, ApiError, ControlInvocation, InvocationId};
 
-use super::{HostCore, ResourceInvocation};
+use super::{AppCore, ResourceInvocation};
 
 /// What entering an API started, or why it refused.
 pub(crate) type Started = Result<ResourceOperationStart, ApiError>;
 
-pub(crate) trait ControlHost: HostCore {
+pub(crate) trait ControlCore: AppCore {
     /// The person at this device.
     fn local_author(&self) -> &crate::permissions::MemberId;
 

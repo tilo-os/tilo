@@ -2,7 +2,7 @@
 # tests/*.rs are modules of tests/it.rs, not separate binaries
 autotests = false
 name = "tilo-compositor"
-description = "Tilo's Wayland compositor: outputs, input, the composited scene of client and hosted surfaces, and the Wayland protocols. Window policy and surface apps plug in through traits; no shell surface code lives here."
+description = "Tilo's Wayland compositor: outputs, input, the composited scene of client and surfaces, and the Wayland protocols. Window policy and surface apps plug in through traits; no shell surface code lives here."
 version = "0.1.0"
 edition = "2024"
 publish.workspace = true
@@ -72,8 +72,8 @@ tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
 # between ports.
 settings-store = { path = "../../system/settings-store" }
 tilo-wayland-ext = { path = "../wayland-ext" }
-# What a hosted surface is, and the shapes, key claims and outputs it is told of: the session's
-# own vocabulary, so a surface app is written once for every host.
+# What a surface is, and the shapes, key claims and outputs it is told of: the session's
+# own vocabulary, so a surface app is written once for the compositor and the page.
 tilo-session-core = { path = "../core" }
 # The liveness socket beside the control socket: whether the loop still turns,
 # and where every thread is when it does not.

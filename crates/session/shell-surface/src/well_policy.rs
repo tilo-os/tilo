@@ -4,7 +4,7 @@
 //! A tilolang shell's views never draw a place's content: each frame puts a
 //! [`ui::widget::WindowWell`] where the content goes, and the well reports its rectangle, keyed
 //! by the place, to the [`Wells`] handle the surface host shares with this policy — as
-//! [`DesktopHost`](crate::DesktopHost) and
+//! [`ShellDesktop`](crate::ShellDesktop) and
 //! [`StripPolicy`](crate::StripPolicy) share their desktop. The policy answers a window's initial
 //! size, its place and the placement of every window from that: a window maps into the
 //! desktop's tab model (giving it a tab id), and its well is the one keyed by that tab id.
@@ -17,7 +17,7 @@
 //! gets no frame callbacks.
 //!
 //! The desktop model the tabs live in is the policy's own ([`well_policy`]), or the session's
-//! ([`crate::DesktopHost::well_policy`]), so a place in the person's placement names the
+//! ([`crate::ShellDesktop::well_policy`]), so a place in the person's placement names the
 //! window's tab there.
 
 use std::cell::{RefCell, RefMut};
@@ -33,7 +33,7 @@ use ui::widget::Wells;
 use ui::widget::arrange::rem_of;
 
 use crate::desktop::{GestureReader, ShellGesture, WindowFollowers, WindowObserver};
-use crate::widget::WidgetHost;
+use crate::widget::WidgetSurface;
 
 /// Where a window not shown waits: left of every output, out of sight and out of the pointer's
 /// reach.
@@ -55,7 +55,7 @@ const INITIAL_HEIGHT_FRACTION: f64 = 0.6;
 /// The desktop both halves share: its window model and the tree it keeps.
 struct Desktop {
     policy: DesktopPolicy,
-    host: WidgetHost,
+    host: WidgetSurface,
 }
 
 /// The desktop model a [`WellPolicy`] keeps its windows' tabs in: the tab a window maps into
@@ -131,18 +131,18 @@ pub struct WellPolicy {
 /// with `wells` the shell's views report their wells to. The surface host of the shell's views
 /// installs the same handle before it lays them out (`ui::widget::window_well::install`).
 #[must_use]
-pub fn well_policy(salt: u16, scale: f64) -> (WellPolicy, WellHost) {
+pub fn well_policy(salt: u16, scale: f64) -> (WellPolicy, WellDesktop) {
     let (policy, surface) = DesktopPolicy::new(salt);
     let placement = crate::Placement {
         origin: (0, 0),
         size: (1, 1),
         scale,
     };
-    let host = WidgetHost::new(Box::new(surface), placement, false);
+    let host = WidgetSurface::new(Box::new(surface), placement, false);
     let desktop = Rc::new(RefCell::new(Desktop { policy, host }));
     (
         WellPolicy::over(Rc::new(OwnModel(Rc::clone(&desktop)))),
-        WellHost { desktop },
+        WellDesktop { desktop },
     )
 }
 
@@ -442,11 +442,11 @@ impl WindowPolicy for WellPolicy {
 /// The host side of the desktop a [`WellPolicy`] places windows on: its widget tree, and what the
 /// session drives on it (strips and workspaces, the tree it keeps).
 #[derive(Clone)]
-pub struct WellHost {
+pub struct WellDesktop {
     desktop: Rc<RefCell<Desktop>>,
 }
 
-impl WellHost {
+impl WellDesktop {
     /// The desktop's policy, for everything else a session drives on it.
     pub fn with_policy<R>(&self, read: impl FnOnce(&mut DesktopPolicy) -> R) -> R {
         read(&mut self.desktop.borrow_mut().policy)
@@ -454,7 +454,7 @@ impl WellHost {
 
     /// The desktop's widget tree as hosted: what it publishes, its accessibility tree, the
     /// actions it accepts.
-    pub fn with_widgets<R>(&self, read: impl FnOnce(&mut WidgetHost) -> R) -> R {
+    pub fn with_widgets<R>(&self, read: impl FnOnce(&mut WidgetSurface) -> R) -> R {
         read(&mut self.desktop.borrow_mut().host)
     }
 }

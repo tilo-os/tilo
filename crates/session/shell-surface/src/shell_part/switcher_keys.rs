@@ -6,7 +6,7 @@ use super::tests_support::{
     alt, compiled, grave, key, part_of, part_with, reading_with_windows, tab,
 };
 use super::{Ask, OVERLAYS};
-use tilo_session_core::surface::{HostKey, KeyClaim, SurfaceHost as _};
+use tilo_session_core::surface::{KeyClaim, ShellSurface as _, SurfaceKey};
 
 /// What the part makes of a key the compositor offers it.
 enum Answer {
@@ -19,7 +19,7 @@ enum Answer {
 
 /// A key offered to the part, in a session that is locked or not, and the part's answer.
 struct Offered {
-    key: HostKey,
+    key: SurfaceKey,
     locked: bool,
     answer: Answer,
 }
@@ -32,7 +32,7 @@ struct Case {
 }
 
 fn asks(
-    key: HostKey,
+    key: SurfaceKey,
     action: &'static str,
     arguments: Vec<(&'static str, serde_json::Value)>,
 ) -> Offered {
@@ -44,7 +44,7 @@ fn asks(
 }
 
 /// `key` walks the switcher `steps` on, over the windows of `scope`.
-fn walks(key: HostKey, steps: i32, scope: &'static str) -> Offered {
+fn walks(key: SurfaceKey, steps: i32, scope: &'static str) -> Offered {
     asks(
         key,
         "walk-switcher",
@@ -52,7 +52,7 @@ fn walks(key: HostKey, steps: i32, scope: &'static str) -> Offered {
     )
 }
 
-fn passes(key: HostKey) -> Offered {
+fn passes(key: SurfaceKey) -> Offered {
     Offered {
         key,
         locked: false,
@@ -61,7 +61,7 @@ fn passes(key: HostKey) -> Offered {
 }
 
 /// `key` offered while the session is locked: no key is the shell's to answer then.
-fn locked(key: HostKey) -> Offered {
+fn locked(key: SurfaceKey) -> Offered {
     Offered {
         key,
         locked: true,
@@ -69,35 +69,35 @@ fn locked(key: HostKey) -> Offered {
     }
 }
 
-fn escape() -> HostKey {
+fn escape() -> SurfaceKey {
     key(0xff1b, true)
 }
 
-fn enter() -> HostKey {
+fn enter() -> SurfaceKey {
     key(0xff0d, true)
 }
 
 /// A letter typed with nothing held.
-fn letter() -> HostKey {
+fn letter() -> SurfaceKey {
     key(u32::from('a'), true)
 }
 
 /// The key above Tab as a layout sends it with Shift held: `~`.
-fn tilde() -> HostKey {
-    HostKey {
+fn tilde() -> SurfaceKey {
+    SurfaceKey {
         keysym: 0x007e,
         ..grave(true)
     }
 }
 
 /// `Alt_R`, let go.
-fn right_alt_let_go() -> HostKey {
+fn right_alt_let_go() -> SurfaceKey {
     key(0xffea, false)
 }
 
 /// `key` as it is let go, with what is held still held.
-fn let_go(key: HostKey) -> HostKey {
-    HostKey {
+fn let_go(key: SurfaceKey) -> SurfaceKey {
+    SurfaceKey {
         pressed: false,
         ..key
     }

@@ -27,8 +27,8 @@ use std::path::PathBuf;
 use std::rc::Rc;
 
 use serde_json::Value as Json;
-use tilo_session_core::surface::{CursorIcon, HostKey, Scroll};
-use tilo_session_core::surface::{HostIme, HostLayer, HostTextInput, SurfaceHost};
+use tilo_session_core::surface::{CursorIcon, Scroll, SurfaceKey};
+use tilo_session_core::surface::{ShellSurface, SurfaceIme, SurfaceLayer, SurfaceTextInput};
 
 use tilo_app_window::AppWindow;
 use tilo_render_protocol::patch::local::pair;
@@ -43,7 +43,7 @@ use tilolang_tilo::runtime::delegate::{Invocation, Invoked, Invoker};
 use tilolang_tilo::runtime::{Meta, ResourceRef, Value};
 
 use crate::session_platform::{Loads, OnSession, Person};
-use crate::{Placement, WidgetHost};
+use crate::{Placement, WidgetSurface};
 
 /// How often the instance and its window may answer each other in one frame before the frame
 /// is drawn as it is: a press, the invocation it asked for, the answer, the next view run.
@@ -205,7 +205,7 @@ struct Open {
     /// The part it draws, as the settings and the overlay stack name it.
     part: &'static str,
     instance: Instance,
-    widgets: WidgetHost,
+    widgets: WidgetSurface,
     /// What a view of a part keeps of its own: nothing, unless its package declares resources
     /// of its own.
     record: tilo_resource::Doc,
@@ -446,7 +446,7 @@ impl PartView {
             return Err(format!("its view `{}` did not run", spec.view));
         }
         let window = AppWindow::part(Box::new(window_end));
-        let widgets = WidgetHost::new(
+        let widgets = WidgetSurface::new(
             Box::new(window),
             Placement {
                 origin: (0, 0),
@@ -609,8 +609,8 @@ impl PartView {
     }
 }
 
-impl SurfaceHost for PartView {
-    fn layers(&self) -> Vec<HostLayer> {
+impl ShellSurface for PartView {
+    fn layers(&self) -> Vec<SurfaceLayer> {
         self.open
             .as_ref()
             .map(|open| open.widgets.layers())
@@ -661,7 +661,7 @@ impl SurfaceHost for PartView {
         }
     }
 
-    fn outputs_changed(&mut self, outputs: &[tilo_session_core::surface::HostedOutput]) {
+    fn outputs_changed(&mut self, outputs: &[tilo_session_core::surface::SurfaceOutput]) {
         let Some((x0, y0, x1, y1)) = outputs
             .iter()
             .map(|output| {
@@ -679,7 +679,7 @@ impl SurfaceHost for PartView {
             return;
         };
         self.outputs = Some((x0, y0, width, height));
-        self.scale = tilo_session_core::surface::HostedOutput::scale_at(
+        self.scale = tilo_session_core::surface::SurfaceOutput::scale_at(
             outputs,
             (
                 f64::from(x0) + f64::from(width) / 2.0,
@@ -693,17 +693,17 @@ impl SurfaceHost for PartView {
         self.focused()
     }
 
-    fn key(&mut self, key: &HostKey) {
+    fn key(&mut self, key: &SurfaceKey) {
         if let Some(open) = self.open.as_mut() {
             open.widgets.key(key);
         }
     }
 
-    fn text_input(&self) -> Option<HostTextInput> {
+    fn text_input(&self) -> Option<SurfaceTextInput> {
         self.open.as_ref()?.widgets.text_input()
     }
 
-    fn ime(&mut self, event: HostIme) {
+    fn ime(&mut self, event: SurfaceIme) {
         if let Some(open) = self.open.as_mut() {
             open.widgets.ime(event);
         }

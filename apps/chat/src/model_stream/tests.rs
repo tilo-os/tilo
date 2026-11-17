@@ -145,8 +145,8 @@ fn mounted_oversized_stream_and_final_persist_utf8_truncation_and_safe_continuat
         assert!(work.trace.is_empty());
         assert!(!original.text.contains("inert"));
         app.with_chat(|surface| {
-            assert!(!surface.host_model.running());
-            assert!(!surface.host_model.needs_frame());
+            assert!(!surface.model_stream.running());
+            assert!(!surface.model_stream.needs_frame());
             assert_eq!(
                 surface.model_controls("c_chat"),
                 vec!["ask", "retry", "continue"]
@@ -199,7 +199,7 @@ fn mounted_reasoning_overflow_splits_deltas_and_persists_terminal_without_contin
     );
     assert!(work.trace.is_empty());
     app.with_chat(|surface| {
-        assert!(!surface.host_model.running());
+        assert!(!surface.model_stream.running());
         assert_eq!(surface.model_controls("c_chat"), vec!["ask", "retry"]);
     })
     .unwrap();
@@ -225,12 +225,12 @@ fn mounted_contradictory_final_fails_and_keeps_persisted_partial() {
         assert!(stream.detail.contains("previously published"));
         assert!(work.trace.is_empty());
         app.with_chat(|surface| {
-            let attempt = surface.host_model.attempt.as_ref().unwrap();
+            let attempt = surface.model_stream.attempt.as_ref().unwrap();
             assert_eq!(
                 attempt.state.error.as_ref().unwrap().kind,
                 ui::models::ErrorKind::InvalidResponse
             );
-            assert!(!surface.host_model.needs_frame());
+            assert!(!surface.model_stream.needs_frame());
             assert_eq!(surface.model_controls("c_chat"), vec!["ask", "retry"]);
         })
         .unwrap();
@@ -294,7 +294,7 @@ tilo_test_env::scenario! {
         let name = app.message_author_name(&message);
         assert!(matches!(app.message_author(&message, &name, "", None),
             ui::author::Author::Bot { appearance: Some(shown), .. } if shown.name == "Another person"));
-        assert!(!crate::host_model::is_provider_output(&message));
+        assert!(!crate::model_stream::is_provider_output(&message));
         let label = app.model_message_label(&message);
         assert!(label.starts_with("Another person (bot:"));
         assert!(!label.contains("model output"));
@@ -310,7 +310,7 @@ tilo_test_env::scenario! {
                 ..
             }
         ));
-        assert!(!crate::host_model::is_provider_output(&message));
+        assert!(!crate::model_stream::is_provider_output(&message));
     }
 
     phase completed_stream_is_not_duplicated_and_model_tool_calls_are_inert;
@@ -555,14 +555,14 @@ tilo_test_env::scenario! {
         let (mut app, mut doc) = chat(backend);
         let first = app.model_command("c_chat", "ask").unwrap();
         pump(&mut app, &mut doc);
-        assert!(app.host_model.running());
+        assert!(app.model_stream.running());
         assert_eq!(app.model_controls("c_chat"), vec!["stop"]);
         assert_eq!(
             app.model_command("c_chat", "stop").unwrap()["stopped"],
             true
         );
         assert!(app.model_command("c_chat", "retry").is_err());
-        assert!(app.host_model.controls("other-channel").is_empty());
+        assert!(app.model_stream.controls("other-channel").is_empty());
         pump(&mut app, &mut doc);
         let message = reply(&doc, &first["reply"]);
         assert_eq!(message.text, "Keep this");
@@ -780,7 +780,7 @@ fn model_capabilities_are_mount_local() {
         );
     })
     .unwrap();
-    a.with_chat(|surface| assert!(surface.host_model.models.is_available()))
+    a.with_chat(|surface| assert!(surface.model_stream.models.is_available()))
         .unwrap();
     assert_eq!(first.requests.borrow().len(), 1);
     assert!(second.requests.borrow().is_empty());

@@ -102,7 +102,7 @@ impl ChatApp {
                         .entry(
                             "sparkles",
                             crate::i18n::t(&format!("chat-model-{command}")),
-                            Hit::HostModel(command.into()),
+                            Hit::ModelStream(command.into()),
                         )
                         .in_menu(),
                 );

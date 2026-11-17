@@ -14,7 +14,7 @@ use std::time::Instant;
 
 use tilo_compositor::{Compositor, InputEvent, OutputConfig, WindowPolicy};
 use tilo_session_core::surface::{
-    HostFrame, HostIme, HostKey, HostLayer, HostTextInput, SurfaceHost,
+    ShellSurface, SurfaceFrame, SurfaceIme, SurfaceKey, SurfaceLayer, SurfaceTextInput,
 };
 use wayland_client::protocol::wl_data_device_manager::DndAction;
 use wayland_client::protocol::{
@@ -919,7 +919,7 @@ pub struct DropLog {
     pub drag_ended: Option<bool>,
 }
 
-/// A hosted surface at (500, 20, 100, 100) that takes file lists, as a surface app does.
+/// A surface at (500, 20, 100, 100) that takes file lists, as a surface app does.
 pub struct DropZone {
     pixels: Vec<u8>,
     log: Rc<RefCell<DropLog>>,
@@ -936,13 +936,13 @@ impl DropZone {
     }
 }
 
-impl SurfaceHost for DropZone {
-    fn layers(&self) -> Vec<HostLayer> {
-        vec![HostLayer {
+impl ShellSurface for DropZone {
+    fn layers(&self) -> Vec<SurfaceLayer> {
+        vec![SurfaceLayer {
             pose: tilo_session_core::surface::LayerPose::SETTLED,
             location: (500, 20),
             size: (100, 100),
-            frame: HostFrame::from_pixels((100, 100), self.pixels.clone()),
+            frame: SurfaceFrame::from_pixels((100, 100), self.pixels.clone()),
         }]
     }
 
@@ -1955,34 +1955,34 @@ pub struct HostLog {
     pub motions: Vec<(f64, f64)>,
     pub buttons: Vec<(u32, bool)>,
     pub left: u32,
-    pub keys: Vec<HostKey>,
+    pub keys: Vec<SurfaceKey>,
     pub wants_keyboard: bool,
     /// Each Super+X the surface was offered, and whether it was told a client holds the desktop's
     /// shortcuts.
     pub taken: Vec<(u32, bool)>,
     /// The text field the surface draws, when it draws one: what it declares and where its caret
     /// stands on the shell.
-    pub field: Option<HostTextInput>,
+    pub field: Option<SurfaceTextInput>,
     /// What the input method did with the field, in order.
-    pub ime: Vec<HostIme>,
+    pub ime: Vec<SurfaceIme>,
     /// Whether a press anywhere else closes the surface, as an open launcher closes.
     pub closes_on_press_elsewhere: bool,
     /// What the surface draws over the windows, by the window each part is of, in the layout.
     pub covers: Vec<tilo_session_core::surface::WindowCover>,
 }
 
-/// A hosted surface: one square of one colour. Like any surface host it keeps the frame it drew and
+/// A surface: one square of one colour. Like any surface it keeps the frame it drew and
 /// hands that same frame on every pass: a fresh one each time would say it drew everything again.
 pub struct Square {
     rect: (i32, i32, i32, i32),
-    frame: HostFrame,
+    frame: SurfaceFrame,
     log: Rc<RefCell<HostLog>>,
     below: bool,
 }
 
 impl Square {
     pub fn new(rect: (i32, i32, i32, i32), rgba: [u8; 4], log: Rc<RefCell<HostLog>>) -> Self {
-        let frame = HostFrame::from_pixels(
+        let frame = SurfaceFrame::from_pixels(
             (
                 u32::try_from(rect.2).expect("a whole number of pixels"),
                 u32::try_from(rect.3).expect("a whole number of pixels"),
@@ -2004,9 +2004,9 @@ impl Square {
     }
 }
 
-impl SurfaceHost for Square {
-    fn layers(&self) -> Vec<HostLayer> {
-        vec![HostLayer {
+impl ShellSurface for Square {
+    fn layers(&self) -> Vec<SurfaceLayer> {
+        vec![SurfaceLayer {
             pose: tilo_session_core::surface::LayerPose::SETTLED,
             location: (self.rect.0, self.rect.1),
             size: (self.rect.2, self.rect.3),
@@ -2050,15 +2050,15 @@ impl SurfaceHost for Square {
         self.log.borrow().wants_keyboard
     }
 
-    fn key(&mut self, key: &HostKey) {
+    fn key(&mut self, key: &SurfaceKey) {
         self.log.borrow_mut().keys.push(key.clone());
     }
 
-    fn text_input(&self) -> Option<HostTextInput> {
+    fn text_input(&self) -> Option<SurfaceTextInput> {
         self.log.borrow().field
     }
 
-    fn ime(&mut self, event: HostIme) {
+    fn ime(&mut self, event: SurfaceIme) {
         self.log.borrow_mut().ime.push(event);
     }
 }

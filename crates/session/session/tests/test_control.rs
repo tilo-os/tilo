@@ -475,7 +475,7 @@ fn text_typed_through_the_socket_reaches_the_canvas_caret() {
         session.accessible_labels()
     );
     assert!(
-        session.compositor().host_takes_keys(),
+        session.compositor().surface_takes_keys(),
         "the caret holds the keyboard: {:?}",
         session.accessible_labels()
     );
@@ -735,7 +735,7 @@ fn session_showing(tree: Layout, socket: &Path) -> Session {
     session.handle().replace_tree(tree);
     session
         .desktop()
-        .with_widgets(tilo_surface_host::WidgetHost::relayout);
+        .with_widgets(tilo_shell_surface::WidgetSurface::relayout);
     session.step(Duration::from_millis(1)).expect("step");
     session
 }

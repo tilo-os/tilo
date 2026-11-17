@@ -486,7 +486,7 @@ fn mount_sheet(
         Ok(sheet) => {
             let state = sheet.state().clone();
             let sheet = sheet.typing_through().layer();
-            compositor.add_host(sheet.clone());
+            compositor.add_surface(sheet.clone());
             surfaces.add(sheet);
             Some(state)
         }

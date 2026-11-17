@@ -1118,7 +1118,7 @@ fn a_window_beside_a_place_on_the_canvas_takes_the_press_and_the_keys() {
     // A frame whose menu is shut is no surface over the windows: nothing of the shell's takes the
     // keyboard, so what the person types is the window in front's.
     assert!(
-        !session.compositor().host_takes_keys(),
+        !session.compositor().surface_takes_keys(),
         "the shell takes no key while its own menu is shut: {:?}",
         session.compositor().windows()
     );

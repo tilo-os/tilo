@@ -1,6 +1,6 @@
 //! The app host core: what the native [`crate::app::App`] and the headless
 //! [`crate::headless::FrameHarness`] do alike, written once. Each host keeps its own fields and lends
-//! the parts this core reads through [`HostCore`].
+//! the parts this core reads through [`AppCore`].
 
 use std::collections::HashMap;
 
@@ -16,12 +16,12 @@ mod controls;
 mod keys;
 mod tooltips;
 
-pub(crate) use controls::{ControlHost, json_argument};
-pub(crate) use keys::{KeyHost, RootEvent};
+pub(crate) use controls::{ControlCore, json_argument};
+pub(crate) use keys::{KeyCore, RootEvent};
 pub(crate) use tooltips::TooltipLayer;
 
 /// A host's document and laid-out widget tree, borrowed for one read.
-pub(crate) struct HostTree<'a> {
+pub(crate) struct AppTree<'a> {
     pub(crate) state: &'a crate::State,
     pub(crate) root: &'a dyn Widget,
     /// The app's registered framework History, when it has one.
@@ -35,7 +35,7 @@ pub(crate) struct HostTree<'a> {
     pub(crate) pointer: &'a PointerPlace,
 }
 
-impl HostTree<'_> {
+impl AppTree<'_> {
     /// The window a palette is asked for from, when the root lays several out (the shell's strip of
     /// app tiles): the tile under the pointer that pressed, else the one holding keyboard focus.
     pub(crate) fn invoking_window_rect(&self) -> Option<vello::kurbo::Rect> {
@@ -395,9 +395,9 @@ pub(crate) struct HostRemount<'a> {
     pub(crate) interaction: crate::interaction::InteractionEnvironment,
 }
 
-pub(crate) trait HostCore {
+pub(crate) trait AppCore {
     /// The host's document and laid-out tree.
-    fn tree(&self) -> HostTree<'_>;
+    fn tree(&self) -> AppTree<'_>;
 
     /// The host's document, writable, beside its bindings.
     fn document(&mut self) -> HostDocument<'_>;

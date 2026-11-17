@@ -18,7 +18,7 @@
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
-use crate::platform::surfaces::DesktopHost;
+use crate::platform::surfaces::ShellDesktop;
 use tilo_app_launch::Launch;
 use tilo_desktop_model::{Layout, TabId, TileContent, WorkspaceId};
 
@@ -208,7 +208,7 @@ impl Restore {
     /// nothing there, and would not join once the device is admitted.
     pub(crate) fn follow(
         &mut self,
-        desktop: &DesktopHost,
+        desktop: &ShellDesktop,
         apps: Option<&Apps>,
         awaited: &dyn Fn(&str) -> Option<String>,
     ) {
@@ -292,7 +292,7 @@ impl Restore {
     /// its windows claims is one the app closed while the desktop was away: it closes too, which
     /// is only known once both the keeper described its windows and the layout is laid out.
     #[cfg(target_os = "linux")]
-    fn claim_kept(&mut self, desktop: &DesktopHost) -> Vec<u32> {
+    fn claim_kept(&mut self, desktop: &ShellDesktop) -> Vec<u32> {
         if self.kept.is_empty() {
             return Vec::new();
         }
@@ -412,7 +412,7 @@ impl Restore {
     /// Tell the keeper of each window it shows the tab that window stands in, when the layout
     /// changed since the last time: the run after an in-place restart puts the window back there.
     /// A tab keeps its id while it is dragged, so a drag tells nothing until it lands elsewhere.
-    pub(crate) fn tell_placements(&mut self, desktop: &DesktopHost, apps: Option<&Apps>) {
+    pub(crate) fn tell_placements(&mut self, desktop: &ShellDesktop, apps: Option<&Apps>) {
         let Some(apps) = apps else {
             return;
         };
@@ -435,7 +435,7 @@ impl Restore {
     /// order they were held, ahead of the ones not asked for yet.
     fn release_admitted(
         &mut self,
-        desktop: &DesktopHost,
+        desktop: &ShellDesktop,
         awaited: &dyn Fn(&str) -> Option<String>,
     ) {
         if self.held.is_empty()
@@ -460,7 +460,7 @@ impl Restore {
 
     /// Ask for `saved` 's window into its own tab. True when an app was asked and its window may
     /// still come.
-    fn open(&mut self, desktop: &DesktopHost, apps: &Apps, saved: Saved) -> bool {
+    fn open(&mut self, desktop: &ShellDesktop, apps: &Apps, saved: Saved) -> bool {
         let Some(launch) = saved.launch else {
             let note = not_installed(&saved.name);
             desktop.with_policy(|policy| policy.note_in_tab(saved.tab, &note));
@@ -549,7 +549,7 @@ pub(crate) fn without_unfilled(tree: &mut Layout) {
 /// What `of` reads of the workspace the tab `tab` stands in: its id, which the tab's app is started
 /// into with that workspace's grants.
 fn workspace_holding<T>(
-    desktop: &DesktopHost,
+    desktop: &ShellDesktop,
     tab: TabId,
     of: impl Fn(&tilo_desktop_model::Workspace) -> T,
 ) -> Option<T> {
@@ -833,7 +833,7 @@ mod tests {
 
     /// The tab window `id` of the kept app, tagged `tag`, stands in once it maps.
     #[cfg(target_os = "linux")]
-    fn map(desktop: &crate::platform::surfaces::DesktopHost, id: u64, tag: &str) -> Option<u64> {
+    fn map(desktop: &crate::platform::surfaces::ShellDesktop, id: u64, tag: &str) -> Option<u64> {
         desktop.with_policy(|policy| {
             policy
                 .map(tilo_desktop_policy::Window {
@@ -850,7 +850,7 @@ mod tests {
 
     /// Every tab the desktop holds, in order.
     #[cfg(target_os = "linux")]
-    fn tabs(desktop: &crate::platform::surfaces::DesktopHost) -> Vec<u64> {
+    fn tabs(desktop: &crate::platform::surfaces::ShellDesktop) -> Vec<u64> {
         desktop.with_policy(|policy| {
             policy.handle().read(|tree| {
                 tree.workspaces
@@ -871,7 +871,7 @@ mod tests {
     #[cfg(target_os = "linux")]
     fn each_kept_window_claims_its_own_saved_tab_and_a_closed_ones_tab_goes() {
         let mut tree = kept_layout();
-        let (desktop, _policy) = tilo_surface_host::desktop(7, 1.0);
+        let (desktop, _policy) = tilo_shell_surface::desktop(7, 1.0);
         let mut restore = Restore::default();
         restore.begin();
         assert!(restore.start(&Layout::default(), &mut tree));
@@ -918,7 +918,7 @@ mod tests {
     #[test]
     #[cfg(target_os = "linux")]
     fn kept_windows_that_answer_before_the_layout_wait_for_it_and_take_their_tabs() {
-        let (desktop, _policy) = tilo_surface_host::desktop(7, 1.0);
+        let (desktop, _policy) = tilo_shell_surface::desktop(7, 1.0);
         let mut restore = Restore::default();
         restore.begin();
         restore.kept = vec![kept(&[("w1", Some("41")), ("w2", Some("42"))])];
@@ -966,7 +966,7 @@ mod tests {
     #[test]
     #[cfg(target_os = "linux")]
     fn kept_windows_stop_waiting_for_a_layout_that_does_not_come() {
-        let (desktop, _policy) = tilo_surface_host::desktop(7, 1.0);
+        let (desktop, _policy) = tilo_shell_surface::desktop(7, 1.0);
         let mut partly = Restore::default();
         partly.begin();
         let mut first = kept_layout();

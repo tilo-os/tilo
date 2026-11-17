@@ -144,8 +144,8 @@ fn component(
     pending: Rc<Cell<bool>>,
     calls: Rc<Cell<usize>>,
     id: u64,
-) -> (ProbeHost, crate::application::AppComponent) {
-    let host = ProbeHost::new();
+) -> (ProbeHarness, crate::application::AppComponent) {
+    let host = ProbeHarness::new();
     let definition = runner_probe_definition();
     let context = host
         .prepare_with_permissions(definition, id, &LaunchTarget::New, runner_permissions())

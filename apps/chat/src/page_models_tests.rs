@@ -136,7 +136,7 @@ fn chat_asks_the_provider_set_up_in_the_page_through_its_lent_service() {
         true
     );
     tilo_test_env::wait_until("the page's model to answer", || {
-        if !app.host_model.needs_frame() {
+        if !app.model_stream.needs_frame() {
             return true;
         }
         app.pump_model();

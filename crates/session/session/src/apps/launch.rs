@@ -1,7 +1,7 @@
 //! What becomes of a launch this session started: the windows the desktop gives a place, the
 //! launches those windows belong to, and how a launch that ended is read.
 
-use super::{Apps, Cause, Closed, Got, LaunchState, WidgetHost, not_opened};
+use super::{Apps, Cause, Closed, Got, LaunchState, WidgetSurface, not_opened};
 
 impl Apps {
     /// The apps that ended since the last pass: one whose window came leaves it behind and is
@@ -120,7 +120,7 @@ impl Apps {
                 }
                 // The notice is a shell command like any other: the shell carries it out, and lays
                 // its tab out, on its next pass.
-                desktop.with_widgets(WidgetHost::relayout);
+                desktop.with_widgets(WidgetSurface::relayout);
             }
         }
     }

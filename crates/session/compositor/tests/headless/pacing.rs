@@ -123,7 +123,7 @@ tilo_test_env::scenario! {
     }
 
     phase the_wait_for_the_blank_serves_what_arrived_before_the_frame;
-    // What a host serves while it waits for the blank runs there, and the frame the blank shows is
+    // What a surface serves while it waits for the blank runs there, and the frame the blank shows is
     // drawn afterwards: an app someone is waiting on starts beside the frame the pass owes rather
     // than after it.
     {

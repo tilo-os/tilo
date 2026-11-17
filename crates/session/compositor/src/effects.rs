@@ -6,9 +6,9 @@
 //! compositor each frame how to draw each one ([`WindowEffect`]: an
 //! offset, a scale about the window's centre and an opacity); the curves
 //! and clocks are the toolkit's, in the session, not the compositor's.
-//! A hosted surface that shows other clients' windows (the overview's
+//! A surface that shows other clients' windows (the overview's
 //! thumbnails, a switcher card) names them and the rects they rest at
-//! ([`WindowPicture`], from [`SurfaceHost::window_pictures`](tilo_session_core::surface::SurfaceHost::window_pictures)); the
+//! ([`WindowPicture`], from [`ShellSurface::window_pictures`](tilo_session_core::surface::ShellSurface::window_pictures)); the
 //! compositor draws each window's live buffer there, scaled to fit, in
 //! front of that surface's layers — and a window a capture may not show
 //! ([`crate::capture::protect`]) as the same placeholder a capture draws of

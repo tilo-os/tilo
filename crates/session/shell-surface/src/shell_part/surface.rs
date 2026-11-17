@@ -1,15 +1,15 @@
-//! The part as the compositor's surface host: the layers it lays out, the pixels it shows of
+//! The part as a shell surface: the layers it lays out, the pixels it shows of
 //! the windows over it, and the material it records for the compositor to fill in below.
 
 use tilo_session_core::surface::Scroll;
 
 use super::{
-    CursorIcon, HostIme, HostKey, HostLayer, HostTextInput, KeyClaim, Origin, ShellPart,
-    SurfaceHost, SurfaceKey,
+    CursorIcon, KeyClaim, Origin, ShellPart, ShellSurface, SurfaceIme, SurfaceKey, SurfaceLayer,
+    SurfaceTextInput, SwitcherKey,
 };
 
-impl SurfaceHost for ShellPart {
-    fn layers(&self) -> Vec<HostLayer> {
+impl ShellSurface for ShellPart {
+    fn layers(&self) -> Vec<SurfaceLayer> {
         // Aside for a fullscreen window, the window has the whole display: not a row of the
         // bar's pixels stands over it.
         if self.hidden() {
@@ -68,10 +68,10 @@ impl SurfaceHost for ShellPart {
             .collect()
     }
 
-    fn claim_key(&mut self, key: &HostKey, locked: bool, _inhibited: bool) -> KeyClaim {
+    fn claim_key(&mut self, key: &SurfaceKey, locked: bool, _inhibited: bool) -> KeyClaim {
         // A shell's overlays answer the keyboard: Alt+Tab walks the switcher, Enter goes there,
         // and Esc closes whatever surface is up. A locked session is not the shell's to answer.
-        if locked || self.surface_key(key).is_none() {
+        if locked || self.switcher_key(key).is_none() {
             return KeyClaim::Pass;
         }
         self.input = true;
@@ -126,7 +126,7 @@ impl SurfaceHost for ShellPart {
         self.widgets.pointer_modifiers(held);
     }
 
-    fn outputs_changed(&mut self, outputs: &[tilo_session_core::surface::HostedOutput]) {
+    fn outputs_changed(&mut self, outputs: &[tilo_session_core::surface::SurfaceOutput]) {
         // A part not yet told which output it stands on covers all of them, the tightest
         // bounding box there is.
         if self.output.is_some() || self.retired() {
@@ -148,7 +148,7 @@ impl SurfaceHost for ShellPart {
         ) else {
             return;
         };
-        self.output_scale = tilo_session_core::surface::HostedOutput::scale_at(
+        self.output_scale = tilo_session_core::surface::SurfaceOutput::scale_at(
             outputs,
             (
                 f64::from(x0) + f64::from(width) / 2.0,
@@ -170,34 +170,34 @@ impl SurfaceHost for ShellPart {
     /// below the part there and hands it back ([`Self::set_backdrops`]), so a glass bar shows
     /// the wallpaper it stands on rather than its own ground.
     fn backdrops(&self) -> Vec<tilo_session_core::surface::BackdropRequest> {
-        SurfaceHost::backdrops(&self.widgets)
+        ShellSurface::backdrops(&self.widgets)
     }
 
     fn set_backdrops(&mut self, images: Vec<Option<tilo_session_core::surface::BackdropImage>>) {
-        SurfaceHost::set_backdrops(&mut self.widgets, images);
+        ShellSurface::set_backdrops(&mut self.widgets, images);
     }
 
     /// A field of the shell has the focus (the bar's search, a settings
     /// field): the input method composes into it.
-    fn text_input(&self) -> Option<HostTextInput> {
+    fn text_input(&self) -> Option<SurfaceTextInput> {
         (!self.hidden())
             .then(|| self.widgets.text_input())
             .flatten()
     }
 
-    fn ime(&mut self, event: HostIme) {
+    fn ime(&mut self, event: SurfaceIme) {
         self.input = true;
         self.widgets.ime(event);
     }
 
-    fn key(&mut self, key: &HostKey) {
+    fn key(&mut self, key: &SurfaceKey) {
         self.input = true;
-        let Some(action) = self.surface_key(key) else {
+        let Some(action) = self.switcher_key(key) else {
             self.widgets.key(key);
             return;
         };
         match action {
-            SurfaceKey::Walk { back, app_scope } => {
+            SwitcherKey::Walk { back, app_scope } => {
                 // Holding Alt opens it; a further Tab walks it on (and back with Shift).
                 let steps = if back { -1 } else { 1 };
                 let scope = if app_scope { "app" } else { "workspace" };
@@ -206,8 +206,8 @@ impl SurfaceHost for ShellPart {
                     &[("steps", steps.into()), ("scope", scope.into())],
                 );
             }
-            SurfaceKey::Commit => self.ask("commit-switcher", &[]),
-            SurfaceKey::Close => {
+            SwitcherKey::Commit => self.ask("commit-switcher", &[]),
+            SwitcherKey::Close => {
                 let up = self.origin.borrow().link.surface();
                 self.ask("close-surface", &[("slot", up.into())]);
             }

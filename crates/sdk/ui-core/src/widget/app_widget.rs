@@ -2165,7 +2165,7 @@ mod native_lifecycle_tests {
                     true
                 }
             }
-            let host = probe::ProbeHost::new();
+            let host = probe::ProbeHarness::new();
             let mut component =
                 probe::instantiate_probe(&host, 42, LaunchTarget::New, RestoreInput::None).unwrap();
             let reads = Rc::new(Cell::new(0));
@@ -2202,7 +2202,7 @@ mod native_lifecycle_tests {
 
         phase free_native_lifecycle_walk_enters_bound_owner_once_and_refuses_closed_owner;
         {
-            let host = probe::ProbeHost::new();
+            let host = probe::ProbeHarness::new();
             let component =
                 probe::instantiate_probe(&host, 41, LaunchTarget::New, RestoreInput::None).unwrap();
             let binding = component.callback_binding();

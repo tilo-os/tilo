@@ -3,7 +3,7 @@
 //! A shell package's views run in a tilolang instance (`tilolang_tilo::instance`), exactly as
 //! an app's do, and draw through the same app window half (`tilo_app_window::AppWindow`, here as
 //! a [`AppWindow::part`]: the view as it is, no window shell). The toolkit lays that widget tree
-//! out and the CPU rasterizes it, as [`WidgetHost`] does for every widget tree the session
+//! out and the CPU rasterizes it, as [`WidgetSurface`] does for every widget tree the session
 //! shows; the compositor gets the buffer as a layer. Nothing here renders on its own.
 //!
 //! What the views read of the session comes in as the person's layout, whose origin is the
@@ -22,8 +22,8 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::rc::Rc;
 
 use serde_json::Value as Json;
-use tilo_session_core::surface::{CursorIcon, HostKey, KeyClaim};
-use tilo_session_core::surface::{HostIme, HostLayer, HostTextInput, SurfaceHost};
+use tilo_session_core::surface::{CursorIcon, KeyClaim, SurfaceKey};
+use tilo_session_core::surface::{ShellSurface, SurfaceIme, SurfaceLayer, SurfaceTextInput};
 
 use tilo_app_window::AppWindow;
 use tilo_render_protocol::patch::local::pair;
@@ -38,7 +38,7 @@ use tilolang_tilo::runtime::{Delivery, ResourceRef, Value};
 use tilolang_tilo::tilolang::Compiled;
 
 use crate::session_platform::{Loads, OnSession, Person};
-use crate::{Placement, WidgetHost};
+use crate::{Placement, WidgetSurface};
 
 /// What a shell reads of the session and the names the session publishes it by: every host's,
 /// so the shell's views and the session use the same names.
@@ -48,8 +48,8 @@ pub use tilo_session_core::shell::{
     LayoutWorkspaceReading, ORIGIN, OVERLAYS, SHELL_APP, SHELL_RECORD,
 };
 
-mod host;
 mod settings;
+mod surface;
 
 /// Every file of the shell's package (`apps/tl/shell`) the session runs, by the name the
 /// package knows it by: a package is a directory of `.tl` files, in path order (the package's
@@ -859,7 +859,7 @@ pub struct ShellWork {
 
 /// One part of a tilolang shell on the desktop. See the module docs.
 pub struct ShellPart {
-    widgets: WidgetHost,
+    widgets: WidgetSurface,
     instance: Instance,
     /// The shell's record, shared by every part of one shell: every display draws the same
     /// record, so a change any part commits is the whole shell's.
@@ -996,7 +996,8 @@ impl ShellPart {
         let window = AppWindow::part(Box::new(window_end));
         // The whole screen lies under the windows, which stand in its wells; the bar rides over
         // them.
-        let mut widgets = WidgetHost::new(Box::new(window), placement, true).named("Desktop shell");
+        let mut widgets =
+            WidgetSurface::new(Box::new(window), placement, true).named("Desktop shell");
         widgets.install_wells(wells);
         let mut part = Self {
             widgets,
@@ -1410,7 +1411,7 @@ impl ShellPart {
     }
 
     /// The toolkit's host of the part's widget tree, to drive it directly.
-    pub fn widgets_mut(&mut self) -> &mut WidgetHost {
+    pub fn widgets_mut(&mut self) -> &mut WidgetSurface {
         &mut self.widgets
     }
 
@@ -1706,7 +1707,7 @@ impl crate::Published for ShellPart {
     }
 
     fn wants_keyboard(&self) -> bool {
-        SurfaceHost::wants_keyboard(self)
+        ShellSurface::wants_keyboard(self)
     }
 }
 
@@ -1719,7 +1720,7 @@ const XKB_GRAVE: [u32; 2] = [0x0060, 0x007e];
 
 /// What a press means to the shell's surfaces.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum SurfaceKey {
+enum SwitcherKey {
     /// Alt+Tab: open the switcher on the window before the one in front, walking on from
     /// there (back with Shift); the same over the app in front's windows with Alt and the grave
     /// key.
@@ -1733,11 +1734,11 @@ enum SurfaceKey {
 impl ShellPart {
     /// What `key` means to the shell while a surface of the shell's is up, or as a press that
     /// opens one. `None` when it belongs to whatever has the keyboard.
-    fn surface_key(&self, key: &HostKey) -> Option<SurfaceKey> {
+    fn switcher_key(&self, key: &SurfaceKey) -> Option<SwitcherKey> {
         if key.pressed && key.modifiers.alt {
             let app_scope = XKB_GRAVE.contains(&key.keysym);
             if key.keysym == XKB_TAB || app_scope {
-                return Some(SurfaceKey::Walk {
+                return Some(SwitcherKey::Walk {
                     back: key.modifiers.shift,
                     app_scope,
                 });
@@ -1748,11 +1749,11 @@ impl ShellPart {
             return None;
         }
         if up == "switcher" && matches!(key.keysym, XKB_ALT_L | 0xffea) && !key.pressed {
-            return Some(SurfaceKey::Commit);
+            return Some(SwitcherKey::Commit);
         }
         match key.keysym {
-            0xff0d if key.pressed && up == "switcher" => Some(SurfaceKey::Commit),
-            0xff1b if key.pressed => Some(SurfaceKey::Close),
+            0xff0d if key.pressed && up == "switcher" => Some(SwitcherKey::Commit),
+            0xff1b if key.pressed => Some(SwitcherKey::Close),
             _ => None,
         }
     }
@@ -1878,4 +1879,4 @@ mod tests;
 mod places;
 
 #[cfg(test)]
-mod surface_keys;
+mod switcher_keys;

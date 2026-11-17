@@ -10,7 +10,7 @@ use crate::a11y::Action;
 use crate::a11y_tree::{
     SEMANTIC_OPERATION_TYPE, SemanticActionKind, SemanticId, SemanticNode, SemanticTree,
 };
-use crate::host_core::HostCore as _;
+use crate::app_core::AppCore as _;
 use crate::widget::Widget;
 use accesskit::{Action as AkAction, Role};
 

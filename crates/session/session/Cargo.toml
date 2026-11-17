@@ -292,7 +292,7 @@ tilo-color-pipeline = { path = "../color-pipeline" }
 image = { workspace = true, features = ["png"] }
 # An application's themed icon is an SVG as often as a PNG.
 resvg = { version = "0.47", default-features = false }
-tilo-surface-host = { path = "../surface-host" }
+tilo-shell-surface = { path = "../shell-surface" }
 # The shell's package (`apps/tl/shell`), compiled as the session starts, and the shell's
 # action vocabulary.
 tilolang-tilo = { path = "../../platform/tilolang-tilo" }

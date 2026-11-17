@@ -3,7 +3,7 @@
 //! across the window beside it.
 
 use super::FrameHarness;
-use crate::host_core::HostCore as _;
+use crate::app_core::AppCore as _;
 use crate::testing::TwoWindows;
 use vello::kurbo::Rect;
 

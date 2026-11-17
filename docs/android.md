@@ -248,7 +248,7 @@ The first start of each catalog version copies it into the app's files
 directory, since fontdb cannot map a file inside an APK; the device's
 `/system/fonts` cover the scripts the catalog does not.
 
-## Host services
+## Process services
 
 `tilo-process-services`'s `native/android` implements `ProcessServices`:
 

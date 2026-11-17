@@ -10,7 +10,7 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
-use crate::platform::surfaces::{DesktopHost, StripPolicy, desktop_with};
+use crate::platform::surfaces::{ShellDesktop, StripPolicy, desktop_with};
 use serde_json::{Map, Value};
 use tilo_desktop::desktop_host::{BackgroundLayer, DesktopAsk};
 use tilo_desktop::launchpad::CollaborationLaunchpad;
@@ -107,7 +107,7 @@ pub(crate) fn background(
     notices: tilo_desktop_surface::DesktopNotifications,
     pictures: Arc<Wallpapers>,
     looked: Background,
-) -> (DesktopHost, StripPolicy, Rc<RefCell<Vec<DesktopAsk>>>) {
+) -> (ShellDesktop, StripPolicy, Rc<RefCell<Vec<DesktopAsk>>>) {
     let Background {
         widgets,
         fold,
@@ -167,7 +167,7 @@ pub(crate) enum WindowPlacement {
 impl WindowPlacement {
     /// The shell drawing the whole screen places the windows in its wells; otherwise the desktop's
     /// strips do.
-    pub(crate) fn for_shell(shell: bool, desktop: &DesktopHost, strips: StripPolicy) -> Self {
+    pub(crate) fn for_shell(shell: bool, desktop: &ShellDesktop, strips: StripPolicy) -> Self {
         if shell {
             Self::Wells(desktop.well_policy())
         } else {

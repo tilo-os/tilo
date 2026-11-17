@@ -1,7 +1,7 @@
 //! `tilolang-process`: the process the session starts as a tilolang host, for one workspace and author.
 //!
-//! It holds its api (`TILO_SVC_TILOLANG_HOST_FD`) and its storage
-//! (`TILO_TILOLANG_HOST_STORAGE`) and nothing else. It waits on the API, its instances' windows,
+//! It holds its api (`TILO_SVC_TILOLANG_PROCESS_FD`) and its storage
+//! (`TILO_TILOLANG_PROCESS_STORAGE`) and nothing else. It waits on the API, its instances' windows,
 //! its own wake and a stop (`stop`), and runs a frame of every instance when one of them has
 //! something for it. It ends when the session closes its api and its last window is gone, or
 //! when it is asked to stop: both drop the instances, and every index they keep closes with them

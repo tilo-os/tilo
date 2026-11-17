@@ -18,7 +18,7 @@ use std::sync::Arc;
 
 use tilo_render_protocol::control::DmabufFormat;
 use tilo_render_service::buffers::{self as delivery, Allocator, BufferSet, History, Memory};
-use tilo_session_core::surface::{CELL, HostBuffer, HostBuffers, HostFrame, Region};
+use tilo_session_core::surface::{CELL, Region, SurfaceBuffer, SurfaceBuffers, SurfaceFrame};
 
 use ui::offscreen::OffscreenRenderer;
 use vello::Scene;
@@ -44,7 +44,7 @@ pub(crate) struct Frames {
     chosen: bool,
     /// What the compositor draws: the surface's pixels, changed where it
     /// changed.
-    frame: HostFrame,
+    frame: SurfaceFrame,
 }
 
 impl Frames {
@@ -58,7 +58,7 @@ impl Frames {
             size,
             target: None,
             chosen: false,
-            frame: HostFrame::new(size),
+            frame: SurfaceFrame::new(size),
         }
     }
 
@@ -71,11 +71,11 @@ impl Frames {
         self.size = size;
         self.target = None;
         self.chosen = false;
-        self.frame = HostFrame::new(size);
+        self.frame = SurfaceFrame::new(size);
     }
 
     /// The frame as the compositor shows it.
-    pub(crate) fn frame(&self) -> HostFrame {
+    pub(crate) fn frame(&self) -> SurfaceFrame {
         self.frame.clone()
     }
 
@@ -137,10 +137,10 @@ impl Frames {
 
 /// The frame a surface drawing on `target` hands the compositor: its dma-bufs
 /// where it draws on the GPU, its pixels otherwise.
-fn frame_of(target: Option<&Target>, size: (u32, u32)) -> HostFrame {
+fn frame_of(target: Option<&Target>, size: (u32, u32)) -> SurfaceFrame {
     match target {
-        Some(Target::Gpu(gpu)) => HostFrame::on_gpu(size, Arc::clone(&gpu.shared)),
-        _ => HostFrame::new(size),
+        Some(Target::Gpu(gpu)) => SurfaceFrame::on_gpu(size, Arc::clone(&gpu.shared)),
+        _ => SurfaceFrame::new(size),
     }
 }
 
@@ -248,7 +248,7 @@ struct Gpu {
     /// device; dropped before their allocator.
     buffers: BufferSet,
     /// The same buffers as the compositor imports them.
-    shared: Arc<HostBuffers>,
+    shared: Arc<SurfaceBuffers>,
     /// What the last frames changed, for a buffer that missed them.
     history: History,
     coverage: Coverage,
@@ -302,7 +302,7 @@ impl Gpu {
         )
         .map_err(|error| tracing::warn!(%error, "hosted frames: no buffers on the GPU"))
         .ok()?;
-        let shared = Arc::new(HostBuffers {
+        let shared = Arc::new(SurfaceBuffers {
             fourcc: delivery::DRM_FORMAT_ABGR8888,
             modifier: delivery::DRM_FORMAT_MOD_LINEAR,
             buffers: buffers
@@ -310,7 +310,7 @@ impl Gpu {
                 .iter()
                 .zip(&buffers.planes)
                 .map(|(buffer, plane)| {
-                    Some(HostBuffer {
+                    Some(SurfaceBuffer {
                         fd: buffer.fd().try_clone_to_owned().ok()?,
                         offset: plane.offset,
                         stride: plane.stride,
@@ -349,7 +349,7 @@ impl Gpu {
     /// Draw `scene` where `damage` says it changed, copy what a free buffer
     /// lacks of it there and show that buffer in `frame`, with what the frame
     /// shows now.
-    fn draw(&mut self, scene: &Scene, damage: Option<&[Rect]>, frame: &HostFrame) {
+    fn draw(&mut self, scene: &Scene, damage: Option<&[Rect]>, frame: &SurfaceFrame) {
         let renderer = &mut self.renderer;
         let (width, height) = (renderer.width, renderer.height);
         let changed = match damage.map(|rects| regions(rects, width, height)) {

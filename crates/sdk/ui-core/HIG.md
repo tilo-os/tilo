@@ -435,7 +435,7 @@ takes back asks nothing: it runs at once and offers Undo.
 
 ---
 
-## 5. System integration (file access, host services)
+## 5. System integration (file access, process services)
 
 - **File open/save goes through the XDG Desktop Portal**
   (`org.freedesktop.portal.FileChooser`, via `ashpd`) — an app **never draws its

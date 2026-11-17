@@ -2790,7 +2790,7 @@ mod portable_tests {
         // and the document and View still reach the disk.
         phase checkpointing_and_closing_on_the_frame_loop_never_wait_on_storage;
         {
-            let host = probe::ProbeHost::new();
+            let host = probe::ProbeHarness::new();
             let root = host.root();
             let mut component =
                 probe::instantiate_probe(&host, 7, LaunchTarget::New, RestoreInput::None).unwrap();
@@ -2804,7 +2804,7 @@ mod portable_tests {
                 drop(component);
                 checkout
             };
-            let probe::ProbeHost {
+            let probe::ProbeHarness {
                 owners,
                 records,
                 views,

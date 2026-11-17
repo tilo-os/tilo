@@ -2,7 +2,7 @@
 //! (`zwp_relative_pointer_v1`), which games and remote desktop clients need.
 //! The compositor, not the client, decides when a constraint takes effect: only for the surface
 //! that holds keyboard focus *and* sits under the local pointer, and never while the session is
-//! locked or a hosted surface owns input. Losing either focus releases it. Ctrl+Alt+Escape always
+//! locked or a surface owns input. Losing either focus releases it. Ctrl+Alt+Escape always
 //! releases it too, and the surface is not granted again until focus moves on, so a misbehaving
 //! game cannot trap the pointer.
 //! A locked pointer stays where it is: its client reads the deltas through
@@ -109,7 +109,7 @@ struct GrantTarget {
 
 impl State {
     /// The surface that may hold the pointer now: the one with keyboard focus that is also under
-    /// the pointer, while the session is unlocked and no hosted surface is taking input.
+    /// the pointer, while the session is unlocked and no surface is taking input.
     fn constraint_target(&self) -> Option<GrantTarget> {
         if self.locked() {
             return None;

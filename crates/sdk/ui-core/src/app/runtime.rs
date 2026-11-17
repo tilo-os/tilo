@@ -50,9 +50,9 @@ pub(super) struct LayoutRuntime {
     pub(super) root_node: Option<NodeId>,
     pub(super) node_map: std::collections::HashMap<NodeId, *mut dyn Widget>,
     /// Which `node_map` pointers were taken from the live tree
-    /// ([`crate::host_core::HostCore::layout_maps_stale`]).
+    /// ([`crate::app_core::AppCore::layout_maps_stale`]).
     pub(super) adopted: crate::retained_widgets::Adopted,
-    /// How many builds' maps were admitted ([`crate::host_core::HostCore::admit_layout_maps`]).
+    /// How many builds' maps were admitted ([`crate::app_core::AppCore::admit_layout_maps`]).
     pub(super) admissions: u64,
     /// The mapped nodes the history sweep visits, and the admission and map
     /// size they were found for (`App::history_sweep_nodes`).
@@ -292,14 +292,14 @@ pub(super) struct InputRuntime {
     pub(super) platform: crate::platform::PlatformConventions,
     pub(super) nav_gestures: crate::gesture::NavGestureRecognizer,
     pub(super) current_cursor: CursorIcon,
-    pub(super) tooltips: crate::host_core::TooltipLayer,
+    pub(super) tooltips: crate::app_core::TooltipLayer,
     /// Pen samples on their way to the pointer events they describe.
     pub(super) pen: crate::pen::PenInput,
     /// The app is shown inside a host whose focus order continues past it:
     /// Tab at either end of the app's order leaves it for the host.
     pub(super) tab_order_continues_in_host: bool,
     /// Where the pointer is, which buttons it holds and where it last pressed.
-    pub(super) pointer: crate::host_core::PointerPlace,
+    pub(super) pointer: crate::app_core::PointerPlace,
     /// Where the pointer last moved, replayed before a press or release
     /// that follows a rebuild under a still pointer.
     pub(super) pointer_replay: crate::pointer_replay::PointerReplay,
@@ -312,7 +312,7 @@ pub(super) struct InputRuntime {
     /// Whether the widgets last painted their carets: the window held the
     /// keyboard and nothing over them took it.
     pub(super) widget_carets: bool,
-    /// [`crate::host_core::KeyHost::keyboard_entry_owed`].
+    /// [`crate::app_core::KeyCore::keyboard_entry_owed`].
     pub(super) keyboard_entry_owed: bool,
 }
 
@@ -329,10 +329,10 @@ impl InputRuntime {
             platform: crate::platform::PlatformConventions::default(),
             nav_gestures: crate::gesture::NavGestureRecognizer::new(),
             current_cursor: CursorIcon::Default,
-            tooltips: crate::host_core::TooltipLayer::default(),
+            tooltips: crate::app_core::TooltipLayer::default(),
             pen: crate::pen::PenInput::default(),
             tab_order_continues_in_host: false,
-            pointer: crate::host_core::PointerPlace::default(),
+            pointer: crate::app_core::PointerPlace::default(),
             pointer_replay: crate::pointer_replay::PointerReplay::default(),
         }
     }

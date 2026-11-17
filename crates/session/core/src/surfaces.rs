@@ -1,5 +1,5 @@
-//! What a hosted surface publishes, and the one API the session reaches
-//! every hosted surface through.
+//! What a surface publishes, and the one API the session reaches
+//! every surface through.
 //!
 //! Each surface (the shell, the chrome, quick settings, the banners, …) is
 //! an ordinary widget tree or app with its own published resources and
@@ -68,7 +68,7 @@ impl<'a> Look<'a> {
     }
 }
 
-/// A hosted surface's published side.
+/// A surface's published side.
 pub trait Published {
     /// What it publishes now: its resources, with their actions.
     fn resources(&mut self) -> Vec<ResourceSpec>;
@@ -235,14 +235,13 @@ pub fn through_api(
     answered.unwrap_or_else(|| Err(ApiError::Unknown(address.clone())))
 }
 
-/// A hosted surface the session keeps beside the compositor's hold of it.
+/// A surface the session keeps beside the compositor's hold of it.
 pub type Shared = Rc<RefCell<dyn Published>>;
 
-/// Every hosted surface's published side, the session's action host for
-/// them.
+/// Every surface's published side, the session's own way into their actions.
 #[derive(Default, Clone)]
 pub struct Surfaces {
-    hosted: Vec<Shared>,
+    held: Vec<Shared>,
     /// Whether the session is locked: only its lock screen is offered then.
     locked: Rc<Cell<bool>>,
     /// What each surface published when it was last read, by its place.
@@ -264,7 +263,7 @@ struct Read {
 impl Surfaces {
     /// Reach `surface` through the API from now on.
     pub fn add(&mut self, surface: Shared) {
-        self.hosted.push(surface);
+        self.held.push(surface);
     }
 
     /// Offer the lock screen's API alone while the session is locked, and
@@ -278,7 +277,7 @@ impl Surfaces {
     /// the session is locked.
     fn offered(&self) -> Vec<(usize, &Shared)> {
         let offered: Vec<(usize, &Shared)> = self
-            .hosted
+            .held
             .iter()
             .enumerate()
             .filter(|(_, surface)| surface.borrow().offered())
@@ -356,7 +355,7 @@ impl Surfaces {
             .collect()
     }
 
-    /// Everything the hosted surfaces offer now, in the order they were
+    /// Everything the surfaces offer now, in the order they were
     /// added: what a locked session's lock screen publishes, while it is
     /// locked.
     #[must_use]
@@ -422,7 +421,7 @@ impl Surfaces {
             .ok_or_else(|| ApiError::Unknown(address.clone()))
     }
 
-    /// The labels of every hosted surface's accessibility tree.
+    /// The labels of every surface's accessibility tree.
     #[must_use]
     pub fn accessible_labels(&self) -> Vec<String> {
         self.offered()
@@ -506,7 +505,7 @@ impl Surfaces {
     /// The surface at `place`, as [`Self::offering`] numbers it.
     #[must_use]
     pub fn surface(&self, place: usize) -> Option<Shared> {
-        self.hosted.get(place).cloned()
+        self.held.get(place).cloned()
     }
 }
 

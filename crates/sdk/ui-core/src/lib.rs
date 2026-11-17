@@ -303,12 +303,12 @@ pub mod host_operation {
         resource_operation_handlers, start_in_children, start_operation,
     };
 }
+mod app_core;
 #[cfg_attr(
     not(any(feature = "native", test)),
     expect(dead_code, reason = "only a native host's frame culls its draw")
 )]
 pub(crate) mod draw_cull;
-mod host_core;
 pub mod mentions;
 pub mod own_paint;
 pub mod published;

@@ -2,7 +2,7 @@
 //! per window: the app's icon, the parts the app declares there ([`crate::window_toolbar`]), the
 //! window's search and History controls and its own controls.
 
-use crate::host_core::KeyHost as _;
+use crate::app_core::KeyCore as _;
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 

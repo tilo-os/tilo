@@ -243,7 +243,7 @@ fn mount_lock_view(
             let state = sheet.state().clone();
             state.presentation().cover_every_display();
             let sheet = sheet.layer();
-            compositor.add_host(sheet.clone());
+            compositor.add_surface(sheet.clone());
             surfaces.add(sheet);
             Some(state)
         }
@@ -299,7 +299,7 @@ fn mount_sheet<S: tilo_sheets::SheetState + 'static>(
         Ok(sheet) => {
             let state = sheet.state().clone();
             let sheet = sheet.layer();
-            compositor.add_host(sheet.clone());
+            compositor.add_surface(sheet.clone());
             surfaces.add(sheet);
             Some(state)
         }

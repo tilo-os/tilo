@@ -3074,7 +3074,7 @@ fn bridge_registration(binding: &crate::bound_dispatch::CallbackBinding) -> Hist
 }
 
 fn runner_component(
-    host: &crate::application_test_support::ProbeHost,
+    host: &crate::application_test_support::ProbeHarness,
     instance: u64,
 ) -> crate::application::AppComponent {
     use crate::application::{LaunchTarget, RestoreInput};
@@ -3102,7 +3102,7 @@ struct BridgeComponent {
     starts: Rc<Cell<usize>>,
     payloads: Rc<RefCell<Vec<serde_json::Value>>>,
     // Keeps the record and view stores alive for the whole test.
-    host: crate::application_test_support::ProbeHost,
+    host: crate::application_test_support::ProbeHarness,
 }
 
 /// `in_domain` binds the emitter to the component's control domain; otherwise
@@ -3111,7 +3111,7 @@ fn bridge_component(
     entered: Option<OwnershipEnteredOperation>,
     in_domain: bool,
 ) -> BridgeComponent {
-    let host = crate::application_test_support::ProbeHost::new();
+    let host = crate::application_test_support::ProbeHarness::new();
     let mut component = runner_component(&host, 1971);
     let mut live = ComponentControlOwner::new(
         "actual-bridge",
@@ -4628,7 +4628,7 @@ struct DeniedBridge {
     exit_calls: Rc<Cell<usize>>,
     starts: Rc<Cell<usize>>,
     payloads: Rc<RefCell<Vec<serde_json::Value>>>,
-    host: crate::application_test_support::ProbeHost,
+    host: crate::application_test_support::ProbeHarness,
 }
 
 fn denied_bridge_with_exit_emission() -> DeniedBridge {

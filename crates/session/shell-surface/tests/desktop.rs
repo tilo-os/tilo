@@ -16,8 +16,8 @@ use tilo_compositor::{Compositor, LayoutRect, OutputConfig, WindowInfo, WindowPo
 
 use tilo_desktop_model::TileContent;
 use tilo_desktop_policy::DesktopPolicy;
-use tilo_session_core::surface::SurfaceHost as _;
-use tilo_surface_host::{DesktopHost, desktop};
+use tilo_session_core::surface::ShellSurface as _;
+use tilo_shell_surface::{ShellDesktop, desktop};
 
 fn output() -> Vec<LayoutRect> {
     vec![LayoutRect::new((0, 0).into(), (1280, 800).into())]
@@ -34,7 +34,7 @@ fn window(id: u64, app: &str) -> WindowInfo {
 
 /// Every tab the desktop holds, in tree order: its id, what it shows and what it
 /// holds.
-fn tabs(host: &DesktopHost) -> Vec<(u64, String, TileContent)> {
+fn tabs(host: &ShellDesktop) -> Vec<(u64, String, TileContent)> {
     host.with_policy(|policy| {
         policy.handle().read(|tree| {
             tree.workspaces
@@ -49,7 +49,7 @@ fn tabs(host: &DesktopHost) -> Vec<(u64, String, TileContent)> {
 }
 
 /// The tab of the window `id`, when the desktop holds one.
-fn window_tab(host: &DesktopHost, id: u64) -> Option<(u64, String, TileContent)> {
+fn window_tab(host: &ShellDesktop, id: u64) -> Option<(u64, String, TileContent)> {
     tabs(host).into_iter().find(
         |(_, _, tile)| matches!(tile, TileContent::Foreign { surface_id, .. } if *surface_id == id),
     )
@@ -144,7 +144,7 @@ fn the_desktop_lies_under_the_windows_and_covers_the_output() {
     compositor
         .add_output(&OutputConfig::new("HEADLESS-1", 640, 480))
         .unwrap();
-    compositor.add_host(Rc::new(RefCell::new(host.clone())));
+    compositor.add_surface(Rc::new(RefCell::new(host.clone())));
     compositor.render().unwrap();
     let layers = host.layers();
     assert_eq!(layers.len(), 1);
@@ -350,7 +350,7 @@ fn an_x11_window_is_a_tab_of_its_class_that_retitles_and_reopens() {
     );
     // The desktop carries the command out on its next pass, as it does for the
     // session's loop.
-    host.with_widgets(tilo_surface_host::WidgetHost::relayout);
+    host.with_widgets(tilo_shell_surface::WidgetSurface::relayout);
     let (reopened, title, shown) = tabs(&host).pop().expect("the tab is back");
     assert_eq!(reopened, tab, "the window comes back in its own tab");
     assert_eq!(title, "vim ~/notes", "named as the person left it");
@@ -429,7 +429,7 @@ fn a_window_opened_beyond_the_visible_strip_stands_on_the_output_at_once() {
                 .checked_add(Duration::from_millis(16))
                 .expect("a moment");
             ui::time::testing::with_monotonic_time(now, || {
-                host.with_widgets(tilo_surface_host::WidgetHost::relayout);
+                host.with_widgets(tilo_shell_surface::WidgetSurface::relayout);
             });
         }
         let arranged = policy

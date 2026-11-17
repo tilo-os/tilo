@@ -14,7 +14,7 @@
 //!
 //! Entirely env-var driven (`TILO_FRAME_TRACE`, `TILO_FRAME_SUMMARY`, `TILO_FRAME_WARMUP_MS`);
 //! `TILO_FRAME_CPU_TRACE` adds a bounded numeric-only companion with phase CPU and clock anchors.
-//! disabled, every [`FrameRecorder`] method is a `bool` branch. Production host sessions set a
+//! disabled, every [`FrameRecorder`] method is a `bool` branch. Production sessions set a
 //! private trace path so the final second before an abrupt reset remains measurable. [`summarize`]
 //! is pure — the same function the live binary and unit tests call, so they can't drift.
 //!
@@ -107,10 +107,10 @@ pub struct FrameSample {
     /// owed after motion ended; `+`-joined, empty when nothing animated. A
     /// desktop that keeps animating while idle is attributed here.
     pub paint_animations: &'static str,
-    /// The hosted surfaces' own frames before the submit: each surface the session hosts (the
+    /// The surfaces' own frames before the submit: each surface the session hosts (the
     /// shell's own surface, its panels and sheets) laying its tree out and building its scene. Every
     /// frame a tick draws counts, the ones a catch-up draws included.
-    pub hosts_us: u32,
+    pub surfaces_us: u32,
     /// The session's share after the frame is out, besides the control socket: what assistive
     /// technology reads of it, the shell and its views read back over it, and the session's
     /// observations of what it published.
@@ -296,7 +296,7 @@ impl FrameSample {
                 .map(|v| v.to_string())
                 .unwrap_or_default(),
             self.paint_animations,
-            self.hosts_us,
+            self.surfaces_us,
             self.after_us,
         )
     }
@@ -306,7 +306,7 @@ impl FrameSample {
 pub const CSV_HEADER: &str = "seq,start_us,period_us,input_us,pump_us,layout_us,scene_us,\
 submit_us,testctl_us,clients_us,sleep_us,painted,present_async,input_latency_us,\
 input_retirement_latency_us,backpressured,deadline_late_us,wake,cpu_us,input_step,input_step_us,\
-paint_reasons,paint_clients,testctl_cpu_us,paint_animations,hosts_us,after_us";
+paint_reasons,paint_clients,testctl_cpu_us,paint_animations,surfaces_us,after_us";
 
 /// Percentile bundle for one measured quantity, in microseconds.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize)]
@@ -369,8 +369,8 @@ pub struct FrameSummary {
     pub scene: Percentiles,
     pub submit: Percentiles,
     pub testctl: Percentiles,
-    /// The hosted surfaces' frames, on ticks that painted ([`FrameSample::hosts_us`]).
-    pub hosts: Percentiles,
+    /// The surfaces' frames, on ticks that painted ([`FrameSample::surfaces_us`]).
+    pub surfaces: Percentiles,
     /// The session's share after the frame ([`FrameSample::after_us`]).
     pub after: Percentiles,
     pub clients: Percentiles,
@@ -484,7 +484,7 @@ pub fn summarize(samples: &[FrameSample], target_period_us: u32) -> FrameSummary
         scene: painted_field(|s| s.scene_us),
         submit: painted_field(|s| s.submit_us),
         testctl: field(|s| s.testctl_us),
-        hosts: painted_field(|s| s.hosts_us),
+        surfaces: painted_field(|s| s.surfaces_us),
         after: field(|s| s.after_us),
         clients: field(|s| s.clients_us),
         sleep: field(|s| s.sleep_us),
@@ -795,10 +795,10 @@ impl FrameRecorder {
     pub fn mark_testctl(&mut self, d: Duration) {
         self.cur.testctl_us = us(d);
     }
-    /// The hosted surfaces' frames took `d` more this tick ([`FrameSample::hosts_us`]): a tick
+    /// The surfaces' frames took `d` more this tick ([`FrameSample::surfaces_us`]): a tick
     /// that draws again to catch up adds the frames it draws then.
-    pub fn add_hosts(&mut self, d: Duration) {
-        self.cur.hosts_us = self.cur.hosts_us.saturating_add(us(d));
+    pub fn add_surfaces(&mut self, d: Duration) {
+        self.cur.surfaces_us = self.cur.surfaces_us.saturating_add(us(d));
     }
     /// The session's share after the frame ([`FrameSample::after_us`]).
     pub fn mark_after(&mut self, d: Duration) {
@@ -1569,7 +1569,7 @@ mod tests {
                 paint_clients: "so.tilo.file-explorer",
                 testctl_cpu_us: Some(17),
                 paint_animations: "notification+content/DesktopSurface/TileHost",
-                hosts_us: 18,
+                surfaces_us: 18,
                 after_us: 19,
             }
             .write_csv_row(&mut buf)

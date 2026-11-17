@@ -1,8 +1,8 @@
 // The native host's side of the core both app hosts share.
 
-impl crate::host_core::HostCore for App {
-    fn tree(&self) -> crate::host_core::HostTree<'_> {
-        crate::host_core::HostTree {
+impl crate::app_core::AppCore for App {
+    fn tree(&self) -> crate::app_core::AppTree<'_> {
+        crate::app_core::AppTree {
             state: &self.state,
             root: self.root_widget.as_ref(),
             history: self.history.as_deref(),
@@ -15,8 +15,8 @@ impl crate::host_core::HostCore for App {
         }
     }
 
-    fn document(&mut self) -> crate::host_core::HostDocument<'_> {
-        crate::host_core::HostDocument {
+    fn document(&mut self) -> crate::app_core::HostDocument<'_> {
+        crate::app_core::HostDocument {
             state: &mut self.state,
             bindings: &self.bindings,
             node_map: &self.layout.node_map,
@@ -69,8 +69,8 @@ impl crate::host_core::HostCore for App {
         &mut self.layout.adopted
     }
 
-    fn layout_mut(&mut self) -> crate::host_core::HostLayout<'_> {
-        crate::host_core::HostLayout {
+    fn layout_mut(&mut self) -> crate::app_core::HostLayout<'_> {
+        crate::app_core::HostLayout {
             taffy: &mut self.layout.taffy,
             node_map: &mut self.layout.node_map,
             bindings: &mut self.bindings,
@@ -93,8 +93,8 @@ impl crate::host_core::HostCore for App {
         self.forget_replaced_widgets()
     }
 
-    fn remount_parts(&mut self) -> crate::host_core::HostRemount<'_> {
-        crate::host_core::HostRemount {
+    fn remount_parts(&mut self) -> crate::app_core::HostRemount<'_> {
+        crate::app_core::HostRemount {
             root: self.root_widget.as_mut(),
             state: &self.state,
             theme: &self.theme,
@@ -134,8 +134,8 @@ impl crate::host_core::HostCore for App {
         self.root_widget.as_mut()
     }
 
-    fn focus_parts(&mut self) -> crate::host_core::HostFocus<'_> {
-        crate::host_core::HostFocus {
+    fn focus_parts(&mut self) -> crate::app_core::HostFocus<'_> {
+        crate::app_core::HostFocus {
             root: self.root_widget.as_mut(),
             history: self.history.as_mut(),
             node_map: &self.layout.node_map,
@@ -200,7 +200,7 @@ impl crate::host_core::HostCore for App {
     }
 }
 
-impl crate::host_core::KeyHost for App {
+impl crate::app_core::KeyCore for App {
     fn modifiers(&self) -> &winit::event::Modifiers {
         &self.input.modifiers
     }
@@ -237,8 +237,8 @@ impl crate::host_core::KeyHost for App {
         self.layout.layout_dirty = true;
     }
 
-    fn root_event(&mut self) -> Option<crate::host_core::RootEvent<'_>> {
-        Some(crate::host_core::RootEvent {
+    fn root_event(&mut self) -> Option<crate::app_core::RootEvent<'_>> {
+        Some(crate::app_core::RootEvent {
             node: self.layout.root_node?,
             root: self.root_widget.as_mut(),
             state: &mut self.state,

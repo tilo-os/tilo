@@ -1,7 +1,9 @@
 //! Real SDK construction/lifecycle tests; the marker is resource-only.
 use super::*;
 use crate::application::{AppComponent, LaunchTarget, ProcessContext, RestoreInput};
-use crate::application_test_support::{ProbeHost, definition, runner_inputs, runner_permissions};
+use crate::application_test_support::{
+    ProbeHarness, definition, runner_inputs, runner_permissions,
+};
 use crate::semantic_document_read::retirement::{
     MountRetirement, RetirementDomain, RetirementError, RetirementHandle, retirement_test_probe,
 };
@@ -146,7 +148,7 @@ fn factory(
         tilo_actions::ActionRegistry::new(),
     ))
 }
-fn component(host: &ProbeHost, mount: MountRetirement) -> AppComponent {
+fn component(host: &ProbeHarness, mount: MountRetirement) -> AppComponent {
     let definition = definition(factory);
     let mut context = host
         .prepare_with_permissions(&definition, 1, &LaunchTarget::New, runner_permissions())
@@ -181,7 +183,7 @@ fn assert_retired_events(observed: &Observations, expected: &[&str]) {
 fn retirement_lifecycle_component_close_retires_before_capture_and_drop_even_when_capture_unwinds()
 {
     for capture_panics in [false, true] {
-        let host = ProbeHost::new();
+        let host = ProbeHarness::new();
         let (_domain, mount, observed) = mounted();
         let mut component = component(&host, mount);
         observed.armed.set(true);
@@ -195,7 +197,7 @@ fn retirement_lifecycle_component_close_retires_before_capture_and_drop_even_whe
 }
 #[test]
 fn retirement_lifecycle_checkpoint_stays_open_until_admitted_close() {
-    let host = ProbeHost::new();
+    let host = ProbeHarness::new();
     let (_domain, mount, observed) = mounted();
     let mut component = component(&host, mount);
     observed.armed.set(true);
@@ -209,7 +211,7 @@ fn retirement_lifecycle_checkpoint_stays_open_until_admitted_close() {
 #[test]
 fn retirement_lifecycle_outer_app_close_and_drop_preserve_capture_behavior() {
     for explicit in [true, false] {
-        let host = ProbeHost::new();
+        let host = ProbeHarness::new();
         let (_domain, mount, observed) = mounted();
         let mut app = app(component(&host, mount));
         observed.armed.set(true);
@@ -229,7 +231,7 @@ fn retirement_lifecycle_outer_app_close_and_drop_preserve_capture_behavior() {
 }
 #[test]
 fn retirement_lifecycle_native_wake_close_retires_without_tree_traversal() {
-    let host = ProbeHost::new();
+    let host = ProbeHarness::new();
     let (_domain, mount, observed) = mounted();
     let mut app = app(component(&host, mount));
     observed.armed.set(true);
@@ -287,7 +289,7 @@ fn retirement_lifecycle_inner_initializer_unwind_retires_before_root_cleanup() {
         "debug", "stamp", "screen", "restore", "profiler", "floating", "contrast",
     ];
     for (index, panic_stage) in expected.iter().enumerate() {
-        let host = ProbeHost::new();
+        let host = ProbeHarness::new();
         let (_domain, mount, observed) = mounted();
         let component = component(&host, mount);
         STAGES.with_borrow_mut(Vec::clear);
@@ -307,7 +309,7 @@ fn retirement_lifecycle_inner_initializer_unwind_retires_before_root_cleanup() {
 }
 #[test]
 fn retirement_lifecycle_construction_service_unwind_retires_before_root_cleanup() {
-    let host = ProbeHost::new();
+    let host = ProbeHarness::new();
     let (_domain, mount, observed) = mounted();
     let component = component(&host, mount);
     assert!(
@@ -322,7 +324,7 @@ fn retirement_lifecycle_construction_service_unwind_retires_before_root_cleanup(
 }
 #[test]
 fn retirement_lifecycle_successful_transfer_does_not_retire_early() {
-    let host = ProbeHost::new();
+    let host = ProbeHarness::new();
     let (domain, mount, observed) = mounted();
     let app = app(component(&host, mount));
     assert!(!observed.retired());
@@ -338,7 +340,7 @@ fn retirement_lifecycle_control_installation_panic_retires_before_root_drop() {
     // Installation 0 happens in the component constructor; 1 and 2 happen
     // while the app mounts the component and its outer controls.
     for index in [0, 1, 2] {
-        let host = ProbeHost::new();
+        let host = ProbeHarness::new();
         let (_domain, mount, observed) = mounted();
         observed.panic_install.set(Some(index));
         let unwound = catch_unwind(AssertUnwindSafe(|| {

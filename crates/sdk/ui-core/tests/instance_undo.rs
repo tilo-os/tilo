@@ -1,4 +1,4 @@
-use crate::support::application::{ProbeHost, author, existing, instantiate_probe};
+use crate::support::application::{ProbeHarness, author, existing, instantiate_probe};
 use automerge::ReadDoc;
 use automerge::{AutoCommit, ROOT, transaction::Transactable};
 use std::collections::HashMap;
@@ -64,7 +64,7 @@ impl BoundProbe {
 #[test]
 fn typing_bursts_finalize_at_the_right_record_boundary() {
     {
-        let host = ProbeHost::new();
+        let host = ProbeHarness::new();
         let first = instantiate_probe(&host, 11, LaunchTarget::New, RestoreInput::None).unwrap();
         let checkout = first.record().clone();
         let mut a = BoundProbe::new(first);
@@ -128,7 +128,7 @@ fn typing_bursts_finalize_at_the_right_record_boundary() {
     }
 
     {
-        let host = ProbeHost::new();
+        let host = ProbeHarness::new();
         let first = instantiate_probe(&host, 11, LaunchTarget::New, RestoreInput::None).unwrap();
         let checkout = first.record().clone();
         let second = instantiate_probe(&host, 12, existing(&checkout), RestoreInput::None).unwrap();
@@ -163,7 +163,7 @@ fn typing_bursts_finalize_at_the_right_record_boundary() {
     }
 
     {
-        let host = ProbeHost::new();
+        let host = ProbeHarness::new();
         let component =
             instantiate_probe(&host, 11, LaunchTarget::New, RestoreInput::None).unwrap();
         let checkout = component.record().clone();
@@ -193,7 +193,7 @@ fn typing_bursts_finalize_at_the_right_record_boundary() {
 
     {
         use crate::support::application::{probe_commit_drains, report_probe_action};
-        let host = ProbeHost::new();
+        let host = ProbeHarness::new();
         let first = instantiate_probe(&host, 11, LaunchTarget::New, RestoreInput::None).unwrap();
         let checkout = first.record().clone();
         let mut a = BoundProbe::new(first);
@@ -267,7 +267,7 @@ fn typing_bursts_finalize_at_the_right_record_boundary() {
 #[test]
 fn record_entry_unwind_and_restore_keep_exact_instance_ownership() {
     {
-        let host = ProbeHost::new();
+        let host = ProbeHarness::new();
         let first = instantiate_probe(&host, 11, LaunchTarget::New, RestoreInput::None).unwrap();
         let checkout = first.record().clone();
         let mut b = BoundProbe::new(
@@ -300,7 +300,7 @@ fn record_entry_unwind_and_restore_keep_exact_instance_ownership() {
     }
 
     {
-        let host = ProbeHost::new();
+        let host = ProbeHarness::new();
         let first = instantiate_probe(&host, 11, LaunchTarget::New, RestoreInput::None).unwrap();
         let checkout = first.record().clone();
         let mut b = BoundProbe::new(

@@ -907,15 +907,15 @@ readers = [
 
 
 [[cargo]]
-package = "tilo-surface-host"
+package = "tilo-shell-surface"
 # The part embeds and compiles the shell package's sources and ids lock, and the packages its
 # views reach (`notes`, `tasks`, `chat`), every file of each; its places' tests publish a notebook
 # from the notes app's sources.
 inputs = ["apps/tl/"]
 readers = [
-  "crates/session/surface-host/src/shell_part.rs",
-  "crates/session/surface-host/src/shell_part/places.rs",
-  "crates/session/surface-host/src/shell_part/tests.rs",
+  "crates/session/shell-surface/src/shell_part.rs",
+  "crates/session/shell-surface/src/shell_part/places.rs",
+  "crates/session/shell-surface/src/shell_part/tests.rs",
 ]
 
 [[cargo]]

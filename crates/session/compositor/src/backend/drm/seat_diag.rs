@@ -187,13 +187,13 @@ impl SeatFailure {
             }
             SeatFailureKind::NoSeatBackend => {
                 "Start `seatd` (`sudo systemctl start seatd`) and make sure your user is in the \
-                 `seat` group, or run from a logind-managed VT login. `--backend winit` hosts \
+                 `seat` group, or run from a logind-managed VT login. `--backend winit` surfaces \
                  inside an existing session and needs no seat at all."
             }
             SeatFailureKind::Unclassified => {
                 "Check that you can open /dev/dri/card* and that a seat is free; `loginctl \
                  session-status` and `seatd -h` are the two things to look at. `--backend \
-                 winit` hosts inside an existing session and needs no seat at all."
+                 winit` surfaces inside an existing session and needs no seat at all."
             }
         }
     }

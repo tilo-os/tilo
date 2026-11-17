@@ -1,11 +1,11 @@
 //! A toolkit widget shown on a rectangle of the desktop: a surface that is
 //! a widget tree of its own rather than an app (the desktop's strips and
-//! window bars). The toolkit's portable host runs it (input in, frames out)
+//! window bars). The toolkit's headless harness runs it (input in, frames out)
 //! and the frame is drawn as an app's is.
 
 use tilo_session_core::surface::WindowPicture;
 use tilo_session_core::surface::{
-    HostIme, HostLayer, HostTextInput, LayerPose, Scroll, SurfaceHost,
+    LayerPose, Scroll, ShellSurface, SurfaceIme, SurfaceLayer, SurfaceTextInput,
 };
 
 use ui::headless::FrameHarness;
@@ -18,7 +18,7 @@ use winit::event::{DeviceId, WindowEvent};
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
-use tilo_session_core::surface::HostKey;
+use tilo_session_core::surface::SurfaceKey;
 use winit::event::Modifiers;
 use winit::keyboard::ModifiersState;
 
@@ -174,7 +174,7 @@ fn whole_pixels(bounds: vello::kurbo::Rect, size: (u32, u32)) -> Option<((i32, i
 }
 
 /// One widget tree shown on a rectangle of the desktop.
-pub struct WidgetHost {
+pub struct WidgetSurface {
     host: FrameHarness,
     placement: Placement,
     frames: Frames,
@@ -214,7 +214,7 @@ pub struct WidgetHost {
     wells: Option<ui::widget::Wells>,
     /// The previews the tree's views report to as it lays them out: shared
     /// with the closures that name the windows it pictures
-    /// ([`SurfaceHost::window_pictures`]).
+    /// ([`ShellSurface::window_pictures`]).
     previews: Option<ui::widget::Previews>,
     /// What an assistive technology knows the tree's window by.
     name: Option<String>,
@@ -234,10 +234,10 @@ pub struct WidgetHost {
     dismissed: Option<Rc<dyn Fn()>>,
 }
 
-impl WidgetHost {
+impl WidgetSurface {
     /// Show `root` at `placement`, above the windows or (`below`) under
     /// them. Nothing is drawn before the first
-    /// [`SurfaceHost::prepare_frame`].
+    /// [`ShellSurface::prepare_frame`].
     ///
     /// # Panics
     /// Never: the placement's scale is a positive output scale.
@@ -455,7 +455,7 @@ impl WidgetHost {
     /// or a deadline that came due. A widget reporting itself dirty is not a reason on its own:
     /// leaves report so by default (a text field always does), so a host that drew for it would
     /// draw every frame while one is shown. A tree fed only through these (a tilolang view's
-    /// patches arrive as a relayout) asks this before [`SurfaceHost::prepare_frame`].
+    /// patches arrive as a relayout) asks this before [`ShellSurface::prepare_frame`].
     pub fn wants_frame(&mut self) -> bool {
         if self.owed != Owed::Nothing || self.asked() {
             return true;
@@ -515,7 +515,7 @@ impl WidgetHost {
 
     /// Run the tree's own pass — what it takes up, and the layout it lays
     /// itself out by — without building or drawing a scene, for a host whose
-    /// drawing stands behind another's ([`WidgetHost`]). Whether the tree moved,
+    /// drawing stands behind another's ([`WidgetSurface`]). Whether the tree moved,
     /// so the frame it stands under is drawn again.
     ///
     /// Only what is asked of it brings it a pass: a command queued on its
@@ -666,7 +666,7 @@ impl WidgetHost {
     }
 }
 
-impl crate::Published for WidgetHost {
+impl crate::Published for WidgetSurface {
     fn resources(&mut self) -> Vec<ui::tilo_actions::ResourceSpec> {
         self.host.resources()
     }
@@ -705,7 +705,7 @@ impl crate::Published for WidgetHost {
     }
 
     fn wants_keyboard(&self) -> bool {
-        SurfaceHost::wants_keyboard(self)
+        ShellSurface::wants_keyboard(self)
     }
 
     fn accessible_labels(&mut self) -> Vec<String> {
@@ -808,9 +808,9 @@ impl crate::Published for WidgetHost {
     }
 }
 
-impl SurfaceHost for WidgetHost {
+impl ShellSurface for WidgetSurface {
     /// The lifted parts, posed, then the rest of the tree over them.
-    fn layers(&self) -> Vec<HostLayer> {
+    fn layers(&self) -> Vec<SurfaceLayer> {
         let (ox, oy) = self.placement.origin;
         let side = |side: u32| i32::try_from(side).unwrap_or(i32::MAX);
         self.lifted
@@ -818,14 +818,14 @@ impl SurfaceHost for WidgetHost {
             .filter(|layer| layer.shown)
             .map(|layer| {
                 let ((x, y), (width, height)) = layer.rect;
-                HostLayer {
+                SurfaceLayer {
                     location: (ox.saturating_add(x), oy.saturating_add(y)),
                     size: (side(width), side(height)),
                     frame: layer.frames.frame(),
                     pose: layer.pose,
                 }
             })
-            .chain(std::iter::once(HostLayer {
+            .chain(std::iter::once(SurfaceLayer {
                 location: self.placement.origin,
                 size: (side(self.placement.size.0), side(self.placement.size.1)),
                 frame: self.frames.frame(),
@@ -954,7 +954,7 @@ impl SurfaceHost for WidgetHost {
         self.input(&crate::mouse_wheel(scroll, self.placement.scale));
     }
 
-    fn outputs_changed(&mut self, outputs: &[tilo_session_core::surface::HostedOutput]) {
+    fn outputs_changed(&mut self, outputs: &[tilo_session_core::surface::SurfaceOutput]) {
         if !self.covers {
             return;
         }
@@ -977,7 +977,7 @@ impl SurfaceHost for WidgetHost {
         // The scale of the output the surface stands on, so what it paints
         // has the pixels that output shows rather than being stretched over
         // them: a bar on a 2 display is drawn at 2.
-        let scale = tilo_session_core::surface::HostedOutput::scale_at(
+        let scale = tilo_session_core::surface::SurfaceOutput::scale_at(
             outputs,
             (
                 f64::from(x0) + f64::from(width) / 2.0,
@@ -1000,7 +1000,7 @@ impl SurfaceHost for WidgetHost {
         self.host.palette_shown() || self.keyboard.as_ref().is_some_and(|wants| wants())
     }
 
-    fn key(&mut self, key: &HostKey) {
+    fn key(&mut self, key: &SurfaceKey) {
         let modifiers = key.modifiers.state();
         if modifiers != self.modifiers {
             self.modifiers = modifiers;
@@ -1012,7 +1012,7 @@ impl SurfaceHost for WidgetHost {
     /// The field the toolkit keeps the focus in, if it takes typing: an input
     /// method composes into it as into a client's field, its candidate window
     /// under the caret.
-    fn text_input(&self) -> Option<HostTextInput> {
+    fn text_input(&self) -> Option<SurfaceTextInput> {
         let field = self.host.ime_window()?;
         let (hint, purpose) = field.content.wayland();
         let (x, y, width, height) = self.logical(vello::kurbo::Rect::new(
@@ -1021,7 +1021,7 @@ impl SurfaceHost for WidgetHost {
             f64::from(field.x.saturating_add(field.width)),
             f64::from(field.y.saturating_add(field.height)),
         ));
-        Some(HostTextInput {
+        Some(SurfaceTextInput {
             hint,
             purpose,
             x,
@@ -1031,7 +1031,7 @@ impl SurfaceHost for WidgetHost {
         })
     }
 
-    fn ime(&mut self, event: HostIme) {
+    fn ime(&mut self, event: SurfaceIme) {
         self.input(&WindowEvent::Ime(ime_event(event)));
     }
 
@@ -1055,7 +1055,7 @@ impl SurfaceHost for WidgetHost {
 
     fn prepare_frame(&mut self) -> bool {
         // The tree draws carets only while this surface holds the keyboard: the same answer that
-        // decides whether keys reach it ([`SurfaceHost::wants_keyboard`]). A surface that just lost
+        // decides whether keys reach it ([`ShellSurface::wants_keyboard`]). A surface that just lost
         // or took the keyboard draws again, so the caret goes with it.
         if self.host.set_keyboard_held(self.wants_keyboard()) {
             self.owe();

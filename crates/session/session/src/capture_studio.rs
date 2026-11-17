@@ -249,7 +249,7 @@ pub(crate) fn mount(
             let sheet = sheet.always_serving();
             let state = sheet.state().clone();
             let sheet = sheet.layer();
-            compositor.add_host(sheet.clone());
+            compositor.add_surface(sheet.clone());
             surfaces.add(sheet);
             Some(CaptureStudio {
                 state,

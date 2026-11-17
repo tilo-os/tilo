@@ -113,7 +113,7 @@ fn deliver_routed(app: &mut App, surface: &dyn AppSurface, event: WindowEvent) {
 fn paced_pen_stroke_attributes_banked_input_per_event_and_phase() {
     use crate::native_scenario::Input;
 
-    let host = crate::application_test_support::ProbeHost::new();
+    let host = crate::application_test_support::ProbeHarness::new();
     let definition = crate::application_test_support::definition(stroke_factory);
     let target = crate::application::LaunchTarget::New;
     let context = host

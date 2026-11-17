@@ -12,7 +12,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use tilo_session_core::surface::{HostLayer, SurfaceHost};
+use tilo_session_core::surface::{ShellSurface, SurfaceLayer};
 
 use tilo_desktop::overlays::Overlays;
 
@@ -31,8 +31,8 @@ impl PartsHost {
     }
 }
 
-impl SurfaceHost for PartsHost {
-    fn layers(&self) -> Vec<HostLayer> {
+impl ShellSurface for PartsHost {
+    fn layers(&self) -> Vec<SurfaceLayer> {
         Vec::new()
     }
 
@@ -66,5 +66,5 @@ impl SurfaceHost for PartsHost {
 
 /// Mount the session's reader of presses outside the overlays over `compositor` .
 pub(crate) fn mount(compositor: &mut tilo_compositor::Compositor, overlays: &Overlays) {
-    compositor.add_host(Rc::new(RefCell::new(PartsHost::new(overlays.clone()))));
+    compositor.add_surface(Rc::new(RefCell::new(PartsHost::new(overlays.clone()))));
 }

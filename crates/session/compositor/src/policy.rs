@@ -135,11 +135,11 @@ pub trait WindowPolicy {
     fn monitors(&mut self, _monitors: &[(LayoutRect, String)], _primary: Option<&str>) {}
 
     /// The pointer moved to `(x, y)` in the logical layout, wherever it went: over a window, a
-    /// hosted surface or nothing.
+    /// surface or nothing.
     fn pointer_moved(&mut self, _x: f64, _y: f64) {}
 
     /// A pointer button went down at `(x, y)` in the logical layout,
-    /// wherever it went: over a window, a hosted surface or nothing, and
+    /// wherever it went: over a window, a surface or nothing, and
     /// whether or not one of them takes it.
     fn pointer_pressed(&mut self, _x: f64, _y: f64) {}
 

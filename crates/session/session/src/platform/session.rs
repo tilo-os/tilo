@@ -19,7 +19,7 @@ use tilo_desktop_surface::DesktopHandle;
 use tilo_liveness::watchdog::{Policy, Watchdog, end_process};
 use tilo_lock::MutexRecover as _;
 use tilo_session_core::surfaces::Surfaces;
-use tilo_surface_host::{DesktopHost, WidgetHost};
+use tilo_shell_surface::{ShellDesktop, WidgetSurface};
 use ui::host_operation::ResourceOperationStart;
 
 use crate::assembly::{Session, Shared};
@@ -591,7 +591,7 @@ impl Session {
         crate::a11y_settings::apply(&mut compositor, &options.config.a11y)?;
         compositor.set_backlight(Box::new(crate::display_settings::PanelBacklight::find()));
         let machine = crate::power::install(&mut compositor, &options);
-        compositor.add_host(crate::shell::under(options.shell, desktop.clone()));
+        compositor.add_surface(crate::shell::under(options.shell, desktop.clone()));
         // The shell draws every window whole — its card, the lift under it
         // and its edge, in the theme's colours, brighter on the window in
         // use. The compositor shapes a window's corners to that card and
@@ -897,7 +897,7 @@ impl Session {
             &overlays,
             &switcher,
         )));
-        compositor.add_host(crate::shell::under(options.shell, Rc::clone(&chrome)));
+        compositor.add_surface(crate::shell::under(options.shell, Rc::clone(&chrome)));
         // Search's code is asked for as the session starts, so it is in by the
         // time someone searches; a search asked for before then opens now,
         // and the shell publishes it on its next pass.
@@ -2231,7 +2231,7 @@ impl Session {
 
     /// The desktop under the windows and its policy.
     #[must_use]
-    pub fn desktop(&self) -> &DesktopHost {
+    pub fn desktop(&self) -> &ShellDesktop {
         &self.shared.desktop
     }
 
@@ -2664,7 +2664,7 @@ impl Session {
             // What ran may have queued desktop commands on the shared
             // handle (the chrome switching workspace): the shell carries
             // them out on its next pass.
-            self.shared.desktop.with_widgets(WidgetHost::relayout);
+            self.shared.desktop.with_widgets(WidgetSurface::relayout);
         }
         Ok(())
     }

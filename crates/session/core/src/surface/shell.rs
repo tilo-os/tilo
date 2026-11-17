@@ -1,8 +1,8 @@
-//! What a surface hands the host that draws it, and what the host gives back.
+//! What a surface hands the shell that draws it, and what the shell gives back.
 //!
 //! A surface draws its layers itself — the top bar, a panel, a sheet — and says which parts of them
-//! changed: as premultiplied RGBA pixels the host copies into whatever it draws with (the page's
-//! canvas, the compositor where no GPU draws), or, where a GPU draws them, into dma-bufs the host
+//! changed: as premultiplied RGBA pixels the shell copies into whatever it draws with (the page's
+//! canvas, the compositor where no GPU draws), or, where a GPU draws them, into dma-bufs the shell
 //! composites straight from. It hands the surface the input that lands on them. Nothing here knows
 //! how the pixels were made or where they are shown.
 
@@ -11,8 +11,8 @@ use std::rc::Rc;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use super::{
-    BackdropImage, BackdropRequest, CursorIcon, HostKey, HostedOutput, KeyClaim, KeyModifiers,
-    Region, Scroll, WindowCover, WindowPicture,
+    BackdropImage, BackdropRequest, CursorIcon, KeyClaim, KeyModifiers, Region, Scroll, SurfaceKey,
+    SurfaceOutput, WindowCover, WindowPicture,
 };
 
 /// How many pixels a side of one coverage cell is: the granularity at which a frame says what it
@@ -20,7 +20,7 @@ use super::{
 pub const CELL: u32 = 8;
 
 /// What one cell of a frame holds; a surface that reads its cells on the GPU hands them over as
-/// these numbers ([`HostFrame::record_cells`]).
+/// these numbers ([`SurfaceFrame::record_cells`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Cell {
     /// Every pixel of it is transparent: nothing is shown there.
@@ -269,40 +269,40 @@ fn alpha_at(pixels: &[u8], width: u32, x: u32, y: u32) -> Option<u8> {
 }
 
 /// The dma-bufs a surface draws its frames into on the GPU: linear, one live session each, all of one
-/// size and format. The host composites the one a frame shows straight from it, as it would a
+/// size and format. The shell composites the one a frame shows straight from it, as it would a
 /// client's.
 #[cfg(unix)]
 #[derive(Debug)]
-pub struct HostBuffers {
+pub struct SurfaceBuffers {
     /// The DRM format.
     pub fourcc: u32,
     /// The DRM format modifier.
     pub modifier: u64,
-    pub buffers: Vec<HostBuffer>,
+    pub buffers: Vec<SurfaceBuffer>,
 }
 
-/// One of a surface's [`HostBuffers`].
+/// One of a surface's [`SurfaceBuffers`].
 #[cfg(unix)]
 #[derive(Debug)]
-pub struct HostBuffer {
+pub struct SurfaceBuffer {
     pub fd: std::os::fd::OwnedFd,
     pub offset: u32,
     pub stride: u32,
 }
 
-/// Where a frame drawn on the GPU stands: the buffer it shows, and the ones the host drew last,
+/// Where a frame drawn on the GPU stands: the buffer it shows, and the ones the shell drew last,
 /// which the GPU may still be reading.
 #[cfg(unix)]
 #[derive(Debug)]
 struct OnGpu {
-    buffers: Arc<HostBuffers>,
+    buffers: Arc<SurfaceBuffers>,
     shown: Option<usize>,
-    /// The buffers the host took last, newest first.
+    /// The buffers the shell took last, newest first.
     taken: [Option<usize>; 2],
 }
 
-/// What a frame holds besides its size: only the host that draws it and the surface that draws into
-/// it read this, each through [`HostFrame`].
+/// What a frame holds besides its size: only the shell that draws it and the surface that draws into
+/// it read this, each through [`SurfaceFrame`].
 #[derive(Debug)]
 struct Held {
     /// Premultiplied RGBA, `size.0 * 4` bytes a row; nothing for a frame drawn on the GPU.
@@ -310,26 +310,26 @@ struct Held {
     /// What it shows, cell by cell; `None` for a frame a surface handed over whole, whose drawing
     /// this side has not seen.
     coverage: Option<Coverage>,
-    /// The parts drawn since a host last took them.
+    /// The parts drawn since the shell last took them.
     damage: Vec<Region>,
     /// The buffers a frame drawn on the GPU is shown from.
     #[cfg(unix)]
     gpu: Option<OnGpu>,
 }
 
-/// The pixels a hosted surface shows: premultiplied RGBA, kept by the surface and taken by the host
+/// The pixels a surface shows: premultiplied RGBA, kept by the surface and taken by the shell
 /// that draws it, which copies only what changed.
 ///
 /// It also keeps what it shows: which part of it holds anything, and which part is wholly opaque. A
 /// layer the size of a display that paints a bar costs its bar, not the display, and nothing under
 /// an opaque part of it is drawn.
 #[derive(Clone, Debug)]
-pub struct HostFrame {
+pub struct SurfaceFrame {
     held: Arc<Mutex<Held>>,
     size: (u32, u32),
 }
 
-impl HostFrame {
+impl SurfaceFrame {
     /// An empty frame of `size` physical pixels.
     #[must_use]
     pub fn new(size: (u32, u32)) -> Self {
@@ -349,7 +349,7 @@ impl HostFrame {
     /// ([`Self::show_buffer`]), reading what it shows there ([`Self::record_cells`]).
     #[cfg(unix)]
     #[must_use]
-    pub fn on_gpu(size: (u32, u32), buffers: Arc<HostBuffers>) -> Self {
+    pub fn on_gpu(size: (u32, u32), buffers: Arc<SurfaceBuffers>) -> Self {
         Self {
             held: Arc::new(Mutex::new(Held {
                 pixels: Vec::new(),
@@ -365,7 +365,7 @@ impl HostFrame {
         }
     }
 
-    /// The frame now shows buffer `index` of its [`HostBuffers`], which changed in `regions` since
+    /// The frame now shows buffer `index` of its [`SurfaceBuffers`], which changed in `regions` since
     /// the one it showed before.
     #[cfg(unix)]
     pub fn show_buffer(&self, index: usize, regions: &[Region]) {
@@ -376,7 +376,7 @@ impl HostFrame {
         }
     }
 
-    /// The buffers the host drew from last, which the GPU may still be reading: a surface draws
+    /// The buffers the shell drew from last, which the GPU may still be reading: a surface draws
     /// into neither.
     #[cfg(unix)]
     #[must_use]
@@ -416,13 +416,13 @@ impl HostFrame {
     }
 
     /// The pixels' identity: clones of one frame share it, and no live frame shares another's, so a
-    /// host keeps what it drew of a frame by it.
+    /// shell keeps what it drew of a frame by it.
     #[must_use]
     pub fn identity(&self) -> usize {
         Arc::as_ptr(&self.held) as usize
     }
 
-    /// A handle on the frame's pixels that says whether they still are the surface's: a host that
+    /// A handle on the frame's pixels that says whether they still are the surface's: a shell that
     /// keeps what it drew of a frame drops it once this stops being live.
     #[must_use]
     pub fn watch(&self) -> FrameWatch {
@@ -484,8 +484,8 @@ impl HostFrame {
         drop(held);
     }
 
-    /// What changed since a host last took it, with the pixels it changed: `None` where nothing
-    /// did. The parts are this call's: the host that takes them draws them and no other.
+    /// What changed since the shell last took it, with the pixels it changed: `None` where nothing
+    /// did. The parts are this call's: the shell that takes them draws them and no other.
     #[must_use]
     pub fn take_changed(&self) -> Option<Changed<'_>> {
         let mut held = self.held();
@@ -511,7 +511,7 @@ impl HostFrame {
     }
 }
 
-/// Whether the pixels of a frame a host drew still stand: it stops being live once the surface that
+/// Whether the pixels of a frame the shell drew still stand: it stops being live once the surface that
 /// drew them lets go of the frame.
 #[derive(Clone, Debug)]
 pub struct FrameWatch(std::sync::Weak<Mutex<Held>>);
@@ -524,7 +524,7 @@ impl FrameWatch {
     }
 }
 
-/// What changed in a [`HostFrame`] since a host last took it: its pixels, the parts of them that
+/// What changed in a [`SurfaceFrame`] since the shell last took it: its pixels, the parts of them that
 /// changed, and what it shows.#[derive(Debug)]
 pub struct Changed<'a> {
     held: MutexGuard<'a, Held>,
@@ -547,7 +547,7 @@ impl Changed<'_> {
     /// The buffers of a frame drawn on the GPU, and the one it shows now.
     #[cfg(unix)]
     #[must_use]
-    pub fn buffer(&self) -> Option<(&Arc<HostBuffers>, usize)> {
+    pub fn buffer(&self) -> Option<(&Arc<SurfaceBuffers>, usize)> {
         let gpu = self.held.gpu.as_ref()?;
         Some((&gpu.buffers, gpu.shown?))
     }
@@ -578,15 +578,15 @@ fn pixels_in(size: (u32, u32)) -> usize {
 
 /// One frame a hosted surface shows, at a position in the logical layout.
 #[derive(Debug, Clone)]
-pub struct HostLayer {
+pub struct SurfaceLayer {
     /// The frame's top-left corner in the logical layout.
     pub location: (i32, i32),
     /// The size it covers in the logical layout: the frame is scaled to fit, so a surface draws at
     /// the output's (possibly fractional) scale.
     pub size: (i32, i32),
     /// The pixels.
-    pub frame: HostFrame,
-    /// How the host draws the frame this time instead of as it stands: faded, scaled or moved
+    pub frame: SurfaceFrame,
+    /// How the shell draws the frame this time instead of as it stands: faded, scaled or moved
     /// while the surface shows the same pixels, so an animation of it is not drawn again.
     pub pose: super::LayerPose,
 }
@@ -594,15 +594,15 @@ pub struct HostLayer {
 /// A drag a hosted surface starts: bytes per format (files as `text/uri-list` ) and, optionally, an
 /// image under the pointer with its hotspot (logical pixels from its top left).
 #[derive(Debug, Clone)]
-pub struct HostDrag {
+pub struct SurfaceDrag {
     pub offer: Vec<(String, Vec<u8>)>,
-    pub icon: Option<(HostFrame, (i32, i32))>,
+    pub icon: Option<(SurfaceFrame, (i32, i32))>,
 }
 
 /// A text field a hosted surface draws, when it is the one the person types into: what an input
 /// method serves it with — how to compose in it, and where its composition stands.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct HostTextInput {
+pub struct SurfaceTextInput {
     /// The field's content hint, as `text-input-v3` names it: what it takes and whether it may be
     /// shown, learned from or completed.
     pub hint: u32,
@@ -619,7 +619,7 @@ pub struct HostTextInput {
 
 /// What an input method sends a hosted surface's field.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum HostIme {
+pub enum SurfaceIme {
     /// The composed text is in the field: insert it, replacing any composition shown before.
     Commit(String),
     /// The composition in progress (empty when it ended), with the byte offsets its cursor and
@@ -631,11 +631,11 @@ pub enum HostIme {
     Disabled,
 }
 
-/// A hosted surface app, as the host that draws it sees it.
-pub trait SurfaceHost {
-    /// The layers this surface shows now, bottom first. Hosts draw above every window
-    /// ([`Self::below_windows`] aside), later hosts above earlier ones.
-    fn layers(&self) -> Vec<HostLayer>;
+/// A surface app, as the shell that draws it sees it.
+pub trait ShellSurface {
+    /// The layers this surface shows now, bottom first. Surfaces draw above every window
+    /// ([`Self::below_windows`] aside), later surfaces above earlier ones.
+    fn layers(&self) -> Vec<SurfaceLayer>;
 
     /// Whether this surface lies under every window rather than above them: the desktop itself (its
     /// wallpaper, window bars and strips). It takes the pointer only where no window is.
@@ -691,8 +691,8 @@ pub trait SurfaceHost {
     fn pressed_elsewhere(&mut self, _x: f64, _y: f64) {}
 
     /// What the surface's owner closes when the pointer is pressed somewhere other than this
-    /// surface. The handle the session shares with its host runs it before
-    /// [`SurfaceHost::pressed_elsewhere`], and before holding the surface, since closing may ask the
+    /// surface. The handle the session shares with the shell runs it before
+    /// [`ShellSurface::pressed_elsewhere`], and before holding the surface, since closing may ask the
     /// surface to draw again.
     fn press_elsewhere_closes(&self) -> Option<Rc<dyn Fn()>> {
         None
@@ -716,30 +716,30 @@ pub trait SurfaceHost {
         false
     }
 
-    /// A key, while [`SurfaceHost::wants_keyboard`] holds, or one this surface claimed (its press,
+    /// A key, while [`ShellSurface::wants_keyboard`] holds, or one this surface claimed (its press,
     /// repeats and release).
-    fn key(&mut self, _key: &HostKey) {}
+    fn key(&mut self, _key: &SurfaceKey) {}
 
     /// The text field this surface draws that the person types into now, when it has the focus: an
     /// input method serves it as it serves a client's field — composing into it, its candidate
     /// window under the caret — and keys it does not use come back to the field.
-    fn text_input(&self) -> Option<HostTextInput> {
+    fn text_input(&self) -> Option<SurfaceTextInput> {
         None
     }
 
-    /// What the input method serving [`SurfaceHost::text_input`] sent.
-    fn ime(&mut self, _event: HostIme) {}
+    /// What the input method serving [`ShellSurface::text_input`] sent.
+    fn ime(&mut self, _event: SurfaceIme) {}
 
     /// Offered every press before whoever has the keyboard gets it, the topmost surface first: a
     /// desktop chord or a hardware key this surface answers wherever the keyboard is. `locked`
     /// while the session is locked, when only keys that reveal nothing (volume, brightness) may be
     /// taken. `inhibited` while a focused client holds the desktop's shortcuts, when only what must
     /// never be given up (hardware keys, locking the session) may be taken.
-    fn claim_key(&mut self, _key: &HostKey, _locked: bool, _inhibited: bool) -> KeyClaim {
+    fn claim_key(&mut self, _key: &SurfaceKey, _locked: bool, _inhibited: bool) -> KeyClaim {
         KeyClaim::Pass
     }
 
-    /// Other clients' windows this surface pictures (thumbnails, cards), bottom first: the host
+    /// Other clients' windows this surface pictures (thumbnails, cards), bottom first: the shell
     /// draws their live buffers there, in front of this surface's layers. A window the session
     /// keeps private is drawn as the placeholder a capture of it shows instead, since the shell a
     /// picture stands on is what a screenshot, a recording and a share show.
@@ -768,13 +768,13 @@ pub trait SurfaceHost {
         Vec::new()
     }
 
-    /// Blurred images of what lies below [`SurfaceHost::backdrops`]' regions, in their order;
+    /// Blurred images of what lies below [`ShellSurface::backdrops`]' regions, in their order;
     /// `None` where nothing changed since the last.
     fn set_backdrops(&mut self, _images: Vec<Option<BackdropImage>>) {}
 
     /// A frame is about to be drawn: bring the layers up to date, and say whether this surface drew
-    /// or changed what it shows. A host that did not leaves the frame to whoever else has something
-    /// new; a host that never knows draws every frame (`true`).
+    /// or changed what it shows. A surface that did not leaves the frame to whoever else has something
+    /// new; a shell that never knows draws every frame (`true`).
     fn prepare_frame(&mut self) -> bool {
         true
     }
@@ -789,8 +789,8 @@ pub trait SurfaceHost {
 
     /// When this surface next needs a frame with no input to bring one: now when a wake it took has
     /// not drawn yet, else the earliest deadline its content sets (a banner's exit, a caret's
-    /// blink). A surface whose content only moves draws on the display's cadence the host gave it
-    /// ([`SurfaceHost::set_frame_interval`]), not once per turn of the loop. The loop waits no
+    /// blink). A surface whose content only moves draws on the display's cadence the shell gave it
+    /// ([`ShellSurface::set_frame_interval`]), not once per turn of the loop. The loop waits no
     /// longer than this; `None` leaves it to the loop's own idle.
     fn next_deadline(&self) -> Option<std::time::Instant> {
         None
@@ -805,7 +805,7 @@ pub trait SurfaceHost {
     /// one's logical rectangle and the scale it draws at. A surface covering the desktop (the top
     /// bar, the chrome above the windows) follows them, and draws at the scale of the output it is
     /// on so what it paints is as crisp as the display allows.
-    fn outputs_changed(&mut self, _outputs: &[HostedOutput]) {}
+    fn outputs_changed(&mut self, _outputs: &[SurfaceOutput]) {}
 
     /// The pointer shape while the pointer is over the surface (a text beam over a field, a hand
     /// over a link).
@@ -823,13 +823,13 @@ pub trait SurfaceHost {
     /// The drag left the surface without a drop.
     fn drop_left(&mut self) {}
 
-    /// The drag was dropped on the surface: its data in the format [`SurfaceHost::drop_offered`]
+    /// The drag was dropped on the surface: its data in the format [`ShellSurface::drop_offered`]
     /// chose, once it has been read.
     fn drop_data(&mut self, _mime: &str, _data: Vec<u8>) {}
 
     /// A drag the app started while handling the input just routed to it (a press held and moved on
-    /// something draggable); the host carries it as a drag of the surface's own.
-    fn take_drag(&mut self) -> Option<HostDrag> {
+    /// something draggable); the shell carries it as a drag of the surface's own.
+    fn take_drag(&mut self) -> Option<SurfaceDrag> {
         None
     }
 
@@ -847,20 +847,20 @@ macro_rules! forwards {
     };
 }
 
-/// A surface the session hands to its host while keeping a handle of its own: the host drives the
+/// A surface the session hands to the shell while keeping a handle of its own: the shell drives the
 /// same instance the role reads, and the owner closes what it has open before the surface hears the
 /// press.
-impl<T: SurfaceHost + ?Sized> SurfaceHost for Rc<RefCell<T>> {
+impl<T: ShellSurface + ?Sized> ShellSurface for Rc<RefCell<T>> {
     forwards! {
         read:
-        layers() -> Vec<HostLayer>;
+        layers() -> Vec<SurfaceLayer>;
         below_windows() -> bool;
         above_lock() -> bool;
         drawn_over_lock() -> bool;
         withholds_captures() -> bool;
         accepts_pointer(x: f64, y: f64) -> bool;
         wants_keyboard() -> bool;
-        text_input() -> Option<HostTextInput>;
+        text_input() -> Option<SurfaceTextInput>;
         window_pictures() -> Vec<WindowPicture>;
         drawn_over_windows() -> Vec<WindowCover>;
         drawn_over_window() -> Option<(u64, (i32, i32, i32, i32))>;
@@ -877,18 +877,18 @@ impl<T: SurfaceHost + ?Sized> SurfaceHost for Rc<RefCell<T>> {
         carries_window_at(x: f64, y: f64) -> bool;
         press_ended(x: f64, y: f64);
         pointer_axis(scroll: Scroll);
-        key(key: &HostKey);
-        ime(event: HostIme);
-        claim_key(key: &HostKey, locked: bool, inhibited: bool) -> KeyClaim;
+        key(key: &SurfaceKey);
+        ime(event: SurfaceIme);
+        claim_key(key: &SurfaceKey, locked: bool, inhibited: bool) -> KeyClaim;
         set_backdrops(images: Vec<Option<BackdropImage>>);
         prepare_frame() -> bool;
         advance() -> bool;
         set_frame_interval(interval: std::time::Duration);
-        outputs_changed(outputs: &[HostedOutput]);
+        outputs_changed(outputs: &[SurfaceOutput]);
         drop_offered(mimes: &[String], x: f64, y: f64) -> Option<String>;
         drop_left();
         drop_data(mime: &str, data: Vec<u8>);
-        take_drag() -> Option<HostDrag>;
+        take_drag() -> Option<SurfaceDrag>;
         drag_ended(dropped: bool);
     }
 
@@ -952,7 +952,7 @@ mod tests {
     #[test]
     fn a_frame_nothing_was_drawn_into_shows_nothing() {
         assert_eq!(
-            HostFrame::new(SIZE).shown(),
+            SurfaceFrame::new(SIZE).shown(),
             None,
             "an empty layer has no layer"
         );
@@ -960,7 +960,7 @@ mod tests {
 
     #[test]
     fn a_frame_shows_the_cells_it_drew_in() {
-        let frame = HostFrame::new(SIZE);
+        let frame = SurfaceFrame::new(SIZE);
         let bar = Region::new(8, 16, 24, 8);
         frame.set_pixels(
             &painted(pixels(|_, _| CLEAR), (8, 16), (24, 8), OPAQUE_RED),
@@ -979,7 +979,7 @@ mod tests {
 
     #[test]
     fn what_changed_is_the_hosts_once() {
-        let frame = HostFrame::new(SIZE);
+        let frame = SurfaceFrame::new(SIZE);
         let bar = Region::new(8, 16, 24, 8);
         frame.set_pixels(
             &painted(pixels(|_, _| CLEAR), (8, 16), (24, 8), OPAQUE_RED),
@@ -987,7 +987,7 @@ mod tests {
         );
         assert!(
             frame.take_changed().is_some(),
-            "the host takes what changed"
+            "the shell takes what changed"
         );
         assert!(
             frame.take_changed().is_none(),
@@ -999,13 +999,13 @@ mod tests {
         );
         assert!(
             frame.take_changed().is_some(),
-            "a later draw is the host's again"
+            "a later draw is the shell's again"
         );
     }
 
     #[test]
     fn a_translucent_part_shows_but_is_not_opaque() {
-        let frame = HostFrame::new(SIZE);
+        let frame = SurfaceFrame::new(SIZE);
         let square = Region::new(0, 0, 8, 8);
         frame.set_pixels(
             &painted(pixels(|_, _| CLEAR), (0, 0), (8, 8), HALF_BLUE),
@@ -1021,7 +1021,7 @@ mod tests {
 
     #[test]
     fn a_cell_drawn_over_again_transparent_is_empty_and_no_longer_shown() {
-        let frame = HostFrame::new(SIZE);
+        let frame = SurfaceFrame::new(SIZE);
         let square = Region::new(0, 0, 8, 8);
         frame.set_pixels(
             &painted(pixels(|_, _| CLEAR), (0, 0), (8, 8), OPAQUE_RED),
@@ -1038,7 +1038,7 @@ mod tests {
 
     #[test]
     fn the_layers_shown_rectangle_grows_with_what_it_draws_and_shrinks_with_what_it_erases() {
-        let frame = HostFrame::new(SIZE);
+        let frame = SurfaceFrame::new(SIZE);
         let corner = Region::new(48, 40, 8, 8);
         frame.set_pixels(
             &painted(pixels(|_, _| CLEAR), (48, 40), (8, 8), OPAQUE_RED),
@@ -1052,7 +1052,7 @@ mod tests {
 
     #[test]
     fn a_frame_a_surface_draws_elsewhere_is_taken_whole() {
-        let frame = HostFrame::from_pixels(SIZE, pixels(|_, _| HALF_BLUE));
+        let frame = SurfaceFrame::from_pixels(SIZE, pixels(|_, _| HALF_BLUE));
         assert_eq!(
             frame.shown(),
             Some(Region::new(0, 0, SIZE.0, SIZE.1)),
@@ -1066,7 +1066,7 @@ mod tests {
 
     #[test]
     fn copies_of_a_frame_are_one_frame_and_a_new_one_is_another() {
-        let frame = HostFrame::new(SIZE);
+        let frame = SurfaceFrame::new(SIZE);
         let copy = frame.clone();
         assert_eq!(
             frame.identity(),
@@ -1083,7 +1083,7 @@ mod tests {
             "what one copy drew, the other shows"
         );
         assert!(frame.watch().alive());
-        let other = HostFrame::new(SIZE);
+        let other = SurfaceFrame::new(SIZE);
         assert_ne!(frame.identity(), other.identity());
         let watch = other.watch();
         drop(other);
@@ -1092,7 +1092,7 @@ mod tests {
 
     #[test]
     fn a_pixel_of_the_frame_answers_its_alpha() {
-        let frame = HostFrame::new(SIZE);
+        let frame = SurfaceFrame::new(SIZE);
         assert_eq!(frame.alpha(0, 0), Some(0), "an empty frame is clear");
         assert_eq!(frame.alpha(SIZE.0, 0), None, "outside it there is no pixel");
         frame.set_pixels(
@@ -1108,8 +1108,8 @@ mod tests {
         closes: Option<Rc<dyn Fn()>>,
     }
 
-    impl SurfaceHost for Pressed {
-        fn layers(&self) -> Vec<HostLayer> {
+    impl ShellSurface for Pressed {
+        fn layers(&self) -> Vec<SurfaceLayer> {
             Vec::new()
         }
 
@@ -1150,7 +1150,7 @@ mod tests {
                     })),
                 })
             });
-        SurfaceHost::pressed_elsewhere(&mut shared, 10.0, 20.0);
+        ShellSurface::pressed_elsewhere(&mut shared, 10.0, 20.0);
         assert_eq!(
             *heard.borrow(),
             ["closed", "press"],
@@ -1161,12 +1161,12 @@ mod tests {
     /// Three buffers, as a surface that draws on the GPU delivers its frames in: their memory is
     /// never read here, so any file stands in for a dma-buf.
     #[cfg(unix)]
-    fn buffers() -> Arc<HostBuffers> {
-        Arc::new(HostBuffers {
+    fn buffers() -> Arc<SurfaceBuffers> {
+        Arc::new(SurfaceBuffers {
             fourcc: 0,
             modifier: 0,
             buffers: (0..3)
-                .map(|_| HostBuffer {
+                .map(|_| SurfaceBuffer {
                     fd: std::fs::File::open("/dev/null").expect("/dev/null").into(),
                     offset: 0,
                     stride: 256,
@@ -1175,13 +1175,13 @@ mod tests {
         })
     }
 
-    /// A frame drawn on the GPU hands the host the buffer it shows and what changed, and the
-    /// surface never draws into the buffers the host drew from last, which the GPU may still be
+    /// A frame drawn on the GPU hands the shell the buffer it shows and what changed, and the
+    /// surface never draws into the buffers the shell drew from last, which the GPU may still be
     /// reading.
     #[cfg(unix)]
     #[test]
     fn the_host_shows_the_newest_buffer_and_the_surface_spares_the_ones_it_read() {
-        let frame = HostFrame::on_gpu(SIZE, buffers());
+        let frame = SurfaceFrame::on_gpu(SIZE, buffers());
         assert!(
             frame.take_changed().is_none(),
             "nothing drawn, nothing to show"
@@ -1194,7 +1194,7 @@ mod tests {
         assert_eq!(changed.regions(), [bar]);
         drop(changed);
         assert_eq!(frame.buffers_in_use(), [Some(0), None]);
-        // Two frames before the host draws again: it shows the newer, with both frames' changes.
+        // Two frames before the shell draws again: it shows the newer, with both frames' changes.
         let glyph = Region::new(8, 16, 8, 8);
         frame.show_buffer(1, &[bar]);
         frame.show_buffer(2, &[glyph]);
@@ -1215,7 +1215,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn a_frame_drawn_on_the_gpu_shows_the_cells_read_there() {
-        let frame = HostFrame::on_gpu(SIZE, buffers());
+        let frame = SurfaceFrame::on_gpu(SIZE, buffers());
         assert_eq!(frame.shown(), None);
         // A 32 by 16 area at (32, 8): its cells row by row, four a row.
         frame.record_cells(Region::new(32, 8, 32, 16), &[2, 2, 0, 0, 2, 2, 1, 0]);

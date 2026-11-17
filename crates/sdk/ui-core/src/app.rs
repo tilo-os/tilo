@@ -26,7 +26,7 @@ use winit::{
     window::{CursorIcon, Fullscreen, Window, WindowId},
 };
 
-use crate::host_core::{ControlHost as _, HostCore as _, KeyHost as _, ResourceInvocation};
+use crate::app_core::{AppCore as _, ControlCore as _, KeyCore as _, ResourceInvocation};
 use std::cell::Cell;
 
 #[cfg(feature = "native")]
@@ -70,7 +70,7 @@ include!("app/continuation.rs");
 include!("app/dev_session.rs");
 include!("app/dev_library.rs");
 include!("app/actions.rs");
-include!("app/host_core.rs");
+include!("app/app_core.rs");
 include!("app/action_directory.rs");
 include!("app/control_availability.rs");
 include!("app/accessibility.rs");
@@ -2344,7 +2344,7 @@ impl App {
                 };
             }
             requested = self.apply_focus_request();
-            crate::host_core::KeyHost::hand_owed_keyboard(self);
+            crate::app_core::KeyCore::hand_owed_keyboard(self);
         }
         self.invalidate_widget_resource_cache();
         self.window.minimum_width = crate::widget::minimum_window_width(self.root_widget.as_ref());
@@ -3129,7 +3129,7 @@ pub(crate) mod ordinary_confirmation_tests {
     crate::testing::test_app_widget!(Fixture, "Confirmation fixture");
     struct OwnerGuard {
         binding: crate::bound_dispatch::CallbackBinding,
-        _host: crate::application_test_support::ProbeHost,
+        _host: crate::application_test_support::ProbeHarness,
     }
     impl OwnerGuard {
         fn close(&self) {
@@ -3166,7 +3166,7 @@ pub(crate) mod ordinary_confirmation_tests {
     }
     fn owned(widget: Fixture) -> (Box<dyn Widget>, OwnerGuard) {
         use crate::application_test_support::*;
-        let host = ProbeHost::new();
+        let host = ProbeHarness::new();
         let definition = runner_probe_definition();
         let target = crate::application::LaunchTarget::New;
         let mut instance = definition

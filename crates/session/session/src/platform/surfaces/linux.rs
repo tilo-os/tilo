@@ -7,7 +7,7 @@ use std::rc::Rc;
 use tilo_compositor::Compositor;
 
 use tilo_session_core::surfaces::Published;
-use tilo_surface_host::{DesktopHost, WidgetHost};
+use tilo_shell_surface::{ShellDesktop, WidgetSurface};
 use ui::widget::Widget;
 
 use super::{Heard, Layer, Placement, Shell, Surfaces};
@@ -43,14 +43,14 @@ impl Surfaces for Hosted<'_> {
         placement: Placement,
         heard: Heard,
     ) -> Rc<dyn Layer> {
-        let mut host = WidgetHost::new(tree, placement, false).named(name);
+        let mut host = WidgetSurface::new(tree, placement, false).named(name);
         host.set_theme(self.theme.clone());
         let host = Rc::new(RefCell::new(
             host.covering_outputs()
                 .with_keyboard(Rc::clone(&heard.wants_keyboard))
                 .with_dismissal(heard.pressed_elsewhere),
         ));
-        self.compositor.add_host(host.clone());
+        self.compositor.add_surface(host.clone());
         host
     }
 
@@ -59,7 +59,7 @@ impl Surfaces for Hosted<'_> {
     }
 }
 
-impl Layer for RefCell<WidgetHost> {
+impl Layer for RefCell<WidgetSurface> {
     fn relayout(&self) {
         self.borrow_mut().relayout();
     }
@@ -69,7 +69,7 @@ impl Layer for RefCell<WidgetHost> {
     }
 
     fn revision(&self) -> u64 {
-        WidgetHost::revision(&self.borrow())
+        WidgetSurface::revision(&self.borrow())
     }
 
     fn a11y_tree(&self) -> Option<ui::accesskit::TreeUpdate> {
@@ -93,7 +93,7 @@ impl Layer for RefCell<WidgetHost> {
     }
 }
 
-impl Shell for DesktopHost {
+impl Shell for ShellDesktop {
     fn shown(&self) -> Vec<(u64, ui::kurbo::Rect)> {
         self.with_policy(|policy| policy.placement().shown)
     }
@@ -103,6 +103,6 @@ impl Shell for DesktopHost {
     }
 
     fn relayout(&self) {
-        self.with_widgets(WidgetHost::relayout);
+        self.with_widgets(WidgetSurface::relayout);
     }
 }

@@ -1,7 +1,7 @@
 //! Genuine mapped, mounted record owners. RED refuses unsafe reads after actual drop.
 use super::*;
 use crate::application::{AppComponent, LaunchTarget, ProcessContext, RestoreInput};
-use crate::application_test_support::{self as probe, ProbeHost};
+use crate::application_test_support::{self as probe, ProbeHarness};
 use crate::owner_wake::OwnerWakeQueue;
 use crate::widget::{
     AppKind, AppWidget, BoundAppWidget, Column, IconDescriptor, TextInput, Widget,
@@ -170,7 +170,7 @@ fn factory(
     ))
 }
 fn prepared(
-    host: &ProbeHost,
+    host: &ProbeHarness,
     queue: &OwnerWakeQueue,
     id: u64,
 ) -> (BoundAppWidget, Seen, crate::resource::DocumentId) {
@@ -220,7 +220,7 @@ fn close(frame: &mut FrameHarness, count: usize) {
 }
 #[test]
 fn mapped_child_drop_retires_old_maps_before_failure_publish_or_next_original_idle_tick() {
-    let host = ProbeHost::new();
+    let host = ProbeHarness::new();
     let queue = OwnerWakeQueue::default();
     let (owner, seen, id) = prepared(&host, &queue, 9100);
     let mut frame = frame(&queue, vec![owner]);
@@ -279,7 +279,7 @@ fn mapped_child_drop_retires_old_maps_before_failure_publish_or_next_original_id
 }
 #[test]
 fn replacement_then_unwind_keeps_maps_retired_and_requeues_the_actual_current_owner() {
-    let host = ProbeHost::new();
+    let host = ProbeHarness::new();
     let queue = OwnerWakeQueue::default();
     let (owner, seen, _) = prepared(&host, &queue, 9101);
     let mut frame = frame(&queue, vec![owner]);
@@ -312,10 +312,10 @@ fn replacement_then_unwind_keeps_maps_retired_and_requeues_the_actual_current_ow
 }
 #[test]
 fn partial_batch_then_busy_canonical_loan_retires_maps_and_keeps_unvisited_owner_work() {
-    let host = ProbeHost::new();
+    let host = ProbeHarness::new();
     let queue = OwnerWakeQueue::default();
     let (a, sa, _) = prepared(&host, &queue, 9102);
-    let busy_host = ProbeHost::new();
+    let busy_host = ProbeHarness::new();
     let (b, sb, record) = prepared(&busy_host, &queue, 9103);
     let mut frame = frame(&queue, vec![a, b]);
     let drops = sa.drops.get();
@@ -353,7 +353,7 @@ fn partial_batch_then_busy_canonical_loan_retires_maps_and_keeps_unvisited_owner
 #[test]
 fn unchanged_focused_editor_caret_and_ime_survive_fresh_input_readmission_without_paint_requirement()
  {
-    let host = ProbeHost::new();
+    let host = ProbeHarness::new();
     let queue = OwnerWakeQueue::default();
     let (owner, seen, _) = prepared(&host, &queue, 9104);
     let mut frame = frame(&queue, vec![owner]);
@@ -409,7 +409,7 @@ fn unchanged_focused_editor_caret_and_ime_survive_fresh_input_readmission_withou
 /// it had, with the caret where it was, instead of building it again.
 #[test]
 fn unchanged_owner_service_readmits_its_tree_without_building_it_again() {
-    let host = ProbeHost::new();
+    let host = ProbeHarness::new();
     let queue = OwnerWakeQueue::default();
     let (owner, seen, _) = prepared(&host, &queue, 9110);
     let mut frame = frame(&queue, vec![owner]);
@@ -439,7 +439,7 @@ fn unchanged_owner_service_readmits_its_tree_without_building_it_again() {
 /// tree it set aside is never called through.
 #[test]
 fn an_unreported_replacement_during_service_rebuilds_on_readmission() {
-    let host = ProbeHost::new();
+    let host = ProbeHarness::new();
     let queue = OwnerWakeQueue::default();
     let (owner, seen, _) = prepared(&host, &queue, 9111);
     let mut frame = frame(&queue, vec![owner]);
@@ -461,7 +461,7 @@ fn an_unreported_replacement_during_service_rebuilds_on_readmission() {
 
 #[test]
 fn empty_owner_queue_preserves_existing_physical_map_and_text_ime() {
-    let host = ProbeHost::new();
+    let host = ProbeHarness::new();
     let queue = OwnerWakeQueue::default();
     let (owner, _, _) = prepared(&host, &queue, 9105);
     let mut frame = frame(&queue, vec![owner]);
@@ -480,7 +480,7 @@ fn empty_owner_queue_preserves_existing_physical_map_and_text_ime() {
 
 #[test]
 fn readmission_second_sync_drop_then_panic_retires_the_newly_built_map_before_resuming_unwind() {
-    let host = ProbeHost::new();
+    let host = ProbeHarness::new();
     let queue = OwnerWakeQueue::default();
     let (owner, seen, _) = prepared(&host, &queue, 9106);
     let mut frame = frame(&queue, vec![owner]);
@@ -537,7 +537,7 @@ fn readmission_second_sync_drop_then_panic_retires_the_newly_built_map_before_re
 }
 #[test]
 fn failed_current_composition_refuses_undo_redo_named_a11y_and_root_input_without_outer_fallback() {
-    let host = ProbeHost::new();
+    let host = ProbeHarness::new();
     let queue = OwnerWakeQueue::default();
     let (owner, seen, record) = prepared(&host, &queue, 9107);
     let mut frame = frame(&queue, vec![owner]);
@@ -642,7 +642,7 @@ fn failed_current_composition_refuses_undo_redo_named_a11y_and_root_input_withou
 
 #[test]
 fn demand_only_fresh_map_second_sync_unwind_retires_before_input_retry() {
-    let host = ProbeHost::new();
+    let host = ProbeHarness::new();
     let queue = OwnerWakeQueue::default();
     let (owner, seen, _) = prepared(&host, &queue, 9120);
     let mut frame = frame(&queue, vec![owner]);
@@ -676,7 +676,7 @@ fn demand_only_fresh_map_second_sync_unwind_retires_before_input_retry() {
 
 #[test]
 fn demand_only_truthful_apply_replacement_error_retires_before_original_input() {
-    let host = ProbeHost::new();
+    let host = ProbeHarness::new();
     let queue = OwnerWakeQueue::default();
     let (owner, seen, _) = prepared(&host, &queue, 9121);
     let mut frame = frame(&queue, vec![owner]);

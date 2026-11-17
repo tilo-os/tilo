@@ -2,7 +2,7 @@
 //!
 //! A client that asked for a tablet seat (`zwp_tablet_manager_v2`) gets the
 //! tool itself: proximity, tip, buttons, pressure, tilt, distance, rotation,
-//! slider and wheel. Every other client, and every hosted surface, sees the
+//! slider and wheel. Every other client, and every surface, sees the
 //! pen as a pointer: the tip presses the primary button and the barrel
 //! buttons the secondary and middle ones, so a pen works in an app that
 //! knows nothing about tablets.
@@ -115,7 +115,7 @@ impl State {
         }
         let under = if self.locked() {
             self.lock_surface_under(at)
-        } else if self.host_under(at).is_some() {
+        } else if self.surface_under(at).is_some() {
             None
         } else {
             self.surface_under(at)

@@ -5,13 +5,13 @@ use super::*;
 
 tilo_test_env::scenario! {
     /// Touch input.
-    fn touches_reach_windows_and_hosted_surfaces;
+    fn touches_reach_windows_and_surfaces;
 
-    phase touches_reach_the_window_under_them_and_hosted_surfaces_as_presses;
+    phase touches_reach_the_window_under_them_and_surfaces_as_presses;
     {
         let mut compositor = headless(Box::new(StackPolicy));
         let log = Rc::new(RefCell::new(HostLog::default()));
-        compositor.add_host(Rc::new(RefCell::new(Square::new(
+        compositor.add_surface(Rc::new(RefCell::new(Square::new(
             (10, 10, 40, 40),
             [0, 255, 0, 255],
             Rc::clone(&log),

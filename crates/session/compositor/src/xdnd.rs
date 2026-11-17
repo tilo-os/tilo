@@ -1,10 +1,10 @@
 //! The XDND protocol (version 5) as plain data: its client messages, the version both sides speak,
 //! the actions and the names formats go by.
 //! X11 clients drag and drop with XDND among themselves; the X11 window manager does not take part.
-//! To let a drag cross between X11 and Wayland windows (and hosted surface apps) the compositor
+//! To let a drag cross between X11 and Wayland windows (and surface apps) the compositor
 //! speaks it too, through [`crate::xdnd_bridge`]: as the target, with a window it raises over
 //! everything that is not an X11 window while an X11 drag runs, and as the source when a Wayland or
-//! hosted drag enters an X11 window. What travels is encoded and decoded here, free of any
+//! surface drag enters an X11 window. What travels is encoded and decoded here, free of any
 //! connection.
 
 use smithay::reexports::wayland_server::protocol::wl_data_device_manager::DndAction;
@@ -277,7 +277,7 @@ const META_TARGETS: [&str; 7] = [
     "XdndDirectSave0",
 ];
 
-/// The formats an X11 drag's types are offered as to Wayland clients and hosted apps: format names
+/// The formats an X11 drag's types are offered as to Wayland clients and surface apps: format names
 /// pass through as they are (`text/uri-list` above all), text also under its Wayland names.
 pub(crate) fn mimes_of_targets(targets: &[String]) -> Vec<String> {
     normalized_mimes(
@@ -288,7 +288,7 @@ pub(crate) fn mimes_of_targets(targets: &[String]) -> Vec<String> {
     )
 }
 
-/// The types a Wayland or hosted drag's formats are offered as to an X11 target: the same names,
+/// The types a Wayland or surface drag's formats are offered as to an X11 target: the same names,
 /// text also under its X11 names.
 pub(crate) fn targets_of_mimes(mimes: &[String]) -> Vec<String> {
     normalized_mimes(mimes.iter().cloned())

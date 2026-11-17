@@ -16,7 +16,7 @@ use tilo_ui::application::{LaunchTarget, RestoreInput};
 use tilo_ui::headless::{Action, HeadlessApp, Invocation, Outcome, Step};
 
 use crate::support::application::{
-    ProbeHost, body, operation_observations, owner_permissions, runner_probe_definition,
+    ProbeHarness, body, operation_observations, owner_permissions, runner_probe_definition,
 };
 
 /// A step that invokes one action of the probe's shared resource with no
@@ -36,8 +36,8 @@ fn invokes(action: &str) -> Step {
 
 /// A mounted probe that publishes its actions, and the host whose record
 /// store it writes to — kept, because the store flushes on drop.
-fn mounted_probe() -> (ProbeHost, HeadlessApp) {
-    let host = ProbeHost::new();
+fn mounted_probe() -> (ProbeHarness, HeadlessApp) {
+    let host = ProbeHarness::new();
     let component = runner_probe_definition()
         .instantiate(
             host.prepare_with_permissions(

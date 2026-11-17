@@ -783,7 +783,7 @@ mod tests {
     use crate::platform::keys::{
         CALCULATOR, CAPTURE_STUDIO, KEY_XF86_RFKILL, MEDIA, NETWORK, NativeKeys, SLEEP, SOUND,
     };
-    use tilo_session_core::surface::{HostKey, SurfaceHost};
+    use tilo_session_core::surface::{ShellSurface, SurfaceKey};
     use xkeysym::key as keysyms;
 
     /// The session's keys as this device hands them its presses: over `session`, with `guide`, the
@@ -821,7 +821,7 @@ mod tests {
     impl NativeKeys {
         fn resolve(
             &self,
-            key: &HostKey,
+            key: &SurfaceKey,
             locked: bool,
             inhibited: bool,
         ) -> Option<(Invocation, KeyClaim)> {
@@ -829,8 +829,8 @@ mod tests {
         }
     }
 
-    fn key(keysym: u32, text: Option<char>, modifiers: KeyModifiers) -> HostKey {
-        HostKey {
+    fn key(keysym: u32, text: Option<char>, modifiers: KeyModifiers) -> SurfaceKey {
+        SurfaceKey {
             keycode: 0,
             at: std::time::Instant::now(),
             pressed: true,
@@ -889,8 +889,8 @@ mod tests {
     }
 
     /// A release of `keysym` with `modifiers` held.
-    fn released(keysym: u32, modifiers: KeyModifiers) -> HostKey {
-        HostKey {
+    fn released(keysym: u32, modifiers: KeyModifiers) -> SurfaceKey {
+        SurfaceKey {
             pressed: false,
             ..key(keysym, None, modifiers)
         }
@@ -1151,7 +1151,7 @@ mod tests {
 
             let (mut keys, walk) = with_walk();
             walk.walk(SwitcherScope::Workspace, 1);
-            let repeat = HostKey {
+            let repeat = SurfaceKey {
                 repeat: true,
                 ..key(keysyms::a, Some('a'), KeyModifiers::default())
             };

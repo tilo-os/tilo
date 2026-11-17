@@ -15,13 +15,13 @@ use tilo_desktop::about::{AboutLinks, AboutSheet, AboutVariant};
 use tilo_desktop::desktop_host::{DesktopChrome, NoticeTiles, PermissiveRules};
 use tilo_desktop::topbar::TopBarChrome;
 use tilo_desktop_surface::{DesktopHandle, DesktopSurface};
-use tilo_session_core::surface::SurfaceHost as _;
-use tilo_surface_host::{Placement, WidgetHost};
+use tilo_session_core::surface::ShellSurface as _;
+use tilo_shell_surface::{Placement, WidgetSurface};
 
 const SIZE: (u32, u32) = (1280, 800);
 
 /// The chrome as the session's own host shows it: over the windows, covering the output.
-fn chrome_host() -> (WidgetHost, DesktopHandle, ui::headless::FrameHarness) {
+fn chrome_host() -> (WidgetSurface, DesktopHandle, ui::headless::FrameHarness) {
     let tree = layout_tree();
     let (surface, handle) = DesktopSurface::new(tree.clone(), 7, Box::new(NoticeTiles));
     let mut shell =
@@ -36,7 +36,7 @@ fn chrome_host() -> (WidgetHost, DesktopHandle, ui::headless::FrameHarness) {
         false,
     );
     let keyboard = handle.clone();
-    let host = WidgetHost::new(
+    let host = WidgetSurface::new(
         Box::new(chrome),
         Placement {
             origin: (0, 0),

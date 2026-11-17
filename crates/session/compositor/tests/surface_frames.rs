@@ -18,12 +18,12 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use tilo_compositor::{Compositor, OutputConfig, StackPolicy};
-use tilo_session_core::surface::{HostFrame, HostLayer, LayerPose, Region, SurfaceHost};
+use tilo_session_core::surface::{LayerPose, Region, ShellSurface, SurfaceFrame, SurfaceLayer};
 
-/// A hosted surface whose host fills its frame row by row, the way a toolkit app draws into one:
+/// A surface that fills its frame row by row, the way a toolkit app draws into one:
 /// red above the middle, blue below.
 struct Rows {
-    frame: HostFrame,
+    frame: SurfaceFrame,
     size: (i32, i32),
 }
 
@@ -33,7 +33,7 @@ impl Rows {
             u32::try_from(size.0).unwrap(),
             u32::try_from(size.1).unwrap(),
         );
-        let frame = HostFrame::new((width, height));
+        let frame = SurfaceFrame::new((width, height));
         let mut pixels = Vec::new();
         for row in 0..size.1 {
             let pixel = if row < size.1 / 2 {
@@ -50,9 +50,9 @@ impl Rows {
     }
 }
 
-impl SurfaceHost for Rows {
-    fn layers(&self) -> Vec<HostLayer> {
-        vec![HostLayer {
+impl ShellSurface for Rows {
+    fn layers(&self) -> Vec<SurfaceLayer> {
+        vec![SurfaceLayer {
             pose: LayerPose::SETTLED,
             location: (0, 0),
             size: self.size,
@@ -70,16 +70,16 @@ impl SurfaceHost for Rows {
 }
 
 tilo_test_env::scenario! {
-    /// The frames a hosted surface hands the compositor.
-    fn a_hosts_layers_are_drawn_where_and_as_the_host_drew_them;
+    /// The frames a surface hands the compositor.
+    fn a_surfaces_layers_are_drawn_where_and_as_it_drew_them;
 
-    phase a_hosted_frame_its_host_fills_row_by_row_draws_the_same_way_up;
+    phase a_frame_a_surface_fills_row_by_row_draws_the_same_way_up;
     {
         let mut compositor = Compositor::headless(Box::new(StackPolicy)).expect("compositor");
         compositor
             .add_output(&OutputConfig::new("HEADLESS-1", 640, 480))
             .expect("output");
-        compositor.add_host(Rc::new(RefCell::new(Rows::new((640, 480)))));
+        compositor.add_surface(Rc::new(RefCell::new(Rows::new((640, 480)))));
         compositor.draw_frame().expect("a frame");
         let frame = compositor.screenshot("HEADLESS-1").unwrap();
         let above = frame.pixel(320, 120).unwrap();
@@ -100,7 +100,7 @@ tilo_test_env::scenario! {
         compositor
             .add_output(&OutputConfig::new("HEADLESS-1", 640, 480))
             .expect("output");
-        compositor.add_host(Rc::new(RefCell::new(Bar::new((640, 480), (640, 480), 1))));
+        compositor.add_surface(Rc::new(RefCell::new(Bar::new((640, 480), (640, 480), 1))));
         compositor.draw_frame().expect("a frame");
         let frame = compositor.screenshot("HEADLESS-1").unwrap();
         let inside = frame.pixel(120, 40).unwrap();
@@ -125,7 +125,7 @@ tilo_test_env::scenario! {
             .expect("output");
         // The frame is drawn at twice the pixels of the rectangle it covers: the bar it draws at (80,
         // 40) of the frame covers (40, 20) on the output.
-        compositor.add_host(Rc::new(RefCell::new(Bar::new((640, 480), (320, 240), 2))));
+        compositor.add_surface(Rc::new(RefCell::new(Bar::new((640, 480), (320, 240), 2))));
         compositor.draw_frame().expect("a frame");
         let frame = compositor.screenshot("HEADLESS-1").unwrap();
         let inside = frame.pixel(50, 25).unwrap();
@@ -145,7 +145,7 @@ tilo_test_env::scenario! {
         compositor
             .add_output(&OutputConfig::new("HEADLESS-1", 640, 480))
             .expect("output");
-        compositor.add_host(Rc::new(RefCell::new(Vanishes::new((640, 480)))));
+        compositor.add_surface(Rc::new(RefCell::new(Vanishes::new((640, 480)))));
         compositor.draw_frame().expect("a frame");
         let frame = compositor.screenshot("HEADLESS-1").unwrap();
         let painted = frame.pixel(120, 40).unwrap();
@@ -182,7 +182,7 @@ tilo_test_env::scenario! {
             .expect("output");
         // A panel a third of the way down the output, drawn at twice the pixels of the rectangle it
         // covers: its bar at (80, 40) of the frame lands at (40, 320) of the output.
-        compositor.add_host(Rc::new(RefCell::new(Bar::at(
+        compositor.add_surface(Rc::new(RefCell::new(Bar::at(
             (0, 300),
             (640, 480),
             (320, 240),
@@ -219,7 +219,7 @@ tilo_test_env::scenario! {
             anchor: (0.0, 0.0),
             offset: (300.0, 0.0),
         };
-        compositor.add_host(Rc::new(RefCell::new(bar)));
+        compositor.add_surface(Rc::new(RefCell::new(bar)));
         compositor.draw_frame().expect("a frame");
         let frame = compositor.screenshot("HEADLESS-1").unwrap();
         let posed = frame.pixel(390, 25).unwrap();
@@ -239,8 +239,8 @@ tilo_test_env::scenario! {
         compositor
             .add_output(&OutputConfig::new("HEADLESS-1", 640, 480))
             .expect("output");
-        compositor.add_host(Rc::new(RefCell::new(Blank {
-            frame: HostFrame::new((640, 480)),
+        compositor.add_surface(Rc::new(RefCell::new(Blank {
+            frame: SurfaceFrame::new((640, 480)),
             size: (640, 480),
         })));
         compositor.draw_frame().expect("a frame");
@@ -254,16 +254,16 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase a_host_that_needs_a_frame_now_shortens_the_loops_wait;
-    // A surface that says it needs a frame now wakes the loop for it: what a host animates is drawn at
+    phase a_surface_that_needs_a_frame_now_shortens_the_loops_wait;
+    // A surface that says it needs a frame now wakes the loop for it: what it animates is drawn at
     // the pace it asks, not at the loop's idle wait.
     {
         use std::time::{Duration, Instant};
 
         struct Animated;
 
-        impl SurfaceHost for Animated {
-            fn layers(&self) -> Vec<HostLayer> {
+        impl ShellSurface for Animated {
+            fn layers(&self) -> Vec<SurfaceLayer> {
                 Vec::new()
             }
 
@@ -290,18 +290,18 @@ tilo_test_env::scenario! {
             None,
             "an idle loop waits for an event, not for a poll interval"
         );
-        compositor.add_host(Rc::new(RefCell::new(Animated)));
+        compositor.add_surface(Rc::new(RefCell::new(Animated)));
         assert!(
             compositor.next_wait() <= Some(Duration::from_millis(1)),
-            "a frame a host asks for now is drawn now"
+            "a frame a surface asks for now is drawn now"
         );
     }
 }
 
-/// A host that paints one opaque bar into a frame the size of the output,
+/// A surface that paints one opaque bar into a frame the size of the output,
 /// the way the top bar does, leaving the rest transparent.
 struct Bar {
-    frame: HostFrame,
+    frame: SurfaceFrame,
     location: (i32, i32),
     size: (i32, i32),
     pose: LayerPose,
@@ -326,7 +326,7 @@ impl Bar {
                 pixels[start..start + 4].copy_from_slice(&[0, 255, 0, 255]);
             }
         }
-        let frame = HostFrame::new(frame);
+        let frame = SurfaceFrame::new(frame);
         frame.set_pixels(&pixels, &[Region::new(bar.0, bar.1, bar.2, bar.3)]);
         Self {
             frame,
@@ -337,9 +337,9 @@ impl Bar {
     }
 }
 
-impl SurfaceHost for Bar {
-    fn layers(&self) -> Vec<HostLayer> {
-        vec![HostLayer {
+impl ShellSurface for Bar {
+    fn layers(&self) -> Vec<SurfaceLayer> {
+        vec![SurfaceLayer {
             pose: self.pose,
             location: self.location,
             size: self.size,
@@ -356,15 +356,15 @@ impl SurfaceHost for Bar {
     fn pointer_button(&mut self, _button: u32, _pressed: bool) {}
 }
 
-/// A host that has a layer but has drawn nothing into it: it never shows.
+/// A surface that has a layer but has drawn nothing into it: it never shows.
 struct Blank {
-    frame: HostFrame,
+    frame: SurfaceFrame,
     size: (i32, i32),
 }
 
-impl SurfaceHost for Blank {
-    fn layers(&self) -> Vec<HostLayer> {
-        vec![HostLayer {
+impl ShellSurface for Blank {
+    fn layers(&self) -> Vec<SurfaceLayer> {
+        vec![SurfaceLayer {
             pose: LayerPose::SETTLED,
             location: (0, 0),
             size: self.size,
@@ -381,11 +381,11 @@ impl SurfaceHost for Blank {
     fn pointer_button(&mut self, _button: u32, _pressed: bool) {}
 }
 
-/// A host that paints a bar in its first frame and erases it in the next,
+/// A surface that paints a bar in its first frame and erases it in the next,
 /// the way a banner leaves: what it stopped drawing is painted over, not
 /// left on the screen.
 struct Vanishes {
-    frame: HostFrame,
+    frame: SurfaceFrame,
     size: (i32, i32),
     /// How many frames it has been asked for: it erases its bar in the second.
     frames: u32,
@@ -407,7 +407,7 @@ impl Vanishes {
                 pixels[start..start + 4].copy_from_slice(&[0, 255, 0, 255]);
             }
         }
-        let frame = HostFrame::new((width, height));
+        let frame = SurfaceFrame::new((width, height));
         frame.set_pixels(&pixels, &[Region::new(bx, by, bw, bh)]);
         Self {
             frame,
@@ -417,9 +417,9 @@ impl Vanishes {
     }
 }
 
-impl SurfaceHost for Vanishes {
-    fn layers(&self) -> Vec<HostLayer> {
-        vec![HostLayer {
+impl ShellSurface for Vanishes {
+    fn layers(&self) -> Vec<SurfaceLayer> {
+        vec![SurfaceLayer {
             pose: LayerPose::SETTLED,
             location: (0, 0),
             size: self.size,

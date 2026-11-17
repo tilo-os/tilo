@@ -11,9 +11,9 @@ use tilo_formats::RegionFormats;
 
 pub use crate::windows::Descriptor;
 
-pub const SOCKET_FD_ENV: &str = "TILO_SVC_TILOLANG_HOST_FD";
+pub const SOCKET_FD_ENV: &str = "TILO_SVC_TILOLANG_PROCESS_FD";
 
-pub const STORAGE_ENV: &str = "TILO_TILOLANG_HOST_STORAGE";
+pub const STORAGE_ENV: &str = "TILO_TILOLANG_PROCESS_STORAGE";
 
 pub const HOSTED_ENV: &str = "TILO_TILOLANG_HOSTED";
 

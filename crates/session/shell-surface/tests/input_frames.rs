@@ -14,9 +14,9 @@ use std::cell::Cell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use tilo_session_core::surface::{HostKey, KeyModifiers, SurfaceHost as _};
+use tilo_session_core::surface::{KeyModifiers, ShellSurface as _, SurfaceKey};
 
-use tilo_surface_host::{Placement, WidgetHost};
+use tilo_shell_surface::{Placement, WidgetSurface};
 use ui::taffy::{NodeId, Style, TaffyTree};
 use ui::widget::{EventCtx, TaffyTreeExt as _, Widget};
 use ui::winit::event::{ElementState, WindowEvent};
@@ -70,9 +70,9 @@ impl Widget for Field {
 }
 
 /// One key as the compositor sends it, with the text it types on the press.
-fn key(pressed: bool, text: &str) -> HostKey {
+fn key(pressed: bool, text: &str) -> SurfaceKey {
     let keysym = u32::from(text.bytes().next().unwrap_or(b' '));
-    HostKey {
+    SurfaceKey {
         keycode: keysym,
         at: std::time::Instant::now(),
         pressed,
@@ -90,7 +90,7 @@ fn a_surface_that_loses_the_keyboard_draws_again_without_its_carets() {
     let _settled = ui::motion::testing::settled();
     let holds = Rc::new(Cell::new(true));
     let field = Field::default();
-    let mut host = WidgetHost::new(
+    let mut host = WidgetSurface::new(
         Box::new(field),
         Placement {
             origin: (0, 0),
@@ -132,7 +132,7 @@ fn a_keystroke_reaches_one_frame_of_the_hosts_clock() {
     let _settled = ui::motion::testing::settled();
     let field = Field::default();
     let typed = Rc::clone(&field.typed);
-    let mut host = WidgetHost::new(
+    let mut host = WidgetSurface::new(
         Box::new(field),
         Placement {
             origin: (0, 0),
@@ -173,7 +173,7 @@ fn a_drag_that_reaches_the_tree_without_its_input_shows_where_it_lands() {
         Box::new(Field::default()),
         ui::component::Event::None,
     );
-    let mut host = WidgetHost::new(
+    let mut host = WidgetSurface::new(
         Box::new(target),
         Placement {
             origin: (0, 0),
@@ -231,7 +231,7 @@ fn a_drag_that_reaches_the_tree_without_its_input_shows_where_it_lands() {
 fn a_drag_over_the_second_display_shows_and_lands_on_that_display() {
     let _settled = ui::motion::testing::settled();
     let host = |x: i32| {
-        let mut host = WidgetHost::new(
+        let mut host = WidgetSurface::new(
             Box::new(ui::widget::DropTarget::new(
                 "window",
                 Box::new(Field::default()),
@@ -337,7 +337,7 @@ fn an_animation_frame_that_changes_nothing_waits_for_the_next_display_frame() {
         size: (320, 240),
         scale: 1.0,
     };
-    let mut host = WidgetHost::new(Box::new(Still), placement, false);
+    let mut host = WidgetSurface::new(Box::new(Still), placement, false);
     assert!(host.prepare_frame(), "the first frame draws the tree");
     // The display holds each frame a second from here on; the grid of the first frame has passed.
     let frame = std::time::Duration::from_secs(1);

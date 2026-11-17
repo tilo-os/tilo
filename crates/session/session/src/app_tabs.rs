@@ -20,7 +20,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 
-use crate::platform::surfaces::DesktopHost;
+use crate::platform::surfaces::ShellDesktop;
 use launcher::services::{SHELL_UI_LAUNCH_PROTOCOL, SHELL_UI_SERVICE};
 use serde::Deserialize;
 use tilo_app_launch::{Connects, Launch, Open};
@@ -347,7 +347,7 @@ impl AppTabs {
     pub(crate) fn follow(
         &mut self,
         shared: &crate::Shared,
-        desktop: &DesktopHost,
+        desktop: &ShellDesktop,
         apps: Option<&Apps>,
         compositor: &mut Compositor,
         services: Option<&DesktopServices>,
@@ -452,7 +452,7 @@ impl AppTabs {
     /// computer sends reports — or saying it is told nowhere, and still sending to an agent or a
     /// person. A window whose app cannot take a box — it never said it opens one, or it is gone —
     /// leaves the gesture to Chat, which a send has always opened.
-    fn deliver_box(&self, shared: &crate::Shared, desktop: &DesktopHost, compositor: &Compositor) {
+    fn deliver_box(&self, shared: &crate::Shared, desktop: &ShellDesktop, compositor: &Compositor) {
         let Some(ask) = shared.take_box_ask() else {
             return;
         };
@@ -479,7 +479,7 @@ impl AppTabs {
     /// never said it does is never sent a box it would not draw. A session that cannot tell which
     /// window is in front answers with its one window that takes boxes, and none when it holds
     /// more.
-    fn link_in_front(&self, desktop: &DesktopHost, compositor: &Compositor) -> Option<&Link> {
+    fn link_in_front(&self, desktop: &ShellDesktop, compositor: &Compositor) -> Option<&Link> {
         let ready = || self.links.iter().filter(|(_, link)| link.selection);
         // The window in front is the tab exactly one connection speaks for: another window of
         // the same app — one parked after its tab closed, one on another strip — is another
@@ -523,7 +523,7 @@ impl AppTabs {
     ///
     /// The layer decides the place; the app's own geometry is a request it
     /// made when presenting, and its window is laid out by what this says.
-    fn follow_cards(&self, desktop: &DesktopHost, compositor: &mut Compositor) {
+    fn follow_cards(&self, desktop: &ShellDesktop, compositor: &mut Compositor) {
         let placements = self.cards.placements();
         // The windows on the shell this pass, and the launch each belongs to: what tells whether the
         // very window that draws an activity is on screen, rather than another window of the same
@@ -713,7 +713,7 @@ impl AppTabs {
 /// stands in front says nothing about who is talking.
 fn window_of(
     links: &BTreeMap<u64, Link>,
-    desktop: &DesktopHost,
+    desktop: &ShellDesktop,
     connection: u64,
     app: &str,
 ) -> Option<u64> {
@@ -737,7 +737,7 @@ fn window_of(
 /// What one pass of answers reaches: the shell, the services the person answers through, and the
 /// connections the answers go back on.
 struct Answers<'a> {
-    desktop: &'a DesktopHost,
+    desktop: &'a ShellDesktop,
     /// The launches of this session, which a window an app asks for starts through: it is planned
     /// here and started once the shell asks back for the tab it takes.
     apps: Option<&'a Apps>,
@@ -1472,7 +1472,7 @@ fn tell(reply: &Arc<Mutex<UnixStream>>, message: &FloatingSurfaceHostMessage, ap
 /// or closes.
 fn withhold(
     withheld: &mut BTreeMap<u64, String>,
-    desktop: &DesktopHost,
+    desktop: &ShellDesktop,
     compositor: &mut Compositor,
     connection: u64,
     app: &str,

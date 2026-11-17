@@ -793,8 +793,8 @@ where
 
 /// The placeholders of what `output` shows a capture may not see, where it stands on it, in
 /// physical pixels: the windows of an app the session keeps private (one that closed included,
-/// while the desktop still animates it away), and the layers of a hosted surface that shows a
-/// secret (see [`protect`] and [`SurfaceHost::withholds_captures`](tilo_session_core::surface::SurfaceHost::withholds_captures)), and the lock
+/// while the desktop still animates it away), and the layers of a surface that shows a
+/// secret (see [`protect`] and [`ShellSurface::withholds_captures`](tilo_session_core::surface::ShellSurface::withholds_captures)), and the lock
 /// screen while it is up. A capture draws them over the scene and under the pointer: a protected
 /// window or surface hides, one that merely passes behind it is covered along with it, which shows
 /// nothing it would not show anyway. A copy that is the session's own look ([`Held::Nothing`])
@@ -832,8 +832,12 @@ where
         let size = geometry.size.to_physical_precise_round(scale);
         placeholders.push(placeholder::<R>(Point::default(), size, 1.0));
     }
-    for host in state.hosts.iter().filter(|host| host.withholds_captures()) {
-        for layer in host.layers() {
+    for surface in state
+        .surfaces
+        .iter()
+        .filter(|surface| surface.withholds_captures())
+    {
+        for layer in surface.layers() {
             // Where the layer's pose draws it.
             let (x, y, width, height) = layer.pose.rect((
                 f64::from(layer.location.0),

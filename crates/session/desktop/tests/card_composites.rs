@@ -17,8 +17,8 @@ use tilo_desktop::about::{AboutLinks, AboutSheet, AboutVariant};
 use tilo_desktop::desktop_host::{DesktopChrome, NoticeTiles, PermissiveRules};
 use tilo_desktop::topbar::TopBarChrome;
 use tilo_desktop_surface::{DesktopHandle, DesktopSurface};
-use tilo_session_core::surface::SurfaceHost as _;
-use tilo_surface_host::{Placement, WidgetHost};
+use tilo_session_core::surface::ShellSurface as _;
+use tilo_shell_surface::{Placement, WidgetSurface};
 
 /// The chrome over the shell at `scale` : built after `_compositor` opened its backend, as the
 /// session builds its surfaces after its compositor. A host built before the backend is open draws
@@ -28,7 +28,7 @@ fn chrome_host(
     _compositor: &mut Compositor,
     scale: f64,
     size: (u32, u32),
-) -> (WidgetHost, DesktopHandle, ui::headless::FrameHarness) {
+) -> (WidgetSurface, DesktopHandle, ui::headless::FrameHarness) {
     let tree = layout_tree();
     let (surface, handle) = DesktopSurface::new(tree.clone(), 7, Box::new(NoticeTiles));
     let mut shell =
@@ -43,7 +43,7 @@ fn chrome_host(
         false,
     );
     let keyboard = handle.clone();
-    let host = WidgetHost::new(
+    let host = WidgetSurface::new(
         Box::new(chrome),
         Placement {
             origin: (0, 0),
@@ -91,7 +91,7 @@ fn assert_palette_shows(scale: f64, size: (u32, u32)) {
         let search = search.borrow();
         search.palette().unwrap().get_rect()
     };
-    compositor.add_host(Rc::new(RefCell::new(host)));
+    compositor.add_surface(Rc::new(RefCell::new(host)));
     let mut shot = None;
     for _ in 0..8 {
         compositor.draw_frame().unwrap();

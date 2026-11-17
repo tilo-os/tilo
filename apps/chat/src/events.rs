@@ -876,7 +876,7 @@ impl ChatApp {
                 self.focus = Focus::Thread;
                 self.set_composer_focus();
             }
-            Hit::HostModel(command) => {
+            Hit::ModelStream(command) => {
                 self.activate_model_control(&command);
             }
             Hit::Send | Hit::RetrySend => self.send_focused(doc),

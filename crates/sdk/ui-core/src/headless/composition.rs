@@ -9,8 +9,8 @@ use vello::Scene;
 use vello::kurbo::{Affine, Rect};
 
 use super::FrameHarness;
+use crate::app_core::AppCore as _;
 use crate::composition::{Composed, Composition, HtmlCx, css};
-use crate::host_core::HostCore as _;
 use crate::widget::Widget;
 
 /// Every widget of the retained tree by its address: the path semantic actions name it by, and the

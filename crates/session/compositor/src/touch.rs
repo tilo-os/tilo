@@ -1,5 +1,5 @@
 //! Touchscreens and touchpad gestures, routed.
-//! A touch on a hosted surface reaches it as a pointer press (hosts take pointer input only); the
+//! A touch on a surface reaches it as a pointer press (surfaces take pointer input only); the
 //! desktop is offered every touch first and may take it (the top edge's swipe); every other touch
 //! goes to the client surface under it through the seat's touch handle and stays with that surface
 //! until the finger lifts. Touchpad gestures of one or two fingers belong to the client under the
@@ -39,8 +39,8 @@ fn binds_touch(surface: &WlSurface) -> bool {
 /// Where each finger on the screen went down.
 #[derive(Debug, Default)]
 pub(crate) struct Touches {
-    /// Fingers on a hosted surface, by slot: the host's index and where the finger is.
-    hosts: Vec<(u32, usize, Point<f64, Logical>)>,
+    /// Fingers on a surface, by slot: the surface's index and where the finger is.
+    surfaces: Vec<(u32, usize, Point<f64, Logical>)>,
     /// Fingers the desktop took, by slot and where the finger is ([`crate::WindowPolicy::touch`]):
     /// nothing under them sees them.
     pub(crate) desktop: Vec<(u32, Point<f64, Logical>)>,
@@ -67,10 +67,10 @@ pub(crate) struct Finger {
 }
 
 impl Touches {
-    /// A finger holding a hosted surface, taken from it: the hosted app starts a drag that follows
-    /// it. Its slot, the host and where it is.
-    pub(crate) fn take_host_finger(&mut self) -> Option<(u32, usize, Point<f64, Logical>)> {
-        self.hosts.pop()
+    /// A finger holding a surface, taken from it: the surface app starts a drag that follows
+    /// it. Its slot, the surface and where it is.
+    pub(crate) fn take_surface_finger(&mut self) -> Option<(u32, usize, Point<f64, Logical>)> {
+        self.surfaces.pop()
     }
 }
 
@@ -89,12 +89,12 @@ impl State {
             return;
         }
         if !self.locked()
-            && let Some(index) = self.host_under(at)
-            && let Some(host) = self.hosts.get_mut(index)
+            && let Some(index) = self.shell_surface_under(at)
+            && let Some(surface) = self.surfaces.get_mut(index)
         {
-            host.pointer_motion(at.x, at.y);
-            host.pointer_button(BTN_LEFT, true);
-            self.touch.hosts.push((slot, index, at));
+            surface.pointer_motion(at.x, at.y);
+            surface.pointer_button(BTN_LEFT, true);
+            self.touch.surfaces.push((slot, index, at));
             return;
         }
         let (focus, at) = if self.locked() {
@@ -165,13 +165,13 @@ impl State {
         }
         if let Some((_, index, last)) = self
             .touch
-            .hosts
+            .surfaces
             .iter_mut()
             .find(|(held, _, _)| *held == slot)
         {
             *last = at;
-            if let Some(host) = self.hosts.get_mut(*index) {
-                host.pointer_motion(at.x, at.y);
+            if let Some(surface) = self.surfaces.get_mut(*index) {
+                surface.pointer_motion(at.x, at.y);
             }
             return;
         }
@@ -221,14 +221,14 @@ impl State {
         }
         if let Some(position) = self
             .touch
-            .hosts
+            .surfaces
             .iter()
             .position(|(held, _, _)| *held == slot)
         {
-            let (_, index, _) = self.touch.hosts.remove(position);
-            if let Some(host) = self.hosts.get_mut(index) {
-                host.pointer_button(BTN_LEFT, false);
-                host.pointer_leave();
+            let (_, index, _) = self.touch.surfaces.remove(position);
+            if let Some(surface) = self.surfaces.get_mut(index) {
+                surface.pointer_button(BTN_LEFT, false);
+                surface.pointer_leave();
             }
             return;
         }
@@ -270,10 +270,10 @@ impl State {
             self.touch.desktop.clear();
             self.policy.touch(TouchSample::Cancel);
         }
-        for (_, index, _) in std::mem::take(&mut self.touch.hosts) {
-            if let Some(host) = self.hosts.get_mut(index) {
-                host.pointer_button(BTN_LEFT, false);
-                host.pointer_leave();
+        for (_, index, _) in std::mem::take(&mut self.touch.surfaces) {
+            if let Some(surface) = self.surfaces.get_mut(index) {
+                surface.pointer_button(BTN_LEFT, false);
+                surface.pointer_leave();
             }
         }
         // A cancelled contact leaves no drag running: the proxy Xwayland raised for it comes down.

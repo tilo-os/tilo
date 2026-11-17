@@ -1,4 +1,5 @@
-//! Explicit, mount-local host inference. No model output is dispatched as an action.
+//! The app's own model reply, streamed and published as it arrives. No model output is
+//! dispatched as an action.
 #[cfg(test)]
 mod tests;
 use crate::{
@@ -16,7 +17,7 @@ use ui::models::{
 };
 
 #[derive(Default)]
-pub(crate) struct HostModel {
+pub(crate) struct ModelStream {
     pub models: Models,
     attempt: Option<Attempt>,
 }
@@ -32,7 +33,7 @@ struct Attempt {
     published_reasoning: String,
     terminal_published: bool,
 }
-impl HostModel {
+impl ModelStream {
     pub fn running(&self) -> bool {
         self.attempt.as_ref().is_some_and(|a| a.future.is_some())
     }
@@ -253,7 +254,7 @@ impl ChatApp {
         {
             return vec![];
         }
-        let mut controls = self.host_model.controls(channel);
+        let mut controls = self.model_stream.controls(channel);
         if !messages.any(|message| {
             message.channel == channel
                 && message.author == self.me.id
@@ -281,7 +282,7 @@ impl ChatApp {
         }
     }
 
-    /// Acknowledgement means the host future has been installed (or dropped for
+    /// Acknowledgement means the stream's future has been installed (or dropped for
     /// stop), not that a provider accepted or completed the request.
     pub(crate) fn model_command(
         &mut self,
@@ -300,7 +301,7 @@ impl ChatApp {
         }
         if command == "stop" {
             let attempt = self
-                .host_model
+                .model_stream
                 .attempt
                 .as_mut()
                 .ok_or("no active inference")?;
@@ -332,7 +333,7 @@ impl ChatApp {
             }
         } else {
             let previous = self
-                .host_model
+                .model_stream
                 .attempt
                 .as_ref()
                 .ok_or("no previous inference")?;
@@ -354,14 +355,14 @@ impl ChatApp {
         let reply = uuid::Uuid::new_v4().to_string();
         let events = Rc::new(RefCell::new(Vec::new()));
         let sink = events.clone();
-        let models = self.host_model.models.clone();
+        let models = self.model_stream.models.clone();
         let input = request.clone();
         let future = Box::pin(async move {
             models
                 .stream(&input, Box::new(move |event| sink.borrow_mut().push(event)))
                 .await
         });
-        self.host_model.attempt = Some(Attempt {
+        self.model_stream.attempt = Some(Attempt {
             channel: channel.into(),
             reply: reply.clone(),
             request,
@@ -378,11 +379,11 @@ impl ChatApp {
     }
 
     pub(crate) fn pump_model(&mut self) -> bool {
-        let Some(mut attempt) = self.host_model.attempt.take() else {
+        let Some(mut attempt) = self.model_stream.attempt.take() else {
             return false;
         };
         if attempt.terminal_published {
-            self.host_model.attempt = Some(attempt);
+            self.model_stream.attempt = Some(attempt);
             return false;
         }
         if let Some(future) = attempt.future.as_mut() {
@@ -426,7 +427,7 @@ impl ChatApp {
                 },
             ));
         }
-        self.host_model.attempt = Some(attempt);
+        self.model_stream.attempt = Some(attempt);
         if changed {
             self.canonical_dirty = true;
         }

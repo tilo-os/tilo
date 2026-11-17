@@ -142,7 +142,7 @@ mod tests {
 
 /// The app's settings channel served from a real settings source, for headless app tests.
 #[cfg(all(feature = "broker-transport", any(test, feature = "test-support")))]
-pub struct TestHost {
+pub struct TestSettings {
     source: Arc<dyn settings_store::SettingsSource>,
     app: String,
     revision: u64,
@@ -151,23 +151,23 @@ pub struct TestHost {
 }
 
 #[cfg(all(feature = "broker-transport", any(test, feature = "test-support")))]
-impl TestHost {
+impl TestSettings {
     /// Serve the app's settings channel from `source`, as the session does.
     pub fn new(source: Arc<dyn settings_store::SettingsSource>, app: &str) -> Self {
         let channel = Arc::new(crate::collaboration::channel_settings::ChannelSettings::new(app));
         channel.linked();
         let previous =
             crate::collaboration::channel_settings::replace_for_test(Some(channel.clone()));
-        let host = Self {
+        let settings = Self {
             source,
             app: app.to_owned(),
             revision: 1,
             channel,
             previous,
         };
-        let view = host.view();
-        host.channel.received(1, view);
-        host
+        let view = settings.view();
+        settings.channel.received(1, view);
+        settings
     }
 
     fn view(&self) -> serde_json::Map<String, serde_json::Value> {
@@ -217,7 +217,7 @@ impl TestHost {
 }
 
 #[cfg(all(feature = "broker-transport", any(test, feature = "test-support")))]
-impl Drop for TestHost {
+impl Drop for TestSettings {
     fn drop(&mut self) {
         self.channel.disconnected();
         crate::collaboration::channel_settings::replace_for_test(self.previous.take());

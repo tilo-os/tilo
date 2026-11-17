@@ -296,14 +296,14 @@ pub fn runner_permissions() -> SharedPermissions {
         .at_unix_time(100),
     )
 }
-pub struct ProbeHost {
+pub struct ProbeHarness {
     pub owners: ResourceOwners,
     pub records: ResourceStore,
     pub views: Rc<InstanceViewStore>,
     // Keep the filesystem alive until stores flush and join their owned workers.
     pub temp: tempfile::TempDir,
 }
-impl ProbeHost {
+impl ProbeHarness {
     pub fn new() -> Self {
         Self::over(ResourceOwners::new)
     }
@@ -380,7 +380,7 @@ impl ProbeHost {
     }
 }
 pub fn instantiate_probe(
-    host: &ProbeHost,
+    host: &ProbeHarness,
     instance: u64,
     target: LaunchTarget,
     restore: RestoreInput,

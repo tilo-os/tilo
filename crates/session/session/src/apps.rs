@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 use std::rc::{Rc, Weak};
 use std::sync::Arc;
 
-use crate::platform::surfaces::{DesktopHost, WidgetHost};
+use crate::platform::surfaces::{ShellDesktop, WidgetSurface};
 use tilo_action_broker::collab_app_broker::AppBrokerState;
 use tilo_actions::remote::{
     APPLICATION_OPEN_ACTION, APPLICATION_RESOURCE_PREFIX, Caller, InvokeArgument, InvokeRequest,
@@ -70,7 +70,7 @@ fn refusal_said(error: &tilo_app_launch::PlanError) -> String {
 pub struct Apps {
     /// The desktop the launches come from, once the session has mounted it: what a launch reads its
     /// workspace from, and where a stopped app's notice goes.
-    desktop: RefCell<Option<DesktopHost>>,
+    desktop: RefCell<Option<ShellDesktop>>,
     state: RefCell<State>,
     /// Why a workspace's apps may not start yet, once the session lent it ([`Self::lend_admission`]).
     admission: RefCell<Option<Admission>>,
@@ -697,7 +697,7 @@ impl Apps {
     }
 
     /// The desktop the person works on, which the launches come from.
-    pub fn attach(&self, desktop: DesktopHost) {
+    pub fn attach(&self, desktop: ShellDesktop) {
         *self.desktop.borrow_mut() = Some(desktop);
     }
 
@@ -1181,7 +1181,7 @@ impl Apps {
             return;
         };
         desktop.with_policy(answer);
-        desktop.with_widgets(WidgetHost::relayout);
+        desktop.with_widgets(WidgetSurface::relayout);
     }
 
     /// Start `launch` on the workspace in front, which is where what the session itself
@@ -1279,7 +1279,7 @@ impl Apps {
         if let Answer::Raise { tab } = answer
             && desktop.with_policy(|policy| policy.focus_tab(tab))
         {
-            desktop.with_widgets(WidgetHost::relayout);
+            desktop.with_widgets(WidgetSurface::relayout);
             tracing::info!(
                 app = %app.id,
                 tab,
@@ -2688,7 +2688,7 @@ mod tests {
 
     /// The desktop the apps are started from, laid out as wide as an output: what its notice tabs
     /// draw on.
-    fn shell() -> DesktopHost {
+    fn shell() -> ShellDesktop {
         let (desktop, _strips) = crate::platform::surfaces::desktop(7, 1.0);
         desktop.with_widgets(|widgets| {
             widgets.set_placement(tilo_session_core::surface::Placement {
@@ -2777,7 +2777,7 @@ mod tests {
                     })
             })
             .unwrap();
-        desktop.with_widgets(WidgetHost::relayout);
+        desktop.with_widgets(WidgetSurface::relayout);
         let asked = desktop.take_launches();
         assert_eq!(asked.len(), 1, "the person asked for Canvas");
         // The launch was asked for the tab the shell held for it, and ended before its window
@@ -2849,7 +2849,7 @@ mod tests {
     }
 
     /// What the shell shows as text now.
-    fn texts(desktop: &DesktopHost) -> Vec<String> {
+    fn texts(desktop: &ShellDesktop) -> Vec<String> {
         desktop.with_widgets(|widgets| {
             widgets.relayout();
             ui::a11y::texts(widgets.host_mut().root_widget())

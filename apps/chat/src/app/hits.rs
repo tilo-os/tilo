@@ -13,7 +13,7 @@ use super::{ChatApp, MenuAction};
 /// next mouse-press.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum Hit {
-    HostModel(String),
+    ModelStream(String),
     Channel(Id),
     /// Make a channel in a category.
     AddChannel {
@@ -206,7 +206,7 @@ impl Hit {
             Self::FocusMain => "chat.composer".into(),
             Self::FocusThread => "chat.thread-composer".into(),
             Self::FocusEdit => "chat.message-edit".into(),
-            Self::HostModel(command) => format!("chat.model.{command}"),
+            Self::ModelStream(command) => format!("chat.model.{command}"),
             Self::Send => "chat.send".into(),
             Self::RetrySend => "chat.retry-send".into(),
             Self::ThreadSend => "chat.thread-send".into(),
@@ -423,7 +423,7 @@ impl ChatApp {
                         Role::MultilineTextInput,
                         false,
                     ),
-                    Hit::HostModel(command) => {
+                    Hit::ModelStream(command) => {
                         (copy(&format!("chat-model-{command}")), Role::Button, false)
                     }
                     Hit::Send | Hit::ThreadSend => (copy("chat-send-message"), Role::Button, false),

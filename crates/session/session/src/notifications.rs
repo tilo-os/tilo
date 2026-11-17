@@ -100,7 +100,7 @@ pub(crate) fn mount_banners(
                 options.scale,
                 stack,
             )));
-            compositor.add_host(surface.clone());
+            compositor.add_surface(surface.clone());
             surfaces.add(surface);
             notices.show_banners_elsewhere();
         }

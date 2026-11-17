@@ -7,7 +7,7 @@ use vello::kurbo::{Affine, Rect};
 use winit::event::WindowEvent;
 
 use super::{FrameHarness, InspectionNode};
-use crate::host_core::KeyHost as _;
+use crate::app_core::KeyCore as _;
 #[cfg(test)]
 use crate::part_row::WindowAction;
 use crate::part_row::{PartRow, PartRowHost, RowInput, RowPlace};
