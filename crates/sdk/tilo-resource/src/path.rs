@@ -1262,7 +1262,7 @@ impl<R> Edit<R> {
                 .map(|field| field.key)
                 .collect();
             return Err(format!(
-                "`{head}` is the record itself, not one of its fields: start the path at the field to change, one of {}",
+                "`{head}` is the resource itself, not one of its fields: start the path at the field to change, one of {}",
                 editable.join(", ")
             ));
         };
@@ -1271,7 +1271,7 @@ impl<R> Edit<R> {
         // security; an edit of such a field is sent again from the root.
         if root.trust_at(rest) != crate::Trust::Ordinary {
             return Err(format!(
-                "`{head}` is the record itself, not one of its fields: start the path at `{start}`"
+                "`{head}` is the resource itself, not one of its fields: start the path at `{start}`"
             ));
         }
         Ok(Self::new(rest.to_vec(), self.op))

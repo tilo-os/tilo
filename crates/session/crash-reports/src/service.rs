@@ -172,7 +172,7 @@ mod tests {
             assert_eq!(listed[0]["kind"], "froze");
 
             let text = read_json(&service, "crash-report:2026-10-24-225201-9-freeze.log");
-            assert_eq!(text["record"]["id"], "2026-10-24-225201-9-freeze.log");
+            assert_eq!(text["report"]["id"], "2026-10-24-225201-9-freeze.log");
             assert!(text["text"].as_str().unwrap().contains("thread:    412"));
             assert_eq!(text["truncated"], false);
             assert_eq!(service.read("crash-report:no-such.log"), None);

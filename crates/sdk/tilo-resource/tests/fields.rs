@@ -804,7 +804,7 @@ tilo_test_env::scenario! {
         );
         let bare = format!("{:?}", board.apply(set_at(&["board"], "Plan")).unwrap_err());
         assert!(
-            bare.contains("`board` is the record itself") && bare.contains("title"),
+            bare.contains("`board` is the resource itself") && bare.contains("title"),
             "{bare}"
         );
         assert_eq!(board.state().unwrap().title, "");

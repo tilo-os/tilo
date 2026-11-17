@@ -87,7 +87,7 @@ impl ProgramWorld {
             }
             let mut lines = String::new();
             for (alias, root) in &self.served {
-                let _ = writeln!(lines, "- `{alias}`: its record is a `{alias}.{root}`");
+                let _ = writeln!(lines, "- `{alias}`: its resource is a `{alias}.{root}`");
                 if let Some(declared) = self.declared.get(alias).filter(|d| !d.is_empty()) {
                     for line in declared.lines() {
                         let _ = writeln!(lines, "    {line}");
@@ -96,7 +96,7 @@ impl ProgramWorld {
             }
             return format!(
                 "Apps your `{}` programs can use, open or not (`find({{alias}}.{{Type}})` finds \
-                 their records, `describe({{alias}})` lists an app's types with their fields, \
+                 their resources, `describe({{alias}})` lists an app's types with their fields, \
                  filters and actions; a program answers with references you can place):\n\n{lines}",
                 programs::TILO
             );
