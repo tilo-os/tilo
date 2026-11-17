@@ -82,6 +82,7 @@ paths = [
     "crates/platform/migration-sources/src/destination_security/*",
     "apps/imager/src/setup/internal_cache/windows.rs",
     "crates/system/tilo-dav/*",
+    "crates/hosting/tilo-workspace-host/src/workspaces/person_settings/calendars/fake_caldav.rs",
     "apps/calendar/src/setup/tests.rs",
     "apps/settings/tests/accounts_calendar_loop.rs",
     "apps/mail/tests/oauth_credentials.rs",
