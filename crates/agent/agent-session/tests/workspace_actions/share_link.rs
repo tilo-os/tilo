@@ -46,7 +46,7 @@ async fn the_host_mints_a_message_link_with_its_range() {
     let mut source = crate::common::open_in(
         &workspace.workspace,
         "so.tilo.chat",
-        &writer,
+        &tilo_actions::MemberId::person(writer.as_str()),
         ReplicaActor::Owner,
         Seed::New,
     )

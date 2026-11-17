@@ -77,6 +77,14 @@ pub fn agent_id(delegation: &Delegation) -> &str {
     delegation.delegate.agent_id().unwrap_or_default()
 }
 
+/// The person `delegation`'s agent acts for.
+#[must_use]
+pub fn person(delegation: &Delegation) -> tilo_actions::MemberId {
+    tilo_actions::MemberId::person(ui::permissions::policy::PersonId::from_root(
+        delegation.user_public_key,
+    ))
+}
+
 /// Why a control request was refused.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ControlError {

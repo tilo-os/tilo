@@ -113,7 +113,7 @@ use tilo_actions::remote::{
     application_provider_record, pending, provider_workspace,
 };
 use tilo_actions::{
-    ActionFailure, ActionOutput, ConfirmationPolicy, InvocationId, InvocationUpdate,
+    ActionFailure, ActionOutput, ConfirmationPolicy, InvocationId, InvocationUpdate, MemberId,
 };
 use tilo_lock::MutexRecover as _;
 use tilo_peer_state::document_frame::DocumentRoute;
@@ -1208,7 +1208,7 @@ struct Worker {
     host_device: HostDevice,
     catalogue: AppCatalogue,
     shared: Arc<Shared>,
-    member: String,
+    member: ui::permissions::policy::PersonId,
     workspaces: HashMap<WorkspaceId, Workspace>,
     mounted: BTreeMap<DocumentRoute, Mounted>,
     /// The replicas callers served within bounds act through ([`bounded`]).
@@ -1343,7 +1343,7 @@ impl Worker {
         let host_device = link.host_device();
         let _ = shared.host_device.set(host_device.clone());
         Self {
-            member: hex::encode(link.user_public_key()),
+            member: ui::permissions::policy::PersonId::from_root(link.user_public_key()),
             host_device,
             catalogue,
             shared,
@@ -1916,7 +1916,7 @@ impl Worker {
                 &self.catalogue,
                 &route.app_id,
                 &route.cluster_id,
-                &self.member,
+                &MemberId::Person(self.member.clone()),
                 &crate::ReplicaActor::Owner,
                 Seed::Existing {
                     record: reads::record_id(&route.record)?,
@@ -2723,9 +2723,15 @@ impl Worker {
                     });
                 }
             }
-            let hosted =
-                ConfinedReplica::open(&self.catalogue, app, workspace, &creator, &actor, Seed::New)
-                    .map_err(|error| refused(error.to_string()))?;
+            let hosted = ConfinedReplica::open(
+                &self.catalogue,
+                app,
+                workspace,
+                &MemberId::Person(creator),
+                &actor,
+                Seed::New,
+            )
+            .map_err(|error| refused(error.to_string()))?;
             let hosted = self.lend(hosted, workspace);
             let route = DocumentRoute {
                 app_id: app.to_owned(),

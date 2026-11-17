@@ -1420,7 +1420,7 @@ impl Chat {
         }
         self.moderation.report(
             cx,
-            author.key(),
+            author,
             Some("so.tilo.chat".to_owned()),
             None,
             Some(message),
@@ -1441,7 +1441,7 @@ impl Chat {
         let Some(person) = self.people.find(person) else {
             return Err(Refusal::new("there is no such person"));
         };
-        let person = person.id.key();
+        let person = person.id.clone();
         self.moderation.report(cx, person, None, None, None, reason)
     }
 
@@ -1454,7 +1454,7 @@ impl Chat {
         &mut self,
         cx: &mut ActionCx,
         #[param("A new id for the decision")] id: String,
-        #[param("The person decided on")] person: String,
+        #[param("The person decided on")] person: MemberId,
         #[param("The reports it settles")] reports: Vec<String>,
         #[param("What is done, and why")] ruling: moderation_model::Ruling,
     ) -> Result<(), Refusal> {

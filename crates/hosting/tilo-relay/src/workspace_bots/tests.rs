@@ -12,6 +12,7 @@ use tilo_moderation::{Case, JudgeError, Outcome, Verdict};
 
 use super::*;
 use crate::workspaces::fixtures::{governor, restricted_until, test_host, test_host_taking_part};
+use tilo_actions::MemberId;
 
 const MALLORY: [u8; 32] = [7; 32];
 const ADA: [u8; 32] = [8; 32];
@@ -183,7 +184,7 @@ async fn post_with(
             &catalogue,
             CHAT,
             workspace,
-            author,
+            &MemberId::person(author),
             ReplicaActor::Owner,
             Seed::Existing {
                 record: ui::record::DocumentId::package_primary(),
@@ -294,7 +295,7 @@ async fn flood_posts(workspaces: &Workspaces, workspace: &str, cert: &DeviceCert
                 &ada,
                 chat::Chat::REPORT_MESSAGE.with(chat::record::chat::ReportMessage {
                     message: spam,
-                    author: tilo_resource::MemberId::person(mallory),
+                    author: MemberId::person(mallory),
                     reason: "spam".parse().unwrap(),
                 }),
             )
@@ -347,7 +348,7 @@ async fn a_report_filed_in_the_workspace_restricts_and_undoes_the_flood_as_the_b
             .unwrap(),
     );
     let decision = after.moderation.decisions.iter().next().unwrap();
-    assert_eq!(decision.person, mallory);
+    assert_eq!(decision.person, MemberId::person(mallory.as_str()));
     assert_eq!(decision.outcome, Outcome::Restrict);
     assert_eq!(
         after.moderation.open_reports().count(),
@@ -525,7 +526,7 @@ async fn an_installed_bot_answers_a_post_in_the_workspace_once() {
     assert!(runner.step().await.unwrap().is_empty());
     assert_eq!(
         runner.workspace_input().await.unwrap()["members"],
-        serde_json::json!([{"person": hex::encode(cert.user_public_key), "role": "owner"}]),
+        serde_json::json!([{"member": {"person": hex::encode(cert.user_public_key)}, "role": "owner"}]),
         "a program declaring `workspace` is told who is in it"
     );
     post_in(&workspaces, &workspace, &cert, (&ada, &general, "hello")).await;
@@ -550,7 +551,7 @@ async fn an_installed_bot_answers_a_post_in_the_workspace_once() {
         .filter(|message| message.text == "welcome!")
         .collect();
     assert_eq!(answers.len(), 1, "one answer to one post");
-    assert_eq!(answers[0].author, tilo_resource::MemberId::bot(GREETER));
+    assert_eq!(answers[0].author, MemberId::bot(GREETER));
 }
 
 /// A workspace with the chat, Ada introduced, and `#general`'s id.
@@ -1030,11 +1031,7 @@ async fn a_bridge_posts_under_another_name_signed_by_its_own_device() {
         .find(|message| message.text == "welcome!")
         .map(|message| message.author.clone())
         .expect("the bridge posted");
-    assert_eq!(
-        post,
-        tilo_resource::MemberId::bot(GREETER),
-        "still the bot's"
-    );
+    assert_eq!(post, MemberId::bot(GREETER), "still the bot's");
     let shown: Vec<_> = AutoCommit::load(&bytes)
         .unwrap()
         .get_changes(&[])
@@ -1258,7 +1255,7 @@ async fn a_bot_posts_into_a_sealed_chat_and_a_guest_reads_it() {
             &AppCatalogue::native(),
             CHAT,
             &workspace,
-            &hex::encode(guest_cert.user_public_key),
+            &MemberId::person(hex::encode(guest_cert.user_public_key)),
             ReplicaActor::Owner,
             Seed::Existing {
                 record: ui::record::DocumentId::package_primary(),
@@ -1304,7 +1301,7 @@ async fn a_bot_posts_into_a_sealed_chat_and_a_guest_reads_it() {
         .filter(|message| message.text == "welcome!")
         .collect();
     assert_eq!(answers.len(), 1, "the guest reads the bot's answer");
-    assert_eq!(answers[0].author, tilo_resource::MemberId::bot(GREETER));
+    assert_eq!(answers[0].author, MemberId::bot(GREETER));
     assert!(
         posted.iter().any(|message| message.text == "hello"),
         "beside Ada's post"
@@ -1449,7 +1446,7 @@ async fn a_file_a_member_posted_stays_in_the_workspace_after_they_leave() {
     workspaces.content_for_host(&workspace, ADA, &answer(&asks[0], ADA, &notes));
     assert_eq!(
         keeper.kept_for(&blake3::hash(&notes).to_hex()),
-        Some(tilo_resource::MemberId::person(ada.as_str()))
+        Some(MemberId::person(ada.as_str()))
     );
     assert_eq!(
         opened(&workspaces, &workspace, BO, &notes),
@@ -1515,7 +1512,7 @@ async fn a_file_a_member_posted_stays_in_the_workspace_after_they_leave() {
     let again = attachments_of(attachments::AttachmentLimits::default());
     assert_eq!(
         again.kept_for(&blake3::hash(&slides).to_hex()),
-        Some(tilo_resource::MemberId::person(ada.as_str()))
+        Some(MemberId::person(ada.as_str()))
     );
     assert_eq!(again.kept_for(&blake3::hash(&notes).to_hex()), None);
 }

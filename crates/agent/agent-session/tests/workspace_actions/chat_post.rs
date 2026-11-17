@@ -19,6 +19,7 @@ use super::{
     ReceiptStatus, enrol, record_provider, start,
 };
 use std::time::{Duration, Instant};
+use tilo_actions::MemberId;
 use tilo_agent_session::{ReplicaActor, Seed};
 use tilo_peer_state::join::Role;
 use tilo_session_client::Outbox as _;
@@ -196,7 +197,7 @@ async fn a_post_costs_the_same_however_long_the_chat_has_run() {
     let mut source = crate::common::open_in(
         &workspace.workspace,
         "so.tilo.chat",
-        "ada",
+        &MemberId::person("ada"),
         ReplicaActor::Owner,
         Seed::New,
     )

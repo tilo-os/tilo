@@ -32,8 +32,8 @@ pub struct Report {
     pub id: String,
     /// Who reported; the moderation agent for its own heuristics.
     pub reporter: MemberId,
-    /// Whom the report is about, by person id.
-    pub person: String,
+    /// Whom the report is about.
+    pub person: MemberId,
     /// The app, record and item reported, when the report is about content.
     pub app: Option<String>,
     pub record: Option<String>,
@@ -93,7 +93,7 @@ pub struct Ruling {
 pub struct Decision {
     #[model(readonly)]
     pub id: String,
-    pub person: String,
+    pub person: MemberId,
     /// The reports it settles.
     pub reports: Vec<String>,
     pub outcome: Outcome,
@@ -136,9 +136,9 @@ impl Moderation {
     }
 
     /// The open reports about `person`.
-    pub fn open_reports_on<'a>(&'a self, person: &'a str) -> impl Iterator<Item = &'a Report> {
+    pub fn open_reports_on<'a>(&'a self, person: &'a MemberId) -> impl Iterator<Item = &'a Report> {
         self.open_reports()
-            .filter(move |report| report.person == person)
+            .filter(move |report| &report.person == person)
     }
 }
 
@@ -228,18 +228,18 @@ impl Moderation {
     pub fn report(
         &mut self,
         cx: &mut ActionCx,
-        #[param("The person reported")] person: String,
+        #[param("The person reported")] person: MemberId,
         #[param("The app of the reported content")] app: Option<String>,
         #[param("The record of the reported content")] record: Option<String>,
         #[param("The reported item, such as a message")] item: Option<String>,
         #[param("What they did")] reason: NonBlank,
     ) -> Result<(), Refusal> {
         let reporter = reporter(cx)?;
-        id_like(&person, "the person")?;
+        id_like(person.id(), "the person")?;
         optional_id(app.as_ref(), "the app")?;
         optional_id(record.as_ref(), "the record")?;
         optional_id(item.as_ref(), "the item")?;
-        if reporter.person_id() == Some(person.as_str()) {
+        if reporter == person {
             return Err(Refusal::new("you cannot report yourself"));
         }
         if reason.chars().count() > MAX_REASON_CHARS {
@@ -286,7 +286,7 @@ impl Moderation {
         &mut self,
         cx: &mut ActionCx,
         #[param("A new id for the decision")] id: String,
-        #[param("The person decided on")] person: String,
+        #[param("The person decided on")] person: MemberId,
         #[param("The reports it settles")] reports: Vec<String>,
         #[param("What is done, and why")] ruling: Ruling,
     ) -> Result<(), Refusal> {
@@ -299,7 +299,7 @@ impl Moderation {
         } = ruling;
         let by = author(cx)?;
         id_like(&id, "the decision")?;
-        id_like(&person, "the person")?;
+        id_like(person.id(), "the person")?;
         if self.decisions.find(&Id::from_raw(id.as_str())).is_some() {
             return Err(Refusal::new("a decision with this id exists"));
         }

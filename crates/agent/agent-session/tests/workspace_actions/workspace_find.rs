@@ -179,7 +179,7 @@ async fn an_agent_finds_a_conversation_by_its_name() {
     let mut chat = crate::common::open_in(
         &browser.cluster_id,
         "so.tilo.chat",
-        "ada",
+        &tilo_actions::MemberId::person("ada"),
         ReplicaActor::Owner,
         Seed::New,
     )

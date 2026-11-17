@@ -2,6 +2,7 @@
 
 use super::*;
 use crate::{AppCatalogue, Replica, ReplicaActor, Seed, component_apps};
+use tilo_actions::MemberId;
 
 const WORKSPACE: &str = "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71";
 
@@ -12,7 +13,7 @@ fn agents_video_survey() -> Vec<ActionDescriptor> {
         &AppCatalogue::new(component_apps()),
         VIDEO_EDITOR,
         WORKSPACE,
-        "editor",
+        &MemberId::person("editor"),
         ReplicaActor::Agent,
         Seed::New,
     )
@@ -51,7 +52,7 @@ fn a_person_is_never_offered_the_agent_renders() {
         &catalogue,
         VIDEO_EDITOR,
         WORKSPACE,
-        "ada",
+        &MemberId::person("ada"),
         ReplicaActor::Owner,
         Seed::New,
     )

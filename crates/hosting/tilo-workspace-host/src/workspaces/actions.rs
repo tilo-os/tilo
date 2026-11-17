@@ -1380,7 +1380,7 @@ impl Workspaces {
             .filter(|member| !member.removed)
             .map(|member| {
                 json!({
-                    "person": member.id.key(),
+                    "member": member.id,
                     "name": (!member.name.is_empty()).then_some(&member.name),
                     "role": member.role.map(Role::key),
                     "owner": member.root().is_some_and(owns),

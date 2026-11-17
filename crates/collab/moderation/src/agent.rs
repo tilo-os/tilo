@@ -13,7 +13,7 @@
 
 use std::collections::BTreeMap;
 
-use tilo_action_policy::Change;
+use tilo_action_policy::{Change, MemberId};
 
 use crate::activity::{Activity, burst};
 use crate::judge::{Case, Earlier, Judge, JudgeError, Reported, Verdict};
@@ -34,7 +34,7 @@ pub trait WorkspaceApi {
 
     /// `person`'s changes across the workspace's records since `since_ms`,
     /// oldest first ([`crate::activity_of`] over each record).
-    fn activity(&mut self, person: &str, since_ms: i64) -> Vec<Activity>;
+    fn activity(&mut self, person: &MemberId, since_ms: i64) -> Vec<Activity>;
 
     /// A governance change on the workspace.
     ///
@@ -98,8 +98,8 @@ impl<J: Judge> ModerationAgent<J> {
 
     /// The people with reports nobody decided yet.
     #[must_use]
-    pub fn reported(moderation: &Moderation) -> Vec<String> {
-        let mut people: Vec<String> = moderation
+    pub fn reported(moderation: &Moderation) -> Vec<MemberId> {
+        let mut people: Vec<MemberId> = moderation
             .open_reports()
             .map(|report| report.person.clone())
             .collect();
@@ -110,7 +110,7 @@ impl<J: Judge> ModerationAgent<J> {
 
     /// Whether `person`'s recent actions are a burst of deletions worth a
     /// look without a report.
-    pub fn bursting(api: &mut impl WorkspaceApi, person: &str) -> bool {
+    pub fn bursting(api: &mut impl WorkspaceApi, person: &MemberId) -> bool {
         let since = api.now_ms().saturating_sub(BURST_WINDOW_MS);
         burst(&api.activity(person, since), BURST_COUNT, BURST_WINDOW_MS)
     }
@@ -119,12 +119,12 @@ impl<J: Judge> ModerationAgent<J> {
     /// earlier decisions. The host asks [`Self::verdict`] on it away from the
     /// workspace, then [`Self::enforce`]s the answer, so the workspace is never held
     /// while the model thinks.
-    pub fn look(api: &mut impl WorkspaceApi, moderation: &Moderation, person: &str) -> Look {
+    pub fn look(api: &mut impl WorkspaceApi, moderation: &Moderation, person: &MemberId) -> Look {
         let now = api.now_ms();
         let reports: Vec<_> = moderation.open_reports_on(person).collect();
         let activity = api.activity(person, now.saturating_sub(LOOKBACK_MS));
         let case = Case {
-            person: person.to_owned(),
+            person: person.clone(),
             reports: reports
                 .iter()
                 .map(|report| Reported {
@@ -142,7 +142,7 @@ impl<J: Judge> ModerationAgent<J> {
             earlier: moderation
                 .decisions
                 .iter()
-                .filter(|decision| decision.person == person)
+                .filter(|decision| &decision.person == person)
                 .map(|decision| Earlier {
                     outcome: decision.outcome,
                     reasoning: decision.reasoning.clone(),
@@ -195,8 +195,8 @@ impl<J: Judge> ModerationAgent<J> {
         model: String,
     ) -> Enforced {
         let Look { now, reports, case } = look;
-        let person = case.person.as_str();
-        let id = format!("{person}@{now}");
+        let person = &case.person;
+        let id = format!("{}@{now}", person.id());
         let run = format!("moderation:{id}");
         let mut failures = Vec::new();
         let mut outcome = verdict.outcome;
@@ -212,14 +212,16 @@ impl<J: Judge> ModerationAgent<J> {
                 );
                 let until = now.saturating_add(minutes.saturating_mul(60_000));
                 until_ms = Some(until);
-                api.govern(Change::Restrict {
-                    person: person.to_owned(),
-                    until_ms: u64::try_from(until).unwrap_or_default(),
+                governed_person(person).and_then(|person| {
+                    api.govern(Change::Restrict {
+                        person,
+                        until_ms: u64::try_from(until).unwrap_or_default(),
+                    })
                 })
             }
-            Outcome::Ban => api.govern(Change::Ban {
-                person: person.to_owned(),
-            }),
+            Outcome::Ban => {
+                governed_person(person).and_then(|person| api.govern(Change::Ban { person }))
+            }
         };
         if let Err(why) = governed {
             // Out of the agent's reach (a Moderator, the Owner): record what
@@ -235,7 +237,7 @@ impl<J: Judge> ModerationAgent<J> {
         };
         let decision = moderation::Decide {
             id,
-            person: person.to_owned(),
+            person: person.clone(),
             reports,
             ruling: Ruling {
                 outcome,
@@ -258,7 +260,6 @@ impl<J: Judge> ModerationAgent<J> {
     /// Each part that failed, with why; the others are still done.
     pub fn restore(api: &mut impl WorkspaceApi, decision: &Decision) -> Result<(), Vec<String>> {
         let mut failures = Vec::new();
-        let person = decision.person.clone();
         let lifted = match decision.outcome {
             Outcome::NoAction => Ok(()),
             Outcome::Restrict => {
@@ -266,10 +267,12 @@ impl<J: Judge> ModerationAgent<J> {
                 if lapsed {
                     Ok(())
                 } else {
-                    api.govern(Change::Unrestrict { person })
+                    governed_person(&decision.person)
+                        .and_then(|person| api.govern(Change::Unrestrict { person }))
                 }
             }
-            Outcome::Ban => api.govern(Change::Unban { person }),
+            Outcome::Ban => governed_person(&decision.person)
+                .and_then(|person| api.govern(Change::Unban { person })),
         };
         if let Err(why) = lifted {
             failures.push(format!("lifting: {why}"));
@@ -291,6 +294,14 @@ impl<J: Judge> ModerationAgent<J> {
             Err(failures)
         }
     }
+}
+
+/// The person a governance change names: only a person is restricted or banned.
+fn governed_person(member: &MemberId) -> Result<String, String> {
+    member
+        .person_id()
+        .map(str::to_owned)
+        .ok_or_else(|| format!("only a person is restricted or banned, not {member}"))
 }
 
 /// Takes back `activity` record by record: per record and per invoker

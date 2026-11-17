@@ -54,7 +54,7 @@ const MOST_SCANNED_VALUES: usize = 1 << 20;
 pub struct ConfinedReplica {
     app_id: String,
     workspace: String,
-    member: String,
+    member: tilo_actions::MemberId,
     /// JSON [`ReplicaActor`], sent again to a revived worker.
     actor: String,
     record: DocumentId,
@@ -139,7 +139,7 @@ impl ConfinedReplica {
         catalogue: &AppCatalogue,
         app_id: &str,
         workspace: &str,
-        member: &str,
+        member: &tilo_actions::MemberId,
         actor: &ReplicaActor,
         seed: Seed,
     ) -> Result<Self, AppError> {
@@ -168,7 +168,7 @@ impl ConfinedReplica {
             .call(&Request::Open {
                 app_id: definition.app_id().to_owned(),
                 workspace: workspace.to_owned(),
-                member: member.to_owned(),
+                member: member.clone(),
                 actor: actor.clone(),
                 seed,
             })
@@ -183,7 +183,7 @@ impl ConfinedReplica {
         let replica = Self {
             app_id: definition.app_id().to_owned(),
             workspace: workspace.to_owned(),
-            member: member.to_owned(),
+            member: member.clone(),
             actor,
             record,
             content: None,
@@ -1454,7 +1454,7 @@ mod tests {
             &AppCatalogue::native(),
             "so.tilo.notes",
             WORKSPACE,
-            "maker",
+            &tilo_actions::MemberId::person("maker"),
             &ReplicaActor::Agent,
             Seed::New,
         )

@@ -180,7 +180,7 @@ pub async fn run() {
     let mut source = crate::common::open_in(
         &workspace.workspace,
         "so.tilo.chat",
-        &source_author,
+        &tilo_actions::MemberId::person(source_author.as_str()),
         ReplicaActor::Owner,
         seed,
     )

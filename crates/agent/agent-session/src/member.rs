@@ -2022,7 +2022,7 @@ impl AgentMember {
             &self.catalogue,
             app_id,
             &self.workspace,
-            crate::control::agent_id(&self.identity.delegation),
+            &crate::control::person(&self.identity.delegation),
             &crate::ReplicaActor::Agent,
             seed,
         )

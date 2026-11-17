@@ -168,7 +168,7 @@ impl Workspace {
                 &self.catalogue,
                 CHAT,
                 &self.id,
-                author,
+                &ui::tilo_actions::MemberId::person(author),
                 ReplicaActor::Owner,
                 Seed::Existing {
                     record: ui::record::DocumentId::package_primary(),

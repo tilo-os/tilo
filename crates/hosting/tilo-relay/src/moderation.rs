@@ -142,7 +142,7 @@ impl<R: Resource> WorkspaceApi for ReplicaApi<'_, R> {
         self.now_ms
     }
 
-    fn activity(&mut self, person: &str, since_ms: i64) -> Vec<Activity> {
+    fn activity(&mut self, person: &tilo_actions::MemberId, since_ms: i64) -> Vec<Activity> {
         let app = self.replica.app_id();
         let record = self.record();
         let mut activity = self

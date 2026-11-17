@@ -51,6 +51,7 @@ use tilo_user_identity::{DeviceCapabilities, RevocationList};
 use crate::harness::hosted::{Hosted, Laptop, Options, Unlisted};
 use crate::harness::page::Page as Browser;
 use crate::support::{Device, WORKSPACE, enrol, workspace};
+use tilo_actions::MemberId;
 
 const NOTES: &str = "so.tilo.notes";
 const SHEETS: &str = "so.tilo.sheets";
@@ -115,7 +116,7 @@ impl Browser {
                 // refuses to open what came before it.
                 let page = match crate::common::open(
                     app,
-                    "ada",
+                    &MemberId::person("ada"),
                     ReplicaActor::Owner,
                     Seed::Existing {
                         record: route_record(&route.record),
@@ -436,7 +437,13 @@ struct Page {
 
 impl Page {
     fn create(browser: &Browser, app: &str) -> Self {
-        let mut page = crate::common::open(app, "ada", ReplicaActor::Owner, Seed::New).unwrap();
+        let mut page = crate::common::open(
+            app,
+            &MemberId::person("ada"),
+            ReplicaActor::Owner,
+            Seed::New,
+        )
+        .unwrap();
         let route = DocumentRoute {
             app_id: app.into(),
             cluster_id: WORKSPACE.into(),
@@ -467,7 +474,7 @@ impl Page {
             {
                 let mut app = crate::common::open(
                     SHEETS,
-                    "bea",
+                    &MemberId::person("bea"),
                     ReplicaActor::Owner,
                     Seed::Existing {
                         record: route_record(&creator.route.record),
@@ -637,7 +644,7 @@ async fn a_browser_sees_every_task_of_an_agent_live_and_after_a_reload() {
         {
             let replayed = crate::common::open(
                 SHEETS,
-                "ada",
+                &MemberId::person("ada"),
                 ReplicaActor::Owner,
                 Seed::Existing {
                     record: route_record(&page.route.record),

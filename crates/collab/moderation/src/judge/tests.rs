@@ -40,7 +40,7 @@ fn the_input_shows_the_newest_actions_and_keeps_instructions_apart() {
         content: true,
     };
     let case = Case {
-        person: "p".into(),
+        person: tilo_actions::MemberId::person("p"),
         reports: Vec::new(),
         activity: (0..MAX_ACTIVITY + 5).map(item).collect(),
         earlier: Vec::new(),

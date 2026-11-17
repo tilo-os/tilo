@@ -91,7 +91,7 @@ pub(crate) enum Request {
     Open {
         app_id: String,
         workspace: String,
-        member: String,
+        member: tilo_actions::MemberId,
         /// JSON `ReplicaActor`: a bot's standing nests maps postcard
         /// cannot describe.
         actor: String,

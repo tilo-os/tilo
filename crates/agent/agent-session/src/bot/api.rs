@@ -28,7 +28,8 @@ use tilo_actions::remote::{
     ReceiptStatus, RecordAddress, RecordCopy, RecordReads, RecordWake,
 };
 use tilo_actions::{
-    ActionContext, ActionFailure, ActionInvoker, ActionOutput, InvocationId, InvocationUpdate,
+    ActionContext, ActionFailure, ActionInvoker, ActionOutput, Actor, InvocationId,
+    InvocationUpdate, MemberId,
 };
 use tilo_peer_state::document_frame::DocumentRoute;
 
@@ -67,7 +68,7 @@ pub trait ApiMember: Send {
     fn find_in_history(
         &self,
         step: &RunStep,
-        actor: &str,
+        actor: &Actor,
     ) -> Option<(DocumentRoute, ActionContext)>;
     /// The outbox stored at `field` of the record at `route`, in order.
     fn outbox(&self, route: &DocumentRoute, field: &str) -> Vec<OutboxRow>;
@@ -77,7 +78,7 @@ pub trait ApiMember: Send {
         &self,
         route: &DocumentRoute,
         step: &RunStep,
-        actor: &str,
+        actor: &Actor,
         field: &str,
     ) -> Vec<String>;
 }
@@ -87,15 +88,12 @@ pub trait ApiMember: Send {
 pub(crate) fn step_change(
     doc: &automerge::Automerge,
     step: &RunStep,
-    actor: &str,
+    actor: &Actor,
 ) -> Option<(automerge::Change, ActionContext)> {
     doc.get_changes(&[]).into_iter().rev().find_map(|change| {
         let context = ActionContext::from_change_message(change.message()?)?;
-        let by = context
-            .invoker
-            .as_ref()
-            .map(|invoker: &tilo_actions::ActionInvoker| invoker.acting.by.key());
-        (RunStep::of(&context).as_ref() == Some(step) && by.as_deref() == Some(actor))
+        let by = context.invoker.as_ref().map(|invoker| &invoker.acting.by);
+        (RunStep::of(&context).as_ref() == Some(step) && by == Some(actor))
             .then(|| (change.clone(), context))
     })
 }
@@ -106,7 +104,7 @@ pub(crate) fn step_change(
 pub(crate) fn queued_by_step(
     doc: &automerge::Automerge,
     step: &RunStep,
-    actor: &str,
+    actor: &Actor,
     field: &str,
 ) -> Vec<String> {
     let Some((change, _)) = step_change(doc, step, actor) else {
@@ -223,8 +221,8 @@ impl<P: ApiMember> BotApi<P> {
         self.cause.lock_recover().clone()
     }
 
-    fn actor(&self) -> String {
-        format!("bot:{}", self.installation)
+    fn actor(&self) -> Actor {
+        Actor::Member(MemberId::bot(self.installation.clone()))
     }
 
     fn its_own(&self, caller: &Caller) -> bool {

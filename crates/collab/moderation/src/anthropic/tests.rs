@@ -28,7 +28,7 @@ fn the_profile_defaults_to_the_small_model_and_reads_its_key_from_the_store() {
     );
 
     let body = judge.body(&Case {
-        person: "p".into(),
+        person: tilo_action_policy::MemberId::person("p"),
         reports: Vec::new(),
         activity: Vec::new(),
         earlier: Vec::new(),

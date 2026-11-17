@@ -51,7 +51,7 @@ pub struct Earlier {
 /// Everything the model is shown about one person.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct Case {
-    pub person: String,
+    pub person: tilo_action_policy::MemberId,
     pub reports: Vec<Reported>,
     /// Oldest first, the newest [`MAX_ACTIVITY`].
     pub activity: Vec<Activity>,

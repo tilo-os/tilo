@@ -31,7 +31,13 @@ impl PlanModel for Canned {
 }
 
 fn context_with(app_id: &str) -> (PlanContext, DocumentRoute, Replica) {
-    let app = crate::common::open(app_id, "agent", ReplicaActor::Agent, Seed::New).unwrap();
+    let app = crate::common::open(
+        app_id,
+        &tilo_actions::MemberId::person("agent"),
+        ReplicaActor::Agent,
+        Seed::New,
+    )
+    .unwrap();
     let route = DocumentRoute {
         app_id: app_id.into(),
         cluster_id: WORKSPACE.into(),

@@ -50,7 +50,7 @@ async fn remote_encrypted_chat_primary_is_discoverable_after_host_restart() {
     let mut source = crate::common::open_in(
         &workspace.workspace,
         "so.tilo.chat",
-        &hex::encode(writer_device.cert.user_public_key),
+        &tilo_actions::MemberId::person(hex::encode(writer_device.cert.user_public_key)),
         ReplicaActor::Owner,
         Seed::New,
     )

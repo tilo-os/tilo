@@ -96,7 +96,7 @@ impl ApiMember for FakeMember {
     fn find_in_history(
         &self,
         step: &RunStep,
-        actor: &str,
+        actor: &Actor,
     ) -> Option<(DocumentRoute, ActionContext)> {
         self.history
             .lock()
@@ -104,12 +104,7 @@ impl ApiMember for FakeMember {
             .iter()
             .find(|(_, context)| {
                 RunStep::of(context).as_ref() == Some(step)
-                    && context
-                        .invoker
-                        .as_ref()
-                        .map(|invoker| invoker.acting.by.key())
-                        .as_deref()
-                        == Some(actor)
+                    && context.invoker.as_ref().map(|invoker| &invoker.acting.by) == Some(actor)
             })
             .cloned()
     }
@@ -122,7 +117,7 @@ impl ApiMember for FakeMember {
         &self,
         _route: &DocumentRoute,
         _step: &RunStep,
-        _actor: &str,
+        _actor: &Actor,
         _field: &str,
     ) -> Vec<String> {
         self.queued_in_history.lock().unwrap().clone()

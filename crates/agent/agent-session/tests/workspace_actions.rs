@@ -175,6 +175,7 @@ use crate::harness::page::Page;
 #[cfg(test)]
 use crate::support::WORKSPACE;
 use crate::support::{Device, enrol, ready, start_peer};
+use tilo_actions::MemberId;
 
 const SHEETS: &str = "so.tilo.sheets";
 const EBOOK: &str = "so.tilo.ebook";
@@ -207,7 +208,7 @@ async fn an_existing_native_chat_reference_discovers_local_views_over_the_govern
     let mut source = crate::common::open_in(
         &workspace.workspace,
         "so.tilo.chat",
-        "ada",
+        &MemberId::person("ada"),
         ReplicaActor::Owner,
         Seed::New,
     )
@@ -271,7 +272,7 @@ async fn an_existing_native_chat_reference_discovers_local_views_over_the_govern
     let provider = record_provider(&route);
     let policy = ui::permissions::PermissionContext::member_of(
         &workspace.workspace,
-        &ui::permissions::MemberId::person("ada"),
+        &MemberId::person("ada"),
         ui::permissions::Role::Owner,
     );
     let source_views = source
@@ -645,9 +646,14 @@ impl Page {
         app: &str,
         before_publish: impl FnOnce(&DocumentRoute),
     ) -> DocumentRoute {
-        let mut page =
-            crate::common::open_in(&self.cluster_id, app, "ada", ReplicaActor::Owner, Seed::New)
-                .unwrap();
+        let mut page = crate::common::open_in(
+            &self.cluster_id,
+            app,
+            &MemberId::person("ada"),
+            ReplicaActor::Owner,
+            Seed::New,
+        )
+        .unwrap();
         let route = DocumentRoute {
             app_id: app.into(),
             cluster_id: self.cluster_id.clone(),
@@ -675,7 +681,7 @@ impl Page {
         crate::common::open_in(
             &self.cluster_id,
             &route.app_id,
-            "ada",
+            &MemberId::person("ada"),
             ReplicaActor::Owner,
             Seed::Existing {
                 record: route_record(&route.record),

@@ -56,7 +56,7 @@ pub(super) struct Bounded {
     /// policy is asked about.
     pub(super) person_caller: Caller,
     /// The person's policy actor id.
-    pub(super) person: String,
+    pub(super) person: ui::permissions::policy::PersonId,
     /// The agent acting for the person, by its agent id.
     pub(super) agent: Option<String>,
     /// The name that agent goes by ([`Caller::agent_name`]).
@@ -64,7 +64,11 @@ pub(super) struct Bounded {
 }
 
 /// The replica a bounded caller acts through, by the record it holds and who.
-pub(super) type BoundedKey = (DocumentRoute, String, Option<String>);
+pub(super) type BoundedKey = (
+    DocumentRoute,
+    ui::permissions::policy::PersonId,
+    Option<String>,
+);
 
 /// A caller's replica of one record, and the standing it was opened with.
 pub(super) struct BoundedReplica {
@@ -361,13 +365,13 @@ impl Worker {
     /// in no person's name.
     pub(super) fn bounded(&self, caller: &Caller) -> Option<Bounded> {
         if let Some(person) = caller.acting().person_id() {
-            if person == self.member {
+            if person == self.member.as_str() {
                 return None;
             }
             return Some(Bounded {
                 caller: caller.clone(),
                 person_caller: caller.clone(),
-                person: person.to_owned(),
+                person: person.into(),
                 agent: None,
                 agent_name: None,
             });
@@ -385,7 +389,7 @@ impl Worker {
                 None => person,
             })
         })?;
-        let person = person_caller.acting().person_id()?.to_owned();
+        let person = person_caller.acting().person_id()?.into();
         Some(Bounded {
             caller: caller.clone(),
             person,
@@ -416,7 +420,7 @@ impl Worker {
         match governed {
             Some(policy)
                 if policy.workspace == cluster
-                    && policy.standing.person_id().unwrap_or_default() == who.person =>
+                    && policy.standing.person_id().unwrap_or_default() == who.person.as_str() =>
             {
                 Ok(policy)
             }
@@ -552,7 +556,7 @@ impl Worker {
                 &self.catalogue,
                 &holder.app_id,
                 &holder.cluster_id,
-                &who.person,
+                &ui::permissions::MemberId::Person(who.person.clone()),
                 &member_actor(&policy, who)?,
                 Seed::Existing {
                     record: reads::record_id(&holder.record).map_err(unavailable)?,

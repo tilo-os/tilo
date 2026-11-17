@@ -95,7 +95,7 @@ async fn a_backends_key_invites_a_reviewer_who_enters_with_a_key_of_their_own() 
     let rosa_hex = hex::encode(rosa.verifying_key().to_bytes());
     let row = |person: &str| {
         rows.iter()
-            .find(|row| row["person"] == person)
+            .find(|row| row["member"]["person"] == person)
             .cloned()
             .unwrap_or_else(|| panic!("{person} has a row in {listed}"))
     };
@@ -197,7 +197,7 @@ async fn a_backends_key_invites_a_reviewer_who_enters_with_a_key_of_their_own() 
     assert_eq!(
         after
             .iter()
-            .find(|row| row["person"] == ada_hex)
+            .find(|row| row["member"]["person"] == ada_hex)
             .map(|row| row["name"].clone()),
         Some(json!("Ada")),
         "it does not rename her after its key: {after:?}"

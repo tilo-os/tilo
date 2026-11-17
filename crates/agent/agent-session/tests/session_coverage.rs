@@ -146,7 +146,7 @@ fn page(
         catalogue,
         &route.app_id,
         WORKSPACE,
-        "ada",
+        &tilo_actions::MemberId::person("ada"),
         tilo_agent_session::ReplicaActor::Owner,
         Seed::Existing {
             record,

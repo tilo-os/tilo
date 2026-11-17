@@ -134,87 +134,84 @@ async fn an_agents_computer_lists_the_workspace_and_writes_what_another_device_s
     let deadline = tilo_test_env::hang_deadline();
     let mut edited = false;
     let mut shown = false;
-    let (view, phases) = loop {
-        browser.pump();
-        let here: Vec<collab_types::presence::Shown> = browser
-            .here()
-            .into_iter()
-            .filter(|member| member.agent)
-            .collect();
-        let run = here
-            .iter()
-            .find(|member| member.label == "Claude Code")
-            .cloned();
-        let phases: Vec<tilo_actions::InteractionPhase> = browser
-            .narrated
-            .iter()
-            .filter(|(_, work)| {
-                // The run is an agent member: its actor key names the kind
-                // before the publisher.
-                run.as_ref()
-                    .is_some_and(|run| work.actor.by.key() == format!("agent:{}", run.publisher))
-            })
-            .filter(|(record, work)| {
-                work.action.id == "new-sheet"
-                    && (record.app.as_str(), record.record.as_str())
-                        == (SHEETS, sheets.record.as_str())
-            })
-            .map(|(_, work)| work.phase.clone())
-            .collect();
-        if !edited {
-            let app = browser.mount(&sheets);
-            if sheet_names(&app).iter().any(|name| name == "Budget") {
-                let groups: Vec<tilo_actions::WorkGroup> = app
-                    .read(|doc| {
-                        doc.clone()
-                            .get_changes(&[])
-                            .iter()
-                            .filter_map(|change| change.message())
-                            .filter_map(|message| {
-                                tilo_actions::ActionContext::from_change_message(message)
-                            })
-                            .filter_map(|context| context.group)
-                            .collect()
-                    })
-                    .unwrap();
-                assert!(
-                    groups
-                        .iter()
-                        .any(|run| run.id.starts_with("agent-session:")
+    let (view, phases) =
+        loop {
+            browser.pump();
+            let here: Vec<collab_types::presence::Shown> = browser
+                .here()
+                .into_iter()
+                .filter(|member| member.agent)
+                .collect();
+            let run = here
+                .iter()
+                .find(|member| member.label == "Claude Code")
+                .cloned();
+            let phases: Vec<tilo_actions::InteractionPhase> = browser
+                .narrated
+                .iter()
+                .filter(|(_, work)| {
+                    run.as_ref()
+                        .is_some_and(|run| work.actor.agent_id() == Some(run.publisher.as_str()))
+                })
+                .filter(|(record, work)| {
+                    work.action.id == "new-sheet"
+                        && (record.app.as_str(), record.record.as_str())
+                            == (SHEETS, sheets.record.as_str())
+                })
+                .map(|(_, work)| work.phase.clone())
+                .collect();
+            if !edited {
+                let app = browser.mount(&sheets);
+                if sheet_names(&app).iter().any(|name| name == "Budget") {
+                    let groups: Vec<tilo_actions::WorkGroup> = app
+                        .read(|doc| {
+                            doc.clone()
+                                .get_changes(&[])
+                                .iter()
+                                .filter_map(|change| change.message())
+                                .filter_map(|message| {
+                                    tilo_actions::ActionContext::from_change_message(message)
+                                })
+                                .filter_map(|context| context.group)
+                                .collect()
+                        })
+                        .unwrap();
+                    assert!(
+                        groups.iter().any(|run| run.id.starts_with("agent-session:")
                             && run.label == "Claude Code"),
-                    "the change names the agent's session: {groups:?}"
-                );
-                edited = true;
+                        "the change names the agent's session: {groups:?}"
+                    );
+                    edited = true;
+                }
             }
-        }
-        // The workbook it works in is open on the workspace's layout, as a
-        // window of the person's, for every page to draw.
-        shown = shown || layout_windows(&mut browser, &sheets.record) > 0;
-        // What it does reads as the catalogue's own line for such a step, in
-        // the app as a person reads its name, not as an English verb glued to
-        // an id.
-        let working = ui::step::lines::step(&tilo_actions::Step::new(
-            tilo_actions::StepKind::Work,
-            Some("Word processor"),
-        ));
-        let said = run.as_ref().is_some_and(|run| {
-            run.spoken_by.as_deref() == Some(spoken_by.as_str())
-                && run.activity.as_deref() == Some(working.as_str())
-                && run.selection.is_some()
-        });
-        let committed = phases.contains(&tilo_actions::InteractionPhase::Committed);
-        if edited && said && shown && committed {
-            assert_eq!(here.len(), 1, "the agent is seen once: {here:?}");
-            break (run.unwrap(), phases);
-        }
-        assert!(
-            Instant::now() < deadline,
-            "the agent's sheet ({edited}), its window ({shown}), the agent the host speaks for \
+            // The workbook it works in is open on the workspace's layout, as a
+            // window of the person's, for every page to draw.
+            shown = shown || layout_windows(&mut browser, &sheets.record) > 0;
+            // What it does reads as the catalogue's own line for such a step, in
+            // the app as a person reads its name, not as an English verb glued to
+            // an id.
+            let working = ui::step::lines::step(&tilo_actions::Step::new(
+                tilo_actions::StepKind::Work,
+                Some("Word processor"),
+            ));
+            let said = run.as_ref().is_some_and(|run| {
+                run.spoken_by.as_deref() == Some(spoken_by.as_str())
+                    && run.activity.as_deref() == Some(working.as_str())
+                    && run.selection.is_some()
+            });
+            let committed = phases.contains(&tilo_actions::InteractionPhase::Committed);
+            if edited && said && shown && committed {
+                assert_eq!(here.len(), 1, "the agent is seen once: {here:?}");
+                break (run.unwrap(), phases);
+            }
+            assert!(
+                Instant::now() < deadline,
+                "the agent's sheet ({edited}), its window ({shown}), the agent the host speaks for \
              ({run:?}), or its narrated action ({phases:?}) never all reached the browser; \
              here: {here:?}",
-        );
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    };
+            );
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        };
 
     // It was seen applying the action and done, in that order.
     assert_eq!(

@@ -133,7 +133,7 @@ fn opened_sheets(member: &Browser, route: &DocumentRoute) -> Option<Vec<String>>
         &crate::common::catalogue(),
         &route.app_id,
         &route.cluster_id,
-        "bob",
+        &tilo_actions::MemberId::person("bob"),
         tilo_agent_session::ReplicaActor::Owner,
         tilo_agent_session::Seed::Existing {
             record,

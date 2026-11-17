@@ -21,7 +21,7 @@ use collab_types::DocumentMutation;
 use serde_json::{Map, Value};
 use tilo_actions::api::{ActionAddress, ApiError};
 use tilo_actions::remote::CatalogueRow;
-use tilo_actions::{ActionContext, ActionInvoker, ActionOutput};
+use tilo_actions::{ActionContext, ActionInvoker, ActionOutput, Actor, MemberId};
 use tilo_peer_state::document_frame::DocumentRoute;
 
 use super::api::{ApiMember, RunStep};
@@ -34,6 +34,7 @@ use ui::permissions::policy;
 pub struct HeldRecords {
     catalogue: AppCatalogue,
     workspace: String,
+    member: MemberId,
     actor: ReplicaActor,
     replicas: BTreeMap<DocumentRoute, ConfinedReplica>,
     /// The records held beside another (the parts of a chain its app
@@ -49,12 +50,18 @@ pub struct HeldRecords {
 }
 
 impl HeldRecords {
-    /// No records yet, for `workspace`, acting as `actor`.
+    /// No records yet, for `workspace`, held by `member` acting as `actor`.
     #[must_use]
-    pub fn new(catalogue: AppCatalogue, workspace: String, actor: ReplicaActor) -> Self {
+    pub fn new(
+        catalogue: AppCatalogue,
+        workspace: String,
+        member: MemberId,
+        actor: ReplicaActor,
+    ) -> Self {
         Self {
             catalogue,
             workspace,
+            member,
             actor,
             replicas: BTreeMap::new(),
             beside: BTreeMap::new(),
@@ -96,16 +103,6 @@ impl HeldRecords {
         standing.answer(&node, ActionKind::Read, &Context::at(now)) == Answer::Allow
     }
 
-    /// Who the replicas name as member: `bot:<id>` for a bot.
-    fn member(&self) -> String {
-        match &self.actor {
-            ReplicaActor::Bot { installation, .. } => format!("bot:{installation}"),
-            ReplicaActor::Owner | ReplicaActor::Agent | ReplicaActor::Member { .. } => {
-                "host".to_owned()
-            }
-        }
-    }
-
     /// Hold the record at `route` as `saved` (the record's whole document)
     /// has it: open it the first time, merge what changed since after. A
     /// part of a chain an app keeps beside its record (a chat's messages)
@@ -135,7 +132,7 @@ impl HeldRecords {
             &self.catalogue,
             &route.app_id,
             &self.workspace,
-            &self.member(),
+            &self.member,
             &self.actor,
             Seed::Existing {
                 record,
@@ -326,16 +323,13 @@ impl ApiMember for HeldRecords {
     fn find_in_history(
         &self,
         step: &RunStep,
-        actor: &str,
+        actor: &Actor,
     ) -> Option<(DocumentRoute, ActionContext)> {
         let recorded = |doc: &automerge::Automerge| {
             doc.get_changes(&[]).into_iter().rev().find_map(|change| {
                 let context = ActionContext::from_change_message(change.message()?)?;
-                let by = context
-                    .invoker
-                    .as_ref()
-                    .map(|invoker: &tilo_actions::ActionInvoker| invoker.acting.by.key());
-                (RunStep::of(&context).as_ref() == Some(step) && by.as_deref() == Some(actor))
+                let by = context.invoker.as_ref().map(|invoker| &invoker.acting.by);
+                (RunStep::of(&context).as_ref() == Some(step) && by == Some(actor))
                     .then_some(context)
             })
         };
@@ -364,7 +358,7 @@ impl ApiMember for HeldRecords {
         &self,
         route: &DocumentRoute,
         step: &RunStep,
-        actor: &str,
+        actor: &Actor,
         field: &str,
     ) -> Vec<String> {
         self.replicas.get(route).map_or_else(Vec::new, |replica| {
@@ -382,6 +376,7 @@ mod tests {
         let mut held = HeldRecords::new(
             AppCatalogue::native(),
             "workspace-1".into(),
+            MemberId::person("ada"),
             ReplicaActor::Owner,
         );
         let emoji = DocumentRoute {
@@ -421,6 +416,7 @@ mod tests {
         let mut held = HeldRecords::new(
             AppCatalogue::native(),
             workspace.into(),
+            MemberId::bot("b1"),
             ReplicaActor::Bot {
                 installation: "b1".into(),
                 installer: "ada".into(),

@@ -24,6 +24,7 @@ use super::own_agent::{listed_resources, page_paragraphs};
 use super::resource_support::{admit_person, open_admitted_peer};
 use super::*;
 use serde_json::{Value, json};
+use tilo_actions::MemberId;
 use tilo_actions::remote::{CataloguePage, ReceiptStatus};
 use tilo_mcp::{McpServer, Surface};
 use tilo_peer_state::join::Role;
@@ -119,9 +120,14 @@ async fn the_hosts_action_service_reads_and_acts_on_a_public_workspaces_records(
     let member_device = enrol(&member_root, "member-browser", DeviceCapabilities::member());
     admit_person(&hosted, &host, &workspace, &member_device, Role::Editor).await;
     let mut member = open_admitted_peer(&hosted, &member_device, &host, &workspace).await;
-    let mut note =
-        crate::common::open_in(&workspace, NOTES, "member", ReplicaActor::Owner, Seed::New)
-            .unwrap();
+    let mut note = crate::common::open_in(
+        &workspace,
+        NOTES,
+        &MemberId::person("member"),
+        ReplicaActor::Owner,
+        Seed::New,
+    )
+    .unwrap();
     let new_note = address_of(&note, "new-note");
     note.invoke(
         &new_note,
@@ -529,9 +535,14 @@ async fn every_paragraph_a_visitors_agent_was_told_it_wrote_reaches_their_open_n
     admit_person(&hosted, &host, &workspace, &browser_device, Role::Editor).await;
     let mut browser = open_admitted_peer(&hosted, &browser_device, &host, &workspace).await;
     // They opened Notes before their agent came: their page founded it.
-    let mut founded =
-        crate::common::open_in(&workspace, NOTES, "visitor", ReplicaActor::Owner, Seed::New)
-            .unwrap();
+    let mut founded = crate::common::open_in(
+        &workspace,
+        NOTES,
+        &MemberId::person("visitor"),
+        ReplicaActor::Owner,
+        Seed::New,
+    )
+    .unwrap();
     let notes_route = DocumentRoute {
         app_id: NOTES.into(),
         cluster_id: workspace.clone(),
@@ -669,9 +680,14 @@ async fn an_agents_window_lands_on_the_layout_a_page_wrote_after_the_service_joi
     );
     admit_person(&hosted, &host, &workspace, &browser_device, Role::Editor).await;
     let mut browser = open_admitted_peer(&hosted, &browser_device, &host, &workspace).await;
-    let mut founded =
-        crate::common::open_in(&workspace, NOTES, "visitor", ReplicaActor::Owner, Seed::New)
-            .unwrap();
+    let mut founded = crate::common::open_in(
+        &workspace,
+        NOTES,
+        &MemberId::person("visitor"),
+        ReplicaActor::Owner,
+        Seed::New,
+    )
+    .unwrap();
     let notes_record = founded.wire_record().to_owned();
     crate::support::written(
         &browser.peer,

@@ -407,7 +407,7 @@ impl Worker {
         &mut self,
         app_id: &str,
         workspace: &str,
-        member: &str,
+        member: &MemberId,
         actor: ReplicaActor,
         seed: Option<(String, Vec<Vec<u8>>)>,
     ) -> Reply {

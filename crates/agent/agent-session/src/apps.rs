@@ -31,7 +31,7 @@ use ui::framework::{AttachedView, ResourceSelection};
 use ui::permissions::{PermissionContext, Role, policy};
 use ui::portable_storage::PortableStorage;
 use ui::record::{DocumentCheckout, DocumentId, RecordOwners};
-use ui::tilo_resource::{Place, ResourceKind};
+use ui::tilo_resource::{MemberId, Place, ResourceKind};
 
 /// An app whose records this host keeps and whose windows another device
 /// holds: a hosted workspace's Browser, whose window runs in the workspace's
@@ -442,7 +442,7 @@ impl Replica {
         catalogue: &AppCatalogue,
         app_id: &str,
         workspace: &str,
-        member: &str,
+        member: &MemberId,
         actor: ReplicaActor,
         seed: Seed,
     ) -> Result<Self, AppError> {
@@ -461,7 +461,7 @@ impl Replica {
         catalogue: &AppCatalogue,
         app_id: &str,
         workspace: &str,
-        member: &str,
+        member: &MemberId,
         actor: ReplicaActor,
         seed: Seed,
         content: Option<tilo_content::ContentStore>,
@@ -483,8 +483,7 @@ impl Replica {
             .by
             .member_id()
             .cloned()
-            .or_else(|| ui::tilo_resource::MemberId::parse(member))
-            .unwrap_or_else(|| ui::tilo_resource::MemberId::person(""));
+            .unwrap_or_else(|| member.clone());
         let (checkout, bytes, created) = seeded(definition, kind, workspace, &creator, seed)?;
         let opening = AttachedView::opening(definition, workspace, checkout, bytes)
             .for_invoker(&invoker)
@@ -1142,13 +1141,19 @@ impl Replica {
     ///
     /// [`AppError::Launch`] for any actor but a member.
     pub fn renew(&mut self, actor: ReplicaActor) -> Result<(), AppError> {
-        if !matches!(actor, ReplicaActor::Member { .. }) {
+        let ReplicaActor::Member {
+            standing,
+            sandbox,
+            unix_time,
+            ..
+        } = actor
+        else {
             return Err(AppError::Launch(
                 "only a member's standing is renewed".into(),
             ));
-        }
-        let (_, permissions) = replica_standing(actor, "", "");
-        self.view.set_permissions(permissions);
+        };
+        self.view
+            .set_permissions(member_permissions(standing, sandbox, unix_time));
         Ok(())
     }
 
@@ -1368,7 +1373,7 @@ fn seeded(
     definition: &ApplicationDefinition,
     kind: ResourceKind,
     workspace: &str,
-    member: &ui::tilo_resource::MemberId,
+    member: &MemberId,
     seed: Seed,
 ) -> Result<(DocumentCheckout, Vec<u8>, bool), AppError> {
     let (checkout, bytes, created) = match seed {
@@ -1420,7 +1425,7 @@ fn genesis(
     workspace: &str,
     checkout: &DocumentCheckout,
     kind: ResourceKind,
-    creator: &ui::tilo_resource::MemberId,
+    creator: &MemberId,
 ) -> Result<Vec<u8>, AppError> {
     let launch = |error: &dyn std::fmt::Display| AppError::Launch(error.to_string());
     let cache = PortableStorage::new("agent-records", DEVICE).map_err(|e| launch(&e))?;
@@ -1484,40 +1489,33 @@ fn discover_views(
 fn replica_standing(
     actor: ReplicaActor,
     workspace: &str,
-    id: &str,
+    member: &MemberId,
 ) -> (tilo_actions::ActionInvoker, PermissionContext) {
-    let mut invoker = tilo_actions::ActionInvoker::person(id);
+    let mut invoker = tilo_actions::ActionInvoker::member(member.clone());
     let permissions = match actor {
         ReplicaActor::Agent => {
-            let member = PermissionContext::member_of(
-                workspace,
-                &ui::permissions::MemberId::person(id),
-                Role::Editor,
-            );
-            let acting = policy::Acting::agent(id).acting_for(policy::Acting::person(id));
+            let id = member.id();
+            let permissions = PermissionContext::member_of(workspace, member, Role::Editor);
+            let acting =
+                policy::Acting::agent(id).acting_for(policy::Acting::member(member.clone()));
             let granted = policy::roles::agent_grants(workspace, id, id, &[]);
-            match member
+            match permissions
                 .standing()
                 .clone()
                 .as_acting(acting)
                 .map(|standing| standing.granted(granted))
             {
-                Some(standing) => member.with_standing(standing),
-                None => member.read_only(),
+                Some(standing) => permissions.with_standing(standing),
+                None => permissions.read_only(),
             }
         }
-        ReplicaActor::Owner => PermissionContext::member_of(
-            workspace,
-            &ui::permissions::MemberId::person(id),
-            Role::Owner,
-        ),
+        ReplicaActor::Owner => PermissionContext::member_of(workspace, member, Role::Owner),
         ReplicaActor::Bot {
             installer,
             standing,
             ..
         } => {
-            invoker = tilo_actions::ActionInvoker::admitted(&tilo_actions::Acting::of_key(id))
-                .acting_for(installer);
+            invoker = invoker.acting_for(installer);
             PermissionContext::from_standing(standing)
         }
         ReplicaActor::Member {
@@ -1528,17 +1526,8 @@ fn replica_standing(
             agent_name,
             agent_session,
         } => {
-            // The host bounded the standing as it reads the caller
-            // (`Caller::invoker`), and puts an ask to the person on their own
-            // devices when their agent acts.
             let person = standing.person_id().unwrap_or_default().to_owned();
-            let permissions = PermissionContext::new(
-                ui::permissions::Acting::person(person.clone()),
-                sandbox,
-                standing,
-            )
-            .at_unix_time(unix_time)
-            .reaching_person();
+            let permissions = member_permissions(standing, sandbox, unix_time);
             if let Some(agent) = agent {
                 // Named as the host admitted it (`Caller::acting`), so
                 // History reads the agent, for the person.
@@ -1553,4 +1542,18 @@ fn replica_standing(
         }
     };
     (invoker, permissions)
+}
+
+/// A member's permissions on `standing`: the host bounded the standing as it
+/// reads the caller (`Caller::invoker`), and puts an ask to the person on
+/// their own devices when their agent acts.
+fn member_permissions(
+    standing: policy::Standing,
+    sandbox: Vec<collab_types::caps::CapOverride>,
+    unix_time: u64,
+) -> PermissionContext {
+    let person = standing.person_id().unwrap_or_default().to_owned();
+    PermissionContext::new(ui::permissions::Acting::person(person), sandbox, standing)
+        .at_unix_time(unix_time)
+        .reaching_person()
 }

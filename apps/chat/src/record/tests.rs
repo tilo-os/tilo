@@ -279,7 +279,7 @@ tilo_test_env::scenario! {
         .unwrap();
         let state = bo.state().unwrap();
         let report = state.moderation.open_reports().next().unwrap();
-        assert_eq!(report.person, ADA, "a message report names its author");
+        assert_eq!(report.person, MemberId::person(ADA), "a message report names its author");
         assert_eq!(report.item, Some(message.to_string()));
         assert!(
             bo.apply(Chat::REPORT_PERSON.with(chat::ReportPerson {
@@ -295,7 +295,7 @@ tilo_test_env::scenario! {
         }))
         .unwrap();
         assert_eq!(
-            bo.state().unwrap().moderation.open_reports_on(ADA).count(),
+            bo.state().unwrap().moderation.open_reports_on(&MemberId::person(ADA)).count(),
             2
         );
 

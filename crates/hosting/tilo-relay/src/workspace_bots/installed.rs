@@ -275,6 +275,7 @@ impl BotRunner {
         let held = Arc::new(Mutex::new(HeldRecords::new(
             catalogue.clone(),
             workspace.clone(),
+            tilo_actions::MemberId::bot(bot.installation.clone()),
             ReplicaActor::Bot {
                 installation: bot.installation.clone(),
                 installer: installer.clone(),
@@ -778,7 +779,7 @@ impl BotRunner {
     }
 
     /// Who is in the workspace and in what role, as of now: `{"members":
-    /// [{"person", "role"}]}`, removed people left out. A program reads it
+    /// [{"member", "role"}]}`, removed people left out. A program reads it
     /// to judge an outside request by the requester's standing here.
     pub(crate) async fn workspace_input(&self) -> Result<Value, String> {
         let summary = self
@@ -788,8 +789,8 @@ impl BotRunner {
             .map_err(|error| error.to_string())?;
         // The workspace's root owns it whether or not governance lists the
         // person as a member.
-        let root = hex::encode(self.host.user_public_key);
-        let mut members = vec![serde_json::json!({ "person": root, "role": "owner" })];
+        let root = tilo_actions::MemberId::person(hex::encode(self.host.user_public_key));
+        let mut members = vec![serde_json::json!({ "member": root, "role": "owner" })];
         members.extend(
             summary
                 .members
@@ -803,7 +804,7 @@ impl BotRunner {
                         member.role.map(tilo_peer_state::join::Role::key)
                     };
                     serde_json::json!({
-                        "person": member.id.key(),
+                        "member": member.id,
                         "role": role,
                     })
                 }),

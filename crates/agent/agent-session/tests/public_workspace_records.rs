@@ -41,6 +41,7 @@ use tilo_relay_protocol::workspaces::Role;
 use tilo_user_identity::{CertificationPolicy, DeviceCapabilities, UserIdentity};
 
 use crate::support::{enrol, enter, entry_grant, start_workspace_host, wait_for, written};
+use tilo_actions::MemberId;
 
 const WRITER: &str = "so.tilo.word-processor";
 const CHAT: &str = "so.tilo.chat";
@@ -157,9 +158,14 @@ async fn an_agent_waits_for_a_public_workspaces_records_and_never_founds_them() 
 
     // The note, as the member's window made it: a document of its own with
     // the text they wrote.
-    let mut note =
-        crate::common::open_in(&workspace, WRITER, "member", ReplicaActor::Owner, Seed::New)
-            .unwrap();
+    let mut note = crate::common::open_in(
+        &workspace,
+        WRITER,
+        &MemberId::person("member"),
+        ReplicaActor::Owner,
+        Seed::New,
+    )
+    .unwrap();
     let (edit, refused) = crate::common::find_edit(&mut Held(&mut note), EDITS);
     assert!(
         edit.is_some(),
@@ -183,8 +189,14 @@ async fn an_agent_waits_for_a_public_workspaces_records_and_never_founds_them() 
 
     // The workspace's chat, as a member makes it: the record every window of
     // the app in this workspace opens, with a channel of their own in it.
-    let chat =
-        crate::common::open_in(&workspace, CHAT, "member", ReplicaActor::Owner, Seed::New).unwrap();
+    let chat = crate::common::open_in(
+        &workspace,
+        CHAT,
+        &MemberId::person("member"),
+        ReplicaActor::Owner,
+        Seed::New,
+    )
+    .unwrap();
     let mut chat_document = chat.read(Clone::clone).unwrap();
     crate::common::add_channel(&mut chat_document, "member", MEMBER_CHANNEL, None);
     let chat_route = DocumentRoute {

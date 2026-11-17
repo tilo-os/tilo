@@ -1780,7 +1780,7 @@ fn a_first_turn_for_real_apps_is_bounded_and_its_prefix_shared() {
             &catalogue_of_apps,
             app,
             "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71",
-            "measure",
+            &tilo_actions::MemberId::person("measure"),
             &crate::ReplicaActor::Agent,
             crate::Seed::New,
         )

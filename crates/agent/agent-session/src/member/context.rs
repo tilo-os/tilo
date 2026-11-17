@@ -417,7 +417,7 @@ impl AgentMember {
             &self.catalogue,
             app,
             &self.workspace,
-            crate::control::agent_id(&self.identity.delegation),
+            &crate::control::person(&self.identity.delegation),
             &crate::ReplicaActor::Agent,
             Seed::New,
         );

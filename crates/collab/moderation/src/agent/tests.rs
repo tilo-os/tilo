@@ -139,7 +139,7 @@ impl WorkspaceApi for FakeWorkspace {
         self.now
     }
 
-    fn activity(&mut self, person: &str, since_ms: i64) -> Vec<Activity> {
+    fn activity(&mut self, person: &MemberId, since_ms: i64) -> Vec<Activity> {
         let versions = self.board.versions();
         let destructive = destructive_verbs(&self.board.published().unwrap());
         let source = Source {
@@ -212,7 +212,7 @@ fn vandalised() -> FakeWorkspace {
     }
     let mut ada = workspace.moderation.fork().as_author(ADA);
     ada.apply(Moderation::REPORT.with(moderation::Report {
-        person: MALLORY.into(),
+        person: MemberId::person(MALLORY),
         app: None,
         record: None,
         item: None,
@@ -239,7 +239,7 @@ fn consider(
     moderation: &Moderation,
     person: &str,
 ) -> Result<Enforced, JudgeError> {
-    let look = ModerationAgent::<FakeJudge>::look(workspace, moderation, person);
+    let look = ModerationAgent::<FakeJudge>::look(workspace, moderation, &MemberId::person(person));
     let (verdict, model) = tokio::runtime::Builder::new_current_thread()
         .build()
         .unwrap()
@@ -256,7 +256,7 @@ fn a_report_restricts_through_the_grant_and_takes_back_the_deletions() {
     let moderation = workspace.moderation.state().unwrap();
     assert_eq!(
         ModerationAgent::<FakeJudge>::reported(&moderation),
-        [MALLORY]
+        [MemberId::person(MALLORY)]
     );
 
     let enforced = consider(&agent, &mut workspace, &moderation, MALLORY).unwrap();
@@ -373,7 +373,7 @@ fn a_report_about_someone_who_did_nothing_never_reaches_the_model() {
     let mut workspace = vandalised();
     let mut ada = workspace.moderation.fork().as_author(MALLORY);
     ada.apply(Moderation::REPORT.with(moderation::Report {
-        person: ADA.into(),
+        person: MemberId::person(ADA),
         app: None,
         record: None,
         item: None,
@@ -400,7 +400,7 @@ fn a_burst_of_deletions_is_noticed_without_a_report() {
     workspace.now = workspace.board.versions().last().unwrap().time_ms + 1;
     assert!(!ModerationAgent::<FakeJudge>::bursting(
         &mut workspace,
-        MALLORY
+        &MemberId::person(MALLORY)
     ));
     let ids: Vec<_> = workspace
         .board
@@ -416,7 +416,10 @@ fn a_burst_of_deletions_is_noticed_without_a_report() {
     workspace.now = workspace.board.versions().last().unwrap().time_ms + 1;
     assert!(ModerationAgent::<FakeJudge>::bursting(
         &mut workspace,
-        MALLORY
+        &MemberId::person(MALLORY)
     ));
-    assert!(!ModerationAgent::<FakeJudge>::bursting(&mut workspace, ADA));
+    assert!(!ModerationAgent::<FakeJudge>::bursting(
+        &mut workspace,
+        &MemberId::person(ADA)
+    ));
 }

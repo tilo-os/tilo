@@ -15,6 +15,7 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
+use tilo_actions::MemberId;
 use tilo_actions::api::{ActionDescriptor, ApiError};
 use tilo_agent_session::{ConfinedReplica, ReplicaActor, Seed, render};
 use tilo_content::ContentStore;
@@ -76,9 +77,14 @@ fn timeline(source: Option<&str>) -> Project {
 /// `project` held for an agent, lent `workspace`: a new record the agent loads
 /// the project into through the action API, as opening a project file does.
 fn agents_record(project: &Project, workspace: &ContentStore) -> ConfinedReplica {
-    let agent = crate::common::confined(VIDEO, "editor", &ReplicaActor::Agent, Seed::New)
-        .unwrap()
-        .lending(workspace.clone());
+    let agent = crate::common::confined(
+        VIDEO,
+        &MemberId::person("editor"),
+        &ReplicaActor::Agent,
+        Seed::New,
+    )
+    .unwrap()
+    .lending(workspace.clone());
     let load = offered(&agent, "field-edit").expect("field edits are offered");
     let edit = serde_json::json!({ "edit": video_editor::resource::load_project(project) });
     agent
@@ -283,9 +289,14 @@ fn a_second_presence_views_a_frame_of_footage_the_first_imported() {
         .unwrap_or_else(|error| panic!("the host renders: {error}"));
     let footage = made.value.unwrap()["content"].as_str().unwrap().to_owned();
 
-    let editor = crate::common::confined(VIDEO, "editor", &ReplicaActor::Agent, Seed::New)
-        .unwrap()
-        .lending(workspace.clone());
+    let editor = crate::common::confined(
+        VIDEO,
+        &MemberId::person("editor"),
+        &ReplicaActor::Agent,
+        Seed::New,
+    )
+    .unwrap()
+    .lending(workspace.clone());
     let import = offered(&editor, "import-content").unwrap().address;
     editor
         .invoke(
@@ -310,7 +321,7 @@ fn a_second_presence_views_a_frame_of_footage_the_first_imported() {
 
     let reviewer = crate::common::confined(
         VIDEO,
-        "reviewer",
+        &MemberId::person("reviewer"),
         &ReplicaActor::Agent,
         Seed::Existing {
             record: editor.record_id().clone(),

@@ -506,7 +506,7 @@ impl Workspaces {
                 catalogue,
                 app,
                 workspace,
-                &hex::encode(governor.user_public_key),
+                &tilo_actions::MemberId::person(hex::encode(governor.user_public_key)),
                 &tilo_agent_session::ReplicaActor::Owner,
                 seed,
             )

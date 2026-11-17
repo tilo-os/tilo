@@ -1,5 +1,6 @@
 //! Real certified HTTPS submit/retry and a canonical retained receipt.
 use super::*;
+use tilo_actions::MemberId;
 use tilo_agent_session::ReplicaActor;
 use tilo_session_client::Outbox;
 use ui::feedback::{Destination, Draft, Submission};
@@ -603,7 +604,7 @@ fn member(browser: &mut Browser, route: &DocumentRoute, person: &str) -> Replica
     crate::common::open_in(
         &route.cluster_id,
         &route.app_id,
-        person,
+        &MemberId::person(person),
         ReplicaActor::Owner,
         Seed::Existing {
             record: ui::record::DocumentId::package_primary(),

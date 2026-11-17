@@ -304,7 +304,7 @@ fn bot_replica(
         &AppCatalogue::native(),
         CHAT,
         workspace,
-        &format!("bot:{MODERATION_INSTALLATION}"),
+        &tilo_actions::MemberId::bot(MODERATION_INSTALLATION),
         ReplicaActor::Bot {
             installation: MODERATION_INSTALLATION.into(),
             installer: installer.into(),

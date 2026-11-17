@@ -15,6 +15,7 @@ use tilo_agent_session::{AppCatalogue, Replica, ReplicaActor, Seed};
 use tilo_moderation::{Case, Judge, JudgeError, ModerationAgent, Outcome, Verdict};
 
 use super::*;
+use tilo_actions::MemberId;
 
 const WORKSPACE: &str = "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71";
 const OWNER: &str = "owner";
@@ -66,7 +67,7 @@ fn flooded_workspace() -> Replica {
         &catalogue,
         "so.tilo.chat",
         WORKSPACE,
-        OWNER,
+        &MemberId::person(OWNER),
         ReplicaActor::Owner,
         Seed::New,
     )
@@ -124,7 +125,7 @@ fn flooded_workspace() -> Replica {
         ADA,
         chat::Chat::REPORT_MESSAGE.with(chat::record::chat::ReportMessage {
             message: spam,
-            author: tilo_resource::MemberId::person(MALLORY),
+            author: MemberId::person(MALLORY),
             reason: "spam".parse().unwrap(),
         }),
     )
@@ -173,14 +174,14 @@ fn bot_replica(page: &Replica) -> Replica {
         Grantee::person(OWNER),
     );
     let standing = Standing::person(WorkspacePolicy::new(WORKSPACE, OWNER), OWNER).acting_as(
-        tilo_action_policy::Actor::Member(tilo_action_policy::MemberId::bot(BOT)),
+        tilo_action_policy::Actor::Member(MemberId::bot(BOT)),
         [grant],
     );
     let mut bot = Replica::open(
         &AppCatalogue::native(),
         page.app_id(),
         WORKSPACE,
-        &format!("bot:{BOT}"),
+        &MemberId::bot(BOT),
         ReplicaActor::Bot {
             installation: BOT.into(),
             installer: OWNER.into(),
@@ -226,9 +227,10 @@ fn a_report_restricts_through_the_workspace_and_undoes_the_flood_as_the_bot() {
     let moderation = api.moderation().unwrap();
     assert_eq!(
         ModerationAgent::<FakeJudge>::reported(&moderation),
-        [MALLORY]
+        [MemberId::person(MALLORY)]
     );
-    let look = ModerationAgent::<FakeJudge>::look(&mut api, &moderation, MALLORY);
+    let look =
+        ModerationAgent::<FakeJudge>::look(&mut api, &moderation, &MemberId::person(MALLORY));
     assert_eq!(
         look.case.activity.len(),
         4,
@@ -254,7 +256,7 @@ fn a_report_restricts_through_the_workspace_and_undoes_the_flood_as_the_bot() {
     assert_eq!(texts_by(&messages(&page), ADA), ["hello everyone"]);
     let state = chat_state(&page);
     let decision = state.moderation.decisions.iter().next().unwrap();
-    assert_eq!(decision.person, MALLORY);
+    assert_eq!(decision.person, MemberId::person(MALLORY));
     assert_eq!(decision.outcome, Outcome::Restrict);
     assert_eq!(decision.model, "fake-model");
     assert_eq!(
@@ -264,9 +266,7 @@ fn a_report_restricts_through_the_workspace_and_undoes_the_flood_as_the_bot() {
     assert!(
         state
             .people
-            .find(&chat::record::member_slot(
-                &tilo_resource::MemberId::person(MALLORY)
-            ))
+            .find(&chat::record::member_slot(&MemberId::person(MALLORY)))
             .is_some(),
         "she keeps her place in the roster"
     );
