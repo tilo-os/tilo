@@ -420,6 +420,10 @@ impl ExactAdmissions {
             .get(&WriterKey::of(key))
             .is_some_and(|mark| key.sequence <= *mark)
     }
+    /// The highest sequence of the writer of `key` a compaction folded, if any.
+    pub(crate) fn mark(&self, key: &AdmissionKey) -> Option<u64> {
+        self.marks.get(&WriterKey::of(key)).copied()
+    }
     pub(crate) fn len(&self) -> usize {
         self.settled.len().saturating_add(self.recent.len())
     }

@@ -1276,3 +1276,115 @@ async fn a_record_its_host_checkpoints_stays_bounded_past_its_bound_of_writes() 
     );
     assert_eq!(read.get_heads(), typist.0.get_heads());
 }
+
+/// A write the host refused leaves the device's record, and the device's next write of it goes
+/// out: it takes a sequence past every write of the device a peer's compaction folded, not one
+/// the record decided already.
+#[tokio::test]
+async fn a_refused_write_after_a_peers_fold_leaves_the_next_write_free() {
+    let (fixture, host, governor_key) = governed_fixture_at(tilo_clock::wall());
+    let mut host = Host::new(host);
+    let joined = enrolled_with(fixture);
+    let (owner, workspace, now) = (&joined.owner, joined.workspace, joined.now);
+    let governor = governor_key.verifying_key().to_bytes();
+    let (_, keys) = rotated_channel();
+    owner.keep_sealed_histories(Arc::new(Held(keys.clone())));
+    let mut typist = Typist::over(&base(owner, workspace), 1);
+    let mut order = 0;
+    for key in keys_typed('k', 3) {
+        let changes = typist.change(&key);
+        assert_eq!(write(owner, workspace, &keys, changes, now).await, Ok(1));
+    }
+    let refused = delivered(
+        owner,
+        workspace,
+        &mut host,
+        (now, &mut order, false),
+        |_| false,
+    )
+    .await;
+    assert!(refused.is_empty());
+    // The governor folds the record's history, the device's writes with it.
+    let compaction = compacted_at(&mut host.peer, &keys, &governor_key, now);
+    owner
+        .receive(
+            workspace,
+            TransportOrigin::ServerDelta(governor),
+            compaction,
+            now,
+        )
+        .unwrap();
+    // The host refuses the device's next write.
+    let changes = typist.change("krefused");
+    assert_eq!(write(owner, workspace, &keys, changes, now).await, Ok(1));
+    let [(id, _)]: [_; 1] = ownership(owner, workspace, now).try_into().unwrap();
+    owner
+        .retire_answered(workspace, &BTreeMap::from([(id, HostAnswer::Refused)]))
+        .unwrap();
+    // The device goes on writing, and the host takes it.
+    let mut typist = Typist::over(&opened(owner, workspace, &keys).save(), 1);
+    let changes = typist.change("kafter");
+    assert_eq!(write(owner, workspace, &keys, changes, now).await, Ok(1));
+    let relayed = host.relayed.len();
+    let refused = delivered(
+        owner,
+        workspace,
+        &mut host,
+        (now, &mut order, false),
+        |_| false,
+    )
+    .await;
+    assert!(refused.is_empty(), "the host refused {}", refused.len());
+    assert_eq!(
+        host.relayed.len(),
+        relayed + 1,
+        "the host took the next write"
+    );
+
+    // A record kept with the device's floor under the writes a compaction folded, as a refusal
+    // left it before, opens again with its floor back at the fold, and takes the device's next
+    // write.
+    let compaction = compacted_at(&mut host.peer, &keys, &governor_key, now);
+    owner
+        .receive(
+            workspace,
+            TransportOrigin::ServerDelta(governor),
+            compaction,
+            now,
+        )
+        .unwrap();
+    let changes = typist.change("kgone");
+    assert_eq!(write(owner, workspace, &keys, changes, now).await, Ok(1));
+    let [(id, _)]: [_; 1] = ownership(owner, workspace, now).try_into().unwrap();
+    owner
+        .retire_answered(workspace, &BTreeMap::from([(id, HostAnswer::Refused)]))
+        .unwrap();
+    let device = member_key().verifying_key().to_bytes();
+    owner
+        .replica(workspace)
+        .unwrap()
+        .lock()
+        .forget_floor(APP, "", device);
+    owner.persist(workspace).unwrap();
+    let path = joined.path.clone();
+    drop(joined.owner);
+    let owner = &open_file(&path).unwrap();
+    owner.keep_sealed_histories(Arc::new(Held(keys.clone())));
+    let mut typist = Typist::over(&opened(owner, workspace, &keys).save(), 1);
+    let changes = typist.change("kreopened");
+    assert_eq!(write(owner, workspace, &keys, changes, now).await, Ok(1));
+    let refused = delivered(
+        owner,
+        workspace,
+        &mut host,
+        (now, &mut order, false),
+        |_| false,
+    )
+    .await;
+    assert!(refused.is_empty(), "the host refused {}", refused.len());
+    assert_eq!(
+        host.relayed.len(),
+        relayed + 2,
+        "the host took the write after a restart"
+    );
+}

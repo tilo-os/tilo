@@ -642,6 +642,7 @@ impl StatePeer {
                 .into(),
             );
         }
+        peer.raise_floors_to_marks();
         for (route, ops) in durable.sealed {
             peer.restore_sealed(&route, ops)?;
         }
@@ -663,6 +664,39 @@ impl StatePeer {
         }
         peer.check_exact_within_floors()?;
         Ok(peer)
+    }
+
+    /// Every write of an author a compaction folded is decided: the author's floor is at least
+    /// its mark. A record whose floor fell below a mark took no write of that author again,
+    /// each one numbered under writes it decided already; it comes back with its floor at the
+    /// mark.
+    fn raise_floors_to_marks(&mut self) {
+        let marks: Vec<(Route, [u8; 32], u64)> = self
+            .core
+            .exact_admissions
+            .marks()
+            .filter(|(writer, _)| writer.workspace == self.core.workspace)
+            .map(|(writer, mark)| {
+                (
+                    Route {
+                        app: writer.app.clone(),
+                        record: writer.record.clone(),
+                    },
+                    writer.author,
+                    mark,
+                )
+            })
+            .collect();
+        for (route, author, mark) in marks {
+            if let Some(document) = self.core.documents.get_mut(&route) {
+                let floor = document
+                    .channel
+                    .last_seq_per_author
+                    .entry(Ed25519PublicKey::from_bytes(author))
+                    .or_default();
+                *floor = (*floor).max(mark);
+            }
+        }
     }
 
     /// Every exact entry and every compaction mark lies within its route's
