@@ -277,6 +277,7 @@ suites = [
   "os/tests/test_ci_fast_images.py",
   "os/containers/tilo-server/test-contract.sh",
   "os/containers/tilo-lounge/test-entrypoint.sh",
+  "os/containers/tilo-sh/test-native-env.sh",
   "os/tests/rpm_snapshot_invariants.sh",
   "os/tests/test_rpm_snapshot_fingerprint.py",
   "os/tests/test_kernel_build_environment.py",

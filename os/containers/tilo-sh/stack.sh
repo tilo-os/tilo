@@ -180,6 +180,11 @@ the registry.tilo.so/tilo/lounge@sha256:… production pins).
 TILO_SH_VM_HOST=0 leaves the VM host out where it could run (it runs as
 root through sudo).
 State: TILO_SH_STATE (default \${XDG_STATE_HOME:-~/.local/state}/tilo-sh-local).
+The keys of people's sealed stores (their sign-ins, provider keys and vault
+items on the server) are kept in a folder beside the state, never in it, so a
+copy of the state alone opens nobody's vault: TILO_SH_PEOPLE_KEYS (default
+the state's path with -keys after it, which down --wipe removes with the
+state).
 Needs a cargo drop-in that builds on a build server (TILO_SH_CARGO names it,
 else \$CARGO; with TILO_SH_BUILD=t, t) and curl, which is all a remote stack
 uses here. A stack here also needs bwrap and python3 (with a drop-in that runs
@@ -1022,14 +1027,16 @@ EOF
 # image_env_here FILE NAME=PATH…: FILE's ENV for a process outside the image,
 # each variable naming a path in the image given the path named here. One that
 # names an image path this list does not move stops the start: the native
-# stack has to be told where that is on this machine, not left to guess.
+# stack has to be told where that is on this machine, not left to guess. So
+# does a NAME the image does not set: its line would be printed nowhere, and
+# what it was to tell the program would never reach it.
 image_env_here() {
-  local file=$1 line name value moved pair
+  local file=$1 line name value moved pair placed=' '
   shift
   while IFS= read -r line; do
     name=${line%%=*} value=${line#*=} moved=
     for pair in "$@"; do
-      [[ ${pair%%=*} == "$name" ]] && { moved=${pair#*=}; break; }
+      [[ ${pair%%=*} == "$name" ]] && { moved=${pair#*=}; placed+="$name "; break; }
     done
     if [[ -n $moved ]]; then
       printf '%s=%s\n' "$name" "$moved"
@@ -1039,6 +1046,10 @@ image_env_here() {
       printf '%s\n' "$line"
     fi
   done < <(containerfile_env "$file")
+  for pair in "$@"; do
+    [[ $placed == *" ${pair%%=*} "* ]] \
+      || die "stack.sh hands ${pair%%=*} to a program it starts from $file, which sets no ${pair%%=*}: it would reach nobody, so the image's ENV has to name it"
+  done
 }
 
 # Caddy: production's tls container and the web entry image both run it. The
@@ -1472,8 +1483,17 @@ start_native_tls() {
   run_native tls "$state/tls" "$caddy" run --config "$state/tls/Caddyfile" --adapter caddyfile
 }
 
+# The folder for the keys of people's sealed stores, made before the server
+# starts: the server keeps them there only when the folder is there, and makes
+# none itself. Its owner alone reads it.
+make_people_keys() {
+  mkdir -p "$people_keys" && chmod 700 "$people_keys" \
+    || die "could not make $people_keys, the folder for the keys of people's sealed stores (TILO_SH_PEOPLE_KEYS names another)"
+}
+
 start_native_server() {
   local lounge=${lounge:-$native/lounge}
+  make_people_keys
   { private_env server "$lounge/bin"
     image_env_here "$repo/os/containers/tilo-lounge/Containerfile" \
       "TILO_WORKSPACES_STATE=$state/server" "TILO_SECRETS_DIR=$state/server/secrets" \
@@ -1852,18 +1872,24 @@ up_images() {
     -v "$state/tls/caddy:/data/caddy:Z" -v "$state/tls/config:/config:Z" \
     "$caddy_image" caddy run --config /etc/caddy/Caddyfile --adapter caddyfile
 
-  # The server: the Lounge image, as the deployment runs it (uid 10001, a
-  # read-only root, the state volume, the secrets read-only, a /tmp).
+  # The server: the Lounge image, as the deployment starts it (uid 10001, a
+  # read-only root, the state volume, the secrets read-only, a /tmp), with a
+  # volume of its own for the keys of people's sealed stores, mounted where
+  # the image says it goes (TILO_PEOPLE_KEYS in its ENV).
   # The server reaches its own live origin through Caddy (its endpoint's home
   # relay), so it trusts the local CA as production trusts Cloudflare's: in
   # the bundle at the path every Tilo client, iroh's included, reads.
   trust_bundle
   local server_args=()
   mapfile -d '' server_args < <(server_env | env_args)
-  local server_user=()
+  local server_user=() keys_volume
   mapfile -d '' server_user < <(as_user 10001)
+  keys_volume=$(containerfile_env "$repo/os/containers/tilo-lounge/Containerfile" | sed -n 's/^TILO_PEOPLE_KEYS=//p')
+  [[ $keys_volume == /* ]] || die "the Lounge image names no folder for the keys of people's sealed stores (TILO_PEOPLE_KEYS in its ENV)"
+  make_people_keys
   start server --network host --read-only --tmpfs /tmp "${server_user[@]}" \
     -v "$state/server:/run/tilo-workspaces:Z" -v "$state/secrets:/run/secrets:ro,Z" \
+    -v "$people_keys:$keys_volume:Z" \
     -v "$state/trust-bundle.pem:/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem:ro,Z" \
     --env "TILO_SOURCE_REVISION=local-$commit" \
     "${server_args[@]}" "$lounge"
@@ -1945,6 +1971,14 @@ down() {
     # account's user namespace: only that namespace removes them.
     podman_ unshare rm -rf "$state/server" "$state/api" "$state/tls" "$state/secrets" "$state/seed" "$state/mail" 2>/dev/null \
       || rm -rf "$state/server" "$state/api" "$state/tls" "$state/secrets" "$state/seed" "$state/mail"
+    # The keys of people's sealed stores open nothing once what they opened is
+    # gone: the stack's own folder goes with its state. One the caller named
+    # (TILO_SH_PEOPLE_KEYS) is the caller's, and is left.
+    if [[ $people_keys == "$state-keys" ]]; then
+      podman_ unshare rm -rf "${people_keys:?}" 2>/dev/null || rm -rf "${people_keys:?}"
+    elif [[ -d $people_keys ]]; then
+      say "left $people_keys (TILO_SH_PEOPLE_KEYS), whose keys open nothing any more"
+    fi
     rm -rf "${runs:?}" "$state/trust-bundle.pem" "$state/mode" "$state/admission"
     say "stopped, and its state is gone (builds kept in $native, images in $state/images)"
   else
