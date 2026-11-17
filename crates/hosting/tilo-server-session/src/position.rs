@@ -25,6 +25,10 @@ use crate::transport::Envelope;
 use tilo_server_protocol::WorkspaceId;
 
 const KEY_CONTEXT: &str = "tilo-server subscription position v2";
+/// The context the key had before the server's crates took their present
+/// name. A position issued under it is still this server's, so a device that
+/// holds one is not replayed everything for it. None is issued under it.
+const EARLIER_KEY_CONTEXT: &str = "tilo-relay subscription position v2";
 const VERSION: u8 = 2;
 const MAC_BYTES: usize = 32;
 /// Longest position accepted from a peer.
@@ -53,13 +57,17 @@ pub struct Resume {
 #[derive(Clone, Copy)]
 pub struct PositionIssuer {
     key: [u8; 32],
+    /// Reads the positions issued under [`EARLIER_KEY_CONTEXT`].
+    earlier_key: [u8; 32],
 }
 
 impl PositionIssuer {
     /// The issuer of the host whose device secret key is `host_secret`.
     pub fn new(host_secret: &[u8; 32]) -> Self {
+        let key = |context| blake3::derive_key(context, host_secret);
         Self {
-            key: blake3::derive_key(KEY_CONTEXT, host_secret),
+            key: key(KEY_CONTEXT),
+            earlier_key: key(EARLIER_KEY_CONTEXT),
         }
     }
 
@@ -100,7 +108,10 @@ impl PositionIssuer {
         let split = position.len().checked_sub(MAC_BYTES)?;
         let (claims, mac) = position.split_at(split);
         let mac: [u8; MAC_BYTES] = mac.try_into().ok()?;
-        if blake3::Hash::from(mac) != blake3::keyed_hash(&self.key, claims) {
+        let mac = blake3::Hash::from(mac);
+        if mac != blake3::keyed_hash(&self.key, claims)
+            && mac != blake3::keyed_hash(&self.earlier_key, claims)
+        {
             return None;
         }
         let claims: Claims = postcard::from_bytes(claims).ok()?;
@@ -214,6 +225,36 @@ mod tests {
                 &[2; 32],
                 &[3; 16]
             ),
+            None
+        );
+    }
+
+    /// A position a device was given before the key's context had its present
+    /// name still reads back, so that device is not replayed everything.
+    #[test]
+    fn a_position_issued_under_the_keys_earlier_context_still_reads_back() {
+        let secret = [1; 32];
+        let earlier = blake3::derive_key(EARLIER_KEY_CONTEXT, &secret);
+        let before = PositionIssuer {
+            key: earlier,
+            earlier_key: earlier,
+        };
+        let resume = Resume {
+            log: [4; 16],
+            len: 42,
+        };
+        let workspace = tilo_server_protocol::WorkspaceId::from_u128(7);
+        let position = before.issue(workspace, [2; 32], [3; 16], resume);
+        let issuer = PositionIssuer::new(&secret);
+        assert_eq!(
+            issuer.verify(&position, workspace, &[2; 32], &[3; 16]),
+            Some(resume)
+        );
+        // What this server issues is under the present context, and a server
+        // with another key reads neither.
+        assert_ne!(issuer.issue(workspace, [2; 32], [3; 16], resume), position);
+        assert_eq!(
+            PositionIssuer::new(&[9; 32]).verify(&position, workspace, &[2; 32], &[3; 16]),
             None
         );
     }
