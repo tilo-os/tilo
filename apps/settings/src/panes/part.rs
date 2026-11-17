@@ -194,6 +194,11 @@ pub(crate) const FAMILIES: &[(u16, &crate::effects::EffectFamily)] = &[
     (280, devices_access::DevicesAccessEffect::FAMILY),
     #[cfg(not(feature = "tilo-os"))]
     (290, person_settings::PersonSettingsEffect::FAMILY),
+    #[cfg(not(feature = "tilo-os"))]
+    (
+        295,
+        <provider_settings_ui::person_models::PersonModelsEffect as crate::effects::AreaVocabulary>::FAMILY,
+    ),
 ];
 
 /// One [`crate::effects::LiveArea`]: the area `$module::$area` behind the
