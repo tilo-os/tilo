@@ -20,14 +20,14 @@ use tilo_action_policy::{Acting, Actor};
 /// Ordinary application-authored commit messages remain untouched.
 pub const CHANGE_MESSAGE_PREFIX: &str = "tilo.entry/3 ";
 
-/// Prefix of a change message that continues its writer's open gesture
-/// (the next keystroke of a word): `tilo.cont/2 <gesture> <claim> <kept>
-/// <tail> <middle>`. It is the gesture's first entry again but for the
-/// action's payload, so it carries only the gesture (simple hex), what the
-/// change claims to be ([`ContinuedAction`]) and how its payload differs
-/// from the first entry's: that payload's first `kept` and last `tail` bytes
-/// around `middle`. Readers fold it into that entry
-/// ([`ActionContext::continued`]).
+/// Prefix of a change message that continues its writer's last whole entry
+/// (the next keystroke of a word, or the first of the next word):
+/// `tilo.cont/2 <gesture> <claim> <kept> <tail> <middle>`. It is that entry
+/// again but for its gesture and the action's payload, so it carries only
+/// the gesture (simple hex), what the change claims to be
+/// ([`ContinuedAction`]) and how its payload differs from that entry's: that
+/// payload's first `kept` and last `tail` bytes around `middle`. Readers
+/// fold it into that entry ([`ActionContext::continued`]).
 pub const CONTINUATION_PREFIX: &str = "tilo.cont/2 ";
 
 #[derive(Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -455,7 +455,7 @@ impl ActionContext {
     /// Read an entry from a change message. Unknown and malformed messages
     /// are ordinary app commits, never an error that hides their history. A
     /// continuation is no entry on its own: read it with
-    /// [`continued`](Self::continued) from its gesture's first entry.
+    /// [`continued`](Self::continued) from its writer's last whole entry.
     pub fn from_change_message(message: &str) -> Option<Self> {
         serde_json::from_value::<wire::Entry>(entry_value(message)?)
             .ok()
@@ -476,9 +476,9 @@ impl ActionContext {
     }
 
     /// This entry, written as the continuation of `first` (its writer's
-    /// previous entry): when it is the same step of the same gesture,
-    /// differing only in its action's payload. `None` when it has to be
-    /// written whole.
+    /// last whole entry): when it is in a gesture and differs from `first`
+    /// only in its gesture and its action's payload. `None` when it has to
+    /// be written whole.
     #[must_use]
     pub fn continuation_of(&self, first: &Self) -> Option<String> {
         let gesture = self.gesture?;
@@ -486,10 +486,10 @@ impl ActionContext {
         let earlier = first.action.as_ref()?;
         let bare = |entry: &Self| Self {
             action: None,
+            gesture: None,
             ..entry.clone()
         };
-        if first.gesture != Some(gesture)
-            || self.compensation.is_some()
+        if self.compensation.is_some()
             || first.compensation.is_some()
             || action.type_id != earlier.type_id
             || bare(self) != bare(first)
@@ -526,17 +526,14 @@ impl ActionContext {
         uuid::Uuid::try_parse(gesture).ok().map(crate::ActionId)
     }
 
-    /// The entry a continuation `message` stands for, from its gesture's
-    /// first entry `first`.
+    /// The entry a continuation `message` stands for, from its writer's last
+    /// whole entry `first`.
     #[must_use]
     pub fn continued(message: &str, first: &Self) -> Option<Self> {
         let rest = message.strip_prefix(CONTINUATION_PREFIX)?;
         let mut parts = rest.splitn(3, ' ');
         let gesture = uuid::Uuid::try_parse(parts.next()?).ok()?;
         let _claim = parts.next()?;
-        if first.gesture.map(|first| first.0) != Some(gesture) {
-            return None;
-        }
         let mut diff = parts.next()?.splitn(3, ' ');
         let kept = diff.next()?.parse::<usize>().ok()?;
         let tail = diff.next()?.parse::<usize>().ok()?;
@@ -553,13 +550,14 @@ impl ActionContext {
                 type_id: earlier.type_id.clone(),
                 payload: payload.into_bytes(),
             }),
+            gesture: Some(crate::ActionId(gesture)),
             ..first.clone()
         })
     }
 }
 
 /// What a continuation says its change is, in the terms a change's claim is
-/// written in, as its gesture's first entry says it: an edit of a resource
+/// written in, as the entry it continues says it: an edit of a resource
 /// kind at a path (the whole record for an empty one), or one of its verbs
 /// on an item. A continuation writes it as JSON.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -2022,8 +2020,8 @@ mod tests {
     }
 
     #[test]
-    fn a_keystroke_continues_its_gesture_with_the_bytes_it_changed_and_its_claim() {
-        let typed = |letter: &str| ActionContext {
+    fn a_keystroke_continues_its_writers_last_entry_with_its_gesture_bytes_and_claim() {
+        let typed = |letter: &str, gesture: u128| ActionContext {
             action: Some(crate::EncodedAction {
                 type_id: "notes.notebook".into(),
                 payload: format!(
@@ -2033,13 +2031,14 @@ mod tests {
             }),
             ..ActionContext::default()
                 .with_described(starred())
-                .in_gesture(Some(crate::ActionId(uuid::Uuid::from_u128(7))))
+                .in_gesture(Some(crate::ActionId(uuid::Uuid::from_u128(gesture))))
         };
-        let (first, next) = (typed(r#""n""#), typed(r#""é \"q\"""#));
+        // The next word's first letter starts its own gesture.
+        let (first, next) = (typed(r#""n""#, 7), typed(r#""é \"q\"""#, 8));
         let message = next.continuation_of(&first).unwrap();
         assert_eq!(
             message,
-            r#"tilo.cont/2 00000000000000000000000000000007 {"edit":{"kind":"","path":[{"field":"snippets"},{"item":"s1"},{"field":"favorite"}]}} 30 28 é \"q\""#
+            r#"tilo.cont/2 00000000000000000000000000000008 {"edit":{"kind":"","path":[{"field":"snippets"},{"item":"s1"},{"field":"favorite"}]}} 30 28 é \"q\""#
         );
         assert_eq!(
             ActionContext::continued(&message, &first),

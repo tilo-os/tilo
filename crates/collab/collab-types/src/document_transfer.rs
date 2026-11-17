@@ -707,8 +707,9 @@ mod tests {
     }
 
     /// The changes typing one word makes in a note, as the notes app makes
-    /// them: one change per letter, each under its own actor, continuing its
-    /// gesture's history entry, and marking the letter with its author.
+    /// them: one change per letter continuing its writer's history entry
+    /// (a blank ends one gesture, the next word starts another), each marking
+    /// the letter with its author.
     fn one_typed_word() -> Vec<u8> {
         use automerge::transaction::{CommitOptions, Transactable as _};
         let person = "9a4e3a3a67b8a60e20418ac050ecd2dc8bff7e7b0f2fc564a60ab02bc4604f26";
@@ -731,8 +732,13 @@ mod tests {
                 automerge::marks::ExpandMark::None,
             )
             .unwrap();
+            let gesture = if at == 14 {
+                "01a1e8eb62e277f2"
+            } else {
+                "01a1e8eb62f07e33"
+            };
             let message = format!(
-                "tilo.cont/2 01a1e8eb62e277f2a19bf41136d4b472 \
+                "tilo.cont/2 {gesture}a19bf41136d4b472 \
                  {{\"edit\":{{\"kind\":\"notes.notebook\",\"path\":[{{\"field\":\"pages\"}},{{\"item\":\"12980f87-fbbb-446e-8620-ee255ff8498f\"}},\
                  {{\"field\":\"body\"}}]}}}} 113 105 {at},\"del\":0,\"ins\":\"{letter}"
             );

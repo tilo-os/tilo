@@ -1308,6 +1308,13 @@ impl Automerge {
         self.seq_for_actor(actor)
     }
 
+    /// TILO(history-of-a-change): the hash of `actor`'s applied change
+    /// numbered `seq` (vendor/automerge/TILO-PATCH.md).
+    pub fn hash_of_actor_seq(&self, actor: &ActorId, seq: u64) -> Option<ChangeHash> {
+        let actor = self.ops.lookup_actor(actor)?;
+        (seq > 0).then(|| self.get_hash(actor, seq).ok()).flatten()
+    }
+
     /// TILO(history-of-a-change): the changes waiting for what they build on.
     pub fn queued_changes(&self) -> impl Iterator<Item = &Change> {
         self.queue.iter()

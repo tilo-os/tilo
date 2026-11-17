@@ -599,9 +599,9 @@ pub struct StepIndex {
     /// change already has is in `colliding`.
     positions: std::collections::HashMap<u64, u32>,
     colliding: std::collections::HashMap<ChangeHash, u32>,
-    /// Where each gesture's first entry sits, by its author and gesture:
-    /// what a continuation of it reads as.
-    firsts: std::collections::HashMap<(u32, tilo_actions::ActionId), u32>,
+    /// Where each author's last whole entry sits: what a continuation of
+    /// theirs reads as, under its own gesture.
+    firsts: std::collections::HashMap<u32, u32>,
     /// The kinds read so far, by position.
     kinds: std::collections::HashMap<u32, Kind>,
     heads: Vec<ChangeHash>,
@@ -646,21 +646,21 @@ impl StepIndex {
             };
             let position = u32::try_from(self.steps.len()).unwrap_or(u32::MAX);
             // Only what a step keeps of its entry is read; a continuation is
-            // its gesture's first entry again, read before it in causal order.
+            // its author's last whole entry again, read before it in causal
+            // order, under its own gesture.
             let message = meta.message.as_deref();
             let continued = message.and_then(ActionContext::continued_gesture);
             let context = match continued {
                 Some(gesture) => self
                     .firsts
-                    .get(&(actor, gesture))
+                    .get(&actor)
                     .and_then(|&first| self.version_at(first as usize))
-                    .and_then(|first| first.context),
+                    .and_then(|first| first.context)
+                    .map(|first| first.in_gesture(Some(gesture))),
                 None => message.and_then(ActionContext::head_of_change_message),
             };
-            if let Some(gesture) = context.as_ref().and_then(|context| context.gesture)
-                && continued.is_none()
-            {
-                self.firsts.insert((actor, gesture), position);
+            if context.is_some() && continued.is_none() {
+                self.firsts.insert(actor, position);
             }
             let mut version = Version {
                 hash: meta.hash,

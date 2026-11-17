@@ -141,7 +141,7 @@ impl ClaimedAction {
     }
 
     /// What a continuation message (the next keystroke of a gesture) says
-    /// its change is: what its gesture's first entry claims.
+    /// its change is: what the entry it continues claims.
     #[must_use]
     pub fn of_continuation(message: &str) -> Option<Self> {
         let rest = message.strip_prefix(tilo_actions::context::CONTINUATION_PREFIX)?;

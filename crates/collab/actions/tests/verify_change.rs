@@ -173,7 +173,7 @@ impl Action for Type {
 
 /// Three keystrokes of one gesture by one writer, each dispatched as an
 /// action with the gesture's entry.
-fn typed(doc: &mut AutoCommit, transport: &mut LocalTransport, text: &str) {
+fn typed(doc: &mut AutoCommit, transport: &mut LocalTransport, writer: &[u8], text: &str) {
     let gesture = tilo_actions::ActionId::new();
     for ch in text.chars() {
         let context = ActionContext {
@@ -185,7 +185,7 @@ fn typed(doc: &mut AutoCommit, transport: &mut LocalTransport, text: &str) {
             &Type(ch.to_string()),
             EncodedAction::encode("test.type", &Type(ch.to_string())).unwrap(),
             transport,
-            Some(b"writer"),
+            Some(writer),
             context,
         )
         .unwrap();
@@ -263,14 +263,14 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase a_gestures_later_changes_are_short_continuations_of_its_first_entry;
+    phase a_writers_later_changes_are_short_continuations_of_its_first_entry;
     {
         let mut registry = ActionRegistry::new();
         registry.register::<Type>("test.type");
         let mut origin = AutoCommit::new();
         let mut peer = origin.fork();
         let mut transport = LocalTransport::new();
-        typed(&mut origin, &mut transport, "abc");
+        typed(&mut origin, &mut transport, b"writer", "abc");
         let changes = origin.get_changes(&[]);
         let messages: Vec<&str> = changes
             .iter()
@@ -318,18 +318,21 @@ tilo_test_env::scenario! {
             );
         }
 
-        // A new gesture starts with its whole entry again.
-        typed(&mut origin, &mut transport, "d");
-        let last = origin
-            .get_changes(&[])
-            .last()
-            .unwrap()
-            .message()
-            .unwrap()
-            .to_owned();
-        assert!(
-            last.starts_with(tilo_actions::CHANGE_MESSAGE_PREFIX),
-            "{last}"
-        );
+        // The next word's gesture continues the same entry under its own
+        // gesture, after someone else's change, and replays to the same change.
+        let before = transport.replicated.len();
+        typed(&mut origin, &mut transport, b"other", "x");
+        typed(&mut origin, &mut transport, b"writer", "d");
+        let last = origin.get_changes(&[]).last().unwrap().hash();
+        let message = origin.get_change_by_hash(&last).unwrap().message().unwrap().to_owned();
+        assert!(message.starts_with(tilo_actions::CONTINUATION_PREFIX), "{message}");
+        let entry = tilo_actions::entry_of(origin.committed_document(), last).unwrap();
+        assert_ne!(entry.gesture, first.gesture);
+        assert_eq!(entry.gesture, tilo_actions::ActionContext::continued_gesture(&message));
+        for envelope in &transport.replicated[before..] {
+            tilo_actions::replay(&mut peer, envelope, &registry).unwrap();
+        }
+        assert_eq!(peer.get_heads(), origin.get_heads());
+        assert_eq!(verify_change(&mut origin, last, &registry).unwrap(), Verified::Reproduced);
     }
 }
