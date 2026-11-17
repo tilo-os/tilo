@@ -485,6 +485,7 @@ chat-view-waiting = This message is not on this device yet
 chat-view-gone = This message carries no view
 chat-view-arriving = Loading the view
 chat-view-unavailable = A view cannot be shown here
+chat-view-unbound = This view says you wrote it. Tilo cannot yet be sure who wrote a message, so it is not shown here
 chat-view-refused = You may not read { $apps } here, so the view shows nothing of it
 chat-view-unread = { $apps } could not be read here
 chat-view-asks = { $who } wrote this view. It asks to do this in { $app }
