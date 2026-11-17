@@ -157,7 +157,7 @@ fn undo_named_from_a_view_takes_back_a_step_and_a_run() {
 
     // `undo(run)`: every step of the run comes back together, and the person's own step stays.
     let mut undo_invocation = serde_json::Map::new();
-    undo_invocation.insert("run".to_owned(), RUN.into());
+    undo_invocation.insert("invocation".to_owned(), RUN.into());
     window
         .invoke(None, None, &record, "undo", &undo_invocation)
         .unwrap();
