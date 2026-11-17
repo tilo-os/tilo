@@ -1206,7 +1206,7 @@ impl Workbook {
             })
             .ok_or_else(|| format!("no sheet `{sheet_part}`; read with no item for the sheets"))?;
         let snap = self.snapshot_of(id).unwrap_or_else(|| sheet.snapshot());
-        let cells = crate::cell_actions::shown_cells(&snap);
+        let cells = crate::cell_actions::shown_cells_and_spills(&snap);
         let (top_left, bottom_right) = match range {
             Some(range) => read_range(range)?,
             None => cells

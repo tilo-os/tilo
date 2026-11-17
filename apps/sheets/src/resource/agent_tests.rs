@@ -435,3 +435,37 @@ fn a_past_version_reads_and_shows_its_cells() {
         "{shown:?}"
     );
 }
+
+#[test]
+fn a_read_shows_the_cells_a_formula_spills_into() {
+    let mut app = app();
+    call(
+        &mut app,
+        "new-sheet",
+        json!({"name": "Sales", "rows": [["Region", "Revenue"], ["North", 10], ["South", 20], ["North", 5]]}),
+    );
+    call(
+        &mut app,
+        "new-sheet",
+        json!({"name": "Summary", "rows": [["=UNIQUE(Sales!A2:A4)", "=SUMIF(Sales!A$2:A$4,A1,Sales!B$2:B$4)"]]}),
+    );
+    call(
+        &mut app,
+        "write-cells",
+        json!({"sheet": "Summary", "cells": [{"cell": "B2", "input": "=SUMIF(Sales!A$2:A$4,A2,Sales!B$2:B$4)"}]}),
+    );
+    let whole = call(&mut app, "read", json!({"item": "Summary"}));
+    assert_eq!(whole["range"], "A1:B2", "{whole}");
+    assert_eq!(
+        whole["rows"],
+        json!([["North", "15"], ["South", "20"]]),
+        "the second group is a cell the first formula fills: {whole}"
+    );
+    assert_eq!(
+        whole["formulas"].as_object().map(serde_json::Map::len),
+        Some(3),
+        "a cell a formula fills holds no formula of its own: {whole}"
+    );
+    let part = call(&mut app, "read", json!({"item": "Summary!A2:A3"}));
+    assert_eq!(part["rows"], json!([["South"], [""]]), "{part}");
+}

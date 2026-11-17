@@ -27,6 +27,17 @@ pub struct SearchableCell {
 /// calculated, a formula without a format of its own shown in its
 /// operands' (a sum of amounts is an amount).
 pub fn shown_cells(snap: &SheetSnapshot) -> Vec<SearchableCell> {
+    shown(snap, false)
+}
+
+/// [`shown_cells`], and the cells a formula spills into (`=UNIQUE(A2:A9)`
+/// fills the cells below it): they hold no input of their own and show what
+/// the formula computed for them.
+pub fn shown_cells_and_spills(snap: &SheetSnapshot) -> Vec<SearchableCell> {
+    shown(snap, true)
+}
+
+fn shown(snap: &SheetSnapshot, spills: bool) -> Vec<SearchableCell> {
     let values = crate::calc::recalculate_snapshot(snap);
     let mut cells = snap
         .raw
@@ -49,6 +60,29 @@ pub fn shown_cells(snap: &SheetSnapshot) -> Vec<SearchableCell> {
             }
         })
         .collect::<Vec<_>>();
+    if spills {
+        cells.extend(
+            values
+                .iter()
+                .filter(|(addr, value)| {
+                    !snap.raw.contains_key(*addr) && **value != CellValue::Empty
+                })
+                .map(|(&(col, row), value)| {
+                    let fmt = snap
+                        .fmt
+                        .get(&(col, row))
+                        .copied()
+                        .unwrap_or(CellFormat::General);
+                    SearchableCell {
+                        col,
+                        row,
+                        raw: String::new(),
+                        display: format_value(value, fmt),
+                        value: value.clone(),
+                    }
+                }),
+        );
+    }
     cells.sort_by_key(|cell| (cell.row, cell.col));
     cells
 }
