@@ -18,6 +18,8 @@ use tilo_agent_session::bot::host_steps::{
     HostStepError, HostSteps, Instruction, Judgement, Question,
 };
 
+/// A person's events through the host's own actions.
+mod events;
 /// The host's own answers for the programs it runs for a person.
 mod judging;
 

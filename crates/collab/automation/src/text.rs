@@ -47,6 +47,32 @@ use tilo_actions::contract::ResultSpec;
 mod tests;
 mod trigger;
 
+/// `trigger` as the one line a program opens with: `once at
+/// 2026-11-17T11:32:00Z`, `every Monday at 09:00`, `when a ... changes`. The
+/// line is the trigger's whole state, every filter included, and
+/// [`trigger_of_line`] reads it back.
+#[must_use]
+pub fn trigger_line(trigger: &crate::shortcut::TriggerSpec) -> String {
+    trigger::trigger_text(trigger)
+}
+
+/// The trigger `line` says, as a program's opening line says one
+/// ([`trigger_line`]).
+///
+/// # Errors
+/// How the line should have been written, in words for whoever wrote it.
+pub fn trigger_of_line(line: &str) -> Result<crate::shortcut::TriggerSpec, String> {
+    let line = line.trim();
+    if !trigger::is_trigger(line) {
+        return Err(
+            "a trigger starts with `once at`, `every` or `when`: `once at \
+             2026-11-17T11:32:00Z`, `every day at 09:00`"
+                .to_owned(),
+        );
+    }
+    trigger::trigger_of(line)
+}
+
 pub(super) use crate::text_read::number_at;
 use crate::text_read::{binding_and_rest, binding_of, condition_of, input_of};
 

@@ -36,8 +36,9 @@ use tilo_actions::remote::{Caller, Pending};
 use tilo_agent_session::bot::api::{BotApi, OutboxSpec, PerformError, Performer};
 use tilo_agent_session::bot::held::HeldDocuments;
 use tilo_agent_session::bot::host_steps::{HostSteps, Keeps};
+use tilo_agent_session::bot::kept::{Ended, LastRun};
 use tilo_agent_session::{AppCatalogue, ReplicaActor};
-use tilo_automation::dispatch::queue::{DeadLetter, Finished, FiringQueue};
+use tilo_automation::dispatch::queue::{DeadLetter, FailureClass, Finished, FiringQueue, classify};
 use tilo_automation::dispatch::{Armed, ConnectorEvent, Event, Firer, Firing, ScheduleEvent};
 use tilo_automation::invocation::{AskRequest, ConfirmationRequest, InvocationHooks};
 use tilo_automation::schedule::{SchedulePlan, Timed, plan};
@@ -418,6 +419,15 @@ impl BotRunner {
                 }
             });
         }
+        // A program whose triggers are all on the clock answers no change:
+        // what members write does not wake it, so hundreds of reminders
+        // cost a workspace's writers nothing. A run still reads the records
+        // as they stand when it starts.
+        let follows = self
+            .shortcut
+            .triggers
+            .iter()
+            .any(|trigger| Timed::of(trigger).is_none());
         loop {
             if let Err(error) = self.step().await {
                 tracing::warn!(installation = %self.bot.installation, %error, "bot runner did not finish a pass");
@@ -438,7 +448,7 @@ impl BotRunner {
                 })
                 .min(IDLE);
             tokio::select! {
-                write = writes.recv() => {
+                write = writes.recv(), if follows => {
                     if matches!(write, Err(tokio::sync::broadcast::error::RecvError::Closed)) {
                         return;
                     }
@@ -484,31 +494,50 @@ impl BotRunner {
         // at its backoff, even when this pass outlasted the backoff, so a
         // pass never runs one firing twice.
         while let Some(queued) = self.progress.queue.next_due(now).filter(|_| !paused) {
-            let firing = queued.firing.clone();
-            let finished = match self.fire(&firing).await {
+            let (firing, again) = (queued.firing.clone(), queued.attempts > 0);
+            let (finished, stopped) = match self.fire(&firing).await {
                 Ok(Fired::Refused(reason)) => {
                     // What the run changed before the refused change stands
                     // and the rest was dropped: run it again, from the
                     // workspace's records, so it finishes what it started.
-                    self.progress.queue.refused(&reason, self.now_ms())
+                    let finished = self.progress.queue.refused(&reason, self.now_ms());
+                    (finished, Some((Ended::Refused, reason)))
                 }
                 Ok(Fired::Ran(report)) => {
                     let finished = self.progress.queue.finished(&report, self.now_ms());
                     tracing::info!(installation = %self.bot.installation, run = %firing.invocation.0, outcome = ?report.outcome, ?finished, "bot run finished");
+                    let stopped = stopped_at(&report);
                     reports.push(*report);
-                    finished
+                    (finished, stopped)
                 }
                 Err(error) => {
                     tracing::warn!(installation = %self.bot.installation, run = %firing.invocation.0, %error, "bot run could not be run");
-                    self.progress.queue.not_run(&error, self.now_ms())
+                    let finished = self.progress.queue.not_run(&error, self.now_ms());
+                    (finished, Some((Ended::Failed, error)))
                 }
             };
+            self.ran(again, stopped);
             if let Finished::DeadLettered(dead) = finished {
                 self.progress.bury(&self.bot.installation, *dead);
             }
             self.keep()?;
         }
         Ok(reports)
+    }
+
+    /// Keep how a run ended with what the program keeps, where whoever
+    /// lists the program reads it: that it ran, or why it stopped. A run
+    /// tried `again` is the same run ending once more.
+    fn ran(&self, again: bool, stopped: Option<(Ended, String)>) {
+        let (ended, why) = stopped.map_or((Ended::Ran, None), |(ended, why)| (ended, Some(why)));
+        let last = LastRun {
+            at_ms: self.now_ms(),
+            ended,
+            why,
+        };
+        if let Err(error) = self.keeps.ran(last, again) {
+            tracing::warn!(installation = %self.bot.installation, ?error, "how a bot's run ended is not kept");
+        }
     }
 
     /// The firings caused by every record change and connector event after
@@ -1051,6 +1080,34 @@ impl BotRunner {
         tilo_files::native::atomic::write(&self.state_file, &bytes)
             .map_err(|error| error.to_string())
     }
+}
+
+/// Why `report`'s run did not run to its end: refused, where trying again
+/// changes nothing, or failed. None for a run that did.
+fn stopped_at(report: &tilo_automation::InvocationReport) -> Option<(Ended, String)> {
+    match &report.outcome {
+        tilo_automation::InvocationOutcome::Completed => None,
+        tilo_automation::InvocationOutcome::Failed { failure, .. } => {
+            let ended = if classify(failure) == FailureClass::Refusal {
+                Ended::Refused
+            } else {
+                Ended::Failed
+            };
+            Some((ended, failure.to_string()))
+        }
+        tilo_automation::InvocationOutcome::Cancelled { .. } => {
+            Some((Ended::Failed, "the run was cancelled".to_owned()))
+        }
+    }
+}
+
+/// The next time `trigger` fires after `now_ms` on this host's clock, ms
+/// since the epoch: a schedule's next time, a moment itself. None for a
+/// trigger that is not on the clock.
+#[must_use]
+pub fn next_fire_ms(trigger: &TriggerSpec, now_ms: i64) -> Option<i64> {
+    let now = DateTime::from_timestamp_millis(now_ms).unwrap_or_default();
+    Timed::of(trigger)?.first_ms(now, &|at: DateTime<Utc>| local_offset(at))
 }
 
 /// `record` of `app`, as the runner names one record across passes.

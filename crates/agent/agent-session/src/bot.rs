@@ -2,6 +2,7 @@
 //! watches.
 
 pub mod api;
+pub mod event;
 pub mod held;
 pub mod host_steps;
 pub mod judging;

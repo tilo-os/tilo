@@ -368,7 +368,7 @@ pub async fn start_relay_lending(
         let browsers = tilo_relay::hosted_browser::HostedBrowsers::from_env()
             .map_err(anyhow::Error::msg)?
             .map(std::sync::Arc::new);
-        let (relay, actions) = tilo_relay::agents::start_serving_documents(
+        let (relay, actions, events) = tilo_relay::agents::start_serving_documents_and_events(
             cfg,
             identity,
             None,
@@ -397,6 +397,7 @@ pub async fn start_relay_lending(
                     actions,
                     model.map(tilo_relay::workspace_agents::model_of),
                 )
+                .with_events(events)
                 .run(),
             )
         });

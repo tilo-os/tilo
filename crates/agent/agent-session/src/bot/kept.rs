@@ -163,6 +163,36 @@ struct Counted {
     steps: BTreeSet<String>,
 }
 
+/// How a run of a program ended.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Ended {
+    /// It ran to its end.
+    Ran,
+    /// It handed its work over, and that work waits for its person's
+    /// answer.
+    Waits,
+    /// It was refused, and will not be tried again on its own.
+    Refused,
+    /// It failed. Where it can go differently later it is tried again.
+    Failed,
+}
+
+/// A program's last run: when it ended, how, and why when it did not run to
+/// its end.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LastRun {
+    /// When it ended, ms since the epoch.
+    pub at_ms: i64,
+    pub ended: Ended,
+    /// Why it was refused or failed, in words for its person.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub why: Option<String>,
+}
+
+/// The longest a last run's reason is kept.
+pub const MAX_WHY_BYTES: usize = 1024;
+
 /// What one program keeps between its runs.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -180,6 +210,11 @@ pub struct Kept {
     /// Whether its person paused it: a paused program answers nothing that
     /// comes while it is paused.
     paused: bool,
+    /// How its last run ended; none until it ran.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    last_run: Option<LastRun>,
+    /// How many runs ended, however they did.
+    runs: u64,
 }
 
 impl Kept {
@@ -281,6 +316,37 @@ impl Kept {
     /// As [`Note::change`].
     pub fn change_note(&mut self, change: NoteChange) -> Result<(), String> {
         self.note.change(change)
+    }
+
+    /// How the program's last run ended; none until it ran.
+    #[must_use]
+    pub const fn last_run(&self) -> Option<&LastRun> {
+        self.last_run.as_ref()
+    }
+
+    /// How many of the program's runs ended, however they did.
+    #[must_use]
+    pub const fn runs(&self) -> u64 {
+        self.runs
+    }
+
+    /// Keep how a run ended, its reason cut to [`MAX_WHY_BYTES`]. A run
+    /// that is tried again is one run: `again` says this is the same run
+    /// ending once more.
+    pub fn ran(&mut self, mut last: LastRun, again: bool) {
+        if let Some(why) = &mut last.why {
+            let end = why
+                .char_indices()
+                .map(|(at, c)| at.saturating_add(c.len_utf8()))
+                .take_while(|end| *end <= MAX_WHY_BYTES)
+                .last()
+                .unwrap_or(0);
+            why.truncate(end);
+        }
+        self.last_run = Some(last);
+        if !again {
+            self.runs = self.runs.saturating_add(1);
+        }
     }
 }
 
