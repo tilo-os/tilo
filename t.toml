@@ -338,6 +338,9 @@ default = false
 [[check]]
 name = "lint-head"
 egress = { to = ["code.tilo.so:443"], pinned = true }
+# It reads the commit's own diff, so it needs the Git view and reruns on every
+# commit (the lint's own pass cache is what keeps it cheap).
+git = true
 run = "set -eu\nrustup target add wasm32-unknown-unknown >/dev/null 2>&1 || true\nbase=$(git rev-parse HEAD^)\npython3 -I tools/ci/pre_push_lint.py --range \"$base..$(git rev-parse HEAD)\"\n"
 
 # The visual goldens: the three packages whose baselines are pixels, under the filter
