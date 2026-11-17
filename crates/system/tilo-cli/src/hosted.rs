@@ -1035,8 +1035,8 @@ fn files_under(path: &Path) -> Result<Vec<Uploading>> {
 /// How many files go up at once.
 const UPLOADS_AT_ONCE: usize = 32;
 /// How many files one action puts into the workspace's tree: a folder larger
-/// than this goes in a few runs, each answered well within the session's
-/// bound on a host action.
+/// than this goes in a few runs, each answered well within the bound a
+/// workspace answers an action in.
 const TREE_BATCH_FILES: usize = 10_000;
 /// How many bytes of file entries one change carries: under the 64 MiB one
 /// upload carries, so a large folder goes in a few changes rather than one
@@ -1098,9 +1098,9 @@ async fn upload_all(
     Ok(uploaded)
 }
 
-/// `uploaded` in as few batches as the host takes: each a whole run and one
-/// History entry, under [`TREE_BATCH_FILES`] files and [`TREE_BATCH_BYTES`]
-/// bytes of entries.
+/// `uploaded` in as few batches as the workspace takes: each a whole run and
+/// one History entry, under [`TREE_BATCH_FILES`] files and
+/// [`TREE_BATCH_BYTES`] bytes of entries.
 fn batches<'a>(
     uploaded: &'a [(Uploading, String)],
     to: Option<&str>,

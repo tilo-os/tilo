@@ -400,19 +400,17 @@ impl DirBackend {
         }
     }
 
-    /// Flush everything this backend wrote under its root in one call, where
-    /// the platform can flush a filesystem: what [`Self::put_many`] leaves
-    /// unsynced when a store is durable. Elsewhere each item is synced as it
-    /// is received.
+    /// Flush everything this backend wrote under its root in one call, for
+    /// [`Self::put_many`] to leave a batch unsynced until it is admitted. The
+    /// platform flushes a filesystem; elsewhere each item is synced as it is
+    /// received.
+    #[cfg(target_os = "linux")]
     fn sync_store(&self) -> Result<(), String> {
         if !self.durable {
             return Ok(());
         }
-        #[cfg(target_os = "linux")]
-        {
-            let root = std::fs::File::open(&self.root).map_err(|error| error.to_string())?;
-            rustix::fs::syncfs(&root).map_err(|error| error.to_string())?;
-        }
+        let root = std::fs::File::open(&self.root).map_err(|error| error.to_string())?;
+        rustix::fs::syncfs(&root).map_err(|error| error.to_string())?;
         Ok(())
     }
 
@@ -439,24 +437,20 @@ impl DirBackend {
             .map_err(|error| error.to_string())?;
         let mut shards: BTreeSet<PathBuf> = BTreeSet::new();
         let mut wrote = false;
-        for (slot, tmp, hash, len) in received {
+        for (at, tmp, hash, len) in received {
             let stored = Stored {
                 hash: hash.clone(),
                 len: u64::try_from(*len).unwrap_or(u64::MAX),
             };
             let Some(path) = Self::path_in(&self.root, hash) else {
                 let _ = std::fs::remove_file(tmp);
-                note(
-                    outcomes,
-                    *slot,
-                    Err(ContentError::InvalidHash(hash.clone())),
-                );
+                note(outcomes, *at, Err(ContentError::InvalidHash(hash.clone())));
                 continue;
             };
             if self.intact(&path, hash, usize::MAX) {
                 self.written_now(&path);
                 let _ = std::fs::remove_file(tmp);
-                note(outcomes, *slot, Ok(stored));
+                note(outcomes, *at, Ok(stored));
                 continue;
             }
             if check_admission(&self.limits, &index, hash, *len).is_err() {
@@ -466,31 +460,27 @@ impl DirBackend {
                     .map_err(|error| error.to_string())?;
                 if let Err(refusal) = check_admission(&self.limits, &index, hash, *len) {
                     let _ = std::fs::remove_file(tmp);
-                    note(outcomes, *slot, Err(refusal));
+                    note(outcomes, *at, Err(refusal));
                     continue;
                 }
             }
             let Some(dir) = path.parent() else {
                 let _ = std::fs::remove_file(tmp);
-                note(
-                    outcomes,
-                    *slot,
-                    Err(ContentError::InvalidHash(hash.clone())),
-                );
+                note(outcomes, *at, Err(ContentError::InvalidHash(hash.clone())));
                 continue;
             };
             let dir = dir.to_path_buf();
             if !dir.is_dir() {
                 if let Err(error) = std::fs::create_dir_all(&dir) {
                     let _ = std::fs::remove_file(tmp);
-                    note(outcomes, *slot, Err(error.into()));
+                    note(outcomes, *at, Err(error.into()));
                     continue;
                 }
                 let _ = self.sync_dir(&self.root);
             }
             if let Err(error) = std::fs::rename(tmp, &path) {
                 let _ = std::fs::remove_file(tmp);
-                note(outcomes, *slot, Err(error.into()));
+                note(outcomes, *at, Err(error.into()));
                 continue;
             }
             if let Some(old_len) = index.entries.insert(hash.clone(), *len) {
@@ -503,7 +493,7 @@ impl DirBackend {
             }
             shards.insert(dir);
             wrote = true;
-            note(outcomes, *slot, Ok(stored));
+            note(outcomes, *at, Ok(stored));
         }
         if wrote {
             self.bump_generation(&mut index, generation);
@@ -523,8 +513,8 @@ fn note(
     index: usize,
     result: Result<Stored, ContentError>,
 ) {
-    if let Some(slot) = outcomes.get_mut(index) {
-        *slot = Some(result);
+    if let Some(outcome) = outcomes.get_mut(index) {
+        *outcome = Some(result);
     }
 }
 
@@ -611,7 +601,9 @@ impl ContentBackend for DirBackend {
             }
         }
         match self.admit_received(&mut outcomes, &received) {
-            Ok(()) => {
+            Ok(()) =>
+            {
+                #[cfg(target_os = "linux")]
                 if let Err(why) = self.sync_store() {
                     for (index, _, _, _) in &received {
                         note(&mut outcomes, *index, Err(ContentError::Io(why.clone())));

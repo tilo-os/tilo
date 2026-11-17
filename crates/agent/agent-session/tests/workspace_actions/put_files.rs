@@ -271,20 +271,20 @@ async fn a_folder_put_is_one_run_and_one_write_per_chunk() {
     const FILES: usize = 1200;
     const INLINE: usize = 600;
     let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
-    let host = enrol(&root, "tilo.sh", DeviceCapabilities::member());
+    let device = enrol(&root, "tilo.sh", DeviceCapabilities::member());
     let computer = enrol(&root, "uploading agent", DeviceCapabilities::member());
     let state = crate::support::scratch_dir();
     let hosted = crate::harness::hosted::start(
         &root,
-        &host,
+        &device,
         state.path(),
         Options::offering(crate::common::catalogue, ModelChoice::Scripted),
     )
     .await;
-    let agent = Browser::open(&hosted, &computer, &host).await;
+    let agent = Browser::open(&hosted, &computer, &device).await;
     let person = hex::encode(root.verifying_key().to_bytes());
     let server = McpServer::new(
-        SessionActions::new(&agent.peer, agent.workspace, host.cert.device_public_key),
+        SessionActions::new(&agent.peer, agent.workspace, device.cert.device_public_key),
         WORKSPACE.into(),
         person,
     )
@@ -331,12 +331,12 @@ async fn a_folder_put_is_one_run_and_one_write_per_chunk() {
 
     // The records the folder changed each carry one change, not one per file:
     // the tree's own record and its chunks.
-    let workspaces = hosted.relay.workspaces().unwrap();
+    let workspaces = hosted.server.workspaces().unwrap();
     let index = workspaces
         .resource_document(WORKSPACE, FILES_APP, &tree_document())
         .await
         .unwrap()
-        .expect("the host keeps the tree's own record");
+        .expect("the workspace keeps the tree's own record");
     let mut index = automerge::AutoCommit::load(&index).expect("the tree's own record reads");
     let chunks = fs_protocol::tree::listed_chunks(&index);
     assert!(chunks.len() > 1, "the folder fills more than one chunk");
@@ -350,7 +350,7 @@ async fn a_folder_put_is_one_run_and_one_write_per_chunk() {
             )
             .await
             .unwrap()
-            .unwrap_or_else(|| panic!("the host keeps chunk {chunk} of the tree"));
+            .unwrap_or_else(|| panic!("the workspace keeps chunk {chunk} of the tree"));
         changes += automerge::AutoCommit::load(&record)
             .expect("a chunk of the tree reads")
             .get_changes(&[])

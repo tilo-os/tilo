@@ -16,8 +16,10 @@ use super::{ActionCallError, Caller};
 /// the request.
 pub const MAX_CONTENT_PUT_CHUNK: usize = 512 * 1024;
 
-/// Uploads one session keeps open at once.
-pub const MAX_OPEN_CONTENT_PUTS: usize = 4;
+/// Uploads one session keeps open at once: a client putting a folder keeps
+/// one open per file until it finishes, so it may hold as many as a workspace
+/// keeps for all its callers ([`super::MAX_HOSTED_CONTENT_PUTS`]).
+pub const MAX_OPEN_CONTENT_PUTS: usize = 64;
 
 /// What a provider without a content store answers.
 pub const CONTENT_PUTS_UNAVAILABLE: &str = "content uploads are not available here";

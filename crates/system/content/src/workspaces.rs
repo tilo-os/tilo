@@ -182,7 +182,7 @@ struct RoomChecked {
 impl RoomChecked {
     /// Whether the disk has room for new content, saying so in the log as it
     /// runs low and as it has room again.
-    fn room(&self) -> Result<(), ContentError> {
+    fn free_disk(&self) -> Result<(), ContentError> {
         // A disk whose room cannot be read is not refused for it: the write
         // itself says when there is no room at all.
         let Some((free, total)) = disk_of(&self.disk) else {
@@ -214,15 +214,15 @@ impl RoomChecked {
 
 impl ContentBackend for RoomChecked {
     fn put(&self, reader: &mut dyn Read, mime: &str) -> Result<Stored, ContentError> {
-        self.room()?;
+        self.free_disk()?;
         self.inner.put(reader, mime)
     }
 
     fn put_many(&self, items: &[(&[u8], &str)]) -> Vec<Result<Stored, ContentError>> {
         // The disk is asked once for the set, then the store writes it
         // together: what a folder of small files needs not to pay a flush and
-        // a free-space check for each.
-        match self.room() {
+        // a free-disk check for each.
+        match self.free_disk() {
             Ok(()) => self.inner.put_many(items),
             Err(_) => items
                 .iter()
