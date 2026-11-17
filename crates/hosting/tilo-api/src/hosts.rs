@@ -8,6 +8,13 @@
 //! host's own key, so equal candidates always resolve the same way. A host
 //! that does not answer is ranked as away.
 //!
+//! Answering is not holding: a server that keeps workspaces for the people it
+//! lets in takes any certified device's session, also of a person it keeps
+//! nothing for. So each one that answers is asked what it lists for the key,
+//! and one that lists nothing is ranked as away while another lists a
+//! workspace. When none lists any (a person's first workspace is still to be
+//! made), every one that answered stays a candidate.
+//!
 //! When no host answers at all, nothing that can read the workspace is
 //! online, and the caller gets the typed refusal
 //! ([`crate::relay::RelayError::NoHolder`]) rather than a call tried again
@@ -52,22 +59,30 @@ impl Hosts {
     }
 
     /// A session with the host that serves `key`'s workspace best right now:
-    /// every host that answers is a candidate, and the one with the shortest
-    /// round trip wins ([`placement::pick`]).
+    /// every host that answers and lists a workspace for the key is a
+    /// candidate (every one that answers, while none lists any), and the one
+    /// with the shortest round trip wins ([`placement::pick`]).
     ///
     /// # Errors
     /// No host answered: nothing that can read the workspace is online.
     pub async fn connect(&self, key: &GrantKey) -> Result<Connection, RelayError> {
         let mut answers = Vec::with_capacity(self.relays.len());
         let mut connected = Vec::with_capacity(self.relays.len());
+        let mut keeping = Vec::new();
         for relay in &self.relays {
             let began = Instant::now();
             let attempt = tokio::time::timeout(ANSWERING, relay.connect(key)).await;
             let latency_ms = u32::try_from(began.elapsed().as_millis()).unwrap_or(u32::MAX);
             match attempt {
                 Ok(Ok(connection)) => {
+                    let device = device_of(relay.name());
+                    let lists =
+                        tokio::time::timeout(ANSWERING, relay.workspaces(&connection)).await;
+                    if matches!(lists, Ok(Ok(listed)) if !listed.is_empty()) {
+                        keeping.push(device);
+                    }
                     answers.push((
-                        device_of(relay.name()),
+                        device,
                         Answer::taking(
                             Rank {
                                 power: Power::Unknown,
@@ -77,7 +92,7 @@ impl Hosts {
                             Vec::new(),
                         ),
                     ));
-                    connected.push((device_of(relay.name()), connection));
+                    connected.push((device, connection));
                 }
                 Ok(Err(error)) => {
                     tracing::debug!(host = relay.name(), %error, "a host did not answer a key");
@@ -89,7 +104,7 @@ impl Hosts {
                 }
             }
         }
-        let Some(worker) = choose(&answers) else {
+        let Some(worker) = choose(&among(answers, &keeping)) else {
             return Err(RelayError::NoHolder);
         };
         let (_, connection) = connected
@@ -115,6 +130,21 @@ fn choose(answers: &[([u8; 32], Answer)]) -> Option<[u8; 32]> {
     let choice = placement::pick(answers.iter().cloned(), &work);
     tracing::debug!(%choice, "an API server chose the host serving a key");
     choice.worker
+}
+
+/// The answers the choice is made among, `keeping` being the devices that list
+/// a workspace for the key: while any does, one that answered and lists none
+/// keeps nothing of the key's person and is ranked as away, however soon it
+/// answered. While none does, every one that answered stays a candidate.
+fn among(mut answers: Vec<([u8; 32], Answer)>, keeping: &[[u8; 32]]) -> Vec<([u8; 32], Answer)> {
+    if !keeping.is_empty() {
+        for (device, answer) in &mut answers {
+            if !keeping.contains(device) {
+                *answer = Answer::away();
+            }
+        }
+    }
+    answers
 }
 
 /// The placement rank key of the host named `name`: its origin's bytes, so
@@ -169,6 +199,31 @@ mod tests {
             ]),
             None,
             "nothing that can read the workspace answered"
+        );
+    }
+
+    /// A server that answers sooner and lists nothing for the key is passed
+    /// over for the one that lists its workspace. While none lists any, the
+    /// nearest serves, so a person's first workspace can be made.
+    #[test]
+    fn a_nearer_server_that_lists_nothing_for_the_key_is_passed_over() {
+        let near = device_of("near");
+        let far = device_of("far");
+        let answered = || vec![(far, taking(40)), (near, taking(3))];
+        assert_eq!(
+            choose(&among(answered(), &[far])),
+            Some(far),
+            "the one that lists the key's workspace serves, though it is the longer way"
+        );
+        assert_eq!(
+            choose(&among(answered(), &[near, far])),
+            Some(near),
+            "both list it: the shorter round trip wins"
+        );
+        assert_eq!(
+            choose(&among(answered(), &[])),
+            Some(near),
+            "none lists any: every one that answered is a candidate"
         );
     }
 }

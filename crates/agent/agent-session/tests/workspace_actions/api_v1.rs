@@ -447,7 +447,7 @@ async fn a_key_its_program_holds_reaches_the_host_directly() {
     let on_relay = api_on_relay(ISSUER).await;
     let (ada, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
     let page = enrol(&ada, "Ada's browser", DeviceCapabilities::member());
-    // Ada comes to the relay once, as every person does.
+    // Ada comes to the server once, as every person does.
     approved_key(&on_relay, &ada, &page, "Visa backend").await;
     let laptop = enrol(&ada, "Ada's script", DeviceCapabilities::member());
     let file = tilo_api::direct::KeyFile::new(
@@ -743,20 +743,124 @@ async fn a_file_larger_than_one_request_goes_up_in_pieces_that_resume() {
     );
 }
 
+/// An address that reaches `origin` later: every connection to it waits `wait` before it is
+/// carried on, so whoever measures the way there finds it the longer one.
+async fn later(origin: &str, wait: std::time::Duration) -> String {
+    let onward = origin
+        .strip_prefix("http://")
+        .expect("a plain origin")
+        .to_owned();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    tokio::spawn(async move {
+        while let Ok((mut from, _)) = listener.accept().await {
+            let onward = onward.clone();
+            tokio::spawn(async move {
+                tokio::time::sleep(wait).await;
+                if let Ok(mut to) = tokio::net::TcpStream::connect(&onward).await {
+                    let _ = tokio::io::copy_bidirectional(&mut from, &mut to).await;
+                }
+            });
+        }
+    });
+    format!("http://127.0.0.1:{port}")
+}
+
+/// An API server before two servers forwards a key's calls to the one that keeps its person's
+/// workspaces, also when the other answers sooner. The other one lets any certified device
+/// connect, as a server that keeps workspaces for the people it lets in does, and keeps nothing
+/// of this person's: asked for her workspace it knows none.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_call_reaches_the_server_that_keeps_the_workspace_when_another_answers_sooner() {
+    Box::pin(async {
+        let hers = api_on_relay(ISSUER).await;
+        let other = api_on_relay(ISSUER).await;
+        let (ada, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
+        let page = enrol(&ada, "Ada's browser", DeviceCapabilities::member());
+        let token = approved_key(&hers, &ada, &page, "Visa backend").await;
+        let home = V1 {
+            api: &hers.api,
+            token: token.clone(),
+        };
+        let (status, made) = home
+            .post("/v1/workspaces", &json!({"name": "Contracts"}), &[])
+            .await;
+        assert_eq!(status, 201, "{made}");
+        let workspace = made["id"].as_str().expect("a workspace").to_owned();
+
+        // Her own server is the longer way from here: the other one answers sooner.
+        let near = other.relay.clone();
+        let far = later(&hers.relay, std::time::Duration::from_millis(1500)).await;
+
+        // What the test rests on: the nearer server lets her key's device connect and lists
+        // nothing for it, and her own is reached by the longer way.
+        let key = tilo_api::store::Store::in_memory()
+            .access(&token, tilo_clock::unix_now_ms())
+            .expect("the token carries its grant")
+            .key()
+            .expect("and the grant its key");
+        let client = tilo_net::Client::builder().build().unwrap();
+        let reached = |origin: &str| Arc::new(tilo_api::relay::Relay::new(&client, origin));
+        let nearer = reached(&near);
+        let session = nearer
+            .connect(&key)
+            .await
+            .expect("the nearer server lets the key's device connect");
+        let listed = nearer.workspaces(&session).await.unwrap_or_default();
+        assert!(
+            listed.is_empty(),
+            "the nearer server keeps none of her workspaces: {listed:?}"
+        );
+        drop(session);
+        let session = reached(&far)
+            .connect(&key)
+            .await
+            .expect("her own server is reached by the longer way");
+        drop(session);
+
+        let front = Server::new(
+            &tilo_api::Config {
+                issuer: ISSUER.into(),
+                web_entry: hers.web_entry.clone(),
+                hosts: vec![near, far],
+            },
+            tilo_api::store::Store::in_memory(),
+        )
+        .unwrap();
+        let through = V1 { api: &front, token };
+        let (status, rows) = through
+            .get(&format!("/v1/workspaces/{workspace}/resources"))
+            .await;
+        assert_eq!(
+            status, 200,
+            "a call for her workspace reaches the server that keeps it: {rows}"
+        );
+        let (status, listed) = through.get("/v1/workspaces").await;
+        assert_eq!(status, 200, "{listed}");
+        assert!(
+            listed["workspaces"]
+                .as_array()
+                .is_some_and(|rows| rows.iter().any(|row| row["id"] == workspace.as_str())),
+            "her workspaces are listed where they are kept: {listed}"
+        );
+    })
+    .await;
+}
+
 /// An API server that never approved the key serves it anyway: the key is the
 /// grant the person signed, so every API server reads the same one.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_key_works_at_every_api_server() {
-    let on_relay = api_on_relay(ISSUER).await;
+    let served = api_on_relay(ISSUER).await;
     let (ada, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
     let page = enrol(&ada, "Ada's browser", DeviceCapabilities::member());
-    let token = approved_key(&on_relay, &ada, &page, "Visa backend").await;
+    let token = approved_key(&served, &ada, &page, "Visa backend").await;
 
     let second = Server::new(
         &tilo_api::Config {
             issuer: ISSUER.into(),
-            web_entry: on_relay.web_entry.clone(),
-            hosts: vec![on_relay.relay.clone()],
+            web_entry: served.web_entry.clone(),
+            hosts: vec![served.relay.clone()],
         },
         tilo_api::store::Store::in_memory(),
     )
@@ -771,7 +875,7 @@ async fn a_key_works_at_every_api_server() {
 
     // The API server that approved it serves the same key, and the same grant.
     let home = V1 {
-        api: &on_relay.api,
+        api: &served.api,
         token,
     };
     let (status, listed) = home.get("/v1/workspaces").await;
@@ -829,7 +933,7 @@ async fn no_host_that_can_read_the_workspace_is_a_typed_refusal() {
         &tilo_api::Config {
             issuer: ISSUER.into(),
             web_entry: on_relay.web_entry.clone(),
-            // Nothing serves at this address: no host is online for the key.
+            // Nothing serves at this address: no server is online for the key.
             hosts: vec!["http://127.0.0.1:9".into()],
         },
         tilo_api::store::Store::in_memory(),
