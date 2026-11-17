@@ -950,9 +950,9 @@ impl Chat {
     /// Whether the conversation `id` takes messages now: a text channel of
     /// the resource, or a direct conversation, named by its members.
     ///
-    /// A member is one by being named as one: the workspace's member list and
-    /// its resource of its agents say who exists, and the chat does not list
-    /// them a second time, so a conversation with someone who never opened
+    /// A member is one by being named as one: the workspace's member list says
+    /// who exists, its agents among them, and the chat does not list them a
+    /// second time, so a conversation with someone who never opened
     /// Chat takes the first message to them.
     #[must_use]
     pub fn takes_messages(&self, id: &Id) -> bool {

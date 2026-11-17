@@ -297,18 +297,17 @@ fn a_contact_goes_by_the_name_they_go_by_here_now() {
     );
 }
 
-/// An agent is a member like a person: its answer reads by the name the workspace's own
-/// resource of its agents keeps for it — whether or not its device works here — and the conversation
-/// with it is named for it. Never by a placeholder that spells part of its routing id.
+/// An agent is a member like a person: its answer reads by the name the workspace's member list
+/// gives it — whether or not its device works here — and the conversation with it is named for
+/// it. Never by a placeholder that spells part of its routing id.
 #[test]
-fn an_agents_answer_reads_by_the_workspaces_agent_resource() {
+fn an_agents_answer_reads_by_the_name_the_member_list_gives_it() {
     let mut doc = crate::testing::Workspace::default();
     crate::testing::starter(&mut doc, crate::model::ME, "You");
     let mut app = ChatApp::new_ephemeral();
     app.attach_workspace(&doc);
-    // The workspace's document of its agents names it; presence never saw it.
-    app.workspace_agent_names
-        .insert("notes".to_owned(), "Notes".to_owned());
+    // The member list names it; its device never worked here.
+    crate::testing::agent_member(&mut app, "notes", "Notes");
     app.reload(&doc);
     let conversation = crate::chat::Chat::direct_id([
         MemberId::person(crate::model::ME),
@@ -348,7 +347,7 @@ fn an_agents_answer_reads_by_the_workspaces_agent_resource() {
         read.display_names(
             &conversation,
             Some(&MemberId::person(crate::model::ME)),
-            (&app.workspace_agent_names, &app.workspace_names)
+            (&crate::projection::AgentNames::new(), &app.workspace_names)
         ),
         "Notes"
     );

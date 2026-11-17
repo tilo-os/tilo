@@ -59,6 +59,17 @@ pub(crate) fn member(me: &str, name: &str) {
     ui::tilo_resource::members::know(members);
 }
 
+/// The agent `agent` is a member of the workspace, called `name`, as the member list `app` and
+/// the record's code receive says.
+pub(crate) fn agent_member(app: &mut crate::app::ChatApp, agent: &str, name: &str) {
+    let agent = ui::tilo_resource::MemberId::agent(agent);
+    let mut members = ui::tilo_resource::members::named();
+    members.retain(|(id, _)| *id != agent);
+    members.push((agent.clone(), name.to_owned()));
+    ui::tilo_resource::members::know(members);
+    app.workspace_names.insert(agent, name.to_owned());
+}
+
 /// Post `text` in `channel` as `author`; the new message's id.
 pub(crate) fn say(doc: &mut Workspace, author: &str, channel: &str, text: &str) -> String {
     doc.say(&ui::tilo_resource::MemberId::person(author), channel, text)

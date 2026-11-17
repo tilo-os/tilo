@@ -401,15 +401,14 @@ fn a_box_send_to_an_agent_opens_its_conversation() {
 }
 
 /// An agent's send names whom it goes to by name alone: the person the workspace's member list
-/// calls that, or the agent its resource of agents does.
+/// calls that, or the agent it calls that.
 #[test]
 fn a_send_by_name_reaches_the_member_called_that() {
     use ui::floating_surface::{Recipient, RecipientKind};
 
     let mut app = crate::ChatApp::new_ephemeral();
     let agent = "a5".repeat(16);
-    app.workspace_agent_names
-        .insert(agent.clone(), "Reviewer".to_owned());
+    crate::testing::agent_member(&mut app, &agent, "Reviewer");
     app.workspace_presence_answers = true;
     app.workspace_names
         .insert(MemberId::person("ad".repeat(32)), "Ada".to_owned());

@@ -299,8 +299,7 @@ tilo_test_env::scenario! {
         assert!(label.starts_with("Another person (bot:"));
         assert!(!label.contains("model output"));
         message.author = MemberId::agent("actual");
-        app.workspace_agent_names
-            .insert("actual".to_owned(), "Actual agent".into());
+        crate::testing::agent_member(&mut app, "actual", "Actual agent");
         let name = app.message_author_name(&message);
         assert_eq!(name, app.user_name(&message.author));
         assert!(name.starts_with("Actual agent"));

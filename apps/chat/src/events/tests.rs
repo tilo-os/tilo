@@ -2624,8 +2624,7 @@ tilo_test_env::scenario! {
     {
         let (mut app, mut doc) = app_with_doc();
         let name = "Book the room for the whole marketing team on Friday";
-        app.workspace_agent_names
-            .insert("planner".into(), name.into());
+        crate::testing::agent_member(&mut app, "planner", name);
         let channel = app.active_channel.clone();
         let id = doc
             .say(&MemberId::agent("planner"), &channel, "On it.")

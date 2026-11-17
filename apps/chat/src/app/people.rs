@@ -61,20 +61,14 @@ impl ChatApp {
         id.id().to_owned()
     }
 
-    /// What the workspace calls the agent `agent` (its bare id): the name its own record keeps for
-    /// it, else the name its device announced while here, else the name the member list gives it.
-    /// `None` for one the workspace names not.
+    /// What the workspace calls the agent `agent` (its bare id): the name its member list gives
+    /// it, else the name its rows here keep. `None` for one the workspace names not.
     pub(crate) fn known_agent_name(&self, agent: &str) -> Option<String> {
         let id = MemberId::agent(agent);
-        self.workspace_agent_names
-            .get(agent)
+        self.workspace_names
+            .get(&id)
+            .filter(|name| !name.trim().is_empty())
             .cloned()
-            .or_else(|| {
-                self.workspace_names
-                    .get(&id)
-                    .filter(|name| !name.trim().is_empty())
-                    .cloned()
-            })
             .or_else(|| {
                 self.users
                     .iter()
@@ -207,34 +201,26 @@ impl ChatApp {
             .unwrap_or_else(|| ui::presence::identity_rgb(self.member_hue(id)))
     }
 
-    /// The chat's people as the composers' `@` lists offer them beside the
-    /// workspace's roster: someone who wrote here stays mentionable after they
-    /// left the workspace, and the workspace's own document of its agents is offered
-    /// too, so an agent is there to name whether or not a device of theirs is here.
+    /// Everyone the composers' `@` lists offer: the chat's people, so someone who wrote here
+    /// stays mentionable after they left, and every member the workspace names, its agents
+    /// among them.
     pub(crate) fn mention_people(&self) -> Vec<ui::widget::MentionCandidate> {
-        let mut people: Vec<ui::widget::MentionCandidate> = self
-            .users
-            .iter()
-            .map(|user| ui::widget::MentionCandidate {
-                id: user.id.clone(),
-                name: self.display_name(&user.id),
-                hue: self.member_hue(&user.id),
-                is_self: self.is_me(&user.id),
+        self.member_ids()
+            .into_iter()
+            .filter(|id| {
+                self.users.iter().any(|user| user.id == *id)
+                    || self
+                        .workspace_names
+                        .get(id)
+                        .is_some_and(|name| !name.trim().is_empty())
             })
-            .collect();
-        for (id, name) in &self.workspace_agent_names {
-            let id = MemberId::agent(id.clone());
-            if name.trim().is_empty() || people.iter().any(|listed| listed.id == id) {
-                continue;
-            }
-            people.push(ui::widget::MentionCandidate {
-                hue: self.member_hue(&id),
+            .map(|id| ui::widget::MentionCandidate {
                 name: self.display_name(&id),
-                is_self: false,
+                hue: self.member_hue(&id),
+                is_self: self.is_me(&id),
                 id,
-            });
-        }
-        people
+            })
+            .collect()
     }
 
     /// Everyone who can be mentioned, by name: the people of the conversations
@@ -252,27 +238,6 @@ impl ChatApp {
         out
     }
 
-    /// The workspace's agents as the `@` list offers them and a message binds their names by:
-    /// the ones its agents resource keeps, under the names that resource gives them.
-    pub(crate) fn agent_members(&self) -> Vec<(MemberId, String)> {
-        self.workspace_agent_names
-            .keys()
-            .map(|id| {
-                let id = MemberId::agent(id.clone());
-                let name = self.display_name(&id);
-                (id, name)
-            })
-            .collect()
-    }
-
-    /// The mentions `text` writes of the workspace's agents, by the one rule a name binds by
-    /// ([`crate::mention::resolve`]): a `@Name` typed by hand asks the agent it names, as it asks
-    /// a person. The chat's own document does not list the workspace's agents, so the window, which
-    /// reads their resource, binds theirs where the message is written.
-    pub(crate) fn agent_mentions(&self, text: &str) -> Vec<crate::mention::Mention> {
-        crate::mention::resolve(text, &self.agent_members())
-    }
-
     /// [`Self::members`] without their names: who can be mentioned, each
     /// once. A frame that only needs their colours reads this, so it never
     /// works out a name or builds a row.
@@ -281,12 +246,6 @@ impl ChatApp {
         for id in self.workspace_names.keys() {
             if !out.contains(id) {
                 out.push(id.clone());
-            }
-        }
-        for id in self.workspace_agent_names.keys() {
-            let id = MemberId::agent(id.clone());
-            if !out.contains(&id) {
-                out.push(id);
             }
         }
         out

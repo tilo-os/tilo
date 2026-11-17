@@ -22,8 +22,7 @@ fn read_resource(doc: &AutoCommit) -> Option<crate::chat::Chat> {
 impl ChatApp {
     /// The conversations this window lists that the resource keeps no row for — a direct
     /// conversation a send opened, an agent's among them — as search finds them, named as the
-    /// sidebar names them: by what the workspace's own document of its agents calls them
-    /// ([`ChatApp::follow_agents`]). A conversation the resource keeps is the resource's own to
+    /// sidebar names them: by what the workspace's member list calls them. A conversation the resource keeps is the resource's own to
     /// publish, and is left out here.
     pub(crate) fn unrecorded_conversation_entries(&self) -> Vec<ui::tilo_resource::SearchEntry> {
         self.channels
@@ -162,11 +161,7 @@ impl ChatApp {
     /// The conversations and categories the resource keeps, the one open, and
     /// how much each of the others holds unread.
     fn sync_conversations(&mut self, chat: &crate::chat::Chat, held: &crate::messages::Messages) {
-        self.channels = chat.conversation_rows(
-            &self.me.id,
-            held,
-            (&self.workspace_agent_names, &self.workspace_names),
-        );
+        self.channels = chat.conversation_rows(&self.me.id, held, &self.workspace_names);
         self.recorded_channels = chat.channels.iter().map(|(id, _)| id.to_string()).collect();
         self.categories = chat.category_rows();
         for category in &mut self.categories {

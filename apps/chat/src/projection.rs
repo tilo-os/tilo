@@ -15,7 +15,7 @@ use crate::model::{AgentStep, AgentWork, Category, Channel, EditEntry, Message, 
 /// (`agent:<id>`): the answer of the workspace's own document of its agents.
 pub type AgentNames = HashMap<String, String>;
 
-/// What the workspace's member list calls each of its people.
+/// What the workspace's member list calls each of its people and agents.
 pub type PeopleNames = HashMap<MemberId, String>;
 
 /// The published id of the item `id` of the resource's `field`
@@ -83,20 +83,19 @@ impl Chat {
     /// the members ([`Chat::direct_id`]) — with the conversations the
     /// resource keeps for an agent among them.
     ///
-    /// A conversation with an agent is named by what the workspace calls its agents (`agents`),
-    /// whether or not the agent is working here this moment, and one with a person by what its
-    /// member list calls them (`people`), whether or not they ever opened Chat.
+    /// A conversation is named by what the workspace's member list calls its people and agents
+    /// (`people`), whether or not they ever opened Chat.
     #[must_use]
     pub fn conversation_rows(
         &self,
         me: &MemberId,
         messages: &crate::messages::Messages,
-        (agents, people): (&AgentNames, &PeopleNames),
+        people: &PeopleNames,
     ) -> Vec<Channel> {
         let mut rows = self.channel_rows();
         let mut direct: Vec<(String, Channel)> = Vec::new();
         let mut push = |id: &Id, members: Vec<MemberId>, recorded: Option<&Conversation>| {
-            let name = self.display_names(id, Some(me), (agents, people));
+            let name = self.display_names(id, Some(me), (&AgentNames::new(), people));
             direct.push((
                 name.clone(),
                 Channel {
@@ -167,8 +166,9 @@ impl Chat {
     /// The one place a conversation is named, for the window and for whatever
     /// else names it (an agent's run on a turn in it).
     ///
-    /// An agent is named by what the workspace's own document calls it (`agents`), the identity
-    /// record every app of the workspace reads, not by whether its device happens to be here.
+    /// A member is named by what the member list calls them (`people`), else, for an agent, by
+    /// what the workspace's own document of its agents calls it (`agents`): a reader with no
+    /// member list reads that record.
     #[must_use]
     pub fn display_names(
         &self,
@@ -186,12 +186,9 @@ impl Chat {
         let named: Vec<String> = members
             .iter()
             .map(|member| {
-                let listed = if member.is_person() {
-                    people.get(member)
-                } else {
-                    agents.get(member.id())
-                };
-                listed
+                people
+                    .get(member)
+                    .or_else(|| agents.get(member.id()).filter(|_| !member.is_person()))
                     .map(|name| name.trim().to_owned())
                     .filter(|name| !name.is_empty())
                     .or_else(|| ui::tilo_resource::members::name_of(member))

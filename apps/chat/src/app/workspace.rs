@@ -48,13 +48,9 @@ impl ChatApp {
         self
     }
 
-    /// Follow the workspace's agents record: what each agent is called, by its bare id.
-    ///
-    /// An agent is a member of the workspace like a person is, and its
-    /// name is the workspace's answer, kept in its own document ([`WorkspaceAgents`]).
-    /// Presence only names an agent while its device works here; the resource
-    /// names it always, so an author reads by its name whether or not it is
-    /// running. Whether any name changed, so the window shows them again.
+    /// Follow the workspace's agents record: the colour each agent wears, by its bare id. Its
+    /// name is the member list's, as everyone's is. Whether any colour changed, so the window
+    /// shows them again.
     pub(super) fn follow_agents(&mut self) -> bool {
         if self.agents_document.is_none() {
             // A record the workspace delivered after this window opened is opened here, once it
@@ -69,15 +65,13 @@ impl ChatApp {
             return false;
         };
         let state = record.get();
-        let names = state.active_names();
         let colours: HashMap<Id, u8> = state
             .active()
             .map(|agent| (agent.id.0.clone(), agent.slot()))
             .collect();
-        if names == self.workspace_agent_names && colours == self.workspace_agent_colours {
+        if colours == self.workspace_agent_colours {
             return false;
         }
-        self.workspace_agent_names = names;
         self.workspace_agent_colours = colours;
         true
     }
@@ -101,14 +95,8 @@ impl ChatApp {
     /// while the conversation is put away and not drawn). In a call they show
     /// who speaks, which moves every frame.
     pub(super) fn take_workspace(&mut self) -> bool {
-        // The workspace's agents are named by its own document, not by presence: an
-        // author reads by its name after it stopped working here too.
+        // The workspace's agents wear the colour their own document gives them.
         let agents_changed = self.follow_agents();
-        if agents_changed {
-            // A conversation's name is what its members are called: read them
-            // again, as this pass does when the resource moved.
-            self.synced = None;
-        }
         let permissions = ui::presence::frame::frame(PresenceCtx::permission_context).flatten();
         let perms_changed = permissions.is_some_and(|permissions| {
             let changed = self.perms.context() != &permissions;

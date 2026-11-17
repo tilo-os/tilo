@@ -86,12 +86,9 @@ impl ChatApp {
     ) {
         match self.messages_chain() {
             Ok(chain) => {
-                chain.invoke_then(
-                    &post(id, text, None, None, Vec::new(), self.agent_mentions(text)),
-                    move |posted| {
-                        then(posted.map(drop).map_err(|error| error.to_string()));
-                    },
-                );
+                chain.invoke_then(&post(id, text, None, None, Vec::new()), move |posted| {
+                    then(posted.map(drop).map_err(|error| error.to_string()));
+                });
             }
             Err(unavailable) => then(Err(unavailable)),
         }
@@ -134,14 +131,7 @@ impl ChatApp {
         // asked can stand the turn it opened (canvas.md §3) by the message, not by its words.
         drop(ui::tilo_resource::take_minted());
         self.messages_chain()?
-            .invoke(&post(
-                &id,
-                text,
-                parent.map(Id::from_raw),
-                body,
-                attached,
-                self.agent_mentions(text),
-            ))
+            .invoke(&post(&id, text, parent.map(Id::from_raw), body, attached))
             .map_err(|error| error.to_string())?;
         let message = ui::tilo_resource::take_minted().into_iter().next();
         // The conversation stands where the box stood: a window of the shell,
@@ -226,14 +216,6 @@ impl ChatApp {
         if name.is_empty() {
             return Err(crate::i18n::t("chat-person-unknown"));
         }
-        if agent
-            && let Some((id, _)) = self
-                .workspace_agent_names
-                .iter()
-                .find(|(_, named)| named.trim().to_lowercase() == name)
-        {
-            return Ok(MemberId::agent(id.clone()));
-        }
         let mut called: Vec<&MemberId> = self
             .workspace_names
             .iter()
@@ -245,7 +227,13 @@ impl ChatApp {
         called.sort();
         called
             .into_iter()
-            .find_map(|member| self.workspace_member(member.clone()).ok())
+            .find_map(|member| {
+                if agent {
+                    Some(member.clone())
+                } else {
+                    self.workspace_member(member.clone()).ok()
+                }
+            })
             .ok_or_else(|| crate::i18n::t("chat-person-unknown"))
     }
 
@@ -326,7 +314,6 @@ fn post(
     parent: Option<Id>,
     body: Option<Vec<tilo_document::ClipBlock>>,
     attachments: Vec<tilo_reference::Attached>,
-    mentions: Vec<crate::mention::Mention>,
 ) -> Invoke<ChatPart> {
     ChatPart::POST.with(chat_part::Post {
         message: crate::messages::NewMessage {
@@ -336,7 +323,7 @@ fn post(
             quoted: None,
             body,
             attachments,
-            mentions: Some(mentions),
+            mentions: None,
             written: None,
             origin: None,
         },

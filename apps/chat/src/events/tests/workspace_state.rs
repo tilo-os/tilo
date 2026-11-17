@@ -285,8 +285,7 @@ tilo_test_env::scenario! {
     phase the_at_list_offers_the_workspaces_agents;
     {
         let (mut app, mut doc) = app_with_doc();
-        app.workspace_agent_names
-            .insert("planner".to_owned(), "Planner".to_owned());
+        crate::testing::agent_member(&mut app, "planner", "Planner");
         app.focus = Focus::Main;
         app.set_composer_focus();
         // The editor learns who is offered at `@` as it is drawn.
@@ -296,7 +295,15 @@ tilo_test_env::scenario! {
                 .iter()
                 .any(|person| person.id == MemberId::agent("planner")
                     && person.name == "Planner"),
-            "the workspace's agent resource names it for the @ list"
+            "the member list names it for the @ list"
+        );
+        let ada = MemberId::person("ad".repeat(32));
+        app.workspace_names.insert(ada.clone(), "Ada".to_owned());
+        assert!(
+            app.mention_people()
+                .iter()
+                .any(|person| person.id == ada && person.name == "Ada"),
+            "a person the member list names is offered beside the agent"
         );
         // Typing the name opens the list, and a pick writes the agent's name: what the page's
         // composer draws is this same list.
@@ -308,8 +315,7 @@ tilo_test_env::scenario! {
     phase a_name_typed_without_the_picker_asks_the_agent;
     {
         let (mut app, mut doc) = app_with_doc();
-        app.workspace_agent_names
-            .insert("planner".to_owned(), "Planner".to_owned());
+        crate::testing::agent_member(&mut app, "planner", "Planner");
         app.active_channel = "c_general".into();
         app.focus = Focus::Main;
         app.thread_open = None;

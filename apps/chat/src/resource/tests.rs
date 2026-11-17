@@ -1171,17 +1171,16 @@ fn a_narrow_window_opens_on_the_conversation() {
 }
 
 /// The conversation with an agent that a send opened is found by the agent's name: the window
-/// publishes it, named by what the workspace's document of its agents calls them — the same name
-/// its sidebar shows — and not by anything of its routing id. The resource keeps no row of the
+/// publishes it, named by what the workspace's member list calls them — the same name its
+/// sidebar shows — and not by anything of its routing id. The resource keeps no row of the
 /// conversation, so only the window's listing has it.
 #[test]
-fn search_finds_an_agents_conversation_by_the_name_its_resource_keeps() {
+fn search_finds_an_agents_conversation_by_its_member_name() {
     let mut doc = crate::testing::Workspace::default();
     crate::testing::starter(&mut doc, crate::model::ME, "You");
     let mut app = crate::ChatApp::new_ephemeral();
     app.attach_workspace(&doc);
-    app.workspace_agent_names
-        .insert("notes".to_owned(), "Notes".to_owned());
+    crate::testing::agent_member(&mut app, "notes", "Notes");
     app.reload(&doc);
     let conversation = crate::chat::Chat::direct_id([
         MemberId::person(crate::model::ME),
