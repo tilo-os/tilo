@@ -433,17 +433,25 @@ fn action_text(answer: &Value) -> String {
 }
 
 /// `tilo ls [path] -w <workspace>`: what the workspace holds, or what `path`
-/// holds, as `tilo_ls` lists it.
-pub fn ls(reach: Reach<'_>, workspace: &str, path: Option<&str>) -> ExitCode {
+/// holds, as `tilo_ls` lists it: `cursor` reads on from where a page ended.
+pub fn ls(reach: Reach<'_>, workspace: &str, path: Option<&str>, cursor: Option<&str>) -> ExitCode {
     run(async {
         let client = Client::open(reach)?;
         let workspace = client.workspace_id(workspace).await?;
-        let mut route = format!("/v1/workspaces/{workspace}/resources");
+        let mut query = Vec::new();
         if let Some(path) = path.map(str::trim).filter(|path| !path.is_empty()) {
-            let _ = write!(route, "?path={}", api::encode_query(path));
+            query.push(format!("path={}", api::encode_query(path)));
+        }
+        if let Some(cursor) = cursor.map(str::trim).filter(|cursor| !cursor.is_empty()) {
+            query.push(format!("cursor={}", api::encode_query(cursor)));
+        }
+        let mut route = format!("/v1/workspaces/{workspace}/resources");
+        if !query.is_empty() {
+            let _ = write!(route, "?{}", query.join("&"));
         }
         let listed = client.get(&route).await?;
-        Ok(show(reach.json, &listed, &listing_text(&listed)))
+        let text = listing_text(&listed, &workspace, path);
+        Ok(show(reach.json, &listed, &text))
     })
 }
 
@@ -542,13 +550,25 @@ pub fn view(
 
 /// A listing as a person reads it: the lines `tilo_ls` prints, or the same
 /// built from its rows when the host sent no text.
-fn listing_text(listed: &Value) -> String {
+fn listing_text(listed: &Value, workspace: &str, path: Option<&str>) -> String {
     if let Some(text) = listed
         .get("text")
         .and_then(Value::as_str)
         .filter(|text| !text.is_empty())
     {
-        return text.to_owned();
+        let mut said = text.to_owned();
+        if let Some(cursor) = listed.get("next_cursor").and_then(Value::as_str) {
+            let what = path
+                .map(str::trim)
+                .filter(|path| !path.is_empty())
+                .map(|path| format!("{path} "))
+                .unwrap_or_default();
+            let _ = write!(
+                said,
+                "\nmore: tilo ls {what}--cursor {cursor} -w {workspace}"
+            );
+        }
+        return said;
     }
     let mut said = text(listed, "path").to_owned();
     if let Some(kind) = listed.get("kind").and_then(Value::as_str) {
@@ -2006,13 +2026,20 @@ mod tests {
 
             // A listing and a read are the routes `tilo_ls` and `tilo_read`
             // answer: the same call, in the words a person's command takes.
-            ls(reach, "applicant-jane-doe", Some("notes/Todo"));
+            ls(reach, "applicant-jane-doe", Some("notes/Todo"), None);
             let listed = api_server.drain_requests();
             let listing = listed.last().expect("the listing");
             assert_eq!(listing.method, "GET");
             assert_eq!(
                 listing.target,
                 format!("/v1/workspaces/{WORKSPACE}/resources?path=notes%2FTodo")
+            );
+            // A listing past its first page names the cursor it ended with.
+            ls(reach, "applicant-jane-doe", Some("notes/Todo"), Some("12"));
+            let paged = api_server.drain_requests();
+            assert_eq!(
+                paged.last().expect("the listing").target,
+                format!("/v1/workspaces/{WORKSPACE}/resources?path=notes%2FTodo&cursor=12")
             );
             read(
                 reach,
@@ -2225,7 +2252,7 @@ mod tests {
                 "rows": [{"path": "notes/Notebook", "label": "Notebook", "kind": "notes.notebook"}],
                 "text": "notes  (notes.notebook)\nNotebook  notes.notebook"});
             assert_eq!(
-                listing_text(&listed),
+                listing_text(&listed, "jane-doe", None),
                 "notes  (notes.notebook)\nNotebook  notes.notebook"
             );
             // A host that sent none: the same, built from its rows.
@@ -2233,8 +2260,15 @@ mod tests {
                 "rows": [{"path": "notes/Notebook", "label": "Notebook",
                     "kind": "notes.notebook"}]});
             assert_eq!(
-                listing_text(&rows_only),
+                listing_text(&rows_only, "jane-doe", None),
                 "notes  (notes.notebook)\nnotes/Notebook  Notebook  notes.notebook"
+            );
+            // A listing that goes on says which command reads it on.
+            let paged = serde_json::json!({"path": "notes", "text": "notes  (notes.notebook)",
+                "next_cursor": "1.0.61.30"});
+            assert_eq!(
+                listing_text(&paged, "jane-doe", Some("notes")),
+                "notes  (notes.notebook)\nmore: tilo ls notes --cursor 1.0.61.30 -w jane-doe"
             );
             let read = serde_json::json!({"path": "notes/Notebook/Todo",
                 "kind": "notes.page", "fields": {"title": "Todo"},

@@ -209,6 +209,9 @@ enum Cmd {
     Ls {
         /// What to list: an app, a resource or an action, as `tilo ls` printed it.
         what: Option<String>,
+        /// The cursor a long listing ended with, for the rest of it.
+        #[arg(long)]
+        cursor: Option<String>,
     },
     /// Read one resource of a hosted workspace (-w).
     #[command(
@@ -1023,9 +1026,9 @@ fn run_hosted(
     };
     Ok(match cmd {
         Cmd::Do { action, args } => Ok(run_do(reach, workspace, action, args, spelling)),
-        Cmd::Ls { what } => workspace
+        Cmd::Ls { what, cursor } => workspace
             .ok_or_else(needs_workspace)
-            .map(|workspace| hosted::ls(reach, &workspace, what.as_deref())),
+            .map(|workspace| hosted::ls(reach, &workspace, what.as_deref(), cursor.as_deref())),
         Cmd::Read { resource, cursor } => workspace
             .ok_or_else(needs_workspace)
             .map(|workspace| hosted::read(reach, &workspace, &resource, cursor.as_deref())),
