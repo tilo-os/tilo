@@ -47,6 +47,40 @@ impl crate::services::LauncherServices for Installed {
     }
 }
 
+/// What the Notes package publishes, as its signed surface.
+const SURFACE: &str =
+    "[[resources]]\nkind = \"notes.notebook\"\nlabel = \"Notebook\"\nversion = 1\n";
+
+/// A launcher holding the reader from the Notes package: its row is offered
+/// with what its package publishes, so an agent generates its types before
+/// the app opens.
+struct Surfaced;
+
+impl crate::services::LauncherServices for Surfaced {
+    fn applications(&self) -> Vec<crate::services::LaunchableApplication> {
+        vec![crate::services::LaunchableApplication {
+            capabilities: Vec::new(),
+            package_id: NOTES.into(),
+            display_name: "Notes".into(),
+            unconfined: false,
+            offers: Vec::new(),
+            surface: Some(SURFACE.into()),
+        }]
+    }
+    fn launch(
+        &self,
+        _: &str,
+        _: &tilo_desktop_model::Workspace,
+        _: Option<&str>,
+        _: &crate::services::LaunchPlace,
+    ) -> Result<(), String> {
+        Ok(())
+    }
+    fn attest_process(&self, _: u32, _: &str, _: &str) -> bool {
+        false
+    }
+}
+
 /// An agent inside a turn: `person`'s message in a conversation it takes part
 /// in caused what it asks, in `workspace`. Nothing an agent does stands
 /// outside one.
@@ -79,6 +113,15 @@ fn broker(
     apps: Vec<&'static str>,
     attached: bool,
 ) -> Arc<AppBrokerState> {
+    broker_with(Arc::new(Installed(apps)), workspaces, attached)
+}
+
+/// As [`broker`], with `launcher` holding the apps.
+fn broker_with(
+    launcher: Arc<dyn crate::services::LauncherServices>,
+    workspaces: Vec<Workspace>,
+    attached: bool,
+) -> Arc<AppBrokerState> {
     let mut tree = WorkspaceTree::default();
     tree.workspaces.extend(workspaces);
     let tree = tree.shared();
@@ -90,7 +133,7 @@ fn broker(
         None,
         None,
         crate::services::ProcessServices {
-            launcher: Some(Arc::new(Installed(apps))),
+            launcher: Some(launcher),
             ..Default::default()
         },
     );
@@ -141,6 +184,25 @@ fn publishers(
 
 tilo_test_env::scenario! {
     fn an_agents_list_of_apps;
+
+    phase an_installed_apps_row_carries_what_its_package_publishes;
+    {
+        let workspace = workspace();
+        let workspace_id = workspace.id().to_string();
+        let state = broker_with(Arc::new(Surfaced), vec![workspace], true);
+        let agent = turn_caller("scribe", "owner", &workspace_id);
+        let page = installed(&state, &agent, &workspace_id).expect("the workspace is reachable");
+        let row = page
+            .rows
+            .iter()
+            .find(|row| row.resource.id == format!("app.{NOTES}"))
+            .expect("Notes is installed");
+        assert_eq!(
+            row.surface.as_deref(),
+            Some(SURFACE),
+            "the row carries the surface its package publishes, before the app opens"
+        );
+    }
 
     phase an_agent_is_told_every_installed_app_and_which_it_may_open;
     {
