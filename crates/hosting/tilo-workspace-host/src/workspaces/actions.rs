@@ -1194,11 +1194,13 @@ impl Workspaces {
                 .iter()
                 .chain(confirmed)
                 .filter(|verb| {
-                    // A verb with no check is the caller's own business (naming
-                    // themselves), which every person has and an agent's grant
-                    // does not.
+                    // A verb with no check is the caller's own business. Naming
+                    // themselves is every person's, and an agent's grant has it
+                    // not. Its own grant is a key's: the key lists and revokes
+                    // it by asking for the verb by name, and no person is
+                    // offered what only a key or the key that minted it can do.
                     if verb.check.is_empty() {
-                        return speaks_for_themselves(caller);
+                        return verb.id == NAME && speaks_for_themselves(caller);
                     }
                     if verb.check == CHOOSES_HOSTS {
                         return self.chooses_hosts(&workspace, &device);

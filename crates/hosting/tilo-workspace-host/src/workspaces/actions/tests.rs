@@ -21,7 +21,8 @@ use tilo_relay_protocol::workspaces::JoinReply;
 use tilo_user_identity::DeviceCert;
 
 use super::{
-    CANCEL_INVITATION, GovernedServer, HostWorkspaceActions, INVITATIONS, MEMBERS, NAME, VERBS,
+    CANCEL_INVITATION, GovernedServer, HostWorkspaceActions, INVITATIONS, MAIL_INVITATION, MEMBERS,
+    NAME, UNLIST, VERBS, WAIT_LIST,
 };
 use crate::app_serving::AppActionServer as _;
 use crate::workspaces::tests::{governor, guest_device, signed_pre_admission, test_host};
@@ -178,7 +179,17 @@ async fn invoke(
     }
 }
 
-const INVITE_FAMILY: [&str; 4] = [governance::INVITE, INVITATIONS, CANCEL_INVITATION, MEMBERS];
+/// Inviting and what is part of it: the invitations made, who is in the workspace, and the
+/// addresses left at its entry while it takes people by invitation.
+const INVITE_FAMILY: [&str; 7] = [
+    governance::INVITE,
+    INVITATIONS,
+    CANCEL_INVITATION,
+    MEMBERS,
+    WAIT_LIST,
+    UNLIST,
+    MAIL_INVITATION,
+];
 
 /// Naming themselves, which every person is offered in a workspace they are
 /// in and no grant gives them.
