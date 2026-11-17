@@ -472,7 +472,7 @@ const host = detached('host', relayBin, ['workspace', '--state', join(work, 'wor
   '--packet-relay', `127.0.0.1:${relayPort}`,
   '--link-listen', `127.0.0.1:${linkPort}`, '--link-origin', `https://127.0.0.1:${linkPort}`,
   '--allowed-origin', siteOrigin, '--listing-description', 'A workspace for a person and their agent',
-  '--default-role', 'editor', '--workspace-records',
+  '--default-role', 'editor', '--workspace-documents',
   // The apps the workspace opens with: the ones the agent drives, which the
   // person's desktop shows too. The Terminal's sessions run on the host,
   // beside the workspace's records.

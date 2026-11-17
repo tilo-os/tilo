@@ -61,7 +61,7 @@ lounge
 /run/secrets/workspace-root-lounge
 --workspace-id-file
 --member-limits
---workspace-records
+--workspace-documents
 --public-avatars
 --public-avatars-url
 https://eu1.tilo.sh/avatars

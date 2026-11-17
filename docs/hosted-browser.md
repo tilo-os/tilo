@@ -354,7 +354,7 @@ fifteenth of a cent on demand, and a hundred-and-fiftieth of a cent on Spot.
 
 ## Running it
 
-A host that places workspaces (`tilo-relay workspace … --workspace-records`) serves
+A host that places workspaces (`tilo-relay workspace … --workspace-documents`) serves
 their Browser with `TILO_HOSTED_PLACER`, `TILO_HOSTED_MEMBERS`,
 `TILO_HOSTED_ACCOUNT` and `TILO_HOSTED_VM_SIZE` (as for shells), plus
 `TILO_HOSTED_BROWSER_RELAY` (`KEY@HOST:PORT`, the public address sessions

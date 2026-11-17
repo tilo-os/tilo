@@ -189,7 +189,7 @@ pub async fn serving_records_with_actions(
 }
 
 /// Start a host for `root`'s person on `host`'s device as tilo.sh's relay
-/// runs (`--workspace-records`): no agents, its workspaces' records served to
+/// runs (`--workspace-documents`): no agents, its workspaces' records served to
 /// their devices, each action run in the record's own app worker here,
 /// whether or not a page of the person's is open. Its apps are
 /// `catalogue`'s.

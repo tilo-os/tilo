@@ -82,7 +82,7 @@ What it reaches:
 
 The relay must be a persistent host, which keeps workspaces of people's own
 for anyone who asks, and run its workspaces' records (its agents, or
-`--workspace-records`).
+`--workspace-documents`).
 
 - **Sign-in.** `TILO_API_WEB_ENTRY` must serve `/sign-in`: given
   `audience`, `challenge`, `return`, `pending`, `client`, `grant_key`,

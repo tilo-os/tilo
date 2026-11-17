@@ -294,7 +294,7 @@ fn announce_web_entry(cfg: &mut tilo_relay::RelayConfig, args: &WebArgs) {
 
 /// Start the relay; with `--agents`, with its agent supervisor as the
 /// app-serving plane and the agents kept under `state_root/agents`; with
-/// `--workspace-records` alone, serving the workspaces' records without agents.
+/// `--workspace-documents` alone, serving the workspaces' records without agents.
 ///
 /// # Errors
 /// The relay did not start, or the agent state could not be read.

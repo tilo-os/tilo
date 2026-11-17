@@ -152,7 +152,7 @@ set -- workspace \
   --root-file "$root" \
   --workspace-id-file "$dir/workspace-id" \
   --member-limits \
-  --workspace-records \
+  --workspace-documents \
   --public-avatars "$dir/avatars" \
   --public-avatars-url "$origin/avatars" \
   --listing-description "$description" \
