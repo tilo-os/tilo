@@ -25,6 +25,11 @@ if flaky.exists():
     flaky.unlink()
     print("rcargo: remote builder unavailable (builder helper failed)")
     sys.exit(1)
+def says(word):
+    return [p.name for p in root.iterdir() if p.is_file() and word in p.read_text(errors="replace")]
+if says("RED") or says("BROKE"):
+    print("pre-push: clippy (native) failed - rerun: python3 tools/ci/fake_clippy.py")
+    sys.exit(1)
 bad = [p.name for p in root.iterdir() if p.is_file() and "BAD" in p.read_text(errors="replace")]
 if bad:
     print("\\n".join(f"Diff in {root / name}:1:" for name in bad))
@@ -34,6 +39,19 @@ if crates:
     print("\\n".join(f"error: could not compile `{name}` (lib)" for name in crates))
     sys.exit(1)
 print("pre-push: lint passed")
+"""
+# What the rerun of a failed Clippy run reports on the tree checked out: one diagnostic per
+# file that says RED (broken on main already) or BROKE (broken by a change).
+FAKE_CLIPPY = """import pathlib
+for p in sorted(pathlib.Path.cwd().iterdir()):
+    if p.is_file():
+        text = p.read_text(errors="replace")
+        if "RED" in text:
+            print("error[E0425]: cannot find value `gone` in this scope")
+            print(f"  --> {p.name}:1:1")
+        if "BROKE" in text:
+            print("error: this change broke it")
+            print(f"  --> {p.name}:1:1")
 """
 ENV = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@localhost",
        "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@localhost",
@@ -56,6 +74,7 @@ class LandTest(unittest.TestCase):
         (self.clone / "tools" / "ci").mkdir(parents=True)
         shutil.copy(ROOT / "tools" / "land.py", self.clone / "tools" / "land.py")
         (self.clone / "tools" / "ci" / "pre_push_lint.py").write_text(FAKE_LINT)
+        (self.clone / "tools" / "ci" / "fake_clippy.py").write_text(FAKE_CLIPPY)
         (self.clone / "shared.txt").write_text("one\ntwo\nthree\n")
         git(self.clone, "add", "-A")
         git(self.clone, "commit", "-qm", "start")
@@ -190,6 +209,17 @@ class LandTest(unittest.TestCase):
         self.assertEqual((code, result["status"]), (0, "landed"), result)
         program = self.clone / ".git" / "land" / "main" / "lander.py"
         self.assertTrue(program.read_text().endswith("# a newer lander\n"))
+
+    def test_a_failure_the_branch_already_has_does_not_stop_a_change_that_adds_none(self):
+        red = self.worktree("red", {"red.txt": "RED\n"})
+        git(red, "push", "-q", "origin", "HEAD:main")
+        [(code, result)] = self.answers([self.land(self.worktree("clean", {"clean.txt": "fine\n"}))])
+        self.assertEqual((code, result["status"]), (0, "landed"), result)
+        [(code, result)] = self.answers([self.land(self.worktree("worse", {"worse.txt": "BROKE\n"}))])
+        self.assertEqual((code, result["status"]), (1, "lint"), result)
+        files = self.main_files()
+        self.assertIn("clean.txt", files)
+        self.assertNotIn("worse.txt", files)
 
     def test_a_merge_commit_is_refused(self):
         tree = self.worktree("merger", {"a.txt": "a\n"})

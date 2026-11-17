@@ -71,6 +71,12 @@ NO_BUILDER_RETRY_SECONDS = 30
 # diagnostic points at or the format check found unformatted.
 NOT_BUILT = re.compile(r"could not compile `([^`]+)`")
 POINTED_AT = re.compile(r"(?:-->|Diff in) (\S+?):\d+:")
+# The command a failed run of the push lint prints to run it again.
+RERUN = re.compile(r"^pre-push: (.+?) failed - rerun: (.+)$", re.MULTILINE)
+# A diagnostic and the file it is about, in rustc's and Clippy's rendering.
+DIAGNOSTIC = re.compile(r"^(?:error|warning)(?:\[[^\]]+\])?: (.+)$")
+LOCATION = re.compile(r"^\s*--> (\S+?):\d+:\d+")
+NOT_A_DIAGNOSTIC = ("could not compile", "aborting due to", "build failed")
 EXIT = {"landed": 0, "lint": 1, "conflict": 2, "error": 3}
 STILL_QUEUED = 75
 
@@ -405,11 +411,18 @@ class Lander:
             self.doing(f"the builder was unavailable; linting again in {NO_BUILDER_RETRY_SECONDS}s")
             time.sleep(NO_BUILDER_RETRY_SECONDS)
             return True
+        inherited = False
         if lint.returncode != 0:
-            self.failed(batch, upstream, output)
-            return True
+            inherited = self.inherited(len(batch), upstream, output)
+            if not inherited:
+                self.failed(batch, upstream, output)
+                return True
         self.doing(f"pushing {len(batch)} change(s) onto {upstream[:12]}")
-        push = git(self.tree, "push", "--quiet", self.place.remote, f"HEAD:refs/heads/{self.place.branch}")
+        # The hook lints again and refuses on the branch's own failures, which the lander has just
+        # shown the batch adds nothing to; Git's own switch is the only way past it.
+        verify = ["--no-verify"] if inherited else []
+        push = git(self.tree, "push", "--quiet", *verify, self.place.remote,
+                   f"HEAD:refs/heads/{self.place.branch}")
         self.place.event(kind="push", ok=push.returncode == 0, batch=len(batch),
                          detail=push.stderr.strip()[-400:])
         if push.returncode != 0:
@@ -425,6 +438,58 @@ class Lander:
             self.finish(entry, {"status": "landed", "commit": commit, "onto": upstream,
                                 "batch": len(batch), "lint_seconds": seconds})
         return True
+
+    def inherited(self, size: int, upstream: str, output: str) -> bool:
+        """Whether every diagnostic of the failed lint is one the branch's head has without the batch.
+
+        A lint reaches the packages built on what a change touched, and when the branch itself
+        does not build there, every change that reaches them fails, whoever broke it. The failed
+        Clippy runs are made again on the batch and on the head alone; when the batch adds no
+        diagnostic, it is not what is broken. A failed format check is always the batch's: it
+        reads only the files the batch changed.
+        """
+        reruns = RERUN.findall(output)
+        if not reruns or any(not label.startswith("clippy") for label, _command in reruns):
+            return False
+        batch_head = out(self.tree, "rev-parse", "HEAD")
+        self.doing(f"the lint of {size} change(s) failed; comparing it with {upstream[:12]} alone")
+        mine = self.diagnostics(reruns)
+        try:
+            out(self.tree, "checkout", "--quiet", "--detach", upstream)
+            theirs = self.diagnostics(reruns)
+        finally:
+            out(self.tree, "checkout", "--quiet", "--detach", batch_head)
+        added = mine - theirs
+        self.place.event(kind="inherited", onto=upstream, batch=size, head=len(theirs),
+                         added=len(added))
+        print(f"diagnostics with the batch {len(mine)}, on {upstream[:12]} alone {len(theirs)}, "
+              f"added by the batch {len(added)}", flush=True)
+        for message, path in sorted(added)[:20]:
+            print(f"  added: {path}: {message}", flush=True)
+        return bool(mine) and not added
+
+    def diagnostics(self, reruns: list[tuple[str, str]]) -> set[tuple[str, str]]:
+        """The diagnostics the push lint's Clippy runs report on the tree checked out, by message and file."""
+        found: set[tuple[str, str]] = set()
+        page = self.tree / "target" / "wasm-clippy"
+        for _label, command in reruns:
+            environment = dict(os.environ)
+            if "wasm32" in command and (page / "clippy.toml").is_file():
+                environment["CLIPPY_CONF_DIR"] = str(page)
+            run = subprocess.run(command, shell=True, cwd=self.tree, env=environment,
+                                 capture_output=True, text=True)
+            message = None
+            for line in (run.stdout + run.stderr).splitlines():
+                diagnostic = DIAGNOSTIC.match(line)
+                if diagnostic:
+                    text = diagnostic.group(1)
+                    message = None if any(words in text for words in NOT_A_DIAGNOSTIC) else text
+                    continue
+                location = LOCATION.match(line)
+                if location and message:
+                    found.add((message, location.group(1)))
+                    message = None
+        return found
 
     def moved(self, upstream: str) -> bool:
         try:
