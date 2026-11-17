@@ -530,6 +530,19 @@ MODEL_RATCHETS = {
         re.compile(r"\bAutoCommit\s*::\s*(?:new|load|load_with\w*)\s*\("),
         "app-owned document; the framework owns the resource document",
     ),
+    # Palette rows, menus and agent tools all come from the tilo-resource
+    # declarations: a row is a `LiveRow` offering `#[derive(Effect)]` values,
+    # never a published tree or an action built by hand.
+    "hand_built_row": (
+        re.compile(
+            r"\bResourceSpec\s*(?:::\s*new\s*\(|\{\s*[a-z_]+\s*[:,}])"
+            r"|\bActionSpec\s*::\s*[a-z_]+\s*\("
+            r"|\bActionType\s*::\s*[a-z_]+\s*\("
+            r"|\bActionRegistry\b"
+        ),
+        "hand-built row or action; publish a LiveRow offering a #[derive(Effect)] value, "
+        "or declare a #[resource] verb",
+    ),
 }
 # Counted over every line of a workspace app's sources but its test files: a
 # hook a widget implements anywhere in a file is the widget's.
