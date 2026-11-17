@@ -222,6 +222,8 @@ class PreCommitSdkTypesTests(unittest.TestCase):
 
     def test_an_older_generator_adds_what_the_surface_changed_and_takes_nothing_out(self):
         self.write("apps/notes/surface.toml", SURFACE + '\n[[resources.verbs]]\nid = "archive"\n')
+        # A file its person left untracked among the types, which no commit takes along.
+        self.write("sdk/python/src/tilo/types/scratch.python", "mine\n")
         self.git("add", "apps/notes/surface.toml")
         result = self.run_hook()
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
@@ -231,6 +233,7 @@ class PreCommitSdkTypesTests(unittest.TestCase):
                       "a call the generator is too old to know stays in the description")
         self.assertEqual(self.staged("sdk/python/src/tilo/types/notes.python"), "rename\narchive\n")
         self.assertEqual(self.staged("sdk/typescript/src/types/notes.ts"), "rename\narchive\n")
+        self.assertNotIn("scratch", self.git("ls-files", "sdk").stdout)
 
     def test_a_new_app_is_described_beside_the_others_and_its_types_are_written(self):
         self.write("apps/tasks/surface.toml", SURFACE.replace("rename", "assign"))
@@ -241,8 +244,9 @@ class PreCommitSdkTypesTests(unittest.TestCase):
         described = self.staged("docs/api/openapi.json")
         for call in ('"assign"', '"rename"', '"listHolders"'):
             self.assertIn(call, described)
-        written = self.root / "sdk/python/src/tilo/types/tasks.python"
-        self.assertEqual(written.read_text(encoding="utf-8"), "assign\n")
+        # Its first types are in the commit, not only in the working tree.
+        self.assertEqual(self.staged("sdk/python/src/tilo/types/tasks.python"), "assign\n")
+        self.assertEqual(self.staged("sdk/typescript/src/types/tasks.ts"), "assign\n")
 
 
 if __name__ == "__main__":
