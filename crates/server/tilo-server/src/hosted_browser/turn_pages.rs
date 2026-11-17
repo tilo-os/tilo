@@ -22,7 +22,7 @@ use tilo_actions::remote::{
 use tilo_actions::{InvocationId, InvocationUpdate};
 use tilo_lock::MutexRecover as _;
 
-use super::{HostedBrowsers, page_action};
+use super::{HostedBrowsers, page_action, update_of_error};
 use crate::WorkspaceId;
 
 /// How long a window has to say how a page action it was handed for a turn ended.
@@ -97,11 +97,15 @@ impl HostedBrowsers {
     /// Whoever calls this decided that the turn may have this action carried, and under what:
     /// nothing is asked here.
     ///
+    /// Whatever the window itself says, a refusal of its own included, is the end this
+    /// answers: other people's content, which whoever asked words for the turn.
+    ///
     /// # Errors
     ///
-    /// No window is up in the workspace, `request` is no page action of that window, this
-    /// server cannot hand it anything yet, the workspace's account may not use Browser, too
-    /// many actions wait, the window refused the action, or it never said how it ended.
+    /// This server's own refusals, in its own words: no window is up in the workspace,
+    /// `request` is no page action of that window, this server cannot hand it anything yet,
+    /// the workspace's account may not use Browser, too many actions wait, or the window
+    /// never said how it ended.
     pub async fn page_for_turn(
         &self,
         workspace_id: WorkspaceId,
@@ -187,7 +191,9 @@ impl HostedBrowsers {
                 invocation,
                 message,
             }),
-            Ok(ReceiptStatus::Rejected { error }) => Err(error),
+            // What a window refuses with is the window's word, as everything it answers is:
+            // an end it said, for whoever asked to word, and never this server's own refusal.
+            Ok(ReceiptStatus::Rejected { error }) => Ok(update_of_error(invocation, &error)),
             Ok(ReceiptStatus::Accepted) | Err(_) => Err(ActionCallError::Unavailable {
                 reason: NOT_SAID.to_owned(),
             }),
