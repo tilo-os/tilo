@@ -99,7 +99,15 @@ pub fn answer_descriptor() -> tilo_actions::ActionDescriptor {
             cancellable: true,
             item_schema: spent_schema(),
         },
-        result: tilo_actions::ResultSpec::Job,
+        // The answer's result is its reply: what the person reads in the conversation, and what
+        // whoever asked the agent through the API gets back.
+        result: tilo_actions::ResultSpec::Json {
+            schema: serde_json::json!({
+                "type": "object",
+                "properties": {"reply": {"type": "string"}},
+                "required": ["reply"],
+            }),
+        },
         ..tilo_actions::ActionContract::default()
     };
     contract.set_audience(tilo_actions::Audience::Agents);
@@ -778,13 +786,13 @@ impl Session {
                     value: serde_json::json!({ "spent": cost_micros }),
                 }
             }
-            // The answer declares a job (`answer_descriptor`), whose terminal update carries
-            // no value of its own: a value here is what the broker refuses as "an undeclared
-            // terminal value", failing the invocation the conversation waits on. What the
-            // person reads is the reply the turn already showed in the conversation.
-            TurnUpdate::Succeeded { .. } => tilo_actions::InvocationUpdate::Succeeded {
+            // The answer's result is its reply (`answer_descriptor`), as its contract declares.
+            TurnUpdate::Succeeded { message } => tilo_actions::InvocationUpdate::Succeeded {
                 invocation,
-                output: tilo_actions::ActionOutput::default(),
+                output: tilo_actions::ActionOutput {
+                    value: Some(serde_json::json!({ "reply": message })),
+                    resources: Vec::new(),
+                },
             },
             TurnUpdate::Failed { message } => tilo_actions::InvocationUpdate::Failed {
                 invocation,
@@ -1047,29 +1055,27 @@ mod tests {
         }
     }
 
-    /// A turn's answer declares a job ([`answer_descriptor`]): its terminal update may not carry
-    /// a value of its own. A reply returned as the terminal's value is what the broker refuses as
-    /// "an undeclared terminal value", which fails the invocation the conversation waits on — the
-    /// "Request refused" a person saw while the agent worked. What the person reads is the reply
-    /// the turn already showed in the conversation.
+    /// A turn's answer declares its reply as its result ([`answer_descriptor`]): the reply the
+    /// agent reports is admitted by the broker (a job, which may carry no value, refused it as
+    /// "an undeclared terminal value" and failed the invocation the conversation waited on), and
+    /// a result without one is not.
     #[test]
-    fn a_turn_answers_a_job_with_no_terminal_value() {
+    fn a_turns_result_is_its_reply() {
         let contract = answer_descriptor().contract;
-        assert_eq!(contract.result, tilo_actions::ResultSpec::Job);
-        let terminal = tilo_actions::ActionOutput::default();
+        let replied = tilo_actions::ActionOutput {
+            value: Some(serde_json::json!({"reply": "Hi! I work across your Notes."})),
+            resources: Vec::new(),
+        };
         assert!(
-            contract.result.validate(&terminal).is_ok(),
-            "the answer's terminal carries no value: the broker admits it"
+            contract.result.validate(&replied).is_ok(),
+            "the reply is the answer's result: the broker admits it"
         );
         assert!(
             contract
                 .result
-                .validate(&tilo_actions::ActionOutput {
-                    value: Some(serde_json::json!({"reply": "Hi! I work across your Notes."})),
-                    resources: Vec::new(),
-                })
+                .validate(&tilo_actions::ActionOutput::default())
                 .is_err(),
-            "a reply in the terminal's value is the undeclared value the broker refuses"
+            "an answer without its reply does not satisfy the contract"
         );
     }
 }
