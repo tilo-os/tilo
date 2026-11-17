@@ -56,13 +56,6 @@ impl AppBrokerState {
     ) -> Result<super::StagedJob, String> {
         command.validate()?;
         let (resource, action, argument) = match command {
-            WorkspaceMembershipCommand::RetiredAddAgent { .. }
-            | WorkspaceMembershipCommand::RetiredRemoveAgent { .. } => {
-                return Err(tilo_peer_state::workspace_membership::RETIRED_AGENT_MEMBERSHIP.into());
-            }
-            WorkspaceMembershipCommand::RetiredGrantAppAuthorship { .. } => {
-                return Err(tilo_peer_state::workspace_membership::RETIRED_APP_AUTHORSHIP.into());
-            }
             WorkspaceMembershipCommand::Grant { grant } => {
                 let argument = format!(
                     "{}{}",
@@ -78,10 +71,6 @@ impl AppBrokerState {
                     serde_json::json!({ "grant": grant })
                 );
                 (WORKSPACE.into(), "revoke", Some(argument))
-            }
-            WorkspaceMembershipCommand::RetiredGrantForTask { .. }
-            | WorkspaceMembershipCommand::RetiredRevokeForTask { .. } => {
-                return Err(tilo_peer_state::workspace_membership::RETIRED_TASK_GRANTS.into());
             }
             WorkspaceMembershipCommand::InstallBot(_)
             | WorkspaceMembershipCommand::RenewBot(_)

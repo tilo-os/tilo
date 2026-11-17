@@ -452,18 +452,6 @@ tilo_test_env::scenario! {
         assert_eq!(answer(&grants, &send(), ActionKind::Read), Answer::Allow);
     }
 
-    phase a_grant_that_lived_while_a_task_was_open_reads_as_expired;
-    {
-        let mut json = serde_json::to_value(grant("t", mail(), KindSet::ALL, Answer::Allow)).unwrap();
-        json["lifetime"] = serde_json::json!({"task": "t1"});
-        let stored: Grant = serde_json::from_value(json).expect("an old workspace still loads");
-        assert_eq!(stored.lifetime, Lifetime::Until(0));
-        assert_eq!(
-            decide(&[stored], &[alice()], &send(), ActionKind::Read, &cx()).answer,
-            Answer::Deny
-        );
-    }
-
     phase once_grants_are_reported_for_consumption;
     {
         let grants = [

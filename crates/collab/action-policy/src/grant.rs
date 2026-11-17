@@ -267,11 +267,7 @@ impl fmt::Display for Grantee {
 
 /// How long a grant is live.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(
-    rename_all = "snake_case",
-    from = "StoredLifetime",
-    into = "StoredLifetime"
-)]
+#[serde(rename_all = "snake_case")]
 pub enum Lifetime {
     /// For one use; the API that used it revokes it.
     Once,
@@ -281,46 +277,6 @@ pub enum Lifetime {
     Until(u64),
     /// Until someone revokes it.
     UntilRevoked,
-}
-
-/// A lifetime as workspaces store it, read and written. A grant once lived while
-/// a task of the workspace was open; those tasks are gone, and such a grant reads
-/// as one that has expired, so a workspace that holds one still loads. The task
-/// keeps its place: compact encodings (postcard) name a variant by its
-/// position, and a workspace's stored grants and the digests of its
-/// administration requests are made of those bytes, so every lifetime is
-/// written as it always was.
-#[derive(Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-enum StoredLifetime {
-    Once,
-    Task(String),
-    Session(String),
-    Until(u64),
-    UntilRevoked,
-}
-
-impl From<Lifetime> for StoredLifetime {
-    fn from(lifetime: Lifetime) -> Self {
-        match lifetime {
-            Lifetime::Once => Self::Once,
-            Lifetime::Session(session) => Self::Session(session),
-            Lifetime::Until(at) => Self::Until(at),
-            Lifetime::UntilRevoked => Self::UntilRevoked,
-        }
-    }
-}
-
-impl From<StoredLifetime> for Lifetime {
-    fn from(stored: StoredLifetime) -> Self {
-        match stored {
-            StoredLifetime::Once => Self::Once,
-            StoredLifetime::Session(session) => Self::Session(session),
-            StoredLifetime::Until(at) => Self::Until(at),
-            StoredLifetime::Task(_) => Self::Until(0),
-            StoredLifetime::UntilRevoked => Self::UntilRevoked,
-        }
-    }
 }
 
 /// Names one grant, so it can be revoked or consumed.

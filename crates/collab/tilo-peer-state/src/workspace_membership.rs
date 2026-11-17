@@ -1,6 +1,6 @@
 //! Typed native workspace membership commands, not grant or identity blobs.
 use serde::{Deserialize, Serialize};
-use tilo_action_policy::{Answer, Grant, GrantId, KindSet, TreePath};
+use tilo_action_policy::{Grant, GrantId, TreePath};
 
 use crate::installation::{Installation, InstallationId};
 use tilo_user_identity::DeviceCert;
@@ -244,62 +244,8 @@ fn validate_bot_entry(entry: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Why a retired task grant command is refused.
-pub const RETIRED_TASK_GRANTS: &str =
-    "a task's grants are retired; an issue's grants are ordinary grants";
-
-/// Why a retired agent membership command is refused.
-pub const RETIRED_AGENT_MEMBERSHIP: &str =
-    "agent membership by preset is retired; an agent is a chat.agent record";
-
-/// Why a retired app authorship command is refused.
-pub const RETIRED_APP_AUTHORSHIP: &str =
-    "app authorship is retired; an app acts as the person running it";
-
-/// The preset an agent was admitted with, as workspaces hold it. Admission by
-/// preset is retired ([`WorkspaceMembershipCommand::RetiredAddAgent`]): this
-/// reads what a workspace holds and decides nothing.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum RetiredAgentPreset {
-    Observer,
-    Contributor,
-    Operator,
-    Custom,
-}
-
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum WorkspaceMembershipCommand {
-    /// Retired with admission by preset: an agent works in a workspace because
-    /// the workspace's `chat.agent` record names it and its keeper is a
-    /// key holder. It keeps the commands after it at their encoded positions,
-    /// still reads where workspaces hold it, and is refused.
-    #[serde(rename = "AddAgent")]
-    RetiredAddAgent {
-        agent: String,
-        preset: RetiredAgentPreset,
-    },
-    /// Retired with admission by preset, as [`Self::RetiredAddAgent`].
-    #[serde(rename = "RemoveAgent")]
-    RetiredRemoveAgent { agent: String },
-    /// Retired with app authorship: an app acts as the person running it, so
-    /// no grant makes it one. It keeps the commands after it at their encoded
-    /// positions, still reads where workspaces hold it, and is refused.
-    #[serde(rename = "GrantAppAuthorship")]
-    RetiredGrantAppAuthorship { app: String },
-    /// Retired with workspace tasks: an issue's grants are ordinary grants. It
-    /// keeps the commands after it at their encoded positions, still reads
-    /// where workspaces hold it, and is refused.
-    #[serde(rename = "GrantForTask")]
-    RetiredGrantForTask {
-        task: String,
-        node: TreePath,
-        kinds: KindSet,
-        answer: Answer,
-    },
-    /// Retired with workspace tasks, as [`Self::RetiredGrantForTask`].
-    #[serde(rename = "RevokeForTask")]
-    RetiredRevokeForTask { task: String, grant: GrantId },
     /// Record `grant` in the workspace, as the caller gives it: they must hold the
     /// workspace's grant action and may give no more than they hold.
     Grant { grant: Grant },
@@ -372,13 +318,6 @@ pub enum SettingsChange {
         subject: tilo_action_policy::Grantee,
         lifetime: tilo_action_policy::Lifetime,
     },
-    /// Retired with app consent in the person's settings: an app's use of
-    /// another app's action is no workspace change. Both keep the settings
-    /// after them at their encoded positions, still read where a workspace
-    /// holds them, and are refused.
-    GrantAppAction(AppAction),
-    /// Retired with [`Self::GrantAppAction`], as it is.
-    RevokeAppAction(AppAction),
     /// Record a sandbox capability for the workspace's apps.
     GrantSandbox {
         capability: collab_types::caps::CapOverride,
@@ -392,17 +331,6 @@ pub enum SettingsChange {
     /// takes people by invitation only, and how many requests it keeps
     /// ([`tilo_action_policy::EntryPolicy`]).
     Entry(tilo_action_policy::EntryPolicy),
-}
-
-/// What a retired app-action setting named: `action` on `target_app`'s
-/// resource `resource`, used by `app`. A workspace's stored settings still
-/// read it and decide nothing by it.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct AppAction {
-    pub app: String,
-    pub target_app: String,
-    pub resource: String,
-    pub action: String,
 }
 
 /// The name a workspace is founded with, trimmed: none, which every reader
@@ -430,51 +358,8 @@ pub fn valid_workspace_name(name: &str) -> Result<&str, String> {
 }
 
 impl WorkspaceMembershipCommand {
-    #[must_use]
-    pub fn agent(&self) -> Option<&str> {
-        match self {
-            Self::RetiredAddAgent { .. }
-            | Self::RetiredRemoveAgent { .. }
-            | Self::RetiredGrantAppAuthorship { .. }
-            | Self::RetiredGrantForTask { .. }
-            | Self::RetiredRevokeForTask { .. }
-            | Self::Grant { .. }
-            | Self::Revoke { .. }
-            | Self::InstallBot(_)
-            | Self::RenewBot(_)
-            | Self::UninstallBot { .. }
-            | Self::PauseBot { .. }
-            | Self::ResumeBot { .. }
-            | Self::SetBotAppearance { .. }
-            | Self::AdoptBot(_)
-            | Self::RequestBot(_)
-            | Self::WithdrawBotRequest { .. }
-            | Self::InstallApp(_)
-            | Self::UninstallApp { .. }
-            | Self::Member { .. }
-            | Self::Settings(_)
-            | Self::Share { .. }
-            | Self::Unshare { .. } => None,
-        }
-    }
-
     /// Validate the canonical identifier before entering the owner turn.
     pub fn validate(&self) -> Result<(), String> {
-        if matches!(
-            self,
-            Self::RetiredGrantForTask { .. } | Self::RetiredRevokeForTask { .. }
-        ) {
-            return Err(RETIRED_TASK_GRANTS.into());
-        }
-        if matches!(
-            self,
-            Self::RetiredAddAgent { .. } | Self::RetiredRemoveAgent { .. }
-        ) {
-            return Err(RETIRED_AGENT_MEMBERSHIP.into());
-        }
-        if let Self::RetiredGrantAppAuthorship { .. } = self {
-            return Err(RETIRED_APP_AUTHORSHIP.into());
-        }
         if let Self::InstallBot(install) = self {
             install.installation.validate()?;
             if install.program.len() > tilo_automation::program::MAX_PROGRAM_BYTES {
@@ -523,9 +408,6 @@ impl WorkspaceMembershipCommand {
                 SettingsChange::Rename { name } => valid_workspace_name(name).map(drop),
                 SettingsChange::SavePreset { preset } => {
                     preset.validate().map_err(|error| error.to_string())
-                }
-                SettingsChange::GrantAppAction(_) | SettingsChange::RevokeAppAction(_) => {
-                    Err(RETIRED_APP_AUTHORSHIP.to_owned())
                 }
                 SettingsChange::Entry(entry) => entry
                     .clone()
@@ -590,7 +472,6 @@ fn validate_member_change(change: &tilo_action_policy::Change) -> Result<(), Str
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tilo_action_policy::{Answer, TreePath};
 
     tilo_test_env::scenario! {
         fn bot_and_agent_identifiers_are_canonical;
@@ -667,59 +548,22 @@ mod tests {
         }
     }
 
-    tilo_test_env::scenario! {
-        fn a_membership_command_reads_from_the_bytes_earlier_builds_wrote;
-
-        phase a_membership_command_keeps_its_bytes_around_the_retired_task_grants;
-        // Postcard names a variant by its position; workspaces keep these commands,
-        // and the digests of their administration requests, in those bytes.
+    /// Postcard names a variant by its position; workspaces keep these
+    /// commands, and the digests of their administration requests, in those
+    /// bytes.
+    #[test]
+    fn a_membership_command_keeps_its_bytes() {
         {
             let cases: Vec<(WorkspaceMembershipCommand, Vec<u8>)> = vec![
-                (
-                    WorkspaceMembershipCommand::RetiredAddAgent {
-                        agent: "a".into(),
-                        preset: RetiredAgentPreset::Observer,
-                    },
-                    vec![0x00, 0x01, b'a', 0x00],
-                ),
-                (
-                    WorkspaceMembershipCommand::RetiredRemoveAgent { agent: "a".into() },
-                    vec![0x01, 0x01, b'a'],
-                ),
-                (
-                    WorkspaceMembershipCommand::RetiredGrantAppAuthorship { app: "x".into() },
-                    vec![0x02, 0x01, b'x'],
-                ),
-                (
-                    WorkspaceMembershipCommand::RetiredGrantForTask {
-                        task: "t".into(),
-                        node: TreePath::workspace("r"),
-                        kinds: KindSet::READ,
-                        answer: Answer::Allow,
-                    },
-                    [
-                        &[0x03, 0x01, b't', 0x0b][..],
-                        b"workspace:r",
-                        &[0x01, 0x00, 0x02],
-                    ]
-                    .concat(),
-                ),
-                (
-                    WorkspaceMembershipCommand::RetiredRevokeForTask {
-                        task: "t".into(),
-                        grant: GrantId::new("g"),
-                    },
-                    vec![0x04, 0x01, b't', 0x01, b'g'],
-                ),
                 (
                     WorkspaceMembershipCommand::Revoke {
                         grant: GrantId::new("g"),
                     },
-                    vec![0x06, 0x01, b'g'],
+                    vec![0x01, 0x01, b'g'],
                 ),
                 (
                     WorkspaceMembershipCommand::WithdrawBotRequest { entry: "e".into() },
-                    vec![0x0f, 0x01, b'e'],
+                    vec![0x0a, 0x01, b'e'],
                 ),
             ];
             for (command, golden) in cases {
@@ -733,69 +577,6 @@ mod tests {
                     command
                 );
             }
-        }
-
-        phase a_grant_command_stored_under_the_workspace_path_name_still_reads;
-        // A grant command stored while the level was named for the workspace still
-        // reads, and reads as the grant it was: the node it names is the
-        // workspace's.
-        {
-            let held = [
-                0x03, 0x01, b't', 0x0b, b'w', b'o', b'r', b'k', b's', b'p', b'a', b'c', b'e', b':',
-                b'r', 0x01, 0x00, 0x02,
-            ];
-            let command = postcard::from_bytes::<WorkspaceMembershipCommand>(&held).unwrap();
-            assert_eq!(
-                command,
-                WorkspaceMembershipCommand::RetiredGrantForTask {
-                    task: "t".into(),
-                    node: TreePath::workspace("r"),
-                    kinds: KindSet::READ,
-                    answer: Answer::Allow,
-                }
-            );
-        }
-    }
-
-    /// Every retired command still reads from the bytes a workspace holds and
-    /// is refused, with the reason of what retired it.
-    #[test]
-    fn a_retired_command_reads_and_is_refused() {
-        let grant_for_task = [
-            &[0x03, 0x01, b't', 0x0b][..],
-            b"workspace:r",
-            &[0x01, 0x00, 0x02],
-        ]
-        .concat();
-        for (case, held, reason) in [
-            (
-                "add agent",
-                [0x00, 0x01, b'a', 0x02].as_slice(),
-                RETIRED_AGENT_MEMBERSHIP,
-            ),
-            (
-                "remove agent",
-                [0x01, 0x01, b'a'].as_slice(),
-                RETIRED_AGENT_MEMBERSHIP,
-            ),
-            (
-                "grant app authorship",
-                [0x02, 0x01, b'x'].as_slice(),
-                RETIRED_APP_AUTHORSHIP,
-            ),
-            (
-                "grant for task",
-                grant_for_task.as_slice(),
-                RETIRED_TASK_GRANTS,
-            ),
-            (
-                "revoke for task",
-                [0x04, 0x01, b't', 0x01, b'g'].as_slice(),
-                RETIRED_TASK_GRANTS,
-            ),
-        ] {
-            let command = postcard::from_bytes::<WorkspaceMembershipCommand>(held).unwrap();
-            assert_eq!(command.validate(), Err(reason.into()), "{case}");
         }
     }
 }

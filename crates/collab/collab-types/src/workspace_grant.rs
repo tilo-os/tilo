@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 
 /// Key of the workspace's grants in its governance document: a map from each
 /// grant's id to the grant (JSON).
-pub const WORKSPACE_GRANTS_KEY: &str = "grants_v1";
+pub const WORKSPACE_GRANTS_KEY: &str = "key_grants";
 
 /// One grant the workspace admitted.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

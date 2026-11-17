@@ -118,7 +118,6 @@ tilo_test_env::scenario! {
                 stand_in: false,
                 server_key: false,
                 browser_pages: false,
-                retired: RetiredFlags::default(),
             },
             issued_at_ns: 1_000_000,
             expires_at_ns: None,
@@ -284,7 +283,7 @@ fn golden_cert_with(capabilities: DeviceCapabilities) -> DeviceCert {
     cert
 }
 
-const GOLDEN_V1_JSON: &str = r#"{"user_public_key":[138,136,227,221,116,9,241,149,253,82,219,45,60,186,93,114,202,103,9,191,29,148,18,27,243,116,136,1,180,15,111,92],"device_public_key":[2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2],"device_label":"golden","capabilities":{"can_own_workspaces":true,"can_admit_devices":false,"can_act_as_host":false,"can_read_all_workspaces":false},"issued_at_ns":1000000,"expires_at_ns":2000000,"signature":[193,94,11,63,27,213,214,122,35,157,141,24,157,200,120,75,180,243,189,153,177,189,224,147,47,142,23,15,234,170,239,9,175,129,176,168,99,254,102,174,97,65,248,91,187,181,93,141,241,211,8,123,41,66,110,172,36,46,39,75,189,14,237,1]}"#;
+const GOLDEN_V1_JSON: &str = r#"{"user_public_key":[138,136,227,221,116,9,241,149,253,82,219,45,60,186,93,114,202,103,9,191,29,148,18,27,243,116,136,1,180,15,111,92],"device_public_key":[2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2],"device_label":"golden","capabilities":{"can_own_workspaces":true,"can_admit_devices":false},"issued_at_ns":1000000,"expires_at_ns":2000000,"signature":[193,94,11,63,27,213,214,122,35,157,141,24,157,200,120,75,180,243,189,153,177,189,224,147,47,142,23,15,234,170,239,9,175,129,176,168,99,254,102,174,97,65,248,91,187,181,93,141,241,211,8,123,41,66,110,172,36,46,39,75,189,14,237,1]}"#;
 const GOLDEN_V1_POSTCARD: &str = "8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c020202020202020202020202020202020202020202020202020202020202020206676f6c64656e01000000c0843d0180897a40c15e0b3f1bd5d67a239d8d189dc8784bb4f3bd99b1bde0932f8e170feaaaef09af81b0a863fe66ae6141f85bbbb55d8df1d3087b29426eac242e274bbd0eed01";
 const GOLDEN_V1_DIGEST: &str = "0d8271d3aadb5438af000ff5f96b6355102b57a271885ed26142fb698884e623";
 
@@ -293,7 +292,7 @@ tilo_test_env::scenario! {
         clippy::arithmetic_side_effects,
         reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
     )]
-    fn certificate_markers_keep_their_encodings_and_old_verifiers_refuse_them;
+    fn certificate_markers_keep_their_encodings;
 
     phase native_certificates_keep_their_v1_encoding_and_digest;
     // The certificate encodings and signing digest as they were before the
@@ -317,13 +316,13 @@ tilo_test_env::scenario! {
         verify_device_cert(&from_postcard).unwrap();
     }
 
-    phase foreign_certificates_sign_under_their_own_tag;
+    phase foreign_certificates_sign_their_marker;
     {
         let foreign = golden_cert(true);
         verify_device_cert(&foreign).unwrap();
         assert_eq!(
             device_cert_signing_digest(&foreign).unwrap(),
-            signing_digest(DEVCERT_V2_PREIMAGE_TAG, &foreign.view()).unwrap()
+            signing_digest(DEVCERT_PREIMAGE_TAG, &foreign.view()).unwrap()
         );
 
         let json = serde_json::to_string(&foreign).unwrap();
@@ -349,36 +348,11 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase verifiers_that_predate_the_marker_reject_foreign_certificates;
+    phase administration_certificates_sign_their_flag;
+    // Administration round-trips in both encodings (alone and together with
+    // the foreign marker) and survives no flip of the flag.
     {
         let native = golden_cert(false);
-        let foreign = golden_cert(true);
-        let nonce = [9u8; 32];
-
-        let old: v1::DeviceCert =
-            serde_json::from_str(&serde_json::to_string(&native).unwrap()).unwrap();
-        assert_eq!(serde_json::to_string(&old).unwrap(), GOLDEN_V1_JSON);
-        let old_wire = postcard::to_allocvec(&(&old, nonce)).unwrap();
-        assert_eq!(postcard::to_allocvec(&(&native, nonce)).unwrap(), old_wire);
-        let (_, old_nonce): (DeviceCert, [u8; 32]) = postcard::from_bytes(&old_wire).unwrap();
-        assert_eq!(old_nonce, nonce);
-
-        let foreign_json = serde_json::to_string(&foreign).unwrap();
-        let json_error = serde_json::from_str::<v1::DeviceCert>(&foreign_json).unwrap_err();
-        assert!(json_error.to_string().contains("unknown field `foreign`"));
-        // Embedded in a larger message, the old decoder stops at the marker
-        // instead of misreading the fields that follow.
-        let foreign_wire = postcard::to_allocvec(&(&foreign, nonce)).unwrap();
-        assert!(postcard::from_bytes::<(v1::DeviceCert, [u8; 32])>(&foreign_wire).is_err());
-    }
-
-    phase administration_certificates_sign_under_their_own_tag_and_old_verifiers_refuse_them;
-    // Administration signs under its own tag, round-trips in both encodings
-    // (alone and together with the foreign marker), survives no flip of the
-    // flag, and is refused by every verifier that predates it.
-    {
-        let native = golden_cert(false);
-        let nonce = [9u8; 32];
         for foreign in [false, true] {
             let admin = golden_cert_with(DeviceCapabilities {
                 foreign,
@@ -387,7 +361,7 @@ tilo_test_env::scenario! {
             verify_device_cert(&admin).unwrap();
             assert_eq!(
                 device_cert_signing_digest(&admin).unwrap(),
-                signing_digest(DEVCERT_V3_PREIMAGE_TAG, &admin.view()).unwrap()
+                signing_digest(DEVCERT_PREIMAGE_TAG, &admin.view()).unwrap()
             );
             let json = serde_json::to_string(&admin).unwrap();
             assert!(json.contains(r#""can_administer_devices":true"#));
@@ -406,14 +380,6 @@ tilo_test_env::scenario! {
                 verify_device_cert(&stripped).unwrap_err(),
                 DeviceCertError::BadSignature
             );
-
-            let json_error = serde_json::from_str::<v1::DeviceCert>(&json).unwrap_err();
-            assert!(
-                json_error.to_string().contains("unknown field"),
-                "{json_error}"
-            );
-            let wire = postcard::to_allocvec(&(&admin, nonce)).unwrap();
-            assert!(postcard::from_bytes::<(v1::DeviceCert, [u8; 32])>(&wire).is_err());
         }
         let mut granted = native;
         granted.capabilities.can_administer_devices = true;
@@ -449,111 +415,17 @@ tilo_test_env::scenario! {
     }
 }
 
-/// A frozen copy of the certificate types as they were before the
-/// foreign marker, in place of a verifier built from an older tree.
-mod v1 {
-    #[allow(
-        clippy::struct_excessive_bools,
-        reason = "a frozen copy of the v1 wire type"
-    )]
-    #[derive(Debug, PartialEq, serde::Serialize, serde::Deserialize)]
-    #[serde(deny_unknown_fields)]
-    pub struct DeviceCapabilities {
-        pub can_own_workspaces: bool,
-        pub can_admit_devices: bool,
-        pub can_act_as_host: bool,
-        pub can_read_all_workspaces: bool,
-    }
-
-    #[derive(Debug, PartialEq, serde::Serialize, serde::Deserialize)]
-    #[serde(deny_unknown_fields)]
-    pub struct DeviceCert {
-        pub user_public_key: [u8; 32],
-        pub device_public_key: [u8; 32],
-        pub device_label: String,
-        pub capabilities: DeviceCapabilities,
-        pub issued_at_ns: u64,
-        pub expires_at_ns: Option<u64>,
-        #[serde(with = "serde_bytes")]
-        pub signature: [u8; 64],
-    }
-}
-
-/// A certificate signed with a retired grant (a host's, or a primary
-/// device's that read every workspace) keeps the bytes and the signature
-/// a build from before their retirement gave it, in both encodings, and
-/// grants neither. A grant that may carry nothing else is refused with
-/// one, as it was then.
+/// Bytes that set either of the two flags after the first two do not decode:
+/// those grants are gone, and no certificate carries them.
 #[test]
-fn certificates_signed_with_retired_grants_keep_their_bytes_and_signature() {
-    let root = ed25519_dalek::SigningKey::from_bytes(&[5; 32]);
-    for (act_as_host, read_all_workspaces) in [(false, true), (true, true), (true, false)] {
-        let mut cert = DeviceCert {
-            user_public_key: root.verifying_key().to_bytes(),
-            device_public_key: [2; 32],
-            device_label: "Home server".into(),
-            capabilities: DeviceCapabilities {
-                retired: RetiredFlags {
-                    act_as_host,
-                    read_all_workspaces,
-                },
-                ..DeviceCapabilities::primary()
-            },
-            issued_at_ns: 7,
-            expires_at_ns: None,
-            signature: [0; 64],
-            issuer: None,
-        };
-        sign_device_cert(&mut cert, &root).unwrap();
-        let then = v1::DeviceCapabilities {
-            can_own_workspaces: true,
-            can_admit_devices: true,
-            can_act_as_host: act_as_host,
-            can_read_all_workspaces: read_all_workspaces,
-        };
-        assert_eq!(
-            device_cert_signing_digest(&cert).unwrap(),
-            signing_digest(
-                DEVCERT_PREIMAGE_TAG,
-                &(
-                    cert.user_public_key,
-                    cert.device_public_key,
-                    "Home server",
-                    &then,
-                    7u64,
-                    None::<u64>
-                )
-            )
-            .unwrap(),
-            "signed over the layout it was signed over then"
-        );
-        let old = v1::DeviceCert {
-            user_public_key: cert.user_public_key,
-            device_public_key: cert.device_public_key,
-            device_label: cert.device_label.clone(),
-            capabilities: then,
-            issued_at_ns: 7,
-            expires_at_ns: None,
-            signature: cert.signature,
-        };
-        let bytes = postcard::to_allocvec(&old).unwrap();
-        assert_eq!(crate::canonical::canonical_bytes(&cert).unwrap(), bytes);
-        let read: DeviceCert = crate::canonical::from_canonical_bytes(&bytes).unwrap();
-        assert_eq!(read, cert);
-        verify_device_cert(&read).unwrap();
-        assert!(read.capabilities.retired.any());
-        let json = serde_json::to_string(&read).unwrap();
-        assert_eq!(serde_json::from_str::<v1::DeviceCert>(&json).unwrap(), old);
-        assert_eq!(serde_json::from_str::<DeviceCert>(&json).unwrap(), cert);
+fn binary_capabilities_refuse_the_cleared_flags() {
+    let bytes = crate::canonical::canonical_bytes(&golden_cert(false)).unwrap();
+    let flags = 32 + 32 + 1 + "golden".len();
+    for at in [flags + 2, flags + 3] {
+        let mut changed = bytes.clone();
+        changed[at] = 1;
+        assert!(crate::canonical::from_canonical_bytes::<DeviceCert>(&changed).is_err());
     }
-    let grant = DeviceCapabilities {
-        retired: RetiredFlags {
-            act_as_host: false,
-            read_all_workspaces: true,
-        },
-        ..DeviceCapabilities::agent_grant(AgentScope::AllWorkspaces)
-    };
-    assert!(!grant.agent_grant_holds());
 }
 
 tilo_test_env::scenario! {
@@ -563,10 +435,9 @@ tilo_test_env::scenario! {
     )]
     fn agent_grants_keep_their_scope_and_what_they_mint_stays_within_them;
 
-    phase agent_grants_carry_their_scope_expire_and_old_verifiers_refuse_them;
-    // An agent's grant signs under its own tag, round-trips with its scope
-    // in both encodings, must expire and grant nothing else, survives no
-    // change of scope, and is refused by verifiers that predate it.
+    phase agent_grants_carry_their_scope_and_expire;
+    // An agent's grant round-trips with its scope in both encodings, must
+    // expire and grant nothing else, and survives no change of scope.
     {
         let workspace = "0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0";
         let one = AgentScope::parse(workspace).unwrap();
@@ -596,16 +467,13 @@ tilo_test_env::scenario! {
             verify_device_cert(&grant).unwrap();
             assert_eq!(
                 device_cert_signing_digest(&grant).unwrap(),
-                signing_digest(DEVCERT_V4_PREIMAGE_TAG, &grant.view()).unwrap()
+                signing_digest(DEVCERT_PREIMAGE_TAG, &grant.view()).unwrap()
             );
             let json = serde_json::to_string(&grant).unwrap();
             assert_eq!(serde_json::from_str::<DeviceCert>(&json).unwrap(), grant);
             let bytes = postcard::to_allocvec(&(&grant, [9u8; 32])).unwrap();
             let (back, nonce): (DeviceCert, [u8; 32]) = postcard::from_bytes(&bytes).unwrap();
             assert_eq!((back, nonce), (grant.clone(), [9u8; 32]));
-            // Verifiers that predate grants stop at the marker.
-            assert!(postcard::from_bytes::<(v1::DeviceCert, [u8; 32])>(&bytes).is_err());
-            assert!(serde_json::from_str::<v1::DeviceCert>(&json).is_err());
             // Another scope under the same signature does not verify.
             let mut moved = grant.clone();
             moved.capabilities.agent = Some(match scope {
@@ -655,7 +523,7 @@ tilo_test_env::scenario! {
             );
             // Signed anyway by a root that skips the check: still refused.
             cert.signature = root
-                .sign(&signing_digest(DEVCERT_V4_PREIMAGE_TAG, &cert.view()).unwrap())
+                .sign(&signing_digest(DEVCERT_PREIMAGE_TAG, &cert.view()).unwrap())
                 .to_bytes();
             assert_eq!(
                 verify_device_cert(&cert),
@@ -850,7 +718,7 @@ tilo_test_env::scenario! {
         );
         assert_eq!(
             device_cert_signing_digest(&cert).unwrap(),
-            signing_digest(DEVCERT_V5_PREIMAGE_TAG, &cert.view()).unwrap()
+            signing_digest(DEVCERT_PREIMAGE_TAG, &cert.view()).unwrap()
         );
         // A device's certificate is no stand-in's.
         assert_eq!(
@@ -865,16 +733,13 @@ tilo_test_env::scenario! {
             Err(DeviceCertError::BadSignature)
         );
 
-        // It round-trips in both encodings, and verifiers that predate it
-        // refuse it.
+        // It round-trips in both encodings.
         let json = serde_json::to_string(&cert).unwrap();
         assert!(json.contains(r#""stand_in":true"#));
         assert_eq!(serde_json::from_str::<DeviceCert>(&json).unwrap(), cert);
-        assert!(serde_json::from_str::<v1::DeviceCert>(&json).is_err());
         let wire = postcard::to_allocvec(&(&cert, [9u8; 32])).unwrap();
         let (back, nonce): (DeviceCert, [u8; 32]) = postcard::from_bytes(&wire).unwrap();
         assert_eq!((back, nonce), (cert.clone(), [9u8; 32]));
-        assert!(postcard::from_bytes::<(v1::DeviceCert, [u8; 32])>(&wire).is_err());
 
         // Any other capability beside it, no expiry, a longer life, or its
         // root's own key is neither signed nor taken.
@@ -980,7 +845,7 @@ tilo_test_env::scenario! {
 }
 
 /// A member certificate a stand-in issued verifies, binds its issuer, and
-/// round-trips; verifiers that predate it refuse it.
+/// round-trips.
 #[test]
 fn a_stand_in_issues_member_certificates_bound_to_it() {
     let (key, stand_in) = make_stand_in(1);
@@ -994,7 +859,7 @@ fn a_stand_in_issues_member_certificates_bound_to_it() {
     assert_eq!(
         device_cert_signing_digest(&cert).unwrap(),
         signing_digest(
-            DEVCERT_V6_PREIMAGE_TAG,
+            DEVCERT_PREIMAGE_TAG,
             &IssuedCertView {
                 cert: cert.view(),
                 issuer: &stand_in,
@@ -1013,11 +878,9 @@ fn a_stand_in_issues_member_certificates_bound_to_it() {
     let json = serde_json::to_string(&cert).unwrap();
     assert!(json.contains(r#""issuer":{"#));
     assert_eq!(serde_json::from_str::<DeviceCert>(&json).unwrap(), cert);
-    assert!(serde_json::from_str::<v1::DeviceCert>(&json).is_err());
     let wire = postcard::to_allocvec(&(&cert, [9u8; 32])).unwrap();
     let (back, nonce): (DeviceCert, [u8; 32]) = postcard::from_bytes(&wire).unwrap();
     assert_eq!((back, nonce), (cert.clone(), [9u8; 32]));
-    assert!(postcard::from_bytes::<(v1::DeviceCert, [u8; 32])>(&wire).is_err());
     // Capabilities alone name no issuer.
     let caps = &wire[32 + 32 + 1 + "Browser".len()..];
     assert_eq!(caps[0], EXTENDED_BINARY_MARKER);
@@ -1177,7 +1040,7 @@ tilo_test_env::scenario! {
     phase a_server_key_lasts_until_revoked_or_its_chosen_expiry;
     // A server key reaches all workspaces and lasts until revoked, or until
     // the expiry its person chose; its marker is in both encodings and under
-    // its signature, and verifiers that predate it refuse it. A grant
+    // its signature. A grant
     // without the marker still expires within the bound.
     {
         let capabilities = DeviceCapabilities::server_key_grant();
@@ -1195,7 +1058,7 @@ tilo_test_env::scenario! {
         );
         assert_eq!(
             serde_json::to_string(&capabilities).unwrap(),
-            r#"{"can_own_workspaces":false,"can_admit_devices":false,"can_act_as_host":false,"can_read_all_workspaces":false,"agent":"all","server_key":true}"#
+            r#"{"can_own_workspaces":false,"can_admit_devices":false,"agent":"all","server_key":true}"#
         );
         // A bit the decoder does not know is refused, as decoders before the
         // marker refuse the marker's.
@@ -1210,10 +1073,8 @@ tilo_test_env::scenario! {
             let bytes = postcard::to_allocvec(&(&key, [9u8; 32])).unwrap();
             let (back, _): (DeviceCert, [u8; 32]) = postcard::from_bytes(&bytes).unwrap();
             assert_eq!(back, key);
-            assert!(postcard::from_bytes::<(v1::DeviceCert, [u8; 32])>(&bytes).is_err());
             let json = serde_json::to_string(&key).unwrap();
             assert_eq!(serde_json::from_str::<DeviceCert>(&json).unwrap(), key);
-            assert!(serde_json::from_str::<v1::DeviceCert>(&json).is_err());
             // The marker is signed: the same signature on a plain grant fails.
             let mut plain = key.clone();
             plain.capabilities = DeviceCapabilities::agent_grant(AgentScope::AllWorkspaces);

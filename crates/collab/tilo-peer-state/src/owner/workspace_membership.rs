@@ -227,8 +227,8 @@ mod tests {
         let mut changed = request;
         if let CommitOperation::WorkspaceMembershipCommand { command, .. } = &mut changed.operation
         {
-            *command = WorkspaceMembershipCommand::RetiredRemoveAgent {
-                agent: "scribe".into(),
+            *command = WorkspaceMembershipCommand::Revoke {
+                grant: tilo_action_policy::GrantId::new("another"),
             };
         }
         assert!(
