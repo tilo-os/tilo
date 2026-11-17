@@ -11,7 +11,8 @@
 //! them ([`Agent::instruction`]).
 //!
 //! An agent starts sub-agents for the person who keeps it. Each is an item here too, with what
-//! it was started for and how it stands ([`sub`]).
+//! it was started for and how it stands ([`sub`]). One whose work a coding harness does in the
+//! workspace's machine is a sub-agent like the others, with that said on it ([`coding`]).
 
 use std::fmt;
 
@@ -24,11 +25,15 @@ use tilo_resource::{
     resource,
 };
 
+pub mod coding;
 pub mod learned;
 pub mod sub;
 
+pub use coding::{Coding, NewCoding, Produced, ProducedAt};
 pub use sub::{NewSubAgent, Stands, Sub};
 
+#[cfg(test)]
+mod coding_tests;
 #[cfg(test)]
 mod sub_tests;
 #[cfg(test)]
@@ -155,8 +160,8 @@ impl Bound {
         Ok(tilo_action_policy::Rule::new(node, kinds, answer))
     }
 
-    /// Whether this narrows rather than widens: an outside effect never runs
-    /// unasked, whatever the person granting it may do.
+    /// Whether this narrows rather than widens: an outside effect is never carried
+    /// out unasked, whatever the person granting it may do.
     fn narrows(&self) -> bool {
         !(self.answer == "allow" && self.kinds.iter().any(|kind| kind == "outside"))
     }
@@ -183,7 +188,7 @@ pub struct Agent {
     /// Its presence colour as its keeper chose it, a slot of the palette people are
     /// drawn in ([`PresenceHue`]); `None` follows its identity.
     pub colour: Option<u8>,
-    /// Who keeps it: the member whose devices run it and whose credentials pay, and
+    /// Who keeps it: the member whose devices work it and whose credentials pay, and
     /// who alone chooses its model and what it may spend. For an agent the workspace's
     /// host runs ([`Self::on_host`]) the keeper still decides both.
     pub keeper: String,
@@ -195,7 +200,7 @@ pub struct Agent {
     /// default.
     pub model: Option<String>,
     /// The MCP client it connects as (`Claude Code`); `None` for an agent its
-    /// keeper's device runs.
+    /// keeper's device works.
     pub mcp_client: Option<String>,
     /// What it may do, narrowed from its keeper's grants; empty follows the default.
     pub bound: Vec<Bound>,
@@ -301,7 +306,7 @@ impl Agent {
 
     /// The rules every turn of it carries in `workspace`: what its record bounds it to
     /// ([`Self::bound_rules`]), and for a sub-agent the rules that keep it from reading
-    /// whoever started it ([`sub::one_way`]). Whoever runs its turns hands the policy these,
+    /// whoever started it ([`sub::one_way`]). Whoever works its turns hands the policy these,
     /// never the bound alone: the one-way rule comes from what the agent is, so no bound set
     /// on it, and none taken off it, lifts it.
     #[must_use]
@@ -731,7 +736,7 @@ impl WorkspaceAgents {
 
     /// Say how a sub-agent stands.
     ///
-    /// Written by whatever runs it, as the sub-agent itself, when its work begins and when
+    /// Written by whatever works it, as the sub-agent itself, when its work begins and when
     /// it ends: nobody else says how it stands.
     #[action(item = agents, audience = "agents")]
     pub fn sub_agent_stands(
@@ -742,6 +747,60 @@ impl WorkspaceAgents {
         #[param("One line of how it stands; none while it works")] line: Option<String>,
     ) -> Result<(), Refusal> {
         self.sub_stands(cx, &agent, stands, line.as_deref())
+    }
+
+    /// Say what a sub-agent made.
+    ///
+    /// A thing one can open: a pull request, a change, a branch, a file, a resource or a page,
+    /// with what a person calls it and either its address (it opens in Browser) or its place
+    /// in Tilo. The sub-agent says it itself, or whatever works it says it as the sub-agent:
+    /// nobody else does. The same thing said again replaces what was said of it.
+    #[action(item = agents, audience = "agents")]
+    pub fn sub_agent_produced(
+        &mut self,
+        cx: &mut ActionCx,
+        #[param("The sub-agent")] agent: Id,
+        #[param("What it is: pull-request, change, branch, file, resource or page")] kind: String,
+        #[param("What a person calls it")] label: NonBlank,
+        #[param("Its address outside Tilo, starting with https://")] url: Option<String>,
+        #[param("Where it is in Tilo: the app, its document and the resource there")] at: Option<
+            ProducedAt,
+        >,
+    ) -> Result<(), Refusal> {
+        self.produced(cx, &agent, (&kind, label.as_str()), url, at)
+    }
+
+    /// Say how a coding agent's work in the machine stands.
+    ///
+    /// Written by whatever works it, as the sub-agent itself: which coding harness it started,
+    /// the harness's own id for its conversation, when its process began and how it ended, and
+    /// what its model calls cost so far. Only what is named changes.
+    #[action(item = agents, audience = "agents")]
+    pub fn sub_agent_coding(
+        &mut self,
+        cx: &mut ActionCx,
+        #[param("The sub-agent")] agent: Id,
+        #[param(
+            "Its process in the machine: when it started and, once it ended, when, how and why"
+        )]
+        process: Option<coding::CodingProcess>,
+        #[param("The harness's own id for its conversation")] session: Option<String>,
+        #[param("What its model calls cost so far, in millionths of the currency")]
+        spent_micros: Option<u64>,
+        #[param("Which coding harness it started: its id and its name")] harness: Option<
+            coding::CodingHarness,
+        >,
+    ) -> Result<(), Refusal> {
+        self.coding_stands(
+            cx,
+            &agent,
+            coding::CodingReport {
+                process,
+                session,
+                spent_micros,
+                harness,
+            },
+        )
     }
 
     /// Say how many sub-agents an agent may have.

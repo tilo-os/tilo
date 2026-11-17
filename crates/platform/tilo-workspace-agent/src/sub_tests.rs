@@ -6,19 +6,19 @@ use collab_types::MemberId;
 use tilo_action_policy::{ActionKind, Answer, Context, Grantee, Party, Rule, TreePath, roles};
 use tilo_resource::{Id, Invoke, Model as _, NonBlank, Replica};
 
-const ADA: &str = "ada";
+pub(super) const ADA: &str = "ada";
 const GRACE: &str = "grace";
 /// Ada's own agent: the one that starts her sub-agents.
-const MAIN: &str = "assistant";
-const WORKSPACE: &str = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
-const THEN: i64 = 1_700_000_000_000;
+pub(super) const MAIN: &str = "assistant";
+pub(super) const WORKSPACE: &str = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+pub(super) const THEN: i64 = 1_700_000_000_000;
 
-fn id(text: &str) -> Id {
+pub(super) fn id(text: &str) -> Id {
     Id::from_raw(text)
 }
 
 /// The record with Ada's own agent in it, as she made it.
-fn with_main() -> Replica<WorkspaceAgents> {
+pub(super) fn with_main() -> Replica<WorkspaceAgents> {
     let mut record = Replica::<WorkspaceAgents>::new().as_author(ADA);
     record.set_now_ms(THEN);
     record
@@ -36,7 +36,7 @@ fn with_main() -> Replica<WorkspaceAgents> {
     record
 }
 
-fn start_as(sub_agent: NewSubAgent) -> Invoke<WorkspaceAgents> {
+pub(super) fn start_as(sub_agent: NewSubAgent) -> Invoke<WorkspaceAgents> {
     WorkspaceAgents::START_SUB_AGENT.with(workspace_agents::StartSubAgent { sub_agent })
 }
 
@@ -75,7 +75,7 @@ fn limits(agent: &str, depth: Option<u8>, at_once: Option<u32>) -> Invoke<Worksp
     })
 }
 
-fn sub_of<'a>(state: &'a WorkspaceAgents, agent: &str) -> &'a Sub {
+pub(super) fn sub_of<'a>(state: &'a WorkspaceAgents, agent: &str) -> &'a Sub {
     state
         .get(&id(agent))
         .unwrap_or_else(|| panic!("no agent {agent}"))
@@ -85,7 +85,7 @@ fn sub_of<'a>(state: &'a WorkspaceAgents, agent: &str) -> &'a Sub {
 }
 
 /// A lead under Ada's agent with a worker of its own, and a second sub-agent beside the lead.
-fn team() -> Replica<WorkspaceAgents> {
+pub(super) fn team() -> Replica<WorkspaceAgents> {
     let mut record = with_main();
     record.apply(limits(MAIN, Some(2), None)).unwrap();
     let mut record = record.as_agent_for(MAIN, ADA);
@@ -109,6 +109,7 @@ fn an_agent_starts_a_sub_agent_with_its_job_its_role_and_its_kind_of_work() {
             model: None,
             task: Some("tasks.issues/issues/i_7".to_owned()),
             id: None,
+            coding: None,
         }))
         .unwrap();
     let state = record.state().unwrap();
@@ -120,7 +121,7 @@ fn an_agent_starts_a_sub_agent_with_its_job_its_role_and_its_kind_of_work() {
         made.keeper, ADA,
         "it works for the person its starter works for"
     );
-    assert!(made.on_host, "the workspace's host runs it");
+    assert!(made.on_host, "the workspace's host works it");
     assert_eq!(made.state, AgentState::Active);
     assert_eq!(made.created_at, THEN);
     assert_eq!(made.told(), Some("Name the build each number comes from."));
@@ -352,7 +353,7 @@ fn a_sub_agent_starts_its_own_only_as_deep_as_the_person_allows() {
 
     // No deeper than allowed; the limits are the person's agent's, never a sub-agent's own.
     let mut record = record.as_agent_for("worker", ADA);
-    let refused = record.apply(start("Helper", "Run them")).unwrap_err();
+    let refused = record.apply(start("Helper", "Do them")).unwrap_err();
     assert!(refused.to_string().contains("2 deep"), "{refused}");
     let mut record = record.fork().as_author(ADA);
     let refused = record.apply(limits("lead", Some(3), None)).unwrap_err();
@@ -746,7 +747,7 @@ fn a_sub_agents_turn_reads_nothing_chat_keeps_whatever_its_bound_says() {
 }
 
 /// A sub-agent as the record keeps it, made `at`, standing `stands`.
-fn kept(name: &str, started_by: &str, at: i64, stands: Stands) -> Agent {
+pub(super) fn kept(name: &str, started_by: &str, at: i64, stands: Stands) -> Agent {
     Agent {
         id: tilo_resource::Atom(name.to_owned()),
         name: name.to_owned(),
@@ -899,6 +900,8 @@ fn a_sub_agent_is_kept_as_the_fields_a_client_reads() {
                 "since": THEN,
                 "line": "",
                 "notes": [{"id": note_id, "by": MAIN, "text": "It may be in Files.", "at": THEN}],
+                "produced": [],
+                "coding": null,
             },
             "sub_depth": null,
             "sub_at_once": null,
