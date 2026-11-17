@@ -1,0 +1,420 @@
+//! What a workspace's files take: the actions of `files.tree`.
+//!
+//! Every change of a file or folder is one of these, applied to the document of the chunk the
+//! node lives in ([`crate::files::FileDocumentId::chunk`]): the mount writes them as a program
+//! on the device changes its files, a holder of the tree writes them for an agent's call, and
+//! a page writes them as a person puts files in. A change of the tree then names what it did
+//! and who did it, as every other resource's change does, so grants decide it, History shows
+//! it under its author, and Undo takes it back.
+//!
+//! An action names its node by key, never by path: a path is where the node is now, and a
+//! concurrent move on another device would make it name something else.
+
+use automerge::transaction::Transactable as _;
+use automerge::{ObjId, ObjType, ReadDoc as _};
+use serde::{Deserialize, Serialize};
+use tilo_actions::{ActionError, ActionKind};
+use tilo_automerge::read::ReadTyped as _;
+use tilo_resource::Doc;
+
+use crate::files::{FileDocumentId, FileNameV1, FileNodeKind};
+use crate::tree::{
+    AUTHOR_KEY, CONTENT_REVISION_KEY, DOCUMENT_ID_KEY, HASH_KEY, KIND_KEY, MTIME_KEY, NAME_KEY,
+    PARENT_KEY, PLACEMENT_NAME_KEY, PREV_PARENT_KEY, ROOT_ID, SIZE_KEY, TRASH_ID, tree_nodes,
+};
+
+/// The registry type every action of the tree is recorded and replayed under.
+pub const FILE_ACTION_TYPE: &str = crate::tree::TREE_KIND;
+
+/// The key a preview of a file's content is kept under: what a new version of its content
+/// makes stale.
+pub const THUMB_KEY: &str = "thumb";
+
+/// The content hash a file had when it went to the trash, so a concurrent edit of it is seen.
+pub const DELETED_HASH_KEY: &str = "deleted_hash";
+
+/// One change of a workspace's files. See the module docs.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "op", rename_all = "kebab-case", deny_unknown_fields)]
+pub enum FileAction {
+    /// Make the node `node` for the document `document_id`, named `name` in the folder `parent`.
+    Create {
+        node: String,
+        document_id: FileDocumentId,
+        parent: String,
+        name: FileNameV1,
+        kind: FileNodeKind,
+        /// The hex digest of its content's manifest; none for a folder or an empty file.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        hash: Option<String>,
+        size: u64,
+        mtime: u64,
+        /// The name of whoever made it, as the device that wrote it knows them.
+        author: String,
+    },
+    /// Give the file `node` new content: `hash` names its manifest, none for no bytes.
+    Write {
+        node: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        hash: Option<String>,
+        size: u64,
+        mtime: u64,
+        author: String,
+    },
+    /// Put `node` into the folder `parent` under `name`: a rename, a move, or both.
+    Move {
+        node: String,
+        parent: String,
+        name: FileNameV1,
+        mtime: u64,
+    },
+    /// Put `node` in the trash, with what it holds.
+    Trash { node: String },
+    /// Take `node` out of the trash, back into the folder it was in.
+    Restore { node: String },
+}
+
+impl FileAction {
+    /// The node it changes.
+    #[must_use]
+    pub fn node(&self) -> &str {
+        match self {
+            Self::Create { node, .. }
+            | Self::Write { node, .. }
+            | Self::Move { node, .. }
+            | Self::Trash { node }
+            | Self::Restore { node } => node,
+        }
+    }
+
+    /// Its verb, as grants and History name it.
+    #[must_use]
+    pub const fn verb(&self) -> &'static str {
+        match self {
+            Self::Create {
+                kind: FileNodeKind::Directory,
+                ..
+            } => verbs::NEW_FOLDER,
+            Self::Create { .. } => verbs::NEW_FILE,
+            Self::Write { .. } => verbs::WRITE,
+            Self::Move { .. } => verbs::MOVE,
+            Self::Trash { .. } => verbs::TRASH,
+            Self::Restore { .. } => verbs::RESTORE,
+        }
+    }
+
+    /// Write it into `doc`, the document of the chunk its node lives in. The namespace a mount
+    /// keeps writes through this too, so a change made on a disk and one made by a call are
+    /// the same change.
+    ///
+    /// # Errors
+    /// A node the document does not hold (for anything but [`Self::Create`]), a name no file
+    /// may have, or a document that refused the write.
+    pub fn write(&self, doc: &mut Doc) -> Result<(), ActionError> {
+        let nodes = tree_nodes(doc)?;
+        match self {
+            Self::Create {
+                node,
+                document_id,
+                parent,
+                name,
+                kind,
+                hash,
+                size,
+                mtime,
+                author,
+            } => {
+                check_name(name)?;
+                let obj = doc.put_object(&nodes, node.as_str(), ObjType::Map)?;
+                doc.put(&obj, PARENT_KEY, parent.as_str())?;
+                doc.put(&obj, PREV_PARENT_KEY, parent.as_str())?;
+                doc.put(&obj, NAME_KEY, name.0.clone())?;
+                doc.put(&obj, PLACEMENT_NAME_KEY, name.0.clone())?;
+                doc.put(
+                    &obj,
+                    KIND_KEY,
+                    match kind {
+                        FileNodeKind::Directory => "dir",
+                        FileNodeKind::File => "file",
+                    },
+                )?;
+                if let Some(hash) = hash {
+                    doc.put(&obj, HASH_KEY, hash.as_str())?;
+                }
+                doc.put(&obj, SIZE_KEY, *size)?;
+                doc.put(&obj, MTIME_KEY, *mtime)?;
+                doc.put(&obj, AUTHOR_KEY, author.as_str())?;
+                doc.put(&obj, DOCUMENT_ID_KEY, document_id.0.to_string())?;
+            }
+            Self::Write {
+                node,
+                hash,
+                size,
+                mtime,
+                author,
+            } => {
+                let obj = node_obj(doc, &nodes, node)?;
+                clear(doc, &obj, CONTENT_REVISION_KEY)?;
+                match hash {
+                    Some(hash) => doc.put(&obj, HASH_KEY, hash.as_str())?,
+                    None => clear(doc, &obj, HASH_KEY)?,
+                }
+                clear(doc, &obj, THUMB_KEY)?;
+                doc.put(&obj, SIZE_KEY, *size)?;
+                doc.put(&obj, MTIME_KEY, *mtime)?;
+                doc.put(&obj, AUTHOR_KEY, author.as_str())?;
+            }
+            Self::Move {
+                node,
+                parent,
+                name,
+                mtime,
+            } => {
+                check_name(name)?;
+                if parent == node {
+                    return Err(ActionError::Refused("a folder cannot hold itself".into()));
+                }
+                let obj = node_obj(doc, &nodes, node)?;
+                let current = doc
+                    .str_at(&obj, PARENT_KEY)
+                    .unwrap_or_else(|| ROOT_ID.to_owned());
+                doc.put(&obj, PREV_PARENT_KEY, current)?;
+                doc.put(&obj, PARENT_KEY, parent.as_str())?;
+                doc.put(&obj, PLACEMENT_NAME_KEY, name.0.clone())?;
+                doc.put(&obj, NAME_KEY, name.0.clone())?;
+                doc.put(&obj, MTIME_KEY, *mtime)?;
+            }
+            Self::Trash { node } => {
+                let obj = node_obj(doc, &nodes, node)?;
+                match doc.str_at(&obj, HASH_KEY) {
+                    Some(hash) => doc.put(&obj, DELETED_HASH_KEY, hash)?,
+                    None => clear(doc, &obj, DELETED_HASH_KEY)?,
+                }
+                let current = doc
+                    .str_at(&obj, PARENT_KEY)
+                    .unwrap_or_else(|| ROOT_ID.to_owned());
+                doc.put(&obj, PREV_PARENT_KEY, current)?;
+                doc.put(&obj, PARENT_KEY, TRASH_ID)?;
+            }
+            Self::Restore { node } => {
+                let obj = node_obj(doc, &nodes, node)?;
+                if doc.str_at(&obj, PARENT_KEY).as_deref() != Some(TRASH_ID) {
+                    return Err(ActionError::Refused("it is not in the trash".into()));
+                }
+                let back = doc
+                    .str_at(&obj, PREV_PARENT_KEY)
+                    .filter(|parent| parent != TRASH_ID)
+                    .unwrap_or_else(|| ROOT_ID.to_owned());
+                doc.put(&obj, PARENT_KEY, back)?;
+            }
+        }
+        Ok(())
+    }
+}
+
+impl tilo_actions::Action for FileAction {
+    fn apply(&self, doc: &mut Doc) -> Result<(), ActionError> {
+        self.write(doc)
+    }
+
+    /// Putting a file in the trash keeps it there to take back: a step like any other.
+    fn action_kind(&self) -> ActionKind {
+        ActionKind::Undoable
+    }
+
+    /// Its verb, on its node: what grants decide and History shows, whichever way it came.
+    fn describe(&self, _doc: &Doc) -> Option<tilo_actions::Described> {
+        Some(self.described())
+    }
+}
+
+impl FileAction {
+    /// What it does, as a change names it: its verb, on its node.
+    #[must_use]
+    pub fn described(&self) -> tilo_actions::Described {
+        tilo_actions::Described::new(tilo_actions::Did::verb(
+            tilo_actions::ActionKey::new(
+                crate::tree::FILES_APP,
+                crate::tree::TREE_KIND,
+                self.verb(),
+            ),
+            [],
+        ))
+        .on(self.node(), self.node())
+    }
+}
+
+/// The verbs of the tree, as grants and History name them.
+pub mod verbs {
+    pub const NEW_FOLDER: &str = "new-folder";
+    pub const NEW_FILE: &str = "new-file";
+    pub const WRITE: &str = "write";
+    pub const MOVE: &str = "move";
+    pub const TRASH: &str = "trash";
+    pub const RESTORE: &str = "restore";
+    /// Every verb, in the order the surface lists them.
+    pub const ALL: [&str; 6] = [NEW_FOLDER, NEW_FILE, WRITE, MOVE, TRASH, RESTORE];
+}
+
+fn check_name(name: &FileNameV1) -> Result<(), ActionError> {
+    let bytes = name.as_bytes();
+    if bytes.is_empty()
+        || bytes == b"."
+        || bytes == b".."
+        || bytes.contains(&b'/')
+        || bytes.contains(&0)
+        || bytes.len() > crate::files::MAX_FILE_NAME_BYTES
+    {
+        return Err(ActionError::Refused(format!(
+            "{:?} is no file's name",
+            String::from_utf8_lossy(bytes)
+        )));
+    }
+    Ok(())
+}
+
+/// Delete `key` of `obj` when it holds one: a key that was never written is left alone, so
+/// the change carries no operation for it.
+fn clear(doc: &mut Doc, obj: &ObjId, key: &str) -> Result<(), ActionError> {
+    if doc.get(obj, key)?.is_some() {
+        doc.delete(obj, key)?;
+    }
+    Ok(())
+}
+
+fn node_obj(doc: &Doc, nodes: &ObjId, node: &str) -> Result<ObjId, ActionError> {
+    doc.obj_at(nodes, node, ObjType::Map)
+        .ok_or_else(|| ActionError::Refused(format!("the tree holds no node {node}")))
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+    use tilo_actions::ActionArgs;
+    use tilo_actions::{ActionRegistry, Did, Verified};
+    use tilo_resource::{Replica, Resource as _};
+
+    use super::*;
+    use crate::tree::{FilesTree, Placing, Tree, place};
+
+    /// The action the declaration `id` builds from `args`, as the API builds it for a caller.
+    fn declared(id: &str, args: serde_json::Value) -> FileAction {
+        let declaration = FilesTree::declarations()
+            .into_iter()
+            .find(|declaration| declaration.id == id)
+            .unwrap();
+        declaration
+            .build_action(
+                &ActionArgs::bind_json(&declaration.params, args.as_object().unwrap()).unwrap(),
+                7,
+            )
+            .unwrap()
+    }
+
+    /// A tree holding the folder `docs` with the file `plan.md` in it, as a page puts them in.
+    fn tree_with_a_file() -> (Doc, String, String) {
+        let mut doc = Doc::new();
+        let mut tree = Tree::default();
+        let docs = place(
+            (&mut doc, 1),
+            &mut tree,
+            ROOT_ID,
+            "docs",
+            Placing::Folder,
+            (5, "page"),
+        )
+        .unwrap();
+        let hash = "ab".repeat(32);
+        let plan = place(
+            (&mut doc, 1),
+            &mut tree,
+            &docs.id,
+            "plan.md",
+            Placing::File {
+                hash: &hash,
+                size: 12,
+            },
+            (6, "page"),
+        )
+        .unwrap();
+        doc.commit();
+        (doc, docs.id, plan.id)
+    }
+
+    #[test]
+    fn an_agent_moves_a_file_by_its_key_and_the_change_names_the_verb_and_the_agent() {
+        let (doc, _, plan) = tree_with_a_file();
+        let mut replica = Replica::<FilesTree>::from_doc(doc).as_agent_for("helper", "ada");
+        let moved = declared(
+            verbs::MOVE,
+            json!({"node": plan, "parent": ROOT_ID, "name": "final.md"}),
+        );
+        replica.apply_action(&moved).unwrap();
+        let state = replica.state().unwrap();
+        let node = state.node(&plan).unwrap();
+        assert_eq!(node.name, "final.md");
+        assert_eq!(node.parent.as_deref(), Some(ROOT_ID));
+
+        let last = replica.versions().pop().unwrap();
+        let context = last.context.expect("the change names what it did");
+        let Some(Did::Verb(verb)) = &context.what else {
+            panic!("a verb, not {:?}", context.what);
+        };
+        assert_eq!(verb.action.action, verbs::MOVE);
+        let invoker = context.invoker.expect("the change names who did it");
+        assert!(
+            format!("{:?}", invoker.acting).contains("helper"),
+            "the agent is the actor: {invoker:?}"
+        );
+
+        // A device that receives the change replays the action and gets the same change.
+        let registry = ActionRegistry::with(tilo_resource::group::register::<FilesTree>);
+        let mut peer = replica.doc().clone();
+        assert_eq!(
+            tilo_actions::verify_change(&mut peer, last.hash, &registry).unwrap(),
+            Verified::Reproduced
+        );
+    }
+
+    #[test]
+    fn trash_and_restore_put_a_folder_back_where_it_was() {
+        let (doc, docs, plan) = tree_with_a_file();
+        let mut replica = Replica::<FilesTree>::from_doc(doc).as_author("ada");
+        replica
+            .apply_action(&declared(verbs::TRASH, json!({"node": docs})))
+            .unwrap();
+        let state = replica.state().unwrap();
+        assert!(state.trashed(&docs));
+        assert!(!crate::tree::reaches_root(&state, &plan));
+        let restore = declared(verbs::RESTORE, json!({"node": docs}));
+        replica.apply_action(&restore).unwrap();
+        let state = replica.state().unwrap();
+        assert_eq!(state.node(&docs).unwrap().parent.as_deref(), Some(ROOT_ID));
+        assert!(crate::tree::reaches_root(&state, &plan));
+        // A node out of the trash is not restored again.
+        assert!(replica.apply_action(&restore).is_err());
+    }
+
+    #[test]
+    fn a_name_no_file_may_have_and_a_node_the_tree_lacks_are_refused() {
+        let (mut doc, _, plan) = tree_with_a_file();
+        for name in ["", "..", "a/b"] {
+            let moved = FileAction::Move {
+                node: plan.clone(),
+                parent: ROOT_ID.into(),
+                name: FileNameV1::from(name),
+                mtime: 1,
+            };
+            assert!(moved.write(&mut doc).is_err(), "{name:?}");
+        }
+        assert!(
+            FileAction::Trash {
+                node: "missing".into()
+            }
+            .write(&mut doc)
+            .is_err()
+        );
+        let read = FilesTree::read(&doc).unwrap();
+        assert_eq!(read.node(&plan).unwrap().name, "plan.md");
+    }
+}

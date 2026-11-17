@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.file-explorer@cb62eaabb4a7bfc3";
+export const SURFACE = "so.tilo.file-explorer@0a6b39435b30c1be";
 
 export interface Bookmark {
   place: string;
@@ -53,6 +53,44 @@ export interface AddBookmarkArgs {
 /** The arguments of `remove-bookmark`. */
 export interface RemoveBookmarkArgs {
   place: string;
+}
+
+/** The arguments of `new-folder`. */
+export interface NewFolderArgs {
+  parent: string;
+  name: string;
+  document?: string;
+}
+
+/** The arguments of `new-file`. */
+export interface NewFileArgs {
+  parent: string;
+  name: string;
+  document?: string;
+}
+
+/** The arguments of `move`. */
+export interface MoveArgs {
+  node: string;
+  parent: string;
+  name: string;
+}
+
+/** The arguments of `write`. */
+export interface WriteArgs {
+  node: string;
+  content: string;
+  size: number;
+}
+
+/** The arguments of `trash`. */
+export interface TrashArgs {
+  node: string;
+}
+
+/** The arguments of `restore`. */
+export interface RestoreArgs {
+  node: string;
 }
 
 /** The arguments of `note`. */
@@ -187,11 +225,49 @@ export function folder(ws: tilo.Workspace, path: string): Folder {
 
 /** Files — `files.tree`. */
 export interface Tree extends tilo.Resource {
+  newFolder(args: {
+    parent: string;
+    name: string;
+    document?: string;
+  }): Promise<void>;
+  /** Runs `new-folder` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  newFolderMany(items: NewFolderArgs[]): Promise<tilo.ActionAnswer[]>;
+  newFile(args: {
+    parent: string;
+    name: string;
+    document?: string;
+  }): Promise<void>;
+  /** Runs `new-file` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  newFileMany(items: NewFileArgs[]): Promise<tilo.ActionAnswer[]>;
+  move(args: {
+    node: string;
+    parent: string;
+    name: string;
+  }): Promise<void>;
+  /** Runs `move` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  moveMany(items: MoveArgs[]): Promise<tilo.ActionAnswer[]>;
+  write(args: {
+    node: string;
+    content: string;
+    size: number;
+  }): Promise<void>;
+  /** Runs `write` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  writeMany(items: WriteArgs[]): Promise<tilo.ActionAnswer[]>;
+  trash(args: {
+    node: string;
+  }): Promise<void>;
+  /** Runs `trash` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  trashMany(items: TrashArgs[]): Promise<tilo.ActionAnswer[]>;
+  restore(args: {
+    node: string;
+  }): Promise<void>;
+  /** Runs `restore` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  restoreMany(items: RestoreArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 
 /** The actions `Tree` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const TREE_ACTIONS = [] as const;
+export const TREE_ACTIONS = ["newFolder", "newFolderMany", "newFile", "newFileMany", "move", "moveMany", "write", "writeMany", "trash", "trashMany", "restore", "restoreMany"] as const;
 
 /** The `files.tree` kind at `path`. */
 export function tree(ws: tilo.Workspace, path: string): Tree {

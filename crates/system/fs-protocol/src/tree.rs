@@ -4,8 +4,11 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use automerge::{ObjId, ObjType, ROOT, ReadDoc};
+use tilo_actions::{ActionParam, ParamType};
 use tilo_automerge::read::ReadTyped as _;
-use tilo_resource::{Delta, Doc, ModelError, NoAction, Resource, SharedResource, Touch};
+use tilo_resource::{ActionDecl, Delta, Doc, ModelError, Resource, SharedResource, Touch};
+
+use crate::file_action::{FileAction, verbs};
 
 use crate::files::{FIRST_TREE_CHUNK, FileDocumentId, FileNameV1, FileNodeKind, TreeChunk};
 
@@ -437,7 +440,7 @@ impl Resource for FilesTree {
     const LABEL: &'static str = "Files";
 
     type State = Tree;
-    type Action = NoAction;
+    type Action = FileAction;
 
     fn read(doc: &Doc) -> Result<Tree, ModelError> {
         let Some(nodes) = nodes_of(doc) else {
@@ -497,6 +500,129 @@ impl Resource for FilesTree {
     fn initialize(_doc: &mut Doc) -> Result<(), ModelError> {
         Ok(())
     }
+
+    /// What anyone may do to a node already in the tree, by its key: what an agent or a
+    /// script that listed the tree acts on. A node is made where its chunk is chosen, by the
+    /// mount or by Files' verbs on a path, and those write [`FileAction::Create`] themselves.
+    fn declarations() -> Vec<ActionDecl<Self>> {
+        let node =
+            || ActionParam::required("node", ParamType::Text, "The key of the file or folder");
+        let create = |id: &'static str, label: &'static str, kind: FileNodeKind| {
+            ActionDecl::new(
+                id,
+                label,
+                vec![
+                    ActionParam::required(
+                        "parent",
+                        ParamType::Text,
+                        "The key of the folder it goes into; ROOT for the workspace's own",
+                    ),
+                    ActionParam::required("name", ParamType::Text, "Its name"),
+                    ActionParam::optional(
+                        "document",
+                        ParamType::Text,
+                        "The document id it takes, which names the chunk it lives in; a new one \
+                         in the first chunk when not named",
+                    ),
+                ],
+                move |args, now_ms| {
+                    let document_id = match args.text("document") {
+                        Some(id) => uuid::Uuid::parse_str(id.trim())
+                            .map(FileDocumentId)
+                            .map_err(|_| format!("`{id}` is no document id"))?,
+                        None => FileDocumentId::in_chunk(crate::files::FIRST_TREE_CHUNK),
+                    };
+                    Ok(FileAction::Create {
+                        node: document_node_id(document_id),
+                        document_id,
+                        parent: text(args, "parent")?,
+                        name: FileNameV1::from(text(args, "name")?.as_str()),
+                        kind,
+                        hash: None,
+                        size: 0,
+                        mtime: u64::try_from(now_ms).unwrap_or_default(),
+                        author: String::new(),
+                    })
+                },
+            )
+        };
+        vec![
+            create(verbs::NEW_FOLDER, "New folder", FileNodeKind::Directory)
+                .describe("Make an empty folder."),
+            create(verbs::NEW_FILE, "New file", FileNodeKind::File)
+                .describe("Make an empty file; write its content with `write`."),
+            ActionDecl::new(
+                verbs::MOVE,
+                "Move or rename",
+                vec![
+                    node(),
+                    ActionParam::required(
+                        "parent",
+                        ParamType::Text,
+                        "The key of the folder it goes into; ROOT for the workspace's own",
+                    ),
+                    ActionParam::required("name", ParamType::Text, "The name it takes there"),
+                ],
+                |args, now_ms| {
+                    Ok(FileAction::Move {
+                        node: text(args, "node")?,
+                        parent: text(args, "parent")?,
+                        name: FileNameV1::from(text(args, "name")?.as_str()),
+                        mtime: u64::try_from(now_ms).unwrap_or_default(),
+                    })
+                },
+            )
+            .describe("Put a file or folder into another folder, under another name, or both."),
+            ActionDecl::new(
+                verbs::WRITE,
+                "Write",
+                vec![
+                    node(),
+                    ActionParam::required(
+                        "content",
+                        ParamType::Text,
+                        "The new content, as its `tilo.content:<hash>` reference",
+                    ),
+                    ActionParam::required("size", ParamType::Integer, "Its length in bytes"),
+                ],
+                |args, now_ms| {
+                    let content = text(args, "content")?;
+                    let hash = tilo_actions::content_hash(&content)
+                        .ok_or_else(|| format!("`{content}` names no content"))?
+                        .to_owned();
+                    Ok(FileAction::Write {
+                        node: text(args, "node")?,
+                        hash: Some(hash),
+                        size: args.whole("size").unwrap_or_default(),
+                        mtime: u64::try_from(now_ms).unwrap_or_default(),
+                        author: String::new(),
+                    })
+                },
+            )
+            .describe("Give a file new content the workspace keeps."),
+            ActionDecl::new(verbs::TRASH, "Move to trash", vec![node()], |args, _| {
+                Ok(FileAction::Trash {
+                    node: text(args, "node")?,
+                })
+            })
+            .describe("Put a file or folder in the trash, with what it holds."),
+            ActionDecl::new(verbs::RESTORE, "Restore", vec![node()], |args, _| {
+                Ok(FileAction::Restore {
+                    node: text(args, "node")?,
+                })
+            })
+            .describe("Take a file or folder out of the trash, back where it was."),
+        ]
+    }
+}
+
+/// The text argument `name`, trimmed, which the action cannot do without.
+fn text(args: &tilo_actions::ActionArgs, name: &str) -> Result<String, String> {
+    args.text(name)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned)
+        .ok_or_else(|| format!("`{name}` is named"))
 }
 
 impl SharedResource for FilesTree {
@@ -730,7 +856,6 @@ pub fn place(
     placing: Placing<'_>,
     (mtime, author): (u64, &str),
 ) -> Result<Placed, ModelError> {
-    use automerge::transaction::Transactable as _;
     if name.is_empty() || name == "." || name == ".." || name.contains('/') {
         return Err(ModelError::invalid(format!("{name:?} is no file's name")));
     }
@@ -738,34 +863,25 @@ pub fn place(
         return Err(ModelError::invalid("the folder to put it in is gone"));
     }
     let name = free_name(tree, parent, name);
-    let nodes = tree_nodes(doc)?;
     let document_id = FileDocumentId::in_chunk(chunk);
     let id = document_node_id(document_id);
-    let node = doc.put_object(&nodes, &id, ObjType::Map)?;
-    doc.put(&node, PARENT_KEY, parent)?;
-    doc.put(&node, PREV_PARENT_KEY, parent)?;
-    doc.put(&node, NAME_KEY, name.as_bytes().to_vec())?;
-    doc.put(&node, PLACEMENT_NAME_KEY, name.as_bytes().to_vec())?;
     let (kind, hash, size) = match placing {
         Placing::Folder => (FileNodeKind::Directory, None, 0),
         Placing::File { hash, size } => (FileNodeKind::File, Some(hash), size),
     };
-    doc.put(
-        &node,
-        KIND_KEY,
-        if kind == FileNodeKind::Directory {
-            "dir"
-        } else {
-            "file"
-        },
-    )?;
-    if let Some(hash) = hash {
-        doc.put(&node, HASH_KEY, hash)?;
+    FileAction::Create {
+        node: id.clone(),
+        document_id,
+        parent: parent.to_owned(),
+        name: FileNameV1::from(name.as_str()),
+        kind,
+        hash: hash.map(str::to_owned),
+        size,
+        mtime,
+        author: author.to_owned(),
     }
-    doc.put(&node, SIZE_KEY, size)?;
-    doc.put(&node, MTIME_KEY, mtime)?;
-    doc.put(&node, AUTHOR_KEY, author)?;
-    doc.put(&node, DOCUMENT_ID_KEY, document_id.0.to_string())?;
+    .write(doc)
+    .map_err(|error| ModelError::invalid(error.to_string()))?;
     tree.nodes.insert(
         id.clone(),
         TreeEntry {

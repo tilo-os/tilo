@@ -29,6 +29,12 @@ __all__ = [
     "Recent",
     "AddBookmarkArgs",
     "RemoveBookmarkArgs",
+    "NewFolderArgs",
+    "NewFileArgs",
+    "MoveArgs",
+    "WriteArgs",
+    "TrashArgs",
+    "RestoreArgs",
     "NoteArgs",
     "MovedArgs",
     "ForgetArgs",
@@ -61,6 +67,44 @@ RemoveBookmarkArgs = TypedDict("RemoveBookmarkArgs", {
 })
 """The arguments of `remove-bookmark`."""
 
+NewFolderArgs = TypedDict("NewFolderArgs", {
+    "parent": "str",
+    "name": "str",
+    "document": NotRequired["str | None"],
+})
+"""The arguments of `new-folder`."""
+
+NewFileArgs = TypedDict("NewFileArgs", {
+    "parent": "str",
+    "name": "str",
+    "document": NotRequired["str | None"],
+})
+"""The arguments of `new-file`."""
+
+MoveArgs = TypedDict("MoveArgs", {
+    "node": "str",
+    "parent": "str",
+    "name": "str",
+})
+"""The arguments of `move`."""
+
+WriteArgs = TypedDict("WriteArgs", {
+    "node": "str",
+    "content": "str",
+    "size": "int",
+})
+"""The arguments of `write`."""
+
+TrashArgs = TypedDict("TrashArgs", {
+    "node": "str",
+})
+"""The arguments of `trash`."""
+
+RestoreArgs = TypedDict("RestoreArgs", {
+    "node": "str",
+})
+"""The arguments of `restore`."""
+
 NoteArgs = TypedDict("NoteArgs", {
     "device": "str",
     "path": "str",
@@ -84,7 +128,7 @@ ForgetArgs = TypedDict("ForgetArgs", {
 
 class Folder(Resource):
     """Folder — `files.folder`."""
-    __surface__ = "so.tilo.file-explorer@cb62eaabb4a7bfc3"
+    __surface__ = "so.tilo.file-explorer@0a6b39435b30c1be"
     places: list[Entry[Bookmark]]
 
     def add_bookmark(self,
@@ -306,11 +350,93 @@ class Folder(Resource):
 
 class Tree(Resource):
     """Files — `files.tree`."""
-    __surface__ = "so.tilo.file-explorer@cb62eaabb4a7bfc3"
+    __surface__ = "so.tilo.file-explorer@0a6b39435b30c1be"
+    def new_folder(self,
+        *,
+        parent: str,
+        name: str,
+        document: str | None = None,
+    ) -> None:
+        """Runs the app's action."""
+        args: dict[str, Any] = {}
+        args["parent"] = parent
+        args["name"] = name
+        if document is not None:
+            args["document"] = document
+        return self.action("new-folder", **args)
+
+    def new_folder_many(self, items: list[NewFolderArgs]) -> list[dict[str, Any]]:
+        """Runs `new-folder` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("new-folder", items)
+
+    def new_file(self,
+        *,
+        parent: str,
+        name: str,
+        document: str | None = None,
+    ) -> None:
+        """Runs the app's action."""
+        args: dict[str, Any] = {}
+        args["parent"] = parent
+        args["name"] = name
+        if document is not None:
+            args["document"] = document
+        return self.action("new-file", **args)
+
+    def new_file_many(self, items: list[NewFileArgs]) -> list[dict[str, Any]]:
+        """Runs `new-file` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("new-file", items)
+
+    def move(self,
+        *,
+        node: str,
+        parent: str,
+        name: str,
+    ) -> None:
+        """Runs the app's action."""
+        return self.action("move", node=node, parent=parent, name=name)
+
+    def move_many(self, items: list[MoveArgs]) -> list[dict[str, Any]]:
+        """Runs `move` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("move", items)
+
+    def write(self,
+        *,
+        node: str,
+        content: str,
+        size: int,
+    ) -> None:
+        """Runs the app's action."""
+        return self.action("write", node=node, content=content, size=size)
+
+    def write_many(self, items: list[WriteArgs]) -> list[dict[str, Any]]:
+        """Runs `write` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("write", items)
+
+    def trash(self, *, node: str) -> None:
+        """Runs the app's action."""
+        return self.action("trash", node=node)
+
+    def trash_many(self, items: list[TrashArgs]) -> list[dict[str, Any]]:
+        """Runs `trash` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("trash", items)
+
+    def restore(self, *, node: str) -> None:
+        """Runs the app's action."""
+        return self.action("restore", node=node)
+
+    def restore_many(self, items: list[RestoreArgs]) -> list[dict[str, Any]]:
+        """Runs `restore` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("restore", items)
+
+    # The actions a call reaches before the resource is read: `await tracker.create(...)`
+    # needs no `load()` first.
+    __actions__ = frozenset({"new_folder", "new_folder_many", "new_file", "new_file_many", "move", "move_many", "write", "write_many", "trash", "trash_many", "restore", "restore_many"})
+
 
 class Recent(Resource):
     """Recent files — `files.recent`."""
-    __surface__ = "so.tilo.file-explorer@cb62eaabb4a7bfc3"
+    __surface__ = "so.tilo.file-explorer@0a6b39435b30c1be"
     devices: dict[str, Any]
 
     def note(self,

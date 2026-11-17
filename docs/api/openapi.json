@@ -16375,6 +16375,108 @@
         "required": [],
         "description": ""
       },
+      "files.tree.new-folder.Arguments": {
+        "type": "object",
+        "properties": {
+          "parent": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "document": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "parent",
+          "name"
+        ],
+        "description": ""
+      },
+      "files.tree.new-file.Arguments": {
+        "type": "object",
+        "properties": {
+          "parent": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "document": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "parent",
+          "name"
+        ],
+        "description": ""
+      },
+      "files.tree.move.Arguments": {
+        "type": "object",
+        "properties": {
+          "node": {
+            "type": "string"
+          },
+          "parent": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "node",
+          "parent",
+          "name"
+        ],
+        "description": ""
+      },
+      "files.tree.write.Arguments": {
+        "type": "object",
+        "properties": {
+          "node": {
+            "type": "string"
+          },
+          "content": {
+            "type": "string"
+          },
+          "size": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "node",
+          "content",
+          "size"
+        ],
+        "description": ""
+      },
+      "files.tree.trash.Arguments": {
+        "type": "object",
+        "properties": {
+          "node": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "node"
+        ],
+        "description": ""
+      },
+      "files.tree.restore.Arguments": {
+        "type": "object",
+        "properties": {
+          "node": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "node"
+        ],
+        "description": ""
+      },
       "files.recent.note.Arguments": {
         "type": "object",
         "properties": {
@@ -32450,6 +32552,42 @@
       "resource": "files.folder",
       "action": "cloud-progress",
       "arguments": "#/components/schemas/files.folder.cloud-progress.Arguments"
+    },
+    {
+      "app": "so.tilo.file-explorer",
+      "resource": "files.tree",
+      "action": "new-folder",
+      "arguments": "#/components/schemas/files.tree.new-folder.Arguments"
+    },
+    {
+      "app": "so.tilo.file-explorer",
+      "resource": "files.tree",
+      "action": "new-file",
+      "arguments": "#/components/schemas/files.tree.new-file.Arguments"
+    },
+    {
+      "app": "so.tilo.file-explorer",
+      "resource": "files.tree",
+      "action": "move",
+      "arguments": "#/components/schemas/files.tree.move.Arguments"
+    },
+    {
+      "app": "so.tilo.file-explorer",
+      "resource": "files.tree",
+      "action": "write",
+      "arguments": "#/components/schemas/files.tree.write.Arguments"
+    },
+    {
+      "app": "so.tilo.file-explorer",
+      "resource": "files.tree",
+      "action": "trash",
+      "arguments": "#/components/schemas/files.tree.trash.Arguments"
+    },
+    {
+      "app": "so.tilo.file-explorer",
+      "resource": "files.tree",
+      "action": "restore",
+      "arguments": "#/components/schemas/files.tree.restore.Arguments"
     },
     {
       "app": "so.tilo.file-explorer",
