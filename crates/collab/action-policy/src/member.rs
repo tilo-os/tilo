@@ -49,6 +49,13 @@ impl MemberId {
         Self::Person(id.into())
     }
 
+    /// `id` as a person, when it is a person's bare root key: an id read from
+    /// stored data or another device, which [`Self::person`] would panic on.
+    #[must_use]
+    pub fn parsed_person(id: &str) -> Option<Self> {
+        PersonId::parse(id).ok().map(Self::Person)
+    }
+
     #[must_use]
     pub fn agent(id: impl Into<String>) -> Self {
         Self::Agent(id.into())

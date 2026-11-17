@@ -849,7 +849,8 @@ fn encoded(ty: &Ty, plain: &Json, meta: &Meta) -> Result<Json, String> {
         // A member as the app's model keeps them, or a person by their id.
         Ty::Actor => {
             let who: tilolang_runtime::ids::MemberId = match plain {
-                Json::String(person) => tilolang_runtime::ids::MemberId::person(person.clone()),
+                Json::String(key) => tilolang_runtime::ids::MemberId::parsed_person(key)
+                    .ok_or_else(|| format!("{plain} names no actor"))?,
                 other => serde_json::from_value(other.clone())
                     .map_err(|_| format!("{plain} names no actor"))?,
             };

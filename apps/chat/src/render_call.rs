@@ -263,7 +263,8 @@ impl ChatApp {
                 .snapshot
                 .speaking
                 .iter()
-                .any(|person| self.is_me(&MemberId::person(person.as_str()))),
+                .filter_map(|person| MemberId::parsed_person(person))
+                .any(|person| self.is_me(&person)),
             muted: self.call.muted,
             deafened: self.call.deafened,
             audio_only: self.call.audio_only,

@@ -210,7 +210,9 @@ impl ChatApp {
             if agent {
                 return Ok(MemberId::agent(recipient.id.clone()));
             }
-            return self.workspace_member(MemberId::person(recipient.id.clone()));
+            let person = ui::tilo_resource::PersonId::parse(&recipient.id)
+                .map_err(|_| crate::i18n::t("chat-person-unknown"))?;
+            return self.workspace_member(MemberId::Person(person));
         }
         let name = recipient.name.trim().to_lowercase();
         if name.is_empty() {

@@ -1194,7 +1194,7 @@ impl PeerGovernanceMut<'_> {
             policy
                 .grants
                 .iter()
-                .filter(|grant| grant.grantee == Grantee::person(person.clone()))
+                .filter(|grant| grant.grantee.person_id() == Some(person.as_str()))
                 .map(|grant| Change::Revoke(grant.id.clone()))
                 .collect()
         };

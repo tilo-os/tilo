@@ -367,7 +367,9 @@ impl GrantSubject {
     pub fn to_parts(&self, person: &str) -> Option<(Grantee, Option<String>)> {
         match self.kind {
             SubjectKind::App => Some((Grantee::person(person), Some(self.id.clone()))),
-            SubjectKind::Member => Some((Grantee::Member(MemberId::person(self.id.clone())), None)),
+            SubjectKind::Member => {
+                Some((Grantee::Member(MemberId::parsed_person(&self.id)?), None))
+            }
             SubjectKind::Agent => Some((Grantee::agent(self.id.clone()), None)),
             // A role-wide grant is a policy decision, not a per-workspace click.
             SubjectKind::Role => None,
@@ -376,7 +378,10 @@ impl GrantSubject {
 
     pub fn display(&self, ws: &Workspace, local_user: &str, apps: &dyn AppDirectory) -> String {
         match self.kind {
-            SubjectKind::Member => person_name(ws, local_user, &MemberId::person(self.id.clone())),
+            SubjectKind::Member => MemberId::parsed_person(&self.id).map_or_else(
+                || self.id.clone(),
+                |member| person_name(ws, local_user, &member),
+            ),
             SubjectKind::Agent => person_name(ws, local_user, &MemberId::agent(self.id.clone())),
             SubjectKind::App => app_display_name(apps, &self.id),
             // A role is listed as the phrase its section reads.

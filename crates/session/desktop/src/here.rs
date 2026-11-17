@@ -820,7 +820,7 @@ impl HereState {
     }
 
     /// The person the device `publisher` is a device of, as its certificate says; `None` before it
-    /// was heard.
+    /// was heard, and for a device whose presence names no person's root key.
     pub fn user_of(&self, publisher: &str) -> Option<&str> {
         if Some(publisher) == self.own_id()
             && let Some(own) = self.own_user()
@@ -832,7 +832,7 @@ impl HereState {
             .flatten()
             .find(|member| member.publisher == publisher)
             .and_then(|member| member.user.as_deref())
-            .filter(|user| !user.is_empty())
+            .filter(|user| !user.is_empty() && PersonId::parse(user).is_ok())
     }
 
     /// The member the device `publisher` is here as: the agent or bot its presence names, else its

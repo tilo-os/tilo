@@ -332,8 +332,9 @@ impl ChatApp {
                     .appearance
                     .as_ref()
                     .and_then(|appearance| appearance.persona.as_ref()?.linked.as_deref())
+                    .and_then(MemberId::parsed_person)
                 {
-                    ids.insert(MemberId::person(linked));
+                    ids.insert(linked);
                 }
                 for reaction in &message.reactions {
                     ids.extend(reaction.reactors.iter().map(|reactor| reactor.by.clone()));

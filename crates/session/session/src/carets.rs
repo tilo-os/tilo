@@ -177,7 +177,11 @@ impl Carets {
             self.read.borrow_mut().insert(workspace.clone(), revision);
             let mut placed: HashMap<String, Caret> = HashMap::new();
             for member in sync.members(&workspace) {
-                let Some(user) = member.user.filter(|user| Some(user) != person.as_ref()) else {
+                // Presence names its person as their device says; one that names no person's
+                // root key has no caret to hand on.
+                let Some(user) = member.user.filter(|user| {
+                    Some(user) != person.as_ref() && collab_types::PersonId::parse(user).is_ok()
+                }) else {
                     continue;
                 };
                 if member.agent {

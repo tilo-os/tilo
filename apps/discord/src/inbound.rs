@@ -244,7 +244,7 @@ fn appearance(
         .iter()
         .find(|link| link.discord_user == author.id)
         .and_then(|link| {
-            let person = tilo::person(chat, &MemberId::person(link.person.as_str()))?;
+            let person = tilo::person(chat, &MemberId::parsed_person(&link.person)?)?;
             Some((link, person))
         })
         .filter(|(_, person)| !person.name.trim().is_empty());
@@ -659,7 +659,8 @@ pub fn plan_command(guild: &Guild, chat: &crate::tilo::ChatRead, event: &Command
             let content = match link {
                 Some(link) => {
                     plan.unlinks.push(event.user_id.clone());
-                    let name = tilo::person(chat, &MemberId::person(link.person.as_str()))
+                    let name = MemberId::parsed_person(&link.person)
+                        .and_then(|id| tilo::person(chat, &id))
                         .map(|person| person.name)
                         .filter(|name| !name.trim().is_empty())
                         .unwrap_or_else(|| "your Tilo account".to_owned());
@@ -714,7 +715,7 @@ pub fn plan_linked(guild: &Guild, chat: &crate::tilo::ChatRead, person: &str) ->
     let Some(link) = guild.links.iter().find(|link| link.person == person) else {
         return plan;
     };
-    let tilo = tilo::person(chat, &MemberId::person(person));
+    let tilo = MemberId::parsed_person(person).and_then(|id| tilo::person(chat, &id));
     if let Some(interaction) = &link.interaction {
         let name = tilo
             .as_ref()

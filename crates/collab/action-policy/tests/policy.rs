@@ -1768,6 +1768,33 @@ tilo_test_env::scenario! {
         assert!(!workspace.is_member(BOB));
     }
 
+    phase a_change_naming_software_as_a_person_is_refused;
+    {
+        // A change arrives from any device: one naming an agent's key, or the
+        // retired `person:` spelling, as a person is refused, not applied.
+        let mut workspace = workspace_with_members(&[(BOB, Role::Editor), (CAROL, Role::Moderator)]);
+        let policy = workspace.clone();
+        let carol = Authority::person(policy.party(CAROL));
+        for named in ["agent:scout", "person:bob"] {
+            let before = workspace.clone();
+            assert_eq!(
+                workspace.apply(
+                    CAROL,
+                    &carol,
+                    Change::Ban {
+                        person: named.into()
+                    },
+                    &cx(),
+                    false
+                ),
+                Err(Refusal::NotAPerson(named.to_owned()))
+            );
+            assert_eq!(workspace, before, "nothing is written");
+            assert!(!workspace.is_blocked(named));
+            assert!(workspace.grantees_of(named).is_empty());
+        }
+    }
+
     phase a_ban_removes_and_blocks_until_unban;
     {
         let mut workspace = workspace_with_members(&[(BOB, Role::Editor), (CAROL, Role::Moderator)]);

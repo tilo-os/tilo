@@ -112,8 +112,11 @@ impl Mount {
             // a change someone made while away reads as theirs, never as their key. Who is here
             // is then named as their presence says, as everywhere else.
             for (person, name) in named {
-                if own.as_deref() != Some(person.as_str()) && offered(person) {
-                    presence.set_display_name(MemberId::person(person.clone()), name);
+                if own.as_deref() != Some(person.as_str())
+                    && offered(person)
+                    && let Some(member) = MemberId::parsed_person(person)
+                {
+                    presence.set_display_name(member, name);
                 }
             }
             here.show_waves(presence);
@@ -479,8 +482,10 @@ pub fn set_people(id: u64, people: &str) -> Result<(), JsValue> {
         m.frame.update_presence(|presence| {
             for person in people {
                 let name = person.name.trim();
-                if !person.id.is_empty() && !name.is_empty() {
-                    presence.set_display_name(MemberId::person(person.id), name);
+                if let Some(member) = MemberId::parsed_person(&person.id)
+                    && !name.is_empty()
+                {
+                    presence.set_display_name(member, name);
                 }
             }
             true

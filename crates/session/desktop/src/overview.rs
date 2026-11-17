@@ -11,7 +11,6 @@
 //! settings name what a share covers, an app's artwork) comes through
 //! [`OverviewHost`].
 
-use collab_types::MemberId;
 use collab_types::caps::{Access, Effect, Scope};
 use collab_types::role::Role as CapRole;
 use tilo_desktop_model::{GroupId, Layout, StripId, TabId, UserId, Workspace, WorkspaceId};
@@ -232,10 +231,9 @@ impl WorkspaceCard {
 /// Falls back to the actor itself rather than a placeholder — a row labelled "Unknown" tells
 /// the reader nothing, while the raw subject is both true and the value a revoke would name.
 fn display_name(id: &UserId, ws: &Workspace, _tree: &Layout) -> String {
-    let wanted = MemberId::person(id.clone());
     ws.members
         .iter()
-        .find(|member| member.id == wanted)
+        .find(|member| member.id.person_id() == Some(id.as_str()))
         .map_or_else(|| id.clone(), |member| member.name.clone())
 }
 
@@ -264,7 +262,7 @@ pub fn workspace_people(
             let present = ws
                 .present
                 .iter()
-                .any(|here| here.member == MemberId::person(id.clone()))
+                .any(|here| here.member.person_id() == Some(id.as_str()))
                 || (id == me && ws.id() == tree.active);
             WorkspacePerson {
                 name: display_name(&id, ws, tree),
@@ -409,7 +407,7 @@ fn overview_strips(
                                         !person.is_you
                                             && person.present
                                             && ws.present.iter().any(|here| {
-                                                here.member == MemberId::person(person.id.clone())
+                                                here.member.person_id() == Some(person.id.as_str())
                                                     && here.tab == Some(tab.id)
                                             })
                                     })

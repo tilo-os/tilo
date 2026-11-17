@@ -6,8 +6,8 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    ActionKind, Answer, Authority, Context, Grant, GrantId, Grantee, Lifetime, Party, Role,
-    TreePath, Verdict,
+    ActionKind, Answer, Authority, Context, Grant, GrantId, Grantee, Lifetime, Party, PersonId,
+    Role, TreePath, Verdict,
     roles::{self, governance},
 };
 
@@ -116,6 +116,21 @@ impl Change {
             Self::Revoke(_) => governance::REVOKE,
         }
     }
+
+    /// The person a membership change names.
+    #[must_use]
+    pub fn person(&self) -> Option<&str> {
+        match self {
+            Self::AddMember { person, .. }
+            | Self::RemoveMember { person }
+            | Self::Ban { person }
+            | Self::Unban { person }
+            | Self::Restrict { person, .. }
+            | Self::Unrestrict { person }
+            | Self::SetRole { person, .. } => Some(person),
+            Self::Grant(_) | Self::Revoke(_) => None,
+        }
+    }
 }
 
 /// Whether `change` is `actor_person` removing themselves: leaving, which the
@@ -185,6 +200,9 @@ pub enum Refusal {
     /// workspace neither revokes nor gives one; it adjusts a role with grants
     /// of its own.
     BuiltInRole(GrantId),
+    /// An id that is no person's root key: a change naming software, or a
+    /// spelling no device of ours writes, as a person.
+    NotAPerson(String),
 }
 
 impl std::fmt::Display for Refusal {
@@ -237,6 +255,7 @@ impl std::fmt::Display for Refusal {
             Self::UnknownGrant(id) => write!(f, "no grant {id}"),
             Self::DuplicateGrant(id) => write!(f, "grant {id} already exists"),
             Self::BuiltInRole(id) => write!(f, "{id} is part of a built-in role"),
+            Self::NotAPerson(id) => write!(f, "{id} is not a person's id"),
         }
     }
 }
@@ -366,10 +385,9 @@ impl WorkspacePolicy {
         if self.is_owner(person) {
             return false;
         }
-        let grantee = Grantee::person(person.to_owned());
         let workspace = self.node();
         self.grants.iter().any(|grant| {
-            grant.grantee == grantee
+            grant.grantee.person_id() == Some(person)
                 && grant.node == workspace
                 && grant.answer == Answer::Deny
                 && grant.kinds == crate::KindSet::ALL
@@ -425,9 +443,10 @@ impl WorkspacePolicy {
     #[must_use]
     pub fn is_administrator(&self, person: &str) -> bool {
         let id = roles::administrator_grant_id(person);
-        let grantee = Grantee::person(person.to_owned());
         self.grants.iter().any(|grant| {
-            grant.id == id && grant.grantee == grantee && grant.answer == Answer::Allow
+            grant.id == id
+                && grant.grantee.person_id() == Some(person)
+                && grant.answer == Answer::Allow
         })
     }
 
@@ -436,10 +455,9 @@ impl WorkspacePolicy {
     /// counted.
     #[must_use]
     pub fn extra_grants(&self, person: &str) -> usize {
-        let grantee = Grantee::person(person.to_owned());
         self.grants
             .iter()
-            .filter(|grant| grant.grantee == grantee)
+            .filter(|grant| grant.grantee.person_id() == Some(person))
             .filter(|grant| {
                 roles::administrator_named(&grant.id).is_none()
                     && roles::keeper_named(&grant.id).is_none()
@@ -461,9 +479,10 @@ impl WorkspacePolicy {
     #[must_use]
     pub fn is_keeper(&self, person: &str) -> bool {
         let id = roles::keeper_grant_id(person);
-        let grantee = Grantee::person(person.to_owned());
         self.grants.iter().any(|grant| {
-            grant.id == id && grant.grantee == grantee && grant.answer == Answer::Allow
+            grant.id == id
+                && grant.grantee.person_id() == Some(person)
+                && grant.answer == Answer::Allow
         })
     }
 
@@ -512,7 +531,11 @@ impl WorkspacePolicy {
     /// grant to a lower role names them too ([`crate::decide::names`]).
     #[must_use]
     pub fn grantees_of(&self, person: &str) -> Vec<Grantee> {
-        let mut grantees = vec![Grantee::person(person.to_owned())];
+        // An id that is no person's is known by nothing here.
+        let Ok(id) = PersonId::parse(person) else {
+            return Vec::new();
+        };
+        let mut grantees = vec![Grantee::person(id)];
         if let Some(role) = self.role_of(person) {
             grantees.push(Grantee::role(role));
         }
@@ -529,11 +552,9 @@ impl WorkspacePolicy {
             roles::block_grant_id(person),
             roles::restriction_grant_id(person),
         ];
-        let grantee = Grantee::person(person.to_owned());
-        let held_off = self
-            .grants
-            .iter()
-            .filter(|grant| grant.grantee == grantee && moderation.contains(&grant.id));
+        let held_off = self.grants.iter().filter(|grant| {
+            grant.grantee.person_id() == Some(person) && moderation.contains(&grant.id)
+        });
         let party = Party::new(self.grantees_of(person), &self.grants).held_off_by(held_off);
         if self.is_owner(person) {
             party.owning(self.node())
@@ -811,6 +832,11 @@ impl WorkspacePolicy {
         cx: &Context<'_>,
         approved: bool,
     ) -> Result<(), Refusal> {
+        // A change arrives from any device: one naming as a person an id
+        // that is none is refused, never applied.
+        for named in std::iter::once(actor_person).chain(change.person()) {
+            PersonId::parse(named).map_err(|_| Refusal::NotAPerson(named.to_owned()))?;
+        }
         let spent = if is_leaving(actor_person, &change) {
             Vec::new()
         } else {
@@ -876,8 +902,8 @@ impl WorkspacePolicy {
     fn drop_member(&mut self, person: &str) {
         self.members.remove(person);
         self.joined.remove(person);
-        let grantee = Grantee::person(person.to_owned());
-        self.grants.retain(|grant| grant.grantee != grantee);
+        self.grants
+            .retain(|grant| grant.grantee.person_id() != Some(person));
     }
 
     /// Whether `actor_person` reaches `person` with a membership action: the

@@ -369,6 +369,9 @@ impl Agents {
         } = *review;
         let state = record.get();
         let kept = state.get(&Id::from_raw(agent.to_owned()))?;
+        // An entry whose keeper is no person's root key, which no device of ours writes, is
+        // not shown.
+        MemberId::parsed_person(&kept.keeper)?;
         let name = kept.name.clone();
         let status = keeper_line(names, workspace, record, &kept.keeper);
         let tag = (kept.keeper == record.me().id()).then(|| t("workspace-settings-agent-yours"));
@@ -1028,17 +1031,14 @@ fn keeper_line(
     if keeper == record.me().id() {
         return t("workspace-settings-agent-keeper-you");
     }
+    let Some(member) = MemberId::parsed_person(keeper) else {
+        return keeper.to_owned();
+    };
     t_args(
         "workspace-settings-agent-keeper",
         &[(
             "name",
-            domain::member_row_name(
-                names,
-                workspace,
-                record.me().id(),
-                &MemberId::person(keeper),
-            )
-            .into(),
+            domain::member_row_name(names, workspace, record.me().id(), &member).into(),
         )],
     )
 }
