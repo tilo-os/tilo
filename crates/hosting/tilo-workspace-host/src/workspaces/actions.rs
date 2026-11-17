@@ -1,4 +1,4 @@
-//! The workspaces this relay governs, as their own governance actions.
+//! The workspaces this holder governs, as their own governance actions.
 //!
 //! A workspace's administration is its public surface like any app's: provider
 //! [`WORKSPACE_GOVERNANCE_PROVIDER`] (`tilo.workspace`) publishes it on the
@@ -12,11 +12,11 @@
 //! Beside it, two providers carry what is not one workspace's governance
 //! (`tilo_relay_session::workspaces` names them):
 //!
-//! - the host's own operations ([`HOST_ACTIONS_PROVIDER`], `host`):
+//! - the holder's own operations ([`HOST_ACTIONS_PROVIDER`], `host`):
 //!   creating, listing and entering workspaces and letting an app author one,
 //!   which only devices of the relay's own person may, decided as
 //!   [`Workspaces::authorize`] decides every [`WorkspaceOp::Host`]. They are asked of
-//!   the host itself over the device's session with it, naming no workspace
+//!   the holder itself over the device's session with it, naming no workspace
 //!   (`Envelope::HostAction`, [`AppActionServer::serve_host`]), or on a workspace
 //!   the device holds there, and need the device's certificate as the
 //!   relay's handshake verified it,
@@ -34,18 +34,18 @@
 //! Removing or banning a member and ending a call are destructive: they run
 //! only on a confirmation the person gave on their own device. The workspace's
 //! owner removes and bans by asking from a device of their own: their
-//! request is that confirmation. For anyone else this host cannot ask yet:
+//! request is that confirmation. For anyone else this holder cannot ask yet:
 //! the action is left out of their catalogue, and a caller the workspace would
 //! let take one is refused with [`ActionHostError::ConfirmationRequired`]; a
 //! caller's own `confirm` is never taken for the person's. Ending a call
 //! waits for everyone.
 //!
-//! The host also serves its own person's MCP server
+//! The holder also serves its own person's MCP server
 //! ([`mcp_server::PROVIDER`]): the devices they run an agent on, read live,
 //! and stopping one's run. Only a device of that person's own asks it, never
 //! an agent's.
 //!
-//! What the host does for its embedder is unchanged: [`GovernedServer`]
+//! What the holder does for its embedder is unchanged: [`GovernedServer`]
 //! answers this provider and hands every other request to the app-serving
 //! app action server the embedder supplied, if any.
 
@@ -58,8 +58,8 @@ use tilo_actions::remote::{
     ActionHost, ActionHostError, Caller, CataloguePage, CatalogueProvider, CatalogueQuery,
     CatalogueResource, CatalogueRow, InvocationLog, InvocationReceipt, InvocationState,
     InvokeArgument, InvokeRequest, Pending, RemoteActionMessage, WORKSPACE_GOVERNANCE_KIND,
-    WORKSPACE_GOVERNANCE_PROVIDER, host_account, mcp_server, person_accounts, person_models,
-    person_telling, person_vault, workspace_governance_resource,
+    WORKSPACE_GOVERNANCE_PROVIDER, host_account, mcp_server, person_accounts, person_asking,
+    person_models, person_telling, person_vault, workspace_governance_resource,
 };
 use tilo_actions::{
     ActionAddress, ActionContract, ActionDescriptor, ActionKind, ActionOutput, ActionParam,
@@ -116,14 +116,14 @@ pub(crate) const UNLIST: &str = "wait-list.remove";
 /// Mailing the invitation issued for an address on the wait list to it,
 /// where the entry sends mail: part of inviting.
 pub(crate) const MAIL_INVITATION: &str = "wait-list.mail";
-/// The hosts holding the workspace: the one it was made on, which governs
-/// it, and each other host its owners had hold it as well.
+/// The holders holding the workspace: the one it was made on, which governs
+/// it, and each other holder its owners had hold it as well.
 pub(crate) const HOSTS: &str = "host.list";
-/// Having another host, named by its site (`https://tilo.sh`), hold the
+/// Having another holder, named by its site (`https://tilo.sh`), hold the
 /// workspace as well: both keep it, a change on either reaches the other, and
-/// its members reach it at either. The host takes it as its own rules say.
+/// its members reach it at either. The holder takes it as its own rules say.
 pub(crate) const ADD_HOST: &str = "host.add";
-/// Having a host hold the workspace no more.
+/// Having a holder hold the workspace no more.
 pub(crate) const REMOVE_HOST: &str = "host.remove";
 /// What checks choosing the workspace's hosts: its owners', which no grant of
 /// its governance gives ([`Workspaces::chooses_hosts`]).
@@ -135,21 +135,21 @@ pub(crate) const PUBLISH: &str = "publish";
 pub(crate) const UNPUBLISH: &str = "unpublish";
 /// Whether the workspace is public, and with which listing.
 pub(crate) const PUBLICATION: &str = "publication";
-/// Asking the workspace's host to run a bot from the directory.
+/// Asking the workspace's holder to run a bot from the directory.
 pub(crate) const REQUEST_BOT: &str = "request-bot";
-/// Taking back the workspace's request for a bot: its host stops and
+/// Taking back the workspace's request for a bot: its holder stops and
 /// uninstalls it.
 pub(crate) const WITHDRAW_BOT_REQUEST: &str = "withdraw-bot-request";
 /// No longer choosing which version of an app the workspace runs
 /// (`install-app`, the governance action of that name, chooses one).
 pub(crate) const UNINSTALL_APP: &str = "uninstall-app";
-/// Hand the workspace's host a piece of an app version's package file.
+/// Hand the workspace's holder a piece of an app version's package file.
 pub(crate) const UPLOAD_APP_FILE: &str = "upload-app-file";
-/// Giving the host a secret a requested bot's connector needs (a Discord
-/// bot token): kept in the host's secret store for that connector, never in
+/// Giving the holder a secret a requested bot's connector needs (a Discord
+/// bot token): kept in the holder's secret store for that connector, never in
 /// the workspace's governance, a record or a log.
 pub(crate) const SET_CONNECTOR_SECRET: &str = "set-connector-secret";
-/// The connector secrets a workspace member may give its host, by connector and
+/// The connector secrets a workspace member may give its holder, by connector and
 /// purpose.
 const CONNECTOR_SECRETS: [(&str, &str); 1] = [("so.tilo.discord", "bot-token")];
 /// Most bytes a connector secret takes.
@@ -721,7 +721,7 @@ const GOVERNANCE: Publisher = Publisher {
 
 impl Publisher {
     /// The catalogue entry naming this provider, offered on `workspace` (empty
-    /// for the host's own).
+    /// for the holder's own).
     fn entry(self, workspace: &str) -> CatalogueProvider {
         CatalogueProvider {
             provider: self.provider.into(),
@@ -789,7 +789,7 @@ fn check_of(action: &str) -> Option<&'static str> {
 }
 
 /// Whether `action` with `args` by a device of `owner`'s person or not needs
-/// the person's own confirmation, which this host cannot ask for yet. The
+/// the person's own confirmation, which this holder cannot ask for yet. The
 /// workspace's owner confirms removing and banning by asking.
 fn unconfirmed(action: &str, args: &Args, owner: bool) -> bool {
     (OWNER_CONFIRMED.iter().any(|verb| verb.id == action) && !owner)
@@ -808,7 +808,7 @@ fn refused(error: &impl ToString) -> ActionHostError {
     }
 }
 
-/// Keep the secret a requested bot's connector needs in this host's store
+/// Keep the secret a requested bot's connector needs in this holder's store
 /// for that connector, where its worker asks for it. Only the secrets a
 /// connector is known to take are kept; the caller already holds the
 /// workspace's right to install bots (the verb's check).
@@ -826,7 +826,7 @@ fn connector_secret(args: &Args) -> Result<Value, ActionHostError> {
     }
     #[cfg(feature = "agents")]
     {
-        // Where the host's connectors read it.
+        // Where the holder's connectors read it.
         tilo_secrets::SecretStore::for_app(app)
             .item(purpose, "default")
             .put_blocking(secret.as_bytes())
@@ -1040,9 +1040,9 @@ fn speaks_for_themselves(caller: &Caller) -> bool {
     caller.acting().is_person()
 }
 
-/// Whether `caller` asks the host's own operations as the person
+/// Whether `caller` asks the holder's own operations as the person
 /// `certificate` names: the person themselves, or an agent's grant, which
-/// the host's operations treat as its person within its scope
+/// the holder's operations treat as its person within its scope
 /// ([`crate::host_authority`]) while every workspace takes it as their agent.
 fn asks_as_person(caller: &Caller, certificate: &DeviceCert) -> bool {
     speaks_for_themselves(caller)
@@ -1326,9 +1326,12 @@ impl Workspaces {
             }
             // What the person keeps to sign in with, in that same vault:
             // nothing of it is read back, and no agent asks.
+            // The same holds for what their agents no longer ask them, in
+            // the same store: read and taken back by the person alone, and
+            // written by no request.
             #[cfg(not(target_arch = "wasm32"))]
-            (person_vault::PROVIDER, _) => {
-                self.person_vault_invoke(workspace_id, caller, certificate, request)
+            (person_vault::PROVIDER | person_asking::PROVIDER, _) => {
+                self.person_alone_invoke(workspace_id, caller, certificate, request)
             }
             // What the person calls important, and what may interrupt
             // them: theirs, and their own agent's to read and to keep.
@@ -2585,7 +2588,7 @@ fn mcp_value(workspaces: &Workspaces) -> Value {
 }
 
 /// The providers a relay that governs workspaces answers itself.
-const PROVIDERS: [&str; 7] = [
+const PROVIDERS: [&str; 8] = [
     WORKSPACE_GOVERNANCE_PROVIDER,
     HOST_ACTIONS_PROVIDER,
     mcp_server::PROVIDER,
@@ -2597,6 +2600,8 @@ const PROVIDERS: [&str; 7] = [
     person_vault::PROVIDER,
     // What the person calls important, and what may interrupt them.
     person_telling::PROVIDER,
+    // What the person's agents no longer ask them, in the same store.
+    person_asking::PROVIDER,
 ];
 
 /// What a relay that governs workspaces answers remote actions addressed to it

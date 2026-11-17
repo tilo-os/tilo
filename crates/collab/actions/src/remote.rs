@@ -59,6 +59,7 @@ mod nodes;
 pub mod own_device;
 mod pending;
 pub mod person_accounts;
+pub mod person_asking;
 pub mod person_events;
 pub mod person_models;
 pub mod person_telling;
