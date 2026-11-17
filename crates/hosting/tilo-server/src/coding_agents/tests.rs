@@ -16,32 +16,28 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
-use std::io::{Read as _, Write as _};
-use std::path::{Path, PathBuf};
-use std::process::{Child, ChildStdin, Command, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
+use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use serde_json::{Value, json};
 use tilo_lock::MutexRecover as _;
-use tilo_test_env::{DiesWithTheTest as _, SpawnUnderEnvLock as _};
-use ush::served_runs::wire::{self, FromRun, ToRun};
+use ush::served_runs::wire::{FromRun, ToRun};
 use ush::served_runs::{Heard, Over};
 
 use super::claude_code::ClaudeCode;
-use super::harness::{Harness, MODEL, ModelProtocol, Program, Reads, Start, TILO};
+use super::harness::{Harness, Start};
 use super::run::{CodingRun, Conversation, Ended, Ending, Machine, Serves};
-use super::working_copy::{self, WorkingCopy};
+use super::testing::{STAND_IN, StandIn, TestMachine, git, seen_of};
+use super::working_copy::WorkingCopy;
 use crate::workspaces::Workspaces;
-use crate::workspaces::fixtures::{governor, test_host};
+use crate::workspaces::fixtures::{self, governor};
 use crate::workspaces::person_model::scripted::{Linking, Reply, ScriptedProvider};
-use crate::workspaces::person_model::{Interaction, ProviderProtocol, Spender};
+use crate::workspaces::person_model::{ProviderProtocol, Spender};
 
 pub(super) const ADA: [u8; 32] = [8; 32];
 /// Ada's key at her provider. Nothing in the machine may ever hold it.
-const ADA_KEY: &str = "sk-ada-KEY-THAT-STAYS-ON-THE-HOST";
+const ADA_KEY: &str = "sk-ada-KEY-THAT-STAYS-ON-THE-SERVER";
 
 const ANTHROPIC: Linking<'static> = Linking {
     name: "Anthropic",
@@ -50,258 +46,6 @@ const ANTHROPIC: Linking<'static> = Linking {
     key: Some(ADA_KEY),
     models: &["claude-parts"],
 };
-
-/// A stand-in for Claude Code. For every message it is given it asks its
-/// model once and says the answer as Claude Code's lines; given `list your
-/// tilo tools` it asks Tilo's MCP server instead.
-pub(super) const STAND_IN: &str = r#"#!/bin/bash
-trap '' PIPE
-trap 'exit 130' INT
-session="stand-in-$$"
-text_first='"text":"([^"\\]*)","type":"text_delta"'
-type_first='"type":"text_delta","text":"([^"\\]*)"'
-message_of='"message":"([^"\\]*)"'
-echo "{\"type\":\"system\",\"subtype\":\"init\",\"session_id\":\"$session\"}"
-post() {
-  local rest=${1#http://} answer
-  local hostport=${rest%%/*} path=/${rest#*/}
-  exec 3<>"/dev/tcp/${hostport%:*}/${hostport#*:}"
-  printf 'POST %s HTTP/1.1\r\nHost: endpoint\r\nAuthorization: Bearer %s\r\nContent-Type: application/json\r\nContent-Length: %s\r\n\r\n%s' "$path" "$ANTHROPIC_AUTH_TOKEN" "${#2}" "$2" >&3 2>/dev/null
-  answer=$(cat <&3 2>/dev/null)
-  exec 3<&- 3>&-
-  answer=${answer//$'\r'/}
-  status=${answer%%$'\n'*}
-  body=${answer#*$'\n\n'}
-}
-says() {
-  echo "{\"type\":\"assistant\",\"session_id\":\"$session\",\"parent_tool_use_id\":null,\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"$1\"}]}}"
-}
-while IFS= read -r line; do
-  # The message object of the line, whichever of its two fields the line wrote first.
-  message=${line#*\"message\":}
-  case $message in
-    *',"type":"user"}') message=${message%,\"type\":\"user\"\}} ;;
-    *) message=${message%\}} ;;
-  esac
-  case $line in
-    *"where do you work"*)
-      says "in $PWD on $(git branch --show-current 2>/dev/null)"
-      echo "{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"session_id\":\"$session\",\"result\":\"said\"}"
-      ;;
-    *"where is your model"*)
-      says "my model is at $ANTHROPIC_BASE_URL"
-      echo "{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"session_id\":\"$session\",\"result\":\"said\"}"
-      ;;
-    *"ask the model at "*)
-      [[ $line =~ model\ at\ (http://[0-9.:]+) ]]
-      post "${BASH_REMATCH[1]}/v1/messages" '{"model":"stand-in-main","max_tokens":8,"messages":[{"role":"user","content":"hello"}]}'
-      says "from there came [$status]"
-      echo "{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"session_id\":\"$session\",\"result\":\"asked\"}"
-      ;;
-    *"list your tilo tools"*)
-      post "$TILO_MCP" '{"jsonrpc":"2.0","method":"notifications/initialized"}'
-      accepted=$status
-      post "$TILO_MCP" '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
-      flat=${body//\"/}
-      flat=${flat//\\/}
-      flat=${flat//$'\n'/ }
-      says "a note was $accepted and tilo answered $flat"
-      echo "{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"session_id\":\"$session\",\"result\":\"listed\"}"
-      ;;
-    *)
-      echo "{\"type\":\"assistant\",\"session_id\":\"$session\",\"parent_tool_use_id\":null,\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"tool_use\",\"id\":\"t1\",\"name\":\"Bash\",\"input\":{\"command\":\"git log --since=monday\"}}]}}"
-      post "$ANTHROPIC_BASE_URL/v1/messages" "{\"model\":\"stand-in-main\",\"max_tokens\":64,\"stream\":true,\"messages\":[$message]}"
-      if [[ $status == *" 200 "* ]] && { [[ $body =~ $text_first ]] || [[ $body =~ $type_first ]]; }; then
-        says "${BASH_REMATCH[1]}"
-        echo "{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"session_id\":\"$session\",\"result\":\"${BASH_REMATCH[1]}\"}"
-      else
-        [[ $body =~ $message_of ]]
-        echo "{\"type\":\"result\",\"subtype\":\"error_during_execution\",\"is_error\":true,\"session_id\":\"$session\",\"result\":\"${BASH_REMATCH[1]}\"}"
-      fi
-      ;;
-  esac
-done
-"#;
-
-/// The stand-in as a harness: Claude Code's own ways of taking a message and
-/// of printing, and a program of its own.
-pub(super) struct StandIn {
-    pub(super) script: PathBuf,
-    /// The working copy it is started in, when it gets one of its own.
-    pub(super) copy: Option<WorkingCopy>,
-    /// What it was started for, each time.
-    pub(super) starts: Arc<Mutex<Vec<Start>>>,
-}
-
-impl Harness for StandIn {
-    fn id(&self) -> &'static str {
-        "stand-in"
-    }
-
-    fn name(&self) -> &'static str {
-        "Stand-in"
-    }
-
-    fn model_protocol(&self) -> ModelProtocol {
-        ModelProtocol::AnthropicMessages
-    }
-
-    fn program(&self, start: &Start) -> Program {
-        self.starts.lock_recover().push(start.clone());
-        let program = vec![self.script.display().to_string()];
-        Program {
-            argv: self.copy.as_ref().map_or_else(
-                || program.clone(),
-                |copy| working_copy::within(copy, &program),
-            ),
-            env: vec![
-                ("ANTHROPIC_BASE_URL".to_owned(), wire::placeholder(MODEL)),
-                (
-                    "ANTHROPIC_AUTH_TOKEN".to_owned(),
-                    "a-word-not-a-key".to_owned(),
-                ),
-                (
-                    "TILO_MCP".to_owned(),
-                    format!("{}/mcp", wire::placeholder(TILO)),
-                ),
-            ],
-            endpoints: vec![MODEL.to_owned(), TILO.to_owned()],
-        }
-    }
-
-    fn message(&self, text: &str) -> Vec<u8> {
-        ClaudeCode.message(text)
-    }
-
-    fn reads(&self) -> Box<dyn Reads> {
-        ClaudeCode.reads()
-    }
-
-    fn kind_of(&self, model: &str) -> Interaction {
-        ClaudeCode.kind_of(model)
-    }
-}
-
-/// This computer as a workspace's machine: the real launcher, started as the
-/// guest agent starts a program, and everything that went to and from it.
-pub(super) struct TestMachine {
-    child: Mutex<Child>,
-    input: Mutex<Option<ChildStdin>>,
-    heard: Mutex<Receiver<Heard>>,
-    launcher: u32,
-    /// Every frame the host sent into the machine.
-    told: Mutex<Vec<ToRun>>,
-    /// Every frame the machine sent.
-    said: Arc<Mutex<Vec<FromRun>>>,
-    cut: AtomicBool,
-}
-
-impl TestMachine {
-    pub(super) fn start(
-        argv: &[String],
-        env: &[(String, String)],
-        endpoints: &[String],
-        directory: &Path,
-        stop_grace: Duration,
-    ) -> Arc<Self> {
-        let endpoints: Vec<&str> = endpoints.iter().map(String::as_str).collect();
-        let mut command = Command::new(tilo_test_env::sibling_binary(
-            "legacy-agent",
-            "tilo-legacy-agent",
-        ));
-        command
-            .args(wire::arguments(&endpoints, stop_grace, argv))
-            .envs(env.iter().cloned())
-            .current_dir(directory)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .dies_with_the_test();
-        let mut child = command.spawn_locked().unwrap();
-        let mut frames = child.stdout.take().unwrap();
-        let mut beside = child.stderr.take().unwrap();
-        let (hearing, heard) = mpsc::channel();
-        let said = Arc::new(Mutex::new(Vec::new()));
-        let recorded = Arc::clone(&said);
-        std::thread::spawn(move || {
-            while let Ok(Some(frame)) = wire::recv::<_, FromRun>(&mut frames) {
-                recorded.lock_recover().push(frame.clone());
-                if hearing.send(Heard::Frame(frame)).is_err() {
-                    return;
-                }
-            }
-            let mut words = String::new();
-            let _ = beside.read_to_string(&mut words);
-            let _ = hearing.send(Heard::Over(Over {
-                exit: 0,
-                refusal: None,
-                words,
-            }));
-        });
-        Arc::new(Self {
-            launcher: child.id(),
-            input: Mutex::new(child.stdin.take()),
-            child: Mutex::new(child),
-            heard: Mutex::new(heard),
-            told: Mutex::default(),
-            said,
-            cut: AtomicBool::new(false),
-        })
-    }
-
-    /// The harness's process, once the launcher said it started.
-    fn harness(&self) -> u32 {
-        tilo_test_env::wait_for("the harness to start", || {
-            self.said
-                .lock_recover()
-                .iter()
-                .find_map(|frame| match frame {
-                    FromRun::Started { pid } => Some(*pid),
-                    _ => None,
-                })
-        })
-    }
-}
-
-impl Machine for TestMachine {
-    fn tell(&self, frame: &ToRun) -> bool {
-        self.told.lock_recover().push(frame.clone());
-        let mut input = self.input.lock_recover();
-        let told = input
-            .as_mut()
-            .is_some_and(|input| wire::send(input, frame).is_ok() && input.flush().is_ok());
-        if !told {
-            *input = None;
-        }
-        drop(input);
-        told
-    }
-
-    fn hear(&self, wait: Duration) -> Option<Heard> {
-        let heard = self.heard.lock_recover();
-        let next = heard.recv_timeout(wait);
-        drop(heard);
-        match next {
-            Ok(heard) => Some(heard),
-            Err(RecvTimeoutError::Timeout) => None,
-            Err(RecvTimeoutError::Disconnected) => Some(Heard::Over(Over::default())),
-        }
-    }
-
-    fn cut(&self) {
-        self.cut.store(true, Ordering::SeqCst);
-        *self.input.lock_recover() = None;
-        let _ = self.child.lock_recover().kill();
-    }
-}
-
-impl Drop for TestMachine {
-    fn drop(&mut self) {
-        let mut child = self.child.lock_recover();
-        let _ = child.kill();
-        let _ = child.wait();
-    }
-}
 
 /// A sub-agent's conversation, as a list of what was written into it.
 #[derive(Default)]
@@ -440,7 +184,7 @@ pub(super) async fn host_of_ada(
     replies: impl IntoIterator<Item = Reply>,
 ) -> (crate::workspaces::fixtures::TestHost, Arc<ScriptedProvider>) {
     let (key, cert) = governor();
-    let host = test_host(state, &key, &cert).await;
+    let host = fixtures::test_host(state, &key, &cert).await;
     let scripted = ScriptedProvider::answering(replies);
     host.workspaces().answer_models_with(scripted.clone());
     host.workspaces()
@@ -449,34 +193,24 @@ pub(super) async fn host_of_ada(
     (host, scripted)
 }
 
-/// Everything of process `process` a program in the machine could read of
-/// it: its variables and its arguments.
-fn seen_of(process: u32) -> String {
-    let read = |name: &str| {
-        String::from_utf8_lossy(&std::fs::read(format!("/proc/{process}/{name}")).unwrap())
-            .into_owned()
-    };
-    format!("{}\n{}", read("environ"), read("cmdline"))
-}
-
 /// Looks for the person's key everywhere a program in the machine could find one.
 fn the_key_is_nowhere_in_the_machine(coding: &Coding) {
     // No key in the machine: not in what its programs were started with, not in a file beside
     // them, not in a frame that went into it, not in what it said, not in its conversation.
-    let (launcher, harness) = (coding.machine.launcher, coding.machine.harness());
+    let (launcher, harness) = (coding.machine.launcher(), coding.machine.harness());
     let mut everywhere = vec![seen_of(launcher), seen_of(harness)];
     for file in std::fs::read_dir(coding.directory.path()).unwrap() {
         everywhere.push(
             String::from_utf8_lossy(&std::fs::read(file.unwrap().path()).unwrap()).into_owned(),
         );
     }
-    everywhere.push(format!("{:?}", coding.machine.told.lock_recover()));
-    for frame in coding.machine.told.lock_recover().iter() {
+    everywhere.push(format!("{:?}", coding.machine.told()));
+    for frame in &coding.machine.told() {
         if let ToRun::AnswerBody { bytes, .. } | ToRun::In(bytes) = frame {
             everywhere.push(String::from_utf8_lossy(bytes).into_owned());
         }
     }
-    for frame in coding.machine.said.lock_recover().iter() {
+    for frame in &coding.machine.said() {
         if let FromRun::Out(bytes) | FromRun::Err(bytes) | FromRun::AskedBody { bytes, .. } = frame
         {
             everywhere.push(String::from_utf8_lossy(bytes).into_owned());
@@ -598,7 +332,7 @@ async fn a_coding_agent_that_is_stopped_ends_and_its_model_call_is_let_go() {
 
     // An answer that takes long has its stream opened and kept alive, so the harness waits.
     tilo_test_env::wait_until("the stream to be opened and kept alive", || {
-        let told = coding.machine.told.lock_recover().clone();
+        let told = coding.machine.told();
         let opened = told.iter().any(|frame| {
             matches!(frame, ToRun::Answer { status: 200, headers, .. }
                 if headers.contains(&("content-type".to_owned(), "text/event-stream".to_owned())))
@@ -660,15 +394,10 @@ async fn a_coding_agent_stops_at_its_persons_limit_for_the_day_and_says_so() {
         "a call past the limit never reaches the provider"
     );
     assert_eq!(coding.run.spent_micros(), 1500);
-    let refusal = coding
-        .machine
-        .told
-        .lock_recover()
-        .iter()
-        .find_map(|frame| match frame {
-            ToRun::Answer { status, .. } if *status != 200 => Some(*status),
-            _ => None,
-        });
+    let refusal = coding.machine.told().iter().find_map(|frame| match frame {
+        ToRun::Answer { status, .. } if *status != 200 => Some(*status),
+        _ => None,
+    });
     assert_eq!(
         refusal,
         Some(402),
@@ -741,27 +470,6 @@ async fn a_machine_that_cannot_serve_a_run_says_why_in_words() {
     assert_eq!(
         (unpaid.how, unpaid.words.as_str()),
         (Ending::Failed, "Linux machines need a card on file.")
-    );
-}
-
-/// Run `git` with `arguments` in `directory`, as a person at a terminal would.
-fn git(directory: &Path, arguments: &[&str]) {
-    let done = Command::new("git")
-        .args(["-c", "user.name=Ada", "-c", "user.email=ada@example.org"])
-        .args([
-            "-c",
-            "init.defaultBranch=main",
-            "-c",
-            "commit.gpgsign=false",
-        ])
-        .args(arguments)
-        .current_dir(directory)
-        .output_locked()
-        .unwrap();
-    assert!(
-        done.status.success(),
-        "git {arguments:?}: {}",
-        String::from_utf8_lossy(&done.stderr)
     );
 }
 

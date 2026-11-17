@@ -159,7 +159,7 @@ env = { TILO_REQUIRE_MEDIA = "1", TILO_REQUIRE_AUDIO = "1", TILO_REQUIRE_GPU = "
 # handed them as the test family's are; tools/ci/nextest.sh built them only where it was named
 # the package, and a shard names none. So is the capability probe a run of a package
 # .config/nextest-capabilities.toml names runs first.
-starts = { app-cli = ["install:tilo-install"], tilo-agent-session = ["tilo-video-render:tilo-video-render"], env-tools = ["tilo-test-env:tilo-capability-probe"], runtime-bundle = ["tilo-test-env:tilo-capability-probe"], ush = ["tilo-test-env:tilo-capability-probe", "legacy-agent:tilo-legacy-agent"] }
+starts = { app-cli = ["install:tilo-install"], tilo-agent-session = ["tilo-video-render:tilo-video-render", "legacy-agent:tilo-legacy-agent"], env-tools = ["tilo-test-env:tilo-capability-probe"], runtime-bundle = ["tilo-test-env:tilo-capability-probe"], ush = ["tilo-test-env:tilo-capability-probe", "legacy-agent:tilo-legacy-agent"] }
 matrix = { arch = ["x86_64", "aarch64"] }
 
 # The packages whose tests cost main a lot for what they catch: on main's newest head when t has

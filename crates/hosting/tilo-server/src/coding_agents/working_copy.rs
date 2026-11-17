@@ -46,9 +46,17 @@ impl WorkingCopy {
 /// Makes the working copy named by its first four arguments when it is not
 /// there, then becomes the program the rest of them name, inside it. What
 /// git prints goes to standard error: standard output is the program's.
+///
+/// A working copy named from the folder the program starts in, as one beside
+/// a repository among the workspace's files is, is made where that name says:
+/// git, asked inside the repository, would read the name from there.
 const ENTERS: &str = r#"set -e
 repository=$1 directory=$2 branch=$3 base=$4
 shift 4
+case $directory in
+  /*) ;;
+  *) directory=$PWD/$directory ;;
+esac
 if [ ! -e "$directory/.git" ]; then
   if ! git -C "$repository" rev-parse --git-dir >/dev/null 2>&1; then
     echo "$repository is not a git repository, so no working copy of it can be made" >&2

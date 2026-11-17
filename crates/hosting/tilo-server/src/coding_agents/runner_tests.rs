@@ -11,34 +11,14 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use tilo_lock::MutexRecover as _;
-use ush::served_runs::ServeRun;
 
 use super::*;
-use crate::coding_agents::harness::{Harnesses, Start};
-use crate::coding_agents::run::{Conversation, Machine, Serves};
-use crate::coding_agents::tests::{ADA, STAND_IN, StandIn, TestMachine, Written, host_of_ada};
+use crate::coding_agents::harness::Start;
+use crate::coding_agents::run::{Conversation, Serves};
+use crate::coding_agents::testing::Local;
+use crate::coding_agents::tests::{ADA, Written, host_of_ada};
 use crate::workspaces::Workspaces;
 use crate::workspaces::person_model::scripted::Reply;
-
-/// This computer as every workspace's machine, and what was started in it.
-struct Local {
-    files: tempfile::TempDir,
-    started: Mutex<Vec<ServeRun>>,
-}
-
-impl Machines for Local {
-    fn serve(&self, _: &str, start: ServeRun) -> Result<Arc<dyn Machine>, String> {
-        let machine = TestMachine::start(
-            &start.argv,
-            &start.env,
-            &start.endpoints,
-            &self.files.path().join(&start.directory),
-            start.stop_grace,
-        );
-        self.started.lock_recover().push(start);
-        Ok(machine as Arc<dyn Machine>)
-    }
-}
 
 /// Ada's lasting yes for every workspace.
 struct Yes;
@@ -65,24 +45,10 @@ impl Kept {
 
     /// The same, with `permits` saying where a start needs no asking.
     fn permitted(workspaces: &Workspaces, idle: Duration, permits: Arc<dyn Permits>) -> Self {
-        let files = tempfile::tempdir().unwrap();
-        let script = tilo_test_env::script(files.path().join("claude"), STAND_IN).unwrap();
-        let starts = Arc::new(Mutex::new(Vec::new()));
-        let harness = Arc::new(StandIn {
-            script: script.path().to_path_buf(),
-            copy: None,
-            starts: Arc::clone(&starts),
-        });
-        let local = Arc::new(Local {
-            files,
-            started: Mutex::default(),
-        });
-        let agents = CodingAgents::new(
-            Arc::clone(&local) as Arc<dyn Machines>,
-            Harnesses::default().with(harness),
-            permits,
-        )
-        .resting_after(idle);
+        let local = Local::new();
+        let (harnesses, starts) = local.stand_in();
+        let agents = CodingAgents::new(Arc::clone(&local) as Arc<dyn Machines>, harnesses, permits)
+            .resting_after(idle);
         let models = workspaces.clone();
         Self {
             agents,
@@ -103,7 +69,7 @@ impl Kept {
         agent: &CodingAgent,
         words: &str,
         written: &Arc<Written>,
-    ) -> Result<(), NotTold> {
+    ) -> Result<bool, NotTold> {
         self.let_tell(agent, words, written, Permit::Lasting)
     }
 
@@ -113,7 +79,7 @@ impl Kept {
         words: &str,
         written: &Arc<Written>,
         permit: Permit,
-    ) -> Result<(), NotTold> {
+    ) -> Result<bool, NotTold> {
         self.agents.tell(
             agent,
             words,
@@ -124,7 +90,7 @@ impl Kept {
     }
 
     fn started(&self) -> usize {
-        self.local.started.lock_recover().len()
+        self.local.started()
     }
 }
 
@@ -137,6 +103,8 @@ fn agent(id: &str) -> CodingAgent {
         copy: None,
         session: None,
         instruction: None,
+        person: String::new(),
+        under: String::new(),
     }
 }
 

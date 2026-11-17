@@ -42,7 +42,7 @@ const STOP_GRACE: Duration = Duration::from_secs(20);
 /// Where served runs are started: a host's shells, in its workspaces'
 /// machines.
 pub trait Machines: Send + Sync {
-    /// Start `start` in `workspace`'s machine and answer its channel.
+    /// Start `start` in `workspace`'s machine and answer its connection.
     fn serve(&self, workspace: &str, start: ServeRun) -> Result<Arc<dyn Machine>, String>;
 }
 
@@ -58,7 +58,7 @@ impl Machines for crate::agents::HostShells {
 pub struct CodingAgent {
     /// The workspace whose machine it works in.
     pub workspace: String,
-    /// Its id in the workspace's record of its agents.
+    /// Its id in the workspace's list of its agents.
     pub id: String,
     /// Which coding harness it is; empty for the first a host knows.
     pub harness: String,
@@ -72,6 +72,11 @@ pub struct CodingAgent {
     pub session: Option<String>,
     /// How its person wants it to work.
     pub instruction: Option<String>,
+    /// The person it works for, as the workspace names them.
+    pub person: String,
+    /// The person's own agent its line of starters ends at: the agent a start that nobody
+    /// was asked about is let for.
+    pub under: String,
 }
 
 /// What says whether a coding agent may start without its person being
@@ -198,7 +203,8 @@ impl CodingAgents {
     /// and what it says written to `conversation`. A start is let by
     /// `permit`: its person's yes to this one, or their lasting yes where
     /// one stands. Its host hands it words one turn at a time, so no two
-    /// starts of one agent meet.
+    /// starts of one agent meet. Answers whether its harness was started
+    /// for them.
     ///
     /// # Errors
     ///
@@ -212,7 +218,7 @@ impl CodingAgents {
         serves: Serves,
         conversation: Arc<dyn Conversation>,
         permit: Permit,
-    ) -> Result<(), NotTold> {
+    ) -> Result<bool, NotTold> {
         let key = (agent.workspace.clone(), agent.id.clone());
         let taken = {
             let mut running = self.running.lock_recover();
@@ -232,7 +238,7 @@ impl CodingAgents {
             taken
         };
         if taken {
-            return Ok(());
+            return Ok(false);
         }
         if permit == Permit::Lasting && !self.permits.stands(agent) {
             return Err(NotTold::NeedsYes);
@@ -284,7 +290,7 @@ impl CodingAgents {
         self.running
             .lock_recover()
             .insert(key, Running { run, state });
-        Ok(())
+        Ok(true)
     }
 
     /// Ask `agent` of `workspace` to end: `false` when no run of it is held.
@@ -315,6 +321,25 @@ impl CodingAgents {
             .values()
             .filter(|held| !held.state.lock_recover().over)
             .count()
+    }
+
+    /// What the model calls of `agent`'s process cost so far; none when no
+    /// process of it is held.
+    #[must_use]
+    pub fn spent_micros(&self, workspace: &str, agent: &str) -> Option<u64> {
+        self.running
+            .lock_recover()
+            .get(&(workspace.to_owned(), agent.to_owned()))
+            .map(|held| held.run.spent_micros())
+    }
+
+    /// The harness `id` names here, as its own id and its name; none when
+    /// no such harness is started here.
+    #[must_use]
+    pub fn harness(&self, id: &str) -> Option<(&'static str, &'static str)> {
+        self.harnesses
+            .named(id)
+            .map(|harness| (harness.id(), harness.name()))
     }
 
     /// Put to rest every run that finished what it was asked long enough

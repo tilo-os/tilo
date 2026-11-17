@@ -66,6 +66,7 @@ use turn_provider::TurnProvider;
 
 mod answers;
 mod asks;
+mod coding;
 mod going;
 mod issue_work;
 mod learned;
@@ -510,6 +511,9 @@ pub struct HostAgents {
     /// The turns going now: one for each agent in each conversation, with what reaches it
     /// while it works.
     going: Arc<going::Turns>,
+    /// The coding agents worked here: the sub-agents whose work a coding harness does in
+    /// their workspace's machine ([`coding`]). `None` works none.
+    coding: Option<Arc<coding::Coders>>,
     /// The events this host runs for its people, which a turn's tools reach for its person.
     events: Option<PersonEvents>,
     /// What carries out the answers to what code of this server asked.
@@ -526,6 +530,7 @@ impl HostAgents {
             actions,
             model,
             going: Arc::default(),
+            coding: None,
             events: None,
             carriers: Arc::default(),
             initiative: None,
@@ -620,6 +625,10 @@ impl HostAgents {
     async fn look_past(&self, workspace: &str, past: Option<&(String, Ask)>) -> Result<(), String> {
         // What its people answered about what its agents asked them first.
         self.settle_asks(workspace).await;
+        // What a coding agent's harness said, and a stop for it, with no turn of it going.
+        if self.codes_in(workspace) {
+            Box::pin(self.settle_coding(workspace)).await;
+        }
         let asks = self.asks(workspace).await?;
         // An answer wakes whoever asked: written once under the question's own key.
         self.wake_answered(workspace, asks.answered);
@@ -933,12 +942,13 @@ impl HostAgents {
         Ok(agents
             .agents
             .iter()
-            // A sub-agent worked elsewhere is its own runner's.
+            // A sub-agent worked elsewhere is its own runner's, but for a coding agent where
+            // coding agents are kept ([`coding`]).
             .filter(|agent| {
                 agent.is_active()
                     && agent.on_host
                     && agent.mcp_client.is_none()
-                    && sub_agents::worked_here(agent)
+                    && (sub_agents::worked_here(agent) || self.codes(agent))
             })
             .map(|agent| (agent.id.0.clone(), agent.clone()))
             .collect())
@@ -1042,8 +1052,8 @@ impl HostAgents {
             Err(error) => return (turn.ask.clone(), Err(error)),
         };
         let began = turn.ask.clone();
-        let mut turn = turn.clone();
-        let mut reply = scope.reply(&turn);
+        let turn = turn.clone();
+        let reply = scope.reply(&turn);
         if self.left_begun(workspace, &turn).await {
             // Its steps may have changed things already, and nothing says which: starting over
             // would do them twice. It ends here, and asking again is the person's to do.
@@ -1061,6 +1071,22 @@ impl HostAgents {
             self.sub_ended(&scope, &turn, &left, false).await;
             return (turn.ask, ended);
         }
+        if self.codes(&turn.agent) {
+            // Its harness in the workspace's machine does the work, not the model's loop: its
+            // turn leaves here, before anything is begun that only that loop ends.
+            return Box::pin(self.answer_coding(&scope, (turn, reply), going)).await;
+        }
+        Box::pin(self.answer_by_model(workspace, (scope, turn, reply, began), going)).await
+    }
+
+    /// The rest of [`Self::answer_going`] for a turn that the agent's model works: its scope,
+    /// the turn, its reply and the ask it began with, as `answer_going` made them.
+    async fn answer_by_model(
+        &self,
+        workspace: &str,
+        (scope, mut turn, mut reply, began): (TurnScope, Turn, Reply, Ask),
+        going: &going::Going,
+    ) -> (Ask, Result<(), String>) {
         // An issue is worked on over many agent sessions: its place is made and the session
         // counted before the model is asked, and one that may not begin ends here with its
         // plain line.

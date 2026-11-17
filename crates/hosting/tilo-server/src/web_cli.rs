@@ -368,16 +368,15 @@ pub async fn start_server_lending(
         let browsers = tilo_server::hosted_browser::HostedBrowsers::from_env()
             .map_err(anyhow::Error::msg)?
             .map(std::sync::Arc::new);
+        let shells = tilo_server::agents::host_shells(state_root.join("shells"))
+            .map_err(anyhow::Error::msg)?;
         let (server, actions, events, initiative) =
             tilo_server::agents::start_serving_documents_and_events(
                 cfg,
                 identity,
                 None,
                 lent.feedback_reviewer,
-                Some(
-                    tilo_server::agents::host_shells(state_root.join("shells"))
-                        .map_err(anyhow::Error::msg)?,
-                ),
+                Some(std::sync::Arc::clone(&shells)),
                 browsers,
             )
             .await
@@ -398,6 +397,9 @@ pub async fn start_server_lending(
                     actions,
                     model.map(tilo_server::workspace_agents::model_of),
                 )
+                // A coding agent among them is worked by its harness in its workspace's
+                // machine, where the shells are.
+                .with_coding(shells)
                 .with_events(events)
                 .with_initiative(initiative)
                 .run(),
