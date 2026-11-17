@@ -1603,7 +1603,7 @@ doc = false
 "zeroize-1_9_0" = { package = "zeroize", version = "^1.9.0", default-features = false, features = ["alloc", "default", "derive", "serde", "zeroize_derive"] }
 "zerotrie-0_2_5" = { package = "zerotrie", version = "^0.2.5", default-features = false, features = ["alloc", "litemap", "serde", "yoke", "zerofrom", "zerovec"] }
 "zerovec-0_11_8" = { package = "zerovec", version = "^0.11.8", default-features = false, features = ["alloc", "derive", "serde", "yoke"] }
-"zip-9_0_4" = { package = "zip", version = "^9.0.4", default-features = false, features = ["_deflate-any", "deflate-flate2", "deflate-flate2-zlib-rs"] }
+"zip-9_0_5" = { package = "zip", version = "^9.0.5", default-features = false, features = ["_deflate-any", "deflate-flate2", "deflate-flate2-zlib-rs"] }
 "zlib-rs-0_6_8" = { package = "zlib-rs", version = "^0.6.8", default-features = false, features = ["rust-allocator", "std"] }
 "zmij-1_0_21" = { package = "zmij", version = "^1.0.21", default-features = false, features = [] }
 "zstd-0_14_3" = { package = "zstd", version = "^0.14.3", default-features = false, features = ["arrays", "default", "legacy", "zdict_builder"] }
@@ -2621,7 +2621,7 @@ doc = false
 "zerotrie-0_2_5" = { package = "zerotrie", version = "^0.2.5", default-features = false, features = ["alloc", "litemap", "serde", "yoke", "zerofrom", "zerovec"] }
 "zerovec-0_11_8" = { package = "zerovec", version = "^0.11.8", default-features = false, features = ["alloc", "derive", "serde", "yoke"] }
 "zerovec-derive-0_11_6" = { package = "zerovec-derive", version = "^0.11.6", default-features = false, features = [] }
-"zip-9_0_4" = { package = "zip", version = "^9.0.4", default-features = false, features = ["_deflate-any", "deflate-flate2", "deflate-flate2-zlib-rs"] }
+"zip-9_0_5" = { package = "zip", version = "^9.0.5", default-features = false, features = ["_deflate-any", "deflate-flate2", "deflate-flate2-zlib-rs"] }
 "zlib-rs-0_6_8" = { package = "zlib-rs", version = "^0.6.8", default-features = false, features = ["rust-allocator", "std"] }
 "zmij-1_0_21" = { package = "zmij", version = "^1.0.21", default-features = false, features = [] }
 "zstd-0_14_3" = { package = "zstd", version = "^0.14.3", default-features = false, features = ["arrays", "default", "legacy", "zdict_builder"] }
@@ -4207,7 +4207,7 @@ doc = false
 "zeroize-1_9_0" = { package = "zeroize", version = "^1.9.0", default-features = false, features = ["alloc", "default", "derive", "serde", "zeroize_derive"] }
 "zerotrie-0_2_5" = { package = "zerotrie", version = "^0.2.5", default-features = false, features = ["alloc", "litemap", "serde", "yoke", "zerofrom", "zerovec"] }
 "zerovec-0_11_8" = { package = "zerovec", version = "^0.11.8", default-features = false, features = ["alloc", "derive", "serde", "yoke"] }
-"zip-9_0_4" = { package = "zip", version = "^9.0.4", default-features = false, features = ["_deflate-any", "deflate-flate2", "deflate-flate2-zlib-rs"] }
+"zip-9_0_5" = { package = "zip", version = "^9.0.5", default-features = false, features = ["_deflate-any", "deflate-flate2", "deflate-flate2-zlib-rs"] }
 "zlib-rs-0_6_8" = { package = "zlib-rs", version = "^0.6.8", default-features = false, features = ["rust-allocator", "std"] }
 "zmij-1_0_21" = { package = "zmij", version = "^1.0.21", default-features = false, features = [] }
 "zstd-0_14_3" = { package = "zstd", version = "^0.14.3", default-features = false, features = ["arrays", "default", "legacy", "zdict_builder"] }
@@ -5338,7 +5338,7 @@ doc = false
 "zerotrie-0_2_5" = { package = "zerotrie", version = "^0.2.5", default-features = false, features = ["alloc", "litemap", "serde", "yoke", "zerofrom", "zerovec"] }
 "zerovec-0_11_8" = { package = "zerovec", version = "^0.11.8", default-features = false, features = ["alloc", "derive", "serde", "yoke"] }
 "zerovec-derive-0_11_6" = { package = "zerovec-derive", version = "^0.11.6", default-features = false, features = [] }
-"zip-9_0_4" = { package = "zip", version = "^9.0.4", default-features = false, features = ["_deflate-any", "deflate-flate2", "deflate-flate2-zlib-rs"] }
+"zip-9_0_5" = { package = "zip", version = "^9.0.5", default-features = false, features = ["_deflate-any", "deflate-flate2", "deflate-flate2-zlib-rs"] }
 "zlib-rs-0_6_8" = { package = "zlib-rs", version = "^0.6.8", default-features = false, features = ["rust-allocator", "std"] }
 "zmij-1_0_21" = { package = "zmij", version = "^1.0.21", default-features = false, features = [] }
 "zstd-0_14_3" = { package = "zstd", version = "^0.14.3", default-features = false, features = ["arrays", "default", "legacy", "zdict_builder"] }
