@@ -21,7 +21,7 @@ use crate::error::DaemonError;
 use crate::fsutil::write_atomic;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct AccountRecord {
+pub struct AccountEntry {
     pub name: String,
     pub kind: AccountKind,
     #[serde(default)]
@@ -94,14 +94,14 @@ impl DeviceSession {
     }
 }
 
-impl AccountRecord {
+impl AccountEntry {
     /// vkms connectors on this account's card.
     pub fn connectors(&self) -> u32 {
         u32::try_from(self.outputs.len()).unwrap_or(u32::MAX).max(1)
     }
 }
 
-impl AccountRecord {
+impl AccountEntry {
     /// The user the account's session runs as: `tds-<account>`, the device session's account, or none for
     /// the `vm` account.
     pub fn user(&self) -> Option<String> {
@@ -172,7 +172,7 @@ impl AccountStore {
         kind: AccountKind,
         owner: Owner,
         outputs: &[OutputSpec],
-    ) -> Result<(AccountRecord, bool), DaemonError> {
+    ) -> Result<(AccountEntry, bool), DaemonError> {
         if name == VM_ACCOUNT || kind == AccountKind::Vm {
             return Err(DaemonError::ReservedName(name.to_owned()));
         }
@@ -206,7 +206,7 @@ impl AccountStore {
             }
             return Ok((existing, false));
         }
-        let record = AccountRecord {
+        let record = AccountEntry {
             name: name.to_owned(),
             kind,
             owner,
@@ -232,7 +232,7 @@ impl AccountStore {
         &self,
         name: &str,
         device: Option<DeviceSession>,
-    ) -> Result<AccountRecord, DaemonError> {
+    ) -> Result<AccountEntry, DaemonError> {
         Self::check_name(name)?;
         if name == DEVICE_ACCOUNT {
             let stored = self.try_load(name)?;
@@ -244,7 +244,7 @@ impl AccountStore {
                     device.login.is_some().then(|| device.logged_out())
                 })
                 .ok_or(DaemonError::NoDeviceSession)?;
-            let mut record = stored.unwrap_or_else(|| AccountRecord {
+            let mut record = stored.unwrap_or_else(|| AccountEntry {
                 name: DEVICE_ACCOUNT.into(),
                 kind: AccountKind::Device,
                 owner: Owner::default(),
@@ -263,7 +263,7 @@ impl AccountStore {
             return Ok(record);
         }
         if name == VM_ACCOUNT {
-            return Ok(AccountRecord {
+            return Ok(AccountEntry {
                 name: VM_ACCOUNT.into(),
                 kind: AccountKind::Vm,
                 owner: Owner::default(),
@@ -283,16 +283,16 @@ impl AccountStore {
     ///
     /// # Errors
     /// As [`Self::load_with`].
-    pub fn load(&self, name: &str) -> Result<AccountRecord, DaemonError> {
+    pub fn load(&self, name: &str) -> Result<AccountEntry, DaemonError> {
         self.load_with(name, None)
     }
 
     /// The account as recorded on disk, if it is.
-    pub fn stored(&self, name: &str) -> Result<Option<AccountRecord>, DaemonError> {
+    pub fn stored(&self, name: &str) -> Result<Option<AccountEntry>, DaemonError> {
         self.try_load(name)
     }
 
-    fn try_load(&self, name: &str) -> Result<Option<AccountRecord>, DaemonError> {
+    fn try_load(&self, name: &str) -> Result<Option<AccountEntry>, DaemonError> {
         match fs::read(self.record_path(name)) {
             Ok(bytes) => serde_json::from_slice(&bytes)
                 .map(Some)
@@ -307,14 +307,14 @@ impl AccountStore {
 
     /// # Errors
     /// I/O failures.
-    pub fn save(&self, record: &AccountRecord) -> Result<(), DaemonError> {
+    pub fn save(&self, record: &AccountEntry) -> Result<(), DaemonError> {
         let bytes = serde_json::to_vec_pretty(record)
             .map_err(|e| DaemonError::InvalidParams(e.to_string()))?;
         write_atomic(&self.record_path(&record.name), &bytes)
     }
 
     /// Every account on disk, sorted by name.
-    pub fn list(&self) -> Result<Vec<AccountRecord>, DaemonError> {
+    pub fn list(&self) -> Result<Vec<AccountEntry>, DaemonError> {
         let mut out = Vec::new();
         let Ok(entries) = fs::read_dir(&self.dir) else {
             return Ok(out);
@@ -394,7 +394,7 @@ impl AccountStore {
     /// [`Self::set_current`].
     pub fn prepare_swap(
         &self,
-        record: &AccountRecord,
+        record: &AccountEntry,
         component: &str,
         layer: &str,
         info: ComponentInfo,
@@ -435,7 +435,7 @@ impl AccountStore {
     /// holding the account lock, after every import and scope was verified.
     pub(crate) fn prepare_userspace(
         &self,
-        record: &AccountRecord,
+        record: &AccountEntry,
         members: &[(String, Entry)],
     ) -> Result<(Generation, Generation), DaemonError> {
         self.userspace_generation(record, members, true)
@@ -443,7 +443,7 @@ impl AccountStore {
 
     pub(crate) fn userspace_preview(
         &self,
-        record: &AccountRecord,
+        record: &AccountEntry,
         members: &[(String, Entry)],
     ) -> Result<Generation, DaemonError> {
         self.userspace_generation(record, members, false)
@@ -452,7 +452,7 @@ impl AccountStore {
 
     fn userspace_generation(
         &self,
-        record: &AccountRecord,
+        record: &AccountEntry,
         members: &[(String, Entry)],
         publish: bool,
     ) -> Result<(Generation, Generation), DaemonError> {
@@ -495,7 +495,7 @@ impl AccountStore {
     /// one, the base when none is recorded.
     pub fn rollback_target(
         &self,
-        record: &AccountRecord,
+        record: &AccountEntry,
         to: Option<u64>,
     ) -> Result<(Generation, Generation), DaemonError> {
         let from = self.generation(&record.name, record.current)?;
@@ -516,7 +516,7 @@ impl AccountStore {
 
     /// # Errors
     /// I/O failures.
-    pub fn set_current(&self, record: &mut AccountRecord, number: u64) -> Result<(), DaemonError> {
+    pub fn set_current(&self, record: &mut AccountEntry, number: u64) -> Result<(), DaemonError> {
         record.current = number;
         self.save(record)?;
         self.clear_pending(&record.name)
@@ -557,7 +557,7 @@ impl AccountStore {
     /// deleted.
     pub fn prune(
         &self,
-        record: &AccountRecord,
+        record: &AccountEntry,
         keep: u32,
         also_keep: &std::collections::BTreeSet<u64>,
         dry_run: bool,
@@ -747,7 +747,7 @@ mod tests {
 
     fn swap(
         store: &AccountStore,
-        record: &mut AccountRecord,
+        record: &mut AccountEntry,
         component: &str,
         layer: &str,
     ) -> Option<u64> {

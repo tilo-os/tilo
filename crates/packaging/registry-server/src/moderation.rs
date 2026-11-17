@@ -13,7 +13,7 @@ use thiserror::Error;
 
 use crate::allowlist::PublisherAllowlist;
 use crate::storage::{
-    PendingSubmission, ReviewDecision, ReviewRecord, ReviewSubject, SnapshotLock, Storage,
+    PendingSubmission, ReviewDecision, ReviewEntry, ReviewSubject, SnapshotLock, Storage,
     StorageError,
 };
 
@@ -122,7 +122,7 @@ impl ModerationService {
         reason: impl Into<String>,
         reviewed_at_unix: u64,
         allowlist: &PublisherAllowlist,
-    ) -> Result<ReviewRecord, ModerationError> {
+    ) -> Result<ReviewEntry, ModerationError> {
         let _transaction = self.storage.lock_snapshot()?;
         let _thread_guard = thread_lock(&self.transition_lock)?;
         self.approve_locked(
@@ -149,7 +149,7 @@ impl ModerationService {
         reason: &str,
         reviewed_at_unix: u64,
         allowlist: &PublisherAllowlist,
-    ) -> Result<Vec<ReviewRecord>, ModerationError> {
+    ) -> Result<Vec<ReviewEntry>, ModerationError> {
         let _thread_guard = thread_lock(&self.transition_lock)?;
         self.approve_batch_locked(
             reviewed_submissions,
@@ -167,7 +167,7 @@ impl ModerationService {
         reason: &str,
         reviewed_at_unix: u64,
         allowlist: &PublisherAllowlist,
-    ) -> Result<Vec<ReviewRecord>, ModerationError> {
+    ) -> Result<Vec<ReviewEntry>, ModerationError> {
         let mut displaced = Vec::new();
         for reviewed in reviewed_submissions {
             match self.storage.load_pending(&reviewed.submission_id)? {
@@ -316,7 +316,7 @@ impl ModerationService {
         reason: String,
         reviewed_at_unix: u64,
         allowlist: &PublisherAllowlist,
-    ) -> Result<ReviewRecord, ModerationError> {
+    ) -> Result<ReviewEntry, ModerationError> {
         let pending = self.require_pending(&reviewed_submission.submission_id)?;
         if &pending != reviewed_submission {
             return Err(ModerationError::PendingChanged(
@@ -349,7 +349,7 @@ impl ModerationService {
                 }
             }
         }
-        let review = ReviewRecord {
+        let review = ReviewEntry {
             review_id,
             decision: ReviewDecision::Approved,
             reviewer,
@@ -369,7 +369,7 @@ impl ModerationService {
     fn completed_review(
         &self,
         submission: &PendingSubmission,
-    ) -> Result<Option<ReviewRecord>, ModerationError> {
+    ) -> Result<Option<ReviewEntry>, ModerationError> {
         let Some(review) = self
             .storage
             .load_review(&submission_review_id(submission))?
@@ -404,7 +404,7 @@ impl ModerationService {
         reviewer: impl Into<String>,
         reason: impl Into<String>,
         reviewed_at_unix: u64,
-    ) -> Result<ReviewRecord, ModerationError> {
+    ) -> Result<ReviewEntry, ModerationError> {
         let _transaction = self.storage.lock_snapshot()?;
         let _thread_guard = thread_lock(&self.transition_lock)?;
         self.ensure_not_reserved_by_promotion(submission_id)?;
@@ -421,7 +421,7 @@ impl ModerationService {
         reviewer: impl Into<String>,
         reason: impl Into<String>,
         reviewed_at_unix: u64,
-    ) -> Result<ReviewRecord, ModerationError> {
+    ) -> Result<ReviewEntry, ModerationError> {
         let _transaction = self.storage.lock_snapshot()?;
         let _thread_guard = thread_lock(&self.transition_lock)?;
         self.ensure_not_reserved_by_promotion(&candidate.submission_id)?;
@@ -440,13 +440,13 @@ impl ModerationService {
         reviewer: String,
         reason: String,
         reviewed_at_unix: u64,
-    ) -> Result<ReviewRecord, ModerationError> {
+    ) -> Result<ReviewEntry, ModerationError> {
         let submission_id = pending.submission_id.clone();
         let review_id = submission_review_id(&pending);
         let review = self
             .storage
             .load_review(&review_id)?
-            .unwrap_or(ReviewRecord {
+            .unwrap_or(ReviewEntry {
                 review_id,
                 decision: ReviewDecision::Rejected,
                 reviewer,
@@ -466,7 +466,7 @@ impl ModerationService {
         reviewer: impl Into<String>,
         reason: impl Into<String>,
         reviewed_at_unix: u64,
-    ) -> Result<ReviewRecord, ModerationError> {
+    ) -> Result<ReviewEntry, ModerationError> {
         let _transaction = self.storage.lock_snapshot()?;
         let _thread_guard = thread_lock(&self.transition_lock)?;
         self.ensure_not_reserved_by_promotion(package_id)?;
@@ -485,7 +485,7 @@ impl ModerationService {
         } else {
             None
         })
-        .unwrap_or_else(|| ReviewRecord {
+        .unwrap_or_else(|| ReviewEntry {
             review_id: entry_review_id(
                 ReviewDecision::Quarantined,
                 &entry,
@@ -517,7 +517,7 @@ impl ModerationService {
         reason: impl Into<String>,
         reviewed_at_unix: u64,
         allowlist: &PublisherAllowlist,
-    ) -> Result<ReviewRecord, ModerationError> {
+    ) -> Result<ReviewEntry, ModerationError> {
         let _transaction = self.storage.lock_snapshot()?;
         let _thread_guard = thread_lock(&self.transition_lock)?;
         self.ensure_not_reserved_by_promotion(package_id)?;
@@ -543,7 +543,7 @@ impl ModerationService {
         } else {
             None
         })
-        .unwrap_or_else(|| ReviewRecord {
+        .unwrap_or_else(|| ReviewEntry {
             review_id: entry_review_id(
                 ReviewDecision::Restored,
                 &entry,
@@ -572,7 +572,7 @@ impl ModerationService {
             .ok_or_else(|| ModerationError::NoPendingSubmission(submission_id.into()))
     }
 
-    fn persist_review_if_absent(&self, review: &ReviewRecord) -> Result<(), ModerationError> {
+    fn persist_review_if_absent(&self, review: &ReviewEntry) -> Result<(), ModerationError> {
         if self.storage.load_review(&review.review_id)?.is_none() {
             self.storage.save_review(review)?;
         }
@@ -583,7 +583,7 @@ impl ModerationService {
         &self,
         decision: ReviewDecision,
         entry: &RegistryEntry,
-    ) -> Result<Option<ReviewRecord>, ModerationError> {
+    ) -> Result<Option<ReviewEntry>, ModerationError> {
         Ok(self.storage.load_reviews()?.into_iter().find(|review| {
             review.decision == decision
                 && matches!(&review.subject, ReviewSubject::Entry { entry: reviewed, .. } if reviewed == entry)

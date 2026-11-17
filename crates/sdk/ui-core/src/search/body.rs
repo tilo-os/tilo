@@ -60,7 +60,7 @@ impl SearchBodySource for Vec<String> {
     }
 }
 
-/// A body attached to a [`SearchRecord`](super::SearchRecord).
+/// A body attached to a [`SearchItem`](super::SearchItem).
 #[derive(Clone)]
 pub struct SearchBody {
     source: Arc<dyn SearchBodySource>,

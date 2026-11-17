@@ -39,19 +39,19 @@ pub trait Custody: collab_types::signer::MaybeSendSync {
 
 /// The durable part of a device's session.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PeerRecord {
+pub struct PeerEntry {
     /// This device's root-signed certificate.
     pub cert: Option<DeviceCert>,
     /// The host certificate pinned at certification.
     pub host_cert: Option<DeviceCert>,
 }
 
-/// Persistence for a [`PeerRecord`]. The page implements it over `IndexedDB`
+/// Persistence for a [`PeerEntry`]. The page implements it over `IndexedDB`
 /// (strict durability); a save counts only once it is durable.
 pub trait PeerStore: tilo_relay_client::MaybeSendSync {
-    fn load(&self) -> Option<PeerRecord>;
+    fn load(&self) -> Option<PeerEntry>;
     /// Replace the stored record.
-    fn save(&self, record: &PeerRecord) -> Result<(), String>;
+    fn save(&self, record: &PeerEntry) -> Result<(), String>;
     /// The stored channel state (encrypted-channel membership and the
     /// edits held for it), if any. A store without it keeps channel state
     /// for the session only.
@@ -122,7 +122,7 @@ pub trait PeerStore: tilo_relay_client::MaybeSendSync {
 /// An in-memory [`PeerStore`] for native peers and tests: by default it keeps the record of the
 /// device's workspaces for a session started again over it, as a page's profile does.
 pub struct MemoryPeerStore(
-    Mutex<Option<PeerRecord>>,
+    Mutex<Option<PeerEntry>>,
     Mutex<Option<Vec<u8>>>,
     [u8; 32],
     Mutex<Option<Vec<u8>>>,
@@ -159,11 +159,11 @@ impl MemoryPeerStore {
 }
 
 impl PeerStore for MemoryPeerStore {
-    fn load(&self) -> Option<PeerRecord> {
+    fn load(&self) -> Option<PeerEntry> {
         self.0.lock_recover().clone()
     }
 
-    fn save(&self, record: &PeerRecord) -> Result<(), String> {
+    fn save(&self, record: &PeerEntry) -> Result<(), String> {
         *self.0.lock_recover() = Some(record.clone());
         Ok(())
     }

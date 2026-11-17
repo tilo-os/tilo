@@ -5,7 +5,7 @@
 //! certificate the person's root signed, answers this device's challenge, and waits. The person is
 //! asked on the session's question sheet, with the approval code the boot screen shows; an approval
 //! releases the half sealed to the boot's ephemeral key, and the next boot needs another approval.
-//! The answer is a fact this device keeps ([`UnlockDecisionRecord`]) and their other devices carry:
+//! The answer is a fact this device keeps ([`UnlockDecisionEntry`]) and their other devices carry:
 //! a boot whose stream went away before the answer reached it hears the same answer again, with a
 //! half sealed to its own new key where the person allowed it, instead of asking them twice.
 //! `tilo-disk-encrypt enrol --sibling` reaches [`Unlock::enrol`] through the session's enrolment
@@ -21,7 +21,7 @@ use crate::platform::fabric::DeviceId;
 use crate::platform::fabric::SharedLink;
 use crate::platform::fabric::{
     AutoApproval, Decided, DecisionOutcome, MAX_UNLOCK_DECISIONS, MergedUnlock, UnlockDecision,
-    UnlockDecisionRecord, UnlockEnrolment, UnlockFabricState, UnlockSibling, UnlockView,
+    UnlockDecisionEntry, UnlockEnrolment, UnlockFabricState, UnlockSibling, UnlockView,
     decision_for, merged_unlock_state,
 };
 use iroh::endpoint::{Connection, RecvStream, SendStream};
@@ -410,7 +410,7 @@ impl Unlock {
 
     /// Keep the owner's answer in this device's own fabric record, so their other devices answer
     /// the same boot the same way. Answers that no longer hold give way to the newest ones.
-    fn keep(&self, record: UnlockDecisionRecord) {
+    fn keep(&self, record: UnlockDecisionEntry) {
         let now = tilo_clock::unix_now_ns();
         self.update_state(|state| {
             state

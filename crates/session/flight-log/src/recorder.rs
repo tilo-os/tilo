@@ -1,14 +1,14 @@
 //! The session flight recorder: relays the compositor's output to stdout
 //! while keeping a bounded private copy of it.
 //!
-//! Next to the full record (`latest.log`) the recorder keeps the session's
+//! Next to the full entry (`latest.log`) the recorder keeps the session's
 //! log events on their own (`events.log`): the lines the compositor's
 //! `tracing` subscriber writes, each starting with its timestamp and level.
-//! The full record is mostly the periodic measurement stream (`paint-stats`
+//! The full entry is mostly the periodic measurement stream (`paint-stats`
 //! every two seconds, `FRAME-LIFECYCLE`, `PUMP-PHASE`, ...), which fills its
 //! bound in a few hours. A launch's timing lines, an Xwayland bridge start or
 //! an error from the morning would be gone by the afternoon; in their own
-//! record, under the same bound, only other events can displace them.
+//! entry, under the same bound, only other events can displace them.
 
 use std::fs::{self, Permissions};
 use std::io::{self, Read, Write};
@@ -22,19 +22,19 @@ use regex::bytes::Regex;
 
 /// Bytes read from the compositor at a time.
 pub const READ_CHUNK: usize = 64 * 1024;
-/// How much of each record is kept.
+/// How much of each entry is kept.
 pub const LOG_LIMIT: usize = 4 * 1024 * 1024;
-/// How soon after output the record is published.
+/// How soon after output the entry is published.
 pub const PERSIST_INTERVAL: Duration = Duration::from_millis(250);
 /// After storage refused a publication (a full disk, say), wait this long
 /// before trying again instead of retrying on every output burst.
 pub const PERSIST_RETRY: Duration = Duration::from_secs(5);
-/// The event record's file name, next to the full record.
+/// The event entry's file name, next to the full entry.
 pub const EVENTS_NAME: &str = "events.log";
 
 /// A `tracing_subscriber::fmt` record: RFC 3339 UTC timestamp, then the level,
 /// each possibly wrapped in ANSI colour codes.
-static EVENT_RECORD: LazyLock<Option<Regex>> = LazyLock::new(|| {
+static EVENT_ENTRY: LazyLock<Option<Regex>> = LazyLock::new(|| {
     let ansi = r"(?:\x1b\[[0-9;]*m)*";
     Regex::new(&format!(
         r"(?-u)^{ansi}\d{{4}}-\d{{2}}-\d{{2}}T\d{{2}}:\d{{2}}:\d{{2}}(?:\.\d+)?Z{ansi}\s+{ansi}\s*(?:TRACE|DEBUG|INFO|WARN|ERROR)\b"
@@ -42,10 +42,10 @@ static EVENT_RECORD: LazyLock<Option<Regex>> = LazyLock::new(|| {
     .ok()
 });
 
-/// Whether one output line is a `tracing` record rather than stream output.
+/// Whether one output line is a `tracing` entry rather than stream output.
 #[must_use]
 pub fn is_event(line: &[u8]) -> bool {
-    EVENT_RECORD
+    EVENT_ENTRY
         .as_ref()
         .is_some_and(|pattern| pattern.is_match(line))
 }
@@ -139,7 +139,7 @@ impl EventFilter {
     pub fn feed(&mut self, chunk: &[u8]) -> Vec<u8> {
         self.partial.extend_from_slice(chunk);
         let Some(end) = self.partial.iter().rposition(|byte| *byte == b'\n') else {
-            // A line longer than the record cannot be kept whole; its head
+            // A line longer than the entry cannot be kept whole; its head
             // is enough to classify it, so keep a bounded prefix.
             self.partial.truncate(self.limit);
             return Vec::new();
@@ -170,12 +170,12 @@ impl EventFilter {
     }
 }
 
-/// Publishes the record at `path`; false when storage refused it (a full
+/// Publishes the entry at `path`; false when storage refused it (a full
 /// disk, an I/O error).
 ///
 /// The recorder sits between the compositor and its stderr. If it died on a
 /// failed write, the compositor's next log line would hit a closed pipe, so a
-/// refused write only skips this publication; the record stays in memory and
+/// refused write only skips this publication; the entry stays in memory and
 /// the next attempt carries all of it.
 pub fn persist(path: &Path, retained: &[u8]) -> bool {
     publish(path, retained).is_ok()
@@ -207,7 +207,7 @@ fn publish(path: &Path, retained: &[u8]) -> io::Result<()> {
 }
 
 /// Tells the session wrapper the relay runs, whether storage took the start
-/// record or not.
+/// entry or not.
 fn mark_ready(ready: Option<&Path>) {
     if let Some(ready) = ready {
         let _ = fs::OpenOptions::new().create(true).append(true).open(ready);
@@ -217,17 +217,17 @@ fn mark_ready(ready: Option<&Path>) {
 /// How the recorder was started.
 #[derive(Clone, Debug)]
 pub struct Recording {
-    /// The full record (`latest.log`).
+    /// The full entry (`latest.log`).
     pub path: PathBuf,
-    /// The start record's fields: timestamp, compositor pid, compositor path.
+    /// The start entry's fields: timestamp, compositor pid, compositor path.
     pub start: Option<(String, String, String)>,
-    /// A file to create once the relay runs (`TILO_FLIGHT_RECORD_READY`).
+    /// A file to create once the relay runs (`TILO_FLIGHT_ENTRY_READY`).
     pub ready: Option<PathBuf>,
 }
 
 impl Recording {
-    /// Reads the recorder's arguments (after the program name): the record
-    /// path, optionally followed by the start record's timestamp, pid and
+    /// Reads the recorder's arguments (after the program name): the entry
+    /// path, optionally followed by the start entry's timestamp, pid and
     /// compositor. `None` for any other shape.
     #[must_use]
     pub fn from_args(args: &[String]) -> Option<Self> {
@@ -248,7 +248,7 @@ impl Recording {
     }
 }
 
-/// The two records and whether the event record still needs publishing.
+/// The two entries and whether the event entry still needs publishing.
 struct Records {
     path: PathBuf,
     events_path: PathBuf,
@@ -258,7 +258,7 @@ struct Records {
 }
 
 impl Records {
-    /// Persists both records; false when storage refused either.
+    /// Persists both entries; false when storage refused either.
     fn publish(&mut self) -> bool {
         if self.events_dirty && persist(&self.events_path, self.events.data()) {
             self.events_dirty = false;
@@ -318,12 +318,12 @@ fn finish_on_term(feed: mpsc::SyncSender<Feed>) {
 }
 
 /// Relays `input` to `output` until `input` ends or SIGTERM asks the
-/// recorder to finish, keeping the records.
+/// recorder to finish, keeping the entries.
 ///
-/// Every publication rewrites and fsyncs the whole record. Doing that per read
+/// Every publication rewrites and fsyncs the whole entry. Doing that per read
 /// turned a chatty session into a continuous multi-megabyte write stream, and
 /// a writer blocked on a full pipe stalls the compositor's stderr. Output is
-/// relayed at once; the record follows within [`PERSIST_INTERVAL`], and in
+/// relayed at once; the entry follows within [`PERSIST_INTERVAL`], and in
 /// full at end of stream or on SIGTERM.
 ///
 /// It takes over SIGTERM for the whole process, so it runs on the main
@@ -343,7 +343,7 @@ pub fn record(recording: &Recording, input: impl Read + Send + 'static, mut outp
     };
     let mut filter = EventFilter::default();
     if let Some((timestamp, pid, shell)) = &recording.start {
-        let header = format!("tilo-flight-record-v1 start={timestamp} pid={pid} shell={shell}\n");
+        let header = format!("tilo-flight-entry-v1 start={timestamp} pid={pid} shell={shell}\n");
         records.full.extend(header.as_bytes());
         records.events.extend(header.as_bytes());
         persist(&records.events_path, records.events.data());
@@ -447,7 +447,7 @@ fn read_input(mut input: impl Read, chunks: &mpsc::SyncSender<Feed>) {
 mod tests {
     use super::*;
 
-    // What the compositor writes: `tracing` records among the periodic
+    // What the compositor writes: `tracing` entries among the periodic
     // measurement stream and relayed app output.
     const LAUNCH: &[u8] = b"\x1b[2m2026-10-11T02:22:31.204118Z\x1b[0m \x1b[32m INFO\x1b[0m \x1b[2mtilo::launch_latency\x1b[0m\x1b[2m:\x1b[0m application launch requested package_id=com.onepassword.OnePassword\n";
     const XWAYLAND: &[u8] = b"2026-10-11T02:22:31.981004Z  INFO tilo::xwayland: starting Xwayland bridge for its first client display=:1\n";
@@ -462,9 +462,9 @@ mod tests {
             clippy::arithmetic_side_effects,
             reason = "in a test these are the assertion, not a hazard"
         )]
-        fn the_event_filter_keeps_whole_tracing_records_and_nothing_else;
+        fn the_event_filter_keeps_whole_tracing_entries_and_nothing_else;
 
-        phase tracing_records_are_events_and_stream_output_is_not;
+        phase tracing_entries_are_events_and_stream_output_is_not;
         {
             for line in [
                 LAUNCH,
@@ -484,7 +484,7 @@ mod tests {
             }
         }
 
-        phase a_record_split_across_reads_is_kept_whole_once;
+        phase a_entry_split_across_reads_is_kept_whole_once;
         {
             let stream = [PAINT_STATS, LAUNCH, FRAME_LIFECYCLE, XWAYLAND].concat();
             let expected = [LAUNCH, XWAYLAND].concat();
@@ -497,7 +497,7 @@ mod tests {
             }
         }
 
-        phase an_unterminated_last_record_is_kept_at_end_of_stream_and_long_lines_stay_bounded;
+        phase an_unterminated_last_entry_is_kept_at_end_of_stream_and_long_lines_stay_bounded;
         {
             let mut filter = EventFilter::default();
             assert!(filter.feed(&XWAYLAND[..XWAYLAND.len() - 1]).is_empty());
@@ -524,7 +524,7 @@ mod tests {
     fn publications_are_private_atomic_and_leave_no_staging_behind() {
         let directory = tempfile::tempdir().expect("directory");
         let path = directory.path().join("latest.log");
-        fs::write(&path, b"previous record").expect("previous");
+        fs::write(&path, b"previous entry").expect("previous");
         fs::set_permissions(&path, Permissions::from_mode(0o644)).expect("permissive");
         assert!(persist(&path, b"private diagnostics"));
         assert_eq!(fs::read(&path).expect("record"), b"private diagnostics");

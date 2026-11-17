@@ -25,7 +25,7 @@ use collab_types::caps::Access;
 use tilo_clock::unix_now;
 use tilo_environment::{Environment, ToolBuilder, host_arch};
 
-use crate::audit::{AuditLog, AuditRecord};
+use crate::audit::{AuditEntry, AuditLog};
 use crate::policy::Policy;
 use crate::records::Records;
 
@@ -312,7 +312,7 @@ pub struct SessionStatus {
     pub landlock: String,
     pub trusted_dirs: Vec<String>,
     pub readable_dirs: Vec<String>,
-    pub audit_records: usize,
+    pub audit_entries: usize,
     pub network: NetworkStatus,
 }
 
@@ -797,13 +797,13 @@ impl BrokerState {
                 .iter()
                 .map(|p| p.display().to_string())
                 .collect(),
-            audit_records: self.audit.read_all().len(),
+            audit_entries: self.audit.read_all().len(),
             network: NetworkStatus::of(self.egress.as_deref()),
         }
     }
 
     fn log(&self, request: &str, subject: Option<&str>, allowed: bool, detail: Option<&str>) {
-        let mut rec = AuditRecord::new(&self.session_id, &self.environment.key, request, allowed);
+        let mut rec = AuditEntry::new(&self.session_id, &self.environment.key, request, allowed);
         if let Some(s) = subject {
             rec = rec.about(s);
         }

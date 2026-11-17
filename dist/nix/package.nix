@@ -70,7 +70,7 @@ rustPlatform.buildRustPackage rec {
   cargoBuildFlags = [
     "-p" "launcher"
     "-p" "tilo-unlock-helper"
-    "-p" "tilo-session-record"
+    "-p" "tilo-flight-log"
     "-p" "tilo-session"
     "-p" "imager"
     "-p" "tilo-cli"

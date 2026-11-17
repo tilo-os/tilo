@@ -52,7 +52,7 @@ pub mod workspace_keys;
 
 pub use arrivals::Arrivals;
 pub use client::{Client, Presence};
-pub use custody::{MemoryPeerStore, PeerRecord, PeerStore};
+pub use custody::{MemoryPeerStore, PeerEntry, PeerStore};
 pub use health::{EntryHealth, PeerSnapshot, SessionHealth};
 pub use link::{
     Entry, Events, Failure, FailureKind, InboundActions, Link, LocalState, PAGE_FAILURE_CODES,

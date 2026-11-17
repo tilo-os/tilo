@@ -986,7 +986,7 @@ async fn what_a_device_commits_to_the_workspace_it_hosts_reaches_its_members_liv
     // The device commits the record as a session's engine does, numbered from the durable view.
     // A member's link signs the device's snapshots for its catch-up between two of these commits.
     let commit = |value: &str| {
-        commit_record(&host, workspace, &host_key, value);
+        commit_entry(&host, workspace, &host_key, value);
         host.with_current(workspace, |view| {
             Ok(view.peer().document_heads(APP, RECORD))
         })
@@ -1458,17 +1458,17 @@ async fn a_device_the_host_admits_is_known_to_the_members_linked_to_it_at_once()
 /// Commit `value` to the test record of `workspace` as `owner`'s device, numbered from the
 /// durable view as a session's engine does (the record's first write founds it empty), and
 /// answer the write's sequence number.
-pub(crate) fn commit_record(
+pub(crate) fn commit_entry(
     owner: &tilo_peer_state::owner::NativeWorkspaceOwner,
     workspace: tilo_desktop_model::WorkspaceId,
     key: &SigningKey,
     value: &str,
 ) -> u64 {
-    commit_record_at(owner, workspace, key, value, SystemTime::now())
+    commit_entry_at(owner, workspace, key, value, SystemTime::now())
 }
 
-/// [`commit_record`], the write signed as made at `when`.
-pub(crate) fn commit_record_at(
+/// [`commit_entry`], the write signed as made at `when`.
+pub(crate) fn commit_entry_at(
     owner: &tilo_peer_state::owner::NativeWorkspaceOwner,
     workspace: tilo_desktop_model::WorkspaceId,
     key: &SigningKey,
@@ -1534,7 +1534,7 @@ async fn a_catch_up_is_durable_and_a_restarted_device_numbers_past_it() {
         .create_workspace(workspace, "Hosted", &cert, &key, None, SystemTime::now())
         .await
         .expect("the workspace is founded here");
-    commit_record(&owner, workspace, &key, "first");
+    commit_entry(&owner, workspace, &key, "first");
     let handed = owner
         .commit_bootstrap(workspace, &key, SystemTime::now())
         .await
@@ -1551,13 +1551,13 @@ async fn a_catch_up_is_durable_and_a_restarted_device_numbers_past_it() {
         .max()
         .expect("the catch-up hands the record as a snapshot this device signed");
     assert!(
-        commit_record(&owner, workspace, &key, "second") > taken,
+        commit_entry(&owner, workspace, &key, "second") > taken,
         "the next write numbers past the catch-up"
     );
     drop(owner);
 
     let restarted = owner_at(state.path());
-    let next = commit_record(&restarted, workspace, &key, "after a restart");
+    let next = commit_entry(&restarted, workspace, &key, "after a restart");
     assert!(
         next > taken,
         "a restarted device numbers past what a member was handed: {next} after {taken}"

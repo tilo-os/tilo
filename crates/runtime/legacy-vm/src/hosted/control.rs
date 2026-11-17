@@ -9,7 +9,7 @@ use legacy_agent_protocol::link::AgentLink;
 use serde::{Deserialize, Serialize};
 use wire_frame::Framing;
 
-use super::meter::{SizeUsage, UsageRecord};
+use super::meter::{SizeUsage, UsageEntry};
 use super::size::VmSize;
 
 pub const FRAMING: Framing = Framing::little_endian(16 * 1024 * 1024).reject_empty();
@@ -169,7 +169,7 @@ pub enum Reply {
     },
     Usage {
         #[serde(with = "usage_on_the_wire")]
-        records: Vec<UsageRecord>,
+        records: Vec<UsageEntry>,
         by_size: Vec<SizeUsage>,
     },
     Error(String),
@@ -198,7 +198,7 @@ pub enum Reply {
 mod usage_on_the_wire {
     use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-    use super::super::meter::{RunEnd, UsageKind, UsageRecord, VmIdentity};
+    use super::super::meter::{RunEnd, UsageEntry, UsageKind, VmIdentity};
 
     #[derive(Serialize, Deserialize)]
     struct Wire {
@@ -212,7 +212,7 @@ mod usage_on_the_wire {
         snapshot_bytes: Option<u64>,
     }
 
-    pub fn serialize<S: Serializer>(records: &[UsageRecord], to: S) -> Result<S::Ok, S::Error> {
+    pub fn serialize<S: Serializer>(records: &[UsageEntry], to: S) -> Result<S::Ok, S::Error> {
         to.collect_seq(records.iter().map(|record| Wire {
             kind: record.kind,
             identity: record.identity.clone(),
@@ -225,10 +225,10 @@ mod usage_on_the_wire {
         }))
     }
 
-    pub fn deserialize<'de, D: Deserializer<'de>>(from: D) -> Result<Vec<UsageRecord>, D::Error> {
+    pub fn deserialize<'de, D: Deserializer<'de>>(from: D) -> Result<Vec<UsageEntry>, D::Error> {
         Ok(Vec::<Wire>::deserialize(from)?
             .into_iter()
-            .map(|wire| UsageRecord {
+            .map(|wire| UsageEntry {
                 kind: wire.kind,
                 identity: wire.identity,
                 start_ms: wire.start_ms,
@@ -285,7 +285,7 @@ mod tests {
         };
         let reply = Reply::Usage {
             records: vec![
-                UsageRecord {
+                UsageEntry {
                     kind: UsageKind::Running,
                     identity: identity.clone(),
                     start_ms: 1_000,
@@ -295,7 +295,7 @@ mod tests {
                     ended: Some(RunEnd::Suspended),
                     snapshot_bytes: None,
                 },
-                UsageRecord {
+                UsageEntry {
                     kind: UsageKind::Snapshot,
                     identity,
                     start_ms: 4_500,

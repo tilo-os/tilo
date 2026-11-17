@@ -161,12 +161,7 @@ async fn joins(
 /// Commit `value` to the test record of `workspace` as `owner`'s device,
 /// numbered from the durable view as a session's engine does (the record's
 /// first write founds it empty).
-fn commit_record(
-    owner: &NativeWorkspaceOwner,
-    workspace: Workspace,
-    key: &SigningKey,
-    value: &str,
-) {
+fn commit_entry(owner: &NativeWorkspaceOwner, workspace: Workspace, key: &SigningKey, value: &str) {
     let now = SystemTime::now();
     let message = owner
         .with_current(workspace, |view| {
@@ -338,8 +333,8 @@ async fn a_members_change_reaches_the_apps_of_the_device_it_entered_through() {
     )
     .await
     .expect("the workspace is founded on the separate host");
-    commit_record(&host, here, &host_key, "founded here");
-    commit_record(&far, elsewhere, &far_key, "founded elsewhere");
+    commit_entry(&host, here, &host_key, "founded here");
+    commit_entry(&far, elsewhere, &far_key, "founded elsewhere");
 
     // The separate host serves its workspaces on the direct lane, as a device
     // holding workspaces does.

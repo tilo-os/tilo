@@ -518,7 +518,7 @@ pub enum DetailAction {
     Split,
     Merge,
     ChooseSource,
-    UndoRecord,
+    UndoEntry,
     /// Undo the whole agent session.
     UndoSession,
 }
@@ -534,7 +534,7 @@ impl DetailAction {
             Self::Restore => RESTORE,
             Self::Undo => UNDO,
             Self::UndoSession | Self::RetiredUndoSession => UNDO_SESSION,
-            Self::UndoRecord => UNDO_RECORD,
+            Self::UndoEntry => UNDO_RECORD,
             Self::Split => SPLIT,
             Self::Merge => MERGE,
             Self::ChooseSource => CHOOSE_SOURCE,

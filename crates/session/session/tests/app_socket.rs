@@ -20,10 +20,10 @@ use media::audio::{AudioDevice, AudioGraph};
 use runtime_collab::CollabClient;
 use runtime_collab::wire::Receipt;
 use serde_json::{Map, Value, json};
-use tilo_actions::remote::crash_records::{self as wire, CrashKind, CrashRecord, CrashRecordText};
+use tilo_actions::remote::crash_reports::{self as wire, CrashKind, CrashReport, CrashReportText};
 use tilo_audio_service::sound::{Graph, SoundService};
 use tilo_compositor::OutputConfig;
-use tilo_crash_records::CrashRecords;
+use tilo_crash_reports::CrashReports;
 use tilo_service::LoopWake;
 use tilo_session::{AppSocket, Options, Service, Session};
 
@@ -322,7 +322,7 @@ const FREEZE_RECORD: &str = "tilo session freeze\n===================\n\
 fn crash_dir() -> tempfile::TempDir {
     let dir = tempfile::tempdir().expect("a directory to keep the records in");
     tilo_files::native::private::directory(dir.path()).expect("a private crash directory");
-    tilo_crash_records::write_record(dir.path(), FREEZE, FREEZE_RECORD)
+    tilo_crash_reports::write_report(dir.path(), FREEZE, FREEZE_RECORD)
         .expect("the record is written");
     dir
 }
@@ -330,12 +330,12 @@ fn crash_dir() -> tempfile::TempDir {
 /// Settings lists the records the session publishes and reads one, over the session's own broker:
 /// what each is without its stack, and the stack of the record it names.
 #[test]
-fn the_settings_app_lists_and_reads_a_crash_record_the_session_publishes() {
+fn the_settings_app_lists_and_reads_a_crash_report_the_session_publishes() {
     let root = crate::common::private_home();
     let socket = root.path().join("collab.sock");
     let records = crash_dir();
     let dir = records.path().to_path_buf();
-    let mut session = session_hosting(&socket, move |_| vec![Box::new(CrashRecords::in_dir(&dir))]);
+    let mut session = session_hosting(&socket, move |_| vec![Box::new(CrashReports::in_dir(&dir))]);
 
     let (seen, received) = std::sync::mpsc::channel();
     let app = std::thread::spawn(move || {
@@ -366,10 +366,10 @@ fn the_settings_app_lists_and_reads_a_crash_record_the_session_publishes() {
                 .expect("the session answers a read of the records")
                 .reading
                 .expect("the session publishes the records");
-            let record: Vec<CrashRecord> =
+            let record: Vec<CrashReport> =
                 serde_json::from_str(&listed).expect("the list is records");
             let read = services
-                .snapshot(&wire::record(&record[0].id))
+                .snapshot(&wire::report(&record[0].id))
                 .await
                 .expect("the session answers a read of one record")
                 .reading
@@ -381,7 +381,7 @@ fn the_settings_app_lists_and_reads_a_crash_record_the_session_publishes() {
     let (listed, read) = until_the_app_is_done(&mut session, &received);
     app.join().expect("the app's thread");
 
-    let listed: Vec<CrashRecord> = serde_json::from_str(&listed).expect("the list is records");
+    let listed: Vec<CrashReport> = serde_json::from_str(&listed).expect("the list is records");
     assert_eq!(listed.len(), 1, "{listed:#?}");
     assert_eq!(listed[0].id, FREEZE);
     assert_eq!(listed[0].kind, CrashKind::Froze);
@@ -391,8 +391,8 @@ fn the_settings_app_lists_and_reads_a_crash_record_the_session_publishes() {
         "the list names the build that wrote the record"
     );
 
-    let text: CrashRecordText = serde_json::from_str(&read).expect("a record reads as its text");
-    assert_eq!(text.record, listed[0]);
+    let text: CrashReportText = serde_json::from_str(&read).expect("a record reads as its text");
+    assert_eq!(text.report, listed[0]);
     assert!(
         text.text.contains(FREEZE_STACK),
         "every thread's stack, on the read of the record it names: {}",
@@ -402,7 +402,7 @@ fn the_settings_app_lists_and_reads_a_crash_record_the_session_publishes() {
         .read(wire::RESOURCE)
         .expect("the session publishes the records");
     assert_eq!(
-        serde_json::from_value::<Vec<CrashRecord>>(published).expect("the list is records"),
+        serde_json::from_value::<Vec<CrashReport>>(published).expect("the list is records"),
         listed,
         "and the app read what the session's service publishes"
     );

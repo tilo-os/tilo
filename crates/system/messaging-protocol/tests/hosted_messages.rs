@@ -616,11 +616,11 @@ impl ui::framework::ResourceApp for AccountOwnerFixture {
 fn live_messages_with_service(client: MessagingClient) -> TestApp<MessagesShell> {
     let person = "11".repeat(32);
     let mut settings = TestApp::<AccountOwnerFixture>::for_person(&person).expect("metadata owner");
-    let account_record = settings
+    let account_entry = settings
         .shared_person::<tilo_messaging::PersonAccounts>()
         .expect("owner account record");
-    assert!(account_record.editable());
-    account_record
+    assert!(account_entry.editable());
+    account_entry
         .invoke(&tilo_messaging::PersonAccounts::SAVE_ACCOUNT.with((
             "fixture-signal".into(),
             "signal".into(),
@@ -637,19 +637,19 @@ fn live_messages_with_service(client: MessagingClient) -> TestApp<MessagesShell>
         .expect("read-only accounts");
     assert_eq!(
         accounts.record().route(),
-        account_record.record().route(),
+        account_entry.record().route(),
         "same owner's shared record route"
     );
     accounts
         .record()
         .merge_peer_document(
-            account_record
+            account_entry
                 .record()
                 .document()
                 .expect("owner record document"),
         )
         .expect("existing shared-record sync path");
-    drop(account_record);
+    drop(account_entry);
     drop(settings);
     assert!(!accounts.editable());
     assert!(

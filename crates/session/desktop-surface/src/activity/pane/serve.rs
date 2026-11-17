@@ -658,7 +658,7 @@ impl WorkspaceActivityPane {
                             app_id: step.app.clone(),
                             change: step.sentence(),
                             undo: self.can_undo_agent_record(step).then(|| wire::Offer {
-                                action: wire::DetailAction::UndoRecord,
+                                action: wire::DetailAction::UndoEntry,
                                 label: t("activity-detail-undo-step"),
                             }),
                         }
@@ -929,7 +929,7 @@ impl WorkspaceActivityPane {
                 Ok(self.apply_detail_action(action, tree))
             }
             wire::UNDO_SESSION => detail(self, &read(arguments)?, DetailAction::UndoTask, tree),
-            wire::UNDO_RECORD => self.serve_undo_record(&read(arguments)?),
+            wire::UNDO_RECORD => self.serve_undo_entry(&read(arguments)?),
             wire::CHOOSE_SOURCE => {
                 detail(self, &read(arguments)?, DetailAction::MorningSource, tree)
             }
@@ -950,7 +950,7 @@ impl WorkspaceActivityPane {
     /// Undo one record's share of the run `query` names: the task it was recorded for, or the
     /// agent connection's group the range's changes are under. The document's own history takes it
     /// back as that one step.
-    fn serve_undo_record(
+    fn serve_undo_entry(
         &mut self,
         query: &wire::ResourceQuery,
     ) -> Result<WorkspaceActivityOutcome, String> {

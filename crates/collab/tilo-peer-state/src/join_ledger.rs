@@ -283,7 +283,7 @@ pub struct Redeeming<'a> {
 /// the format, append only.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct JoinLedger {
-    pub invitations: Vec<InvitationRecord>,
+    pub invitations: Vec<InvitationEntry>,
     pub join_challenges: Vec<JoinChallengeRecord>,
     pub join_completions: Vec<JoinCompletionRecord>,
     pub membership_challenges: Vec<MembershipChallengeRecord>,
@@ -291,7 +291,7 @@ pub struct JoinLedger {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct InvitationRecord {
+pub struct InvitationEntry {
     pub request_id: [u8; 32],
     pub request_digest: [u8; 32],
     pub issued: IssuedInvitation,
@@ -571,7 +571,7 @@ impl JoinLedger {
             invite_id: *blake3::hash(&signed_invitation).as_bytes(),
             signed_invitation,
         };
-        self.invitations.push(InvitationRecord {
+        self.invitations.push(InvitationEntry {
             request_id: request.request_id,
             request_digest: digest,
             issued: answer.clone(),
@@ -904,7 +904,7 @@ impl JoinLedger {
     }
 
     /// The record of invitation `invite_id`, kept until it is redeemed.
-    fn issued(&self, invite_id: [u8; 32]) -> Result<&InvitationRecord, JoinError> {
+    fn issued(&self, invite_id: [u8; 32]) -> Result<&InvitationEntry, JoinError> {
         self.invitations
             .iter()
             .find(|record| record.issued.invite_id == invite_id)

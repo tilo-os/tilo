@@ -54,7 +54,7 @@ struct Record {
 /// The ledger's first field, which is all the export reads of it.
 #[derive(Deserialize)]
 struct LedgerHead {
-    invitations: Vec<InvitationRecord>,
+    invitations: Vec<InvitationEntry>,
 }
 
 #[derive(Deserialize)]
@@ -66,7 +66,7 @@ struct Publication {
 }
 
 #[derive(Deserialize)]
-struct InvitationRecord {
+struct InvitationEntry {
     #[expect(dead_code, reason = "read to reach the fields after it")]
     request_id: [u8; 32],
     #[expect(dead_code, reason = "read to reach the fields after it")]
@@ -433,7 +433,7 @@ struct Kept {
 /// invitation once it is redeemed), or on the wait-list entry an invitation
 /// was mailed to.
 fn addresses(
-    invitations: &[InvitationRecord],
+    invitations: &[InvitationEntry],
     wait_list: &[Kept],
     redeemed: &std::collections::BTreeMap<[u8; 32], Redemption>,
 ) -> std::collections::BTreeMap<[u8; 32], String> {

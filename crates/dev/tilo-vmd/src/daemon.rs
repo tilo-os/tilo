@@ -17,7 +17,7 @@ use tilo_vm_protocol::{
     VmTools,
 };
 
-use crate::accounts::{self, AccountRecord, AccountStore, Generation};
+use crate::accounts::{self, AccountEntry, AccountStore, Generation};
 use crate::apply::{self, Apply, GREETER_UNIT, Restarts, Session, SessionChange};
 use crate::awake;
 use crate::error::DaemonError;
@@ -230,7 +230,7 @@ fn layer_paths(layers: &LayerStore, generation: &Generation) -> Result<Vec<PathB
 fn system_layers(
     accounts: &AccountStore,
     layers: &LayerStore,
-    record: &AccountRecord,
+    record: &AccountEntry,
     own: Vec<PathBuf>,
 ) -> Result<Vec<PathBuf>, DaemonError> {
     let mut machine: Vec<PathBuf> = Vec::new();
@@ -264,7 +264,7 @@ fn prepare_account_session(
     accounts: &AccountStore,
     layers: &LayerStore,
     apply: &mut dyn Apply,
-    record: &AccountRecord,
+    record: &AccountEntry,
     system: Option<&[PathBuf]>,
 ) -> Result<(), DaemonError> {
     let session = record
@@ -410,7 +410,7 @@ fn to_value<T: Serialize>(value: &T) -> Result<serde_json::Value, DaemonError> {
     serde_json::to_value(value).map_err(|e| DaemonError::InvalidParams(e.to_string()))
 }
 
-fn unchanged(record: AccountRecord) -> ApplyResult {
+fn unchanged(record: AccountEntry) -> ApplyResult {
     ApplyResult {
         account: record.name,
         generation: record.current,
@@ -645,18 +645,18 @@ impl Daemon {
         Ok(self
             .stored_accounts()?
             .iter()
-            .filter_map(AccountRecord::session)
+            .filter_map(AccountEntry::session)
             .collect())
     }
 
     /// Every account on disk, with the machine's own session found again for the `device` account: a
     /// login's session and processes change with every login.
-    fn stored_accounts(&mut self) -> Result<Vec<AccountRecord>, DaemonError> {
+    fn stored_accounts(&mut self) -> Result<Vec<AccountEntry>, DaemonError> {
         let mut records = self.accounts.list()?;
         if let Some(record) = records.iter_mut().find(|r| r.name == DEVICE_ACCOUNT) {
             *record = match self.load_account(DEVICE_ACCOUNT) {
                 Ok(fresh) => fresh,
-                Err(DaemonError::NoDeviceSession) => AccountRecord {
+                Err(DaemonError::NoDeviceSession) => AccountEntry {
                     device: None,
                     ..record.clone()
                 },
@@ -667,7 +667,7 @@ impl Daemon {
     }
 
     /// Every account on disk, and the `device` account wherever the machine runs its own session.
-    fn listed_accounts(&mut self) -> Result<Vec<AccountRecord>, DaemonError> {
+    fn listed_accounts(&mut self) -> Result<Vec<AccountEntry>, DaemonError> {
         let mut records = self.stored_accounts()?;
         if !records.iter().any(|r| r.name == DEVICE_ACCOUNT)
             && let Some(device) = self.apply.device_session()
@@ -683,13 +683,13 @@ impl Daemon {
     /// own.
     fn system_layers(
         &self,
-        record: &AccountRecord,
+        record: &AccountEntry,
         own: Vec<PathBuf>,
     ) -> Result<Vec<PathBuf>, DaemonError> {
         system_layers(&self.accounts, &self.layers, record, own)
     }
 
-    fn load_account(&mut self, name: &str) -> Result<AccountRecord, DaemonError> {
+    fn load_account(&mut self, name: &str) -> Result<AccountEntry, DaemonError> {
         let device = if name == DEVICE_ACCOUNT {
             self.apply.device_session()
         } else {
@@ -1231,7 +1231,7 @@ impl Daemon {
     pub(crate) fn user_account(
         &mut self,
         name: &str,
-    ) -> Result<(AccountRecord, Session), DaemonError> {
+    ) -> Result<(AccountEntry, Session), DaemonError> {
         let record = self.load_account(name)?;
         let session = record
             .session()
@@ -1292,7 +1292,7 @@ impl Daemon {
         Ok(issues)
     }
 
-    fn info(&mut self, record: &AccountRecord) -> Result<AccountInfo, DaemonError> {
+    fn info(&mut self, record: &AccountEntry) -> Result<AccountInfo, DaemonError> {
         let generation = self.accounts.generation(&record.name, record.current)?;
         let unit = record.session();
         let session = match &unit {
@@ -1502,7 +1502,7 @@ impl Daemon {
     /// controls are pressed by name through the control socket, as a person's clicks reach them.
     fn complete_onboarding(
         &mut self,
-        record: &AccountRecord,
+        record: &AccountEntry,
     ) -> Result<(TestIdentity, Vec<Action>), DaemonError> {
         let name = record.name.as_str();
         let fail = |detail: String| DaemonError::DeviceIdentity {
@@ -1603,7 +1603,7 @@ impl Daemon {
     /// user and hides every app launch.
     fn provision_test_identity(
         &mut self,
-        record: &AccountRecord,
+        record: &AccountEntry,
     ) -> Result<(TestIdentity, Vec<Action>), DaemonError> {
         let name = record.name.as_str();
         let fail = |detail: String| DaemonError::TestIdentity {
@@ -1727,7 +1727,7 @@ impl Daemon {
 
     fn component_info(
         &self,
-        record: &AccountRecord,
+        record: &AccountEntry,
         component: &str,
         info: Option<ComponentInfo>,
     ) -> ComponentInfo {
@@ -1861,7 +1861,7 @@ impl Daemon {
     /// [`DaemonError::InvalidParams`] naming what to swap together; a missing layer.
     pub(crate) fn check_interfaces(
         &self,
-        record: &AccountRecord,
+        record: &AccountEntry,
         to: &Generation,
         partner: Option<&tilo_vm_protocol::Partner>,
     ) -> Result<(), DaemonError> {
@@ -1955,7 +1955,7 @@ impl Daemon {
     /// not declare one.
     fn check_cohort_users(
         &mut self,
-        record: &AccountRecord,
+        record: &AccountEntry,
         from: &Generation,
         to: &Generation,
         reselected: &BTreeSet<&str>,
@@ -2016,7 +2016,7 @@ impl Daemon {
 
     fn transition(
         &mut self,
-        record: &mut AccountRecord,
+        record: &mut AccountEntry,
         from: &Generation,
         to: &Generation,
     ) -> Result<ApplyResult, DaemonError> {
@@ -2047,7 +2047,7 @@ impl Daemon {
 
     fn activate_generation(
         &mut self,
-        record: &mut AccountRecord,
+        record: &mut AccountEntry,
         from: &Generation,
         to: &Generation,
     ) -> Result<ApplyResult, DaemonError> {
@@ -2161,7 +2161,7 @@ impl Daemon {
         Ok(actions)
     }
 
-    fn journal_matches(&mut self, record: &AccountRecord) -> Result<Vec<String>, DaemonError> {
+    fn journal_matches(&mut self, record: &AccountEntry) -> Result<Vec<String>, DaemonError> {
         let mut matches = Vec::new();
         if let Some(session) = record.session() {
             // PAM moves the session into `session-N.scope`, so its output is found by the unit's
@@ -2195,7 +2195,7 @@ impl Daemon {
 
     /// Re-activate an account's current generation with a session restart, after its seat assignment
     /// changed.
-    fn reseat(&mut self, record: &mut AccountRecord) -> Result<Vec<Action>, DaemonError> {
+    fn reseat(&mut self, record: &mut AccountEntry) -> Result<Vec<Action>, DaemonError> {
         let generation = self.accounts.generation(&record.name, record.current)?;
         let layers = self.layer_paths(&generation)?;
         let actions = apply::activate(
@@ -2276,7 +2276,7 @@ impl Daemon {
         if record.kind == AccountKind::Device {
             return Err(DaemonError::DeviceAccount("moved between seats".into()));
         }
-        let own_seat = |r: &AccountRecord| r.seat.clone().unwrap_or_else(|| "none".into());
+        let own_seat = |r: &AccountEntry| r.seat.clone().unwrap_or_else(|| "none".into());
         if record.seat0.is_none() {
             return Ok(SeatResult {
                 seat: own_seat(&record),

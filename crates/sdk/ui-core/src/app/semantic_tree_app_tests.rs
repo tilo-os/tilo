@@ -51,7 +51,7 @@ impl LargeDirectoryProvider {
             .replace_all_resources((0..records).map(|index| {
                 let resource = format!("test.item:{index}");
                 let address = tilo_actions::ActionAddress::new(resource.clone(), "open");
-                crate::search::SearchRecord::new(
+                crate::search::SearchItem::new(
                     resource,
                     crate::search::SearchResult::for_action(
                         "Large directory",

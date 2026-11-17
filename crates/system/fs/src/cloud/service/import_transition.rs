@@ -36,7 +36,7 @@ enum Phase {
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
-struct CommitRecord {
+struct CommitEntry {
     account: accounts::Account,
     token: String,
 }
@@ -64,7 +64,7 @@ fn committed(before: &accounts::Account, after: &accounts::Account) -> bool {
 
 impl CloudService {
     pub(super) fn restore_import_commits(&mut self) {
-        let result = (|| -> Result<Vec<CommitRecord>, String> {
+        let result = (|| -> Result<Vec<CommitEntry>, String> {
             let bytes = match fs::read(self.config.state_root.join(JOURNAL)) {
                 Ok(bytes) => bytes,
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
@@ -105,7 +105,7 @@ impl CloudService {
             .import_holds
             .iter()
             .filter(|(id, hold)| Some(id.as_str()) != excluding && hold.phase == Phase::Committing)
-            .map(|(_, hold)| CommitRecord {
+            .map(|(_, hold)| CommitEntry {
                 account: hold.account.clone(),
                 token: hold.token.clone(),
             })

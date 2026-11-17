@@ -41,7 +41,7 @@ pub enum RunEnd {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub struct UsageRecord {
+pub struct UsageEntry {
     pub kind: UsageKind,
     #[serde(flatten)]
     pub identity: VmIdentity,
@@ -135,24 +135,24 @@ impl Meter {
     }
 
     /// The hypervisor is gone since `now`. `None` when nothing billed ran.
-    pub fn stopped(&mut self, now: u64, ended: RunEnd) -> Option<UsageRecord> {
+    pub fn stopped(&mut self, now: u64, ended: RunEnd) -> Option<UsageEntry> {
         let open = self.open.take()?;
         let start = open.billed_from_ms?;
         Some(self.run_record(start, now.max(start), ended))
     }
 
     /// Close a run the service left open, at the last moment it was seen.
-    pub fn recover(&mut self) -> Option<UsageRecord> {
+    pub fn recover(&mut self) -> Option<UsageEntry> {
         let open = self.open.take()?;
         let start = open.billed_from_ms?;
         Some(self.run_record(start, open.last_seen_ms.max(start), RunEnd::Recovered))
     }
 
-    fn run_record(&mut self, start_ms: u64, end_ms: u64, ended: RunEnd) -> UsageRecord {
+    fn run_record(&mut self, start_ms: u64, end_ms: u64, ended: RunEnd) -> UsageEntry {
         let millis = end_ms.saturating_sub(start_ms);
         let total = self.carry_ms.saturating_add(millis);
         self.carry_ms = total % 1000;
-        UsageRecord {
+        UsageEntry {
             kind: UsageKind::Running,
             identity: self.identity.clone(),
             start_ms,
@@ -166,7 +166,7 @@ impl Meter {
 
     /// A snapshot of `bytes` was written at `now`. One that was held is replaced, and its record
     /// returned.
-    pub fn snapshot_taken(&mut self, now: u64, bytes: u64) -> Option<UsageRecord> {
+    pub fn snapshot_taken(&mut self, now: u64, bytes: u64) -> Option<UsageEntry> {
         let replaced = self.snapshot_dropped(now);
         self.snapshot = Some(HeldSnapshot {
             start_ms: now,
@@ -176,13 +176,13 @@ impl Meter {
         replaced
     }
 
-    pub fn snapshot_dropped(&mut self, now: u64) -> Option<UsageRecord> {
+    pub fn snapshot_dropped(&mut self, now: u64) -> Option<UsageEntry> {
         let held = self.snapshot.take()?;
         let end_ms = now.max(held.start_ms);
         let millis = end_ms.saturating_sub(held.start_ms);
         let total = self.snapshot_carry_ms.saturating_add(millis);
         self.snapshot_carry_ms = total % 1000;
-        Some(UsageRecord {
+        Some(UsageEntry {
             kind: UsageKind::Snapshot,
             identity: self.identity.clone(),
             start_ms: held.start_ms,
@@ -227,7 +227,7 @@ impl Ledger {
     }
 
     /// Append `record` to its account's file and wait until it is on disk: a record is money.
-    pub fn append(&self, record: &UsageRecord) -> std::io::Result<()> {
+    pub fn append(&self, record: &UsageEntry) -> std::io::Result<()> {
         let path = self.file(&record.identity.account)?;
         std::fs::create_dir_all(&self.dir)?;
         let mut line = serde_json::to_vec(record).map_err(std::io::Error::other)?;
@@ -239,7 +239,7 @@ impl Ledger {
 
     /// The account's records, oldest first. A line that is not a record (a torn write at a crash)
     /// is skipped.
-    pub fn records(&self, account: &str) -> std::io::Result<Vec<UsageRecord>> {
+    pub fn records(&self, account: &str) -> std::io::Result<Vec<UsageEntry>> {
         let file = match File::open(self.file(account)?) {
             Ok(file) => file,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
@@ -275,7 +275,7 @@ impl SizeUsage {
 
 /// What an account used per size, from the records that ended in `[from_ms, to_ms)`.
 #[must_use]
-pub fn summarize(records: &[UsageRecord], from_ms: u64, to_ms: u64) -> Vec<SizeUsage> {
+pub fn summarize(records: &[UsageEntry], from_ms: u64, to_ms: u64) -> Vec<SizeUsage> {
     let mut by_size: std::collections::BTreeMap<VmSize, SizeUsage> =
         std::collections::BTreeMap::new();
     for record in records

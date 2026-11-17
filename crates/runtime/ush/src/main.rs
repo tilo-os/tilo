@@ -764,7 +764,7 @@ explain when the host does not offer them.\n";
                 for line in ush::guard::network_report(&status.network) {
                     println!("{line}");
                 }
-                println!("audit       : {} records", status.audit_records);
+                println!("audit       : {} records", status.audit_entries);
                 Ok(0)
             }
             Some(other) => anyhow::bail!("unknown `guard {other}`; try status"),

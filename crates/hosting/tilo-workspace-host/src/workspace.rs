@@ -9,7 +9,7 @@ use std::sync::Arc;
 use automerge::AutoCommit;
 use tokio::sync::{Mutex as AsyncMutex, mpsc};
 
-use crate::store::{CommitRecord, WorkspaceStore};
+use crate::store::{CommitEntry, WorkspaceStore};
 use crate::transport::Envelope;
 use tilo_lock::MutexRecover as _;
 use tilo_relay_protocol::WorkspaceId;
@@ -227,9 +227,9 @@ pub const MAX_REMEMBERED_COMMITS: usize = 16_384;
 /// durable.
 #[must_use]
 pub enum CommitLedgerWrite {
-    Append(CommitRecord),
+    Append(CommitEntry),
     /// Replace the ledger, dropping evicted records.
-    Rewrite(Vec<CommitRecord>),
+    Rewrite(Vec<CommitEntry>),
 }
 
 impl CommitLedgerWrite {
@@ -249,14 +249,14 @@ impl CommitLedgerWrite {
 
 #[derive(Default)]
 struct CommitLedger {
-    by_op: HashMap<([u8; 32], [u8; 16]), CommitRecord>,
+    by_op: HashMap<([u8; 32], [u8; 16]), CommitEntry>,
     order: VecDeque<([u8; 32], [u8; 16])>,
     /// Records in the on-disk ledger, evicted ones included.
     logged: usize,
 }
 
 impl CommitLedger {
-    fn load(records: Vec<CommitRecord>) -> Self {
+    fn load(records: Vec<CommitEntry>) -> Self {
         let mut ledger = Self {
             logged: records.len(),
             ..Self::default()
@@ -267,7 +267,7 @@ impl CommitLedger {
         ledger
     }
 
-    fn insert(&mut self, record: CommitRecord) {
+    fn insert(&mut self, record: CommitEntry) {
         let key = (record.author, record.op);
         if self.by_op.insert(key, record).is_none() {
             self.order.push_back(key);
@@ -415,7 +415,7 @@ impl WorkspaceRuntime {
     }
 
     /// The admission of `author`'s commit `op`, if this host remembers it.
-    pub fn admitted_commit(&self, author: &[u8; 32], op: &[u8; 16]) -> Option<CommitRecord> {
+    pub fn admitted_commit(&self, author: &[u8; 32], op: &[u8; 16]) -> Option<CommitEntry> {
         self.commits.by_op.get(&(*author, *op)).copied()
     }
 
@@ -451,11 +451,11 @@ impl WorkspaceRuntime {
     /// Remember an admitted commit. The returned write makes it durable, so
     /// a resend is recognised also after a host restart; run it off the
     /// workspace lock and in remembering order (see `commit_ledger_lane`).
-    pub fn remember_commit(&mut self, record: CommitRecord) -> CommitLedgerWrite {
+    pub fn remember_commit(&mut self, record: CommitEntry) -> CommitLedgerWrite {
         self.commits.insert(record);
         self.commits.logged = self.commits.logged.saturating_add(1);
         if self.commits.logged > MAX_REMEMBERED_COMMITS.saturating_mul(2) {
-            let kept: Vec<CommitRecord> = self
+            let kept: Vec<CommitEntry> = self
                 .commits
                 .order
                 .iter()
@@ -943,7 +943,7 @@ mod tests {
     #[test]
     fn the_commit_ledger_is_durable_and_forgets_its_oldest_commits_first() {
         let tmp = tempfile::tempdir().unwrap();
-        let record = |n: u64| CommitRecord {
+        let record = |n: u64| CommitEntry {
             author: [1; 32],
             op: {
                 let mut op = [0; 16];

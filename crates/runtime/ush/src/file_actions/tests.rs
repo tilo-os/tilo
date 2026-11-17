@@ -664,7 +664,7 @@ tilo_test_env::scenario! {
         });
         assert_eq!(action.verb(), "truncate");
         assert_eq!(subjects(&action), "/home/me/log /home/me/log");
-        let record = audit_record("s", "env", &action);
+        let record = audit_entry("s", "env", &action);
         assert_eq!(record.request, "truncate");
         assert!(record.allowed);
     }

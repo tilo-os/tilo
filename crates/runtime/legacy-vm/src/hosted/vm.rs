@@ -20,7 +20,7 @@ use super::files::Served;
 use super::firecracker::{self, Api, FirecrackerError, Machine, VmFiles};
 use super::jail::{Jail, JailDirs};
 use super::memory;
-use super::meter::{Ledger, Meter, RunEnd, UsageRecord, VmIdentity};
+use super::meter::{Ledger, Meter, RunEnd, UsageEntry, VmIdentity};
 use super::network::Endpoint;
 use super::size::VmSize;
 use crate::lifecycle::{Action, Lifecycle, LifecycleError, Phase};
@@ -801,7 +801,7 @@ impl HostedVm {
         Ok(())
     }
 
-    fn ended(&mut self, how: RunEnd) -> Result<Option<UsageRecord>, VmError> {
+    fn ended(&mut self, how: RunEnd) -> Result<Option<UsageEntry>, VmError> {
         let _ = std::fs::remove_file(self.pid_file());
         self.link = None;
         let record = self.meter.stopped((self.clock)(), how);
@@ -959,7 +959,7 @@ pub fn forget_source_argv() -> Vec<String> {
         .to_vec()
 }
 
-fn resource_in(ledger: Option<&Ledger>, record: Option<&UsageRecord>) -> Result<(), VmError> {
+fn resource_in(ledger: Option<&Ledger>, record: Option<&UsageEntry>) -> Result<(), VmError> {
     match (ledger, record) {
         (Some(ledger), Some(record)) => Ok(ledger.append(record)?),
         _ => Ok(()),

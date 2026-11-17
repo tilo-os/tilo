@@ -102,7 +102,7 @@ everywhere else.
 ### Every board says what it keeps
 
 A hang leaves nothing behind unless the board was set up to record it, so each
-schema-2 definition carries a `crash_record` naming three things:
+schema-2 definition carries a `crash_report` naming three things:
 
 - `storage` - where the kernel's record of a panic goes. `ramoops` is a region
   the board's device tree reserves, `block` a reserved region on a block

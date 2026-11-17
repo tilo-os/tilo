@@ -18,7 +18,7 @@ pub use tilo_device_fabric::speaker_group::{
 };
 pub use tilo_device_fabric::unlock::{
     AutoApproval, DEVICE_UNLOCK_ACTION, Decided, DecisionOutcome, MAX_UNLOCK_DECISIONS,
-    MergedUnlock, UnlockDecision, UnlockDecisionRecord, UnlockEnrolment, UnlockFabricState,
+    MergedUnlock, UnlockDecision, UnlockDecisionEntry, UnlockEnrolment, UnlockFabricState,
     UnlockSibling, UnlockView, decision_for, merged_unlock_state,
 };
 pub use tilo_device_fabric::wake::WakeEvent;

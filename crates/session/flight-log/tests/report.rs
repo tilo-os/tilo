@@ -18,7 +18,7 @@ use std::path::Path;
 use std::process::{Command, Output};
 use tilo_test_env::SpawnUnderEnvLock as _;
 
-use tilo_session_record::value::Value;
+use tilo_flight_log::value::Value;
 
 fn reporter() -> std::path::PathBuf {
     tilo_test_env::package_binary!("tilo-session-report")
@@ -190,7 +190,7 @@ fn same(left: &Value, right: &Value) -> bool {
 }
 
 fn check(root: &Path, log: &str, extra: &[&str]) -> Output {
-    fs::write(root.join("latest.log"), log).expect("flight record");
+    fs::write(root.join("latest.log"), log).expect("flight entry");
     let mut args = vec!["--render-check"];
     args.extend_from_slice(extra);
     report(root, &args)
@@ -217,9 +217,9 @@ tilo_test_env::scenario! {
          package_id=chatgpt surface_id=77 frame_seq=1 request_to_first_present_us=50000 spawn_to_first_present_us=41800 map_to_first_present_us=8000 application first frame presented\n\
          paint-stats: 0/12025 painted | events=0 revision=0 anim=0 session=0 keepalive=0 | 144.027 Hz target | present=9 backpressure=12\n\
          thread 'main' panicked at wayland-backend/src/rs/server_impl/common_poll.rs:284:38:\n\
-         tilo-flight-record-v1 status=134 logout_request=no\n",
+         tilo-flight-entry-v1 status=134 logout_request=no\n",
         )
-        .expect("flight record");
+        .expect("flight entry");
         fs::write(
             root.join("previous-frame-trace.csv"),
             "seq,start_us,period_us,input_us,pump_us,layout_us,scene_us,submit_us,testctl_us,clients_us,sleep_us,painted,present_async,input_latency_us,input_retirement_latency_us,backpressured,deadline_late_us\n\
@@ -396,11 +396,11 @@ tilo_test_env::scenario! {
             Some(1)
         );
 
-        // No record at all.
+        // No entry at all.
         fs::remove_file(root.join("latest.log")).expect("remove");
         let missing = report(root, &["--render-check"]);
         assert_eq!(missing.status.code(), Some(1));
-        assert!(String::from_utf8_lossy(&missing.stderr).contains("no session flight record at"));
+        assert!(String::from_utf8_lossy(&missing.stderr).contains("no session flight entry at"));
     }
 
     phase the_render_check_holds_typing_and_damage_to_the_latency_bar;
@@ -488,7 +488,7 @@ tilo_test_env::scenario! {
          KEY-LATENCY app=so.tilo.notes key_to_commit_us=30000 key_to_submit_us=31000 key_to_present_us=50000\n\
          KEY-LATENCY app=so.tilo.notes unanswered=1\n",
         )
-        .expect("flight record");
+        .expect("flight entry");
         let ran = report(root, &[]);
         assert!(ran.status.success());
         let report_json = json(&String::from_utf8_lossy(&ran.stdout));
@@ -513,10 +513,10 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase a_long_session_reads_launch_events_from_the_event_record;
+    phase a_long_session_reads_launch_events_from_the_event_entry;
     {
-        // The full record holds only measurement lines by now, and the launch
-        // timing and failure live in the recorder's event record.
+        // The full entry holds only measurement lines by now, and the launch
+        // timing and failure live in the recorder's event entry.
         let directory = tempfile::tempdir().expect("directory");
         let root = directory.path();
         fs::write(
@@ -524,14 +524,14 @@ tilo_test_env::scenario! {
             "paint-stats: 3/14 painted | events=0 revision=0 anim=0 session=0 keepalive=0 | 60.000 Hz target | present=1 backpressure=0\n"
                 .repeat(64),
         )
-        .expect("flight record");
+        .expect("flight entry");
         fs::write(
             root.join("events.log"),
-            "tilo-flight-record-v1 start=now pid=42 shell=/usr/bin/shell\n\
+            "tilo-flight-entry-v1 start=now pid=42 shell=/usr/bin/shell\n\
          2026-10-11T02:22:31.204118Z  INFO tilo::launch_latency: package_id=com.onepassword.OnePassword pid=9 request_to_spawn_us=1200000 application launcher spawned\n\
          2026-10-11T02:22:45.760719Z ERROR tilo::app_launch: application stopped before presenting a window package_id=com.onepassword.OnePassword display_name=1Password exit_code=None\n",
         )
-        .expect("event record");
+        .expect("event entry");
         let output = root.join("current.json");
         let ran = report(root, &["--output", output.to_str().expect("path")]);
         assert!(ran.status.success());

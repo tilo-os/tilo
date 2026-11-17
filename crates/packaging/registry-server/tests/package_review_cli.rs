@@ -138,7 +138,7 @@ fn stale_package_decisions_refuse_the_replacement_and_fresh_feedback_is_exact() 
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
-    let record: registry_server::ReviewRecord = serde_json::from_slice(&output.stdout)?;
+    let record: registry_server::ReviewEntry = serde_json::from_slice(&output.stdout)?;
     ensure!(record.reason == feedback);
     ensure!(record.subject == registry_server::ReviewSubject::Submission(replacement));
     ensure!(storage.load_pending(&candidate.submission_id)?.is_none());
@@ -173,7 +173,7 @@ fn fresh_guarded_approval_and_legacy_rejection_still_use_the_existing_transition
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
-    let record: registry_server::ReviewRecord = serde_json::from_slice(&output.stdout)?;
+    let record: registry_server::ReviewEntry = serde_json::from_slice(&output.stdout)?;
     ensure!(record.decision == registry_server::ReviewDecision::Approved);
     ensure!(record.subject == registry_server::ReviewSubject::Submission(candidate.clone()));
     ensure!(storage.load_entry(&candidate.submission_id)?.is_none());

@@ -1459,7 +1459,7 @@ pub(super) mod fixture {
 pub(super) mod tests {
     use super::fixture::{basis, facts, fake_bounds, fake_plan};
     use super::*;
-    use crate::setup::staging::record::{OriginalFirmware, StepRecord, StepState};
+    use crate::setup::staging::record::{OriginalFirmware, StepEntry, StepState};
     use std::collections::VecDeque;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -1580,7 +1580,7 @@ pub(super) mod tests {
                 manifest_sha256: "a".repeat(64),
                 architecture: "x86_64".into(),
             },
-            steps: vec![StepRecord {
+            steps: vec![StepEntry {
                 step: Step::WriteRoot,
                 state: StepState::Intended,
                 detail: serde_json::Map::new(),

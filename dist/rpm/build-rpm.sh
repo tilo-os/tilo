@@ -60,7 +60,7 @@ if (( run_cargo )); then
     # shipped target, and leave the compositor's no-default-features graph
     # separate below. Explicit bins avoid developer-only relay/launcher tools.
     ( cd "$repo_root" && cargo build --release --locked --lib \
-        -p launcher -p tilo-unlock-helper -p tilo-session-record -p tilo-app-package-cli -p install -p runtime-bundle \
+        -p launcher -p tilo-unlock-helper -p tilo-flight-log -p tilo-app-package-cli -p install -p runtime-bundle \
         -p cli-shim -p app-host -p app-cli -p ush -p local-model-service -p tilo-model-gateway \
         -p imager -p tilo-relay -p tilo-fs -p legacy-vm -p tilo-cli \
         --features tilo-model-gateway/local-models,tilo-model-gateway/host-backend,imager/installation \

@@ -1,10 +1,10 @@
 [package]
-name = "tilo-session-record"
+name = "tilo-flight-log"
 version = "0.1.0"
 edition = "2024"
 publish.workspace = true
 license.workspace = true
-description = "Session flight recorder that relays the compositor's output into a bounded private record, and the report that summarises those records."
+description = "Session flight recorder that relays the compositor's output into a bounded private entry, and the report that summarises those entries."
 
 [[bin]]
 name = "tilo-flight-recorder"

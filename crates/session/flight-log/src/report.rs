@@ -1,5 +1,5 @@
-//! The session report: summarises a login's private flight records (the
-//! recorder's full and event records, and the compositor's frame trace)
+//! The session report: summarises a login's private flight entries (the
+//! recorder's full and event entries, and the compositor's frame trace)
 //! without controlling the desktop.
 
 use std::collections::BTreeMap;
@@ -169,7 +169,7 @@ fn unavailable(path: &Path, error: Option<String>) -> Value {
 
 /// Rows of a CSV file as header-keyed maps; quoted fields are understood.
 fn csv_rows(text: &str) -> Vec<BTreeMap<String, String>> {
-    let records = csv_records(text);
+    let records = csv_entries(text);
     let Some((header, rows)) = records.split_first() else {
         return Vec::new();
     };
@@ -185,7 +185,7 @@ fn csv_rows(text: &str) -> Vec<BTreeMap<String, String>> {
         .collect()
 }
 
-fn csv_records(text: &str) -> Vec<Vec<String>> {
+fn csv_entries(text: &str) -> Vec<Vec<String>> {
     let mut records = Vec::new();
     let mut record = Vec::new();
     let mut field = String::new();
@@ -221,7 +221,7 @@ fn csv_records(text: &str) -> Vec<Vec<String>> {
         record.push(field);
         records.push(record);
     }
-    // A blank line is an empty record, which DictReader skips.
+    // A blank line is an empty entry, which DictReader skips.
     records
         .into_iter()
         .map(|record| {
@@ -374,7 +374,7 @@ fn tail(lines: &[String], count: usize) -> Value {
 /// Samples per name, then per metric.
 type Samples = BTreeMap<String, BTreeMap<String, Vec<i64>>>;
 
-/// What the full record's lines say about presentation and typing.
+/// What the full entry's lines say about presentation and typing.
 #[derive(Default)]
 struct Presentation {
     render_phases: Vec<Value>,
@@ -545,10 +545,10 @@ fn matching(lines: &[&str], keep: impl Fn(&str) -> bool) -> Vec<String> {
         .collect()
 }
 
-/// The flight-record part of the report: the full record at `path`, and the
-/// recorder's event record at `events_path`, where launch timing and launch
-/// failures outlive hours of measurement lines. A record from before the
-/// recorder kept events apart has them in the full record only.
+/// The flight-record part of the report: the full entry at `path`, and the
+/// recorder's event entry at `events_path`, where launch timing and launch
+/// failures outlive hours of measurement lines. An entry from before the
+/// recorder kept events apart has them in the full entry only.
 #[must_use]
 pub fn flight_report(path: &Path, events_path: Option<&Path>) -> Value {
     if !path.is_file() {
@@ -645,7 +645,7 @@ pub fn flight_report(path: &Path, events_path: Option<&Path>) -> Value {
     report
 }
 
-/// The whole report for the records under `root`; `previous` reports the
+/// The whole report for the entries under `root`; `previous` reports the
 /// prior login.
 #[must_use]
 pub fn session_report(root: &Path, previous: bool) -> Value {
@@ -705,7 +705,7 @@ pub fn render_check(report: &Value, budgets: RenderBudgets) -> Vec<String> {
             || "None".to_owned(),
             |path| path.as_str().map_or_else(|| path.repr(), str::to_owned),
         );
-        return vec![format!("no session flight record at {path}")];
+        return vec![format!("no session flight entry at {path}")];
     }
     let phases: Vec<&Value> = match flight.get("render_phase_samples") {
         Some(Value::List(samples)) => samples
@@ -840,7 +840,7 @@ pub fn key_latency_table(report: &Value) -> String {
     let entries = match keys {
         Some(Value::Map(entries)) if !entries.is_empty() => entries.clone(),
         _ => {
-            out.push_str("no typed keys were answered in this login's record\n");
+            out.push_str("no typed keys were answered in this login's entry\n");
             Vec::new()
         }
     };
@@ -876,7 +876,7 @@ mod tests {
     use super::*;
 
     tilo_test_env::scenario! {
-        fn the_report_reads_a_records_patterns_numbers_lines_and_rows;
+        fn the_report_reads_a_entries_patterns_numbers_lines_and_rows;
 
         phase every_pattern_compiles;
         {

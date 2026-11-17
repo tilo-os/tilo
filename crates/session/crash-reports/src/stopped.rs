@@ -2,37 +2,37 @@
 //!
 //! The kernel keeps its log of a panic or oops in persistent memory across the
 //! reset that follows (pstore, a ramoops region on boards that reserve one).
-//! At the next start [`take_in`] reads those records, from `/sys/fs/pstore`
+//! At the next start [`take_in`] reads those reports, from `/sys/fs/pstore`
 //! where this account can read it and from this boot's journal, where
 //! `systemd-pstore` moves them before any session starts, and keeps each as a
-//! `…-stopped.log` record beside the session's own. A record already kept is
+//! `…-stopped.log` report beside the session's own. A report already kept is
 //! known by the text's digest, so reading the same ones at every start keeps
 //! each once. The kernel keeps an oops too, a fault it ends the faulting task
-//! for and runs on from: its record is a fault of the system's core, never the
+//! for and runs on from: its report is a fault of the system's core, never the
 //! computer stopping.
 
 use std::io::Read as _;
 use std::path::Path;
 
 use chrono::TimeZone as _;
-use tilo_actions::remote::crash_records::StopReason;
+use tilo_actions::remote::crash_reports::StopReason;
 
 use super::FILE_TIMESTAMP;
-use super::records::STOPPED_SUFFIX;
+use super::reports::STOPPED_SUFFIX;
 
-/// The heading of a record of the computer stopping.
+/// The heading of a report of the computer stopping.
 pub const STOPPED_TITLE: &str = "tilo computer stopped";
 
-/// The heading of a record of a fault the system's core went on from.
+/// The heading of a report of a fault the system's core went on from.
 pub const FAULT_TITLE: &str = "tilo system fault";
 
-/// The most of one persistent-memory record read at the start.
+/// The most of one persistent-memory report read at the start.
 const MAX_PSTORE_ENTRY: u64 = 1024 * 1024;
 
-/// The records the kernel keeps.
+/// The reports the kernel keeps.
 const PSTORE_DIR: &str = "/sys/fs/pstore";
 
-/// One record the kernel kept in persistent memory: its name there
+/// One report the kernel kept in persistent memory: its name there
 /// (`dmesg-ramoops-0`), what it holds, and when it was written, if known.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PstoreEntry {
@@ -59,7 +59,7 @@ const fn reason_word(reason: StopReason) -> &'static str {
     }
 }
 
-/// The reason a record names, as the kernel writes it.
+/// The reason a report names, as the kernel writes it.
 fn reason_named(name: &str) -> Option<StopReason> {
     match name.trim().to_ascii_lowercase().as_str() {
         "panic" => Some(StopReason::Panic),
@@ -83,7 +83,7 @@ fn dump_heading(first_line: &str) -> Option<(StopReason, u32, u32)> {
 }
 
 /// The stops `entries` record: each dumped log, its parts joined oldest
-/// first. The console log and other records the kernel keeps beside them
+/// first. The console log and other reports the kernel keeps beside them
 /// are not stops of their own.
 #[must_use]
 pub fn stops(entries: &[PstoreEntry]) -> Vec<Stop> {
@@ -123,7 +123,7 @@ pub fn stops(entries: &[PstoreEntry]) -> Vec<Stop> {
         .collect()
 }
 
-/// The records in the persistent-memory filesystem `dir`, as far as this
+/// The reports in the persistent-memory filesystem `dir`, as far as this
 /// account may read them.
 #[must_use]
 pub fn read_pstore_dir(dir: &Path) -> Vec<PstoreEntry> {
@@ -170,8 +170,8 @@ fn journal_bytes(value: &serde_json::Value) -> Option<Vec<u8>> {
     }
 }
 
-/// The records `systemd-pstore` moved into the journal, from the lines of
-/// `journalctl -o json`: each names the record in its message
+/// The reports `systemd-pstore` moved into the journal, from the lines of
+/// `journalctl -o json`: each names the report in its message
 /// (`PStore dmesg-ramoops-0.`) and carries it as its `FILE` field. The
 /// journal keeps no time of the dump itself.
 #[must_use]
@@ -195,7 +195,7 @@ pub fn journal_entries(json_lines: &str) -> Vec<PstoreEntry> {
         .collect()
 }
 
-/// The records `systemd-pstore` moved into this boot's journal, when this
+/// The reports `systemd-pstore` moved into this boot's journal, when this
 /// account may read the system journal.
 #[cfg(target_os = "linux")]
 fn read_journal() -> Vec<PstoreEntry> {
@@ -223,7 +223,7 @@ fn read_journal() -> Vec<PstoreEntry> {
     match output {
         Ok(output) => journal_entries(&String::from_utf8_lossy(&output.stdout)),
         Err(error) => {
-            tracing::debug!(%error, "the journal's records of the computer stopping are unreadable");
+            tracing::debug!(%error, "the journal's reports of the computer stopping are unreadable");
             Vec::new()
         }
     }
@@ -234,7 +234,7 @@ fn read_journal() -> Vec<PstoreEntry> {
     Vec::new()
 }
 
-/// The record kept for `stop`, written as `stamp` (local time, the crash
+/// The report kept for `stop`, written as `stamp` (local time, the crash
 /// log's file-name form).
 #[must_use]
 pub fn render_stop(stop: &Stop, stamp: &str) -> String {
@@ -271,13 +271,13 @@ fn stop_tail(stop: &Stop) -> String {
     format!("-{short}{STOPPED_SUFFIX}")
 }
 
-/// Keep each of `stops` not already kept as a record in `dir`, timed when
+/// Keep each of `stops` not already kept as a report in `dir`, timed when
 /// the system recorded it or else `found_at` (seconds since the Unix epoch).
 /// The names written.
 ///
 /// # Errors
 ///
-/// The directory could not be read; a record that could not be written is
+/// The directory could not be read; a report that could not be written is
 /// left for the next start.
 pub fn keep_stops(dir: &Path, stops: &[Stop], found_at: i64) -> std::io::Result<Vec<String>> {
     let mut held: Vec<String> = std::fs::read_dir(dir)?
@@ -294,22 +294,22 @@ pub fn keep_stops(dir: &Path, stops: &[Stop], found_at: i64) -> std::io::Result<
             continue;
         };
         let stamp = tilo_formats::machine!(
-            "the record's file name, which programs sort by",
+            "the report's file name, which programs sort by",
             when.format(FILE_TIMESTAMP).to_string()
         );
         let name = format!("{stamp}{tail}");
-        match super::write_record(dir, &name, &render_stop(stop, &stamp)) {
+        match super::write_report(dir, &name, &render_stop(stop, &stamp)) {
             Ok(_) => {
                 held.push(name.clone());
                 written.push(name);
             }
-            Err(error) => tracing::warn!(%error, "a record of the computer stopping was not kept"),
+            Err(error) => tracing::warn!(%error, "a report of the computer stopping was not kept"),
         }
     }
     Ok(written)
 }
 
-/// Keep the records of the computer stopping that the kernel left for this
+/// Keep the reports of the computer stopping that the kernel left for this
 /// start in `dir`, from every source, and say how many were new.
 pub fn take_in(dir: &Path) -> usize {
     // Each source's dumps are joined on their own: a dump numbered alike in
@@ -322,7 +322,7 @@ pub fn take_in(dir: &Path) -> usize {
     match keep_stops(dir, &found, chrono::Local::now().timestamp()) {
         Ok(written) => written.len(),
         Err(error) => {
-            tracing::warn!(%error, "the records of the computer stopping were not kept");
+            tracing::warn!(%error, "the reports of the computer stopping were not kept");
             0
         }
     }
@@ -369,7 +369,7 @@ mod tests {
             assert!(stops(&[entry("dmesg-ramoops-0", "Something else\nlog", None)]).is_empty());
         }
 
-        phase the_journals_records_are_read_from_the_messages_that_carried_them;
+        phase the_journals_reports_are_read_from_the_messages_that_carried_them;
         {
             let lines = concat!(
                 r#"{"MESSAGE":"PStore dmesg-ramoops-0 moved to /var/lib/systemd/pstore/0/","FILE":[80,97,110,105,99]}"#,
@@ -413,9 +413,9 @@ mod tests {
             assert!(text.contains("sysrq triggered\n"), "{text}");
         }
 
-        phase a_fault_kept_as_a_record_says_the_system_ran_on;
+        phase a_fault_kept_as_a_report_says_the_system_ran_on;
         {
-            let record = render_stop(
+            let report = render_stop(
                 &Stop {
                     reason: StopReason::Oops,
                     written: None,
@@ -423,12 +423,12 @@ mod tests {
                 },
                 "2026-10-24-225201",
             );
-            assert!(record.starts_with(FAULT_TITLE), "{record}");
+            assert!(report.starts_with(FAULT_TITLE), "{report}");
             assert!(
-                record.contains("time-of:   the start that found it\n"),
-                "{record}"
+                report.contains("time-of:   the start that found it\n"),
+                "{report}"
             );
-            assert!(record.contains("went on running"), "{record}");
+            assert!(report.contains("went on running"), "{report}");
         }
     }
 }

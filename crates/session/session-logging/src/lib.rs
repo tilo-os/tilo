@@ -3,7 +3,7 @@
 //! A session is started by a display manager or by systemd, with no terminal
 //! to read it: its runner relays what it writes to stderr into the journal and
 //! the flight record (`dist/session/tilo-session-runner`,
-//! `crates/session/session-record`). [`install`] makes that one stream the log
+//! `crates/session/flight-log`). [`install`] makes that one stream the log
 //! of everything this process and its crates report — every `tracing::warn!`,
 //! `error!` and `info!`, as much of it as `RUST_LOG` asks for, with the
 //! launch-timing lines always on ([`tilo_startup_metrics::log_directives`]) —
@@ -36,5 +36,5 @@ pub fn install() {
         // a runner or recorder that stopped reading must not end the session.
         .log_internal_errors(false)
         .init();
-    tilo_crash_records::install(tilo_crash_records::PANIC_TITLE);
+    tilo_crash_reports::install(tilo_crash_reports::PANIC_TITLE);
 }

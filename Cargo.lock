@@ -18669,7 +18669,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "tilo-crash-records"
+name = "tilo-crash-reports"
 version = "0.1.0"
 dependencies = [
  "blake3",
@@ -19425,6 +19425,17 @@ dependencies = [
  "rustix 1.1.6",
  "tempfile",
  "tilo-pycompat",
+ "tilo-test-env",
+ "workspace-hack",
+]
+
+[[package]]
+name = "tilo-flight-log"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "regex",
+ "tempfile",
  "tilo-test-env",
  "workspace-hack",
 ]
@@ -21889,7 +21900,7 @@ dependencies = [
  "tilo-connectivity-service",
  "tilo-content",
  "tilo-copy-lint",
- "tilo-crash-records",
+ "tilo-crash-reports",
  "tilo-delivery-protocol",
  "tilo-desktop",
  "tilo-desktop-entry",
@@ -22100,7 +22111,7 @@ dependencies = [
 name = "tilo-session-logging"
 version = "0.1.0"
 dependencies = [
- "tilo-crash-records",
+ "tilo-crash-reports",
  "tilo-startup-metrics",
  "tilo-test-env",
  "tracing-subscriber",
@@ -22123,17 +22134,6 @@ dependencies = [
  "tracing",
  "workspace-hack",
  "zbus",
-]
-
-[[package]]
-name = "tilo-session-record"
-version = "0.1.0"
-dependencies = [
- "libc",
- "regex",
- "tempfile",
- "tilo-test-env",
- "workspace-hack",
 ]
 
 [[package]]
@@ -29005,7 +29005,7 @@ dependencies = [
  "tilo-control",
  "tilo-copy-lint",
  "tilo-cpu-raster",
- "tilo-crash-records",
+ "tilo-crash-reports",
  "tilo-crypto",
  "tilo-dav",
  "tilo-delivery-protocol",
@@ -29043,6 +29043,7 @@ dependencies = [
  "tilo-file-provider",
  "tilo-files",
  "tilo-firstboot-files",
+ "tilo-flight-log",
  "tilo-font-catalog",
  "tilo-formats",
  "tilo-frame-metrics",
@@ -29149,7 +29150,6 @@ dependencies = [
  "tilo-session-core",
  "tilo-session-logging",
  "tilo-session-power",
- "tilo-session-record",
  "tilo-settings-records",
  "tilo-settings-service",
  "tilo-sheets",

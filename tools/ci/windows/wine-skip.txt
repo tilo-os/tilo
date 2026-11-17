@@ -34,7 +34,7 @@ setup::migration::tests::migration_cancellation_keeps_verified_files_and_cleans_
 setup::migration::tests::pinned_paths_resist_parent_and_descendant_swaps	Wine cannot protect a directory ACL
 setup::migration::tests::publication_requires_verified_unchanged_bytes_and_preserves_conflicts	Wine cannot protect a directory ACL
 setup::migration_store::tests::issue_details_and_pages_stay_attempt_scoped_and_bounded	Wine cannot protect a directory ACL
-setup::migration_store::tests::operation_records_reopen_review_and_round_trip_truthfully	Wine cannot protect a directory ACL
+setup::migration_store::tests::operation_entries_reopen_review_and_round_trip_truthfully	Wine cannot protect a directory ACL
 setup::migration_store::tests::store_ownership_is_exclusive_and_released_on_process_death	Wine cannot protect a directory ACL
 setup::migration_worker::tests::migration_worker_terminal_events_are_ordered_and_distinct	durable journaled copying needs native directory persistence
 setup::staging::fake::tests::an_injected_failure_is_recorded_and_retry_completes	its recorded staging needs local-disk evidence Wine lacks

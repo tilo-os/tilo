@@ -7,7 +7,7 @@ use ui::widget::ListRow;
 
 use super::desktop_continuation::ChoiceMode;
 use crate::resource::CATALOG;
-use imager_backend::migration_store::{OperationRecord, OperationState};
+use imager_backend::migration_store::{OperationEntry, OperationState};
 
 pub(super) fn issue_row(path: &Path, reason: &str) -> ListRow {
     let shown = if path.as_os_str().is_empty() {
@@ -50,7 +50,7 @@ pub(super) fn shown_path(path: &Path) -> String {
 }
 
 pub(super) fn operation_details(
-    operation: &OperationRecord,
+    operation: &OperationEntry,
 ) -> (Vec<(PathBuf, String)>, Vec<String>) {
     let issues = operation.issues().unwrap_or_default();
     let mut notes = operation.metadata_limitations().to_vec();

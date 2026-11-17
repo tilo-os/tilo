@@ -687,7 +687,7 @@ class HardwareProfileTest(unittest.TestCase):
                     hardware_profile.validate_definition(data)
 
 
-class CrashRecordContractTest(unittest.TestCase):
+class CrashReportContractTest(unittest.TestCase):
     """Every board says where its record of a crash goes, what resets it and
     what panics first, and the kernel arguments it ships keep that promise."""
 

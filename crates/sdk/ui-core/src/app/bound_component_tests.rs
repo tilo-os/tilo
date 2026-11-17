@@ -57,7 +57,7 @@ impl PagedProbe {
             let resource = format!("bound:paged:{id}");
             catalog
                 .upsert_resource(
-                    crate::search::SearchRecord::new(
+                    crate::search::SearchItem::new(
                         &resource,
                         crate::search::SearchResult::for_action(
                             format!("Paged kind {id}"),

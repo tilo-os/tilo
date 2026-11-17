@@ -49,7 +49,7 @@ mod confirmation;
 mod content_get;
 mod content_link;
 mod content_put;
-pub mod crash_records;
+pub mod crash_reports;
 pub mod downloaded_apps;
 pub mod environment_commands;
 pub mod environment_machines;

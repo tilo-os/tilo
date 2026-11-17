@@ -388,24 +388,24 @@ pub fn codec_notice(
 /// The notice for `news`, a session or computer that stopped and started again; `today` decides
 /// whether it names the time of day or the date too.
 #[must_use]
-pub fn news_notice(news: &tilo_crash_records::News, today: NaiveDate) -> Notice {
+pub fn news_notice(news: &tilo_crash_reports::News, today: NaiveDate) -> Notice {
     let time = if news.at.date() == today {
         ui::format::time_of(&news.at)
     } else {
         ui::format::timestamp(&news.at)
     };
     let (urgency, title, body) = match news.ended {
-        tilo_crash_records::Ended::Froze => (
+        tilo_crash_reports::Ended::Froze => (
             1,
             t("crash-notice-title"),
             t_args("crash-notice-froze-body", &[("time", time.into())]),
         ),
-        tilo_crash_records::Ended::Crashed => (
+        tilo_crash_reports::Ended::Crashed => (
             1,
             t("crash-notice-title"),
             t_args("crash-notice-crashed-body", &[("time", time.into())]),
         ),
-        tilo_crash_records::Ended::Stopped => (
+        tilo_crash_reports::Ended::Stopped => (
             1,
             t("crash-notice-stopped-title"),
             t("crash-notice-stopped-body"),
@@ -652,7 +652,7 @@ pub(crate) fn tell_shell_not_taken(
 
 /// Tell the person what the crash records in `dir` say happened before this start.
 pub fn tell_crash_news(notifications: &Notifications, dir: &Path) {
-    let Some(news) = tilo_crash_records::take_news(dir) else {
+    let Some(news) = tilo_crash_reports::take_news(dir) else {
         return;
     };
     let today = ui::clock::local_now().date_naive();
@@ -712,12 +712,12 @@ pub fn start(notifications: &Notifications) {
     let crash_news = std::thread::Builder::new()
         .name("crash-news".into())
         .spawn(move || {
-            let Some(dir) = tilo_crash_records::directory() else {
+            let Some(dir) = tilo_crash_reports::directory() else {
                 return;
             };
             // What the kernel kept of the computer stopping becomes a record first, so it is news
             // like the session's own.
-            tilo_crash_records::stopped::take_in(&dir);
+            tilo_crash_reports::stopped::take_in(&dir);
             tell_crash_news(&news, &dir);
         });
     if let Err(error) = crash_news {
@@ -1054,7 +1054,7 @@ mod tests {
         tell_crash_news(&notifications, dir.path());
         assert!(notifications.live().is_empty());
 
-        tilo_crash_records::write_record(
+        tilo_crash_reports::write_report(
             dir.path(),
             "2026-10-24-225201-9-freeze.log",
             "tilo session freeze\n===================\nversion:   0.1.0\n",
@@ -1151,8 +1151,8 @@ mod tests {
 
         phase a_computer_that_stopped_is_its_own_notice;
         {
-            let news = tilo_crash_records::News {
-                ended: tilo_crash_records::Ended::Stopped,
+            let news = tilo_crash_reports::News {
+                ended: tilo_crash_reports::Ended::Stopped,
                 at: ui::format::NaiveDateTime::parse_from_str(
                     "2026-10-24 22:52:01",
                     "%Y-%m-%d %H:%M:%S",

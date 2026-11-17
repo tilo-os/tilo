@@ -344,7 +344,7 @@ impl AdmittedCommit {
         }
         let seq = remember_commit(
             &ws,
-            crate::store::CommitRecord {
+            crate::store::CommitEntry {
                 author,
                 op,
                 seq: durable,
@@ -421,7 +421,7 @@ async fn claim(
     ws: &SharedWorkspace,
     author: [u8; 32],
     op: [u8; 16],
-) -> Result<crate::workspace::CommitClaim, crate::store::CommitRecord> {
+) -> Result<crate::workspace::CommitClaim, crate::store::CommitEntry> {
     loop {
         let runtime = ws.lock().await;
         let claimed = runtime
@@ -441,7 +441,7 @@ async fn claim(
 /// host order, or a refusal when the same operation id carries other content.
 fn resent_commit(
     workspace_id: WorkspaceId,
-    admitted: crate::store::CommitRecord,
+    admitted: crate::store::CommitEntry,
     digest: [u8; 32],
 ) -> Envelope {
     if admitted.digest != digest {
@@ -469,7 +469,7 @@ fn resent_commit(
 /// member then receives commits in the order their authors were told.
 async fn remember_commit(
     ws: &SharedWorkspace,
-    mut record: crate::store::CommitRecord,
+    mut record: crate::store::CommitEntry,
 ) -> Result<u64, PeerError> {
     let lane = ws.lock().await.commit_ledger_lane.clone();
     let _writing = lane.lock().await;

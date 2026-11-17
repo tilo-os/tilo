@@ -36,7 +36,7 @@ use super::import_rows::{
 use super::view::system_folder_reason;
 use crate::resource::Imager;
 use imager_backend::migration_store::{
-    IssuePage, MigrationStore, OperationRecord, OperationState, StoreWriter,
+    IssuePage, MigrationStore, OperationEntry, OperationState, StoreWriter,
 };
 use imager_backend::migration_worker::{
     MigrationJob, MigrationWorker, WorkerEvent, WorkerOutcome, durable_copy_available,
@@ -98,7 +98,7 @@ const SHOT_LINKS: [&str; 40] = [
 ];
 
 type CommandSink = Rc<RefCell<Vec<ImportCommand>>>;
-type SaveReply = mpsc::Receiver<Result<Vec<OperationRecord>, String>>;
+type SaveReply = mpsc::Receiver<Result<Vec<OperationEntry>, String>>;
 
 #[derive(Clone, Copy, Debug)]
 enum PickTarget {
@@ -160,10 +160,10 @@ pub struct ImportApp {
     batch: Vec<usize>,
     store: Option<Arc<MigrationStore>>,
     writer: Option<StoreWriter>,
-    pending_saves: Vec<mpsc::Receiver<Result<Vec<OperationRecord>, String>>>,
+    pending_saves: Vec<mpsc::Receiver<Result<Vec<OperationEntry>, String>>>,
     detail_request: Option<(usize, mpsc::Receiver<Result<IssuePage, String>>)>,
     detail_pages: HashMap<usize, IssuePage>,
-    operations: Vec<OperationRecord>,
+    operations: Vec<OperationEntry>,
     source: Option<PathBuf>,
     destination_parent: Option<PathBuf>,
     worker: Option<(usize, MigrationWorker)>,
@@ -451,7 +451,7 @@ impl ImportApp {
             }
             std::thread::yield_now();
         }
-        if self.operations.first().map(OperationRecord::state) != Some(OperationState::Cancelled) {
+        if self.operations.first().map(OperationEntry::state) != Some(OperationState::Cancelled) {
             return Err("retry screenshot did not retain a stopped attempt".into());
         }
         self.retry_operation(0)?;
@@ -505,7 +505,7 @@ impl ImportApp {
             journal,
         )?;
         let retry = fresh.retry()?;
-        let mut conflict = OperationRecord::new(&fresh);
+        let mut conflict = OperationEntry::new(&fresh);
         conflict.approve();
         conflict.mark_running()?;
         Self::run_shot_worker(&mut conflict, retry)?;
@@ -537,7 +537,7 @@ impl ImportApp {
         Ok(())
     }
 
-    fn run_shot_worker(operation: &mut OperationRecord, job: MigrationJob) -> Result<(), String> {
+    fn run_shot_worker(operation: &mut OperationEntry, job: MigrationJob) -> Result<(), String> {
         let mut worker = MigrationWorker::start(job)?;
         let deadline = ui::time::now() + SHOT_WAIT_BOUND;
         loop {
@@ -1315,7 +1315,7 @@ impl ImportApp {
         );
         let journal = store.root().join(format!("{id}.journal"));
         let job = MigrationJob::fresh(id, source, destination, journal)?;
-        self.operations.push(OperationRecord::new(&job));
+        self.operations.push(OperationEntry::new(&job));
         if let Err(error) = self.persist() {
             self.operations.pop();
             return Err(format!("review could not be saved: {error}"));
@@ -2242,7 +2242,7 @@ impl ImportApp {
         ))
     }
 
-    fn page_details(&self, index: usize, operation: &OperationRecord) -> Option<Column> {
+    fn page_details(&self, index: usize, operation: &OperationEntry) -> Option<Column> {
         let mut issues: Vec<Box<dyn Widget>> = Vec::new();
         let mut notes = Vec::new();
         if let Some(page) = self.detail_pages.get(&index) {
@@ -2311,7 +2311,7 @@ impl ImportApp {
         .with_enabled(enabled)
     }
 
-    fn operation_card(&self, index: usize, operation: &OperationRecord) -> Column {
+    fn operation_card(&self, index: usize, operation: &OperationEntry) -> Column {
         let state = operation.state();
         let folder = operation
             .source()

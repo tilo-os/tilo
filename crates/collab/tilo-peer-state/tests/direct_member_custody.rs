@@ -18,7 +18,7 @@
 
 use crate::common::{addr, device, localhost_endpoint};
 use crate::direct_host_link::{
-    commit_membership, commit_record, commit_record_at, hint, invitation, joins, owner_at, until,
+    commit_entry, commit_entry_at, commit_membership, hint, invitation, joins, owner_at, until,
 };
 
 use automerge::{AutoCommit, ROOT, transaction::Transactable};
@@ -92,7 +92,7 @@ impl Hosted {
         let router = Router::builder(host_endpoint.clone())
             .accept(DIRECT_ALPN, serving)
             .spawn();
-        commit_record(&host, workspace, &host_key, "from the host");
+        commit_entry(&host, workspace, &host_key, "from the host");
 
         let service: Arc<dyn tilo_peer_state::join_transport::LocalJoinService> = Arc::new(
             JoinAnswer(OwnerJoinWorkspaces::new(host.clone(), host_key.clone())),
@@ -259,7 +259,7 @@ async fn a_write_the_host_refuses_for_good_leaves_custody_and_its_verdict_reache
     let (workspace, member_device) = (hosted.workspace, hosted.member_device());
     hosted.unlink();
     let before = hosted.member.owed_writes(workspace).unwrap();
-    let seq = commit_record(
+    let seq = commit_entry(
         &hosted.member,
         workspace,
         &hosted.member_key,
@@ -582,7 +582,7 @@ async fn a_cleartext_write_that_waited_past_the_live_window_lands_on_the_host() 
     let written = SystemTime::now()
         .checked_sub(Duration::from_secs(360))
         .unwrap();
-    let seq = commit_record_at(
+    let seq = commit_entry_at(
         &hosted.member,
         workspace,
         &hosted.member_key,

@@ -1276,7 +1276,7 @@ tilo_test_env::scenario! {
             let revision = app.action_directory_revision();
             catalog
                 .upsert_resource(
-                    crate::search::SearchRecord::new(
+                    crate::search::SearchItem::new(
                         "test.item:1",
                         crate::search::SearchResult::for_action(
                             "Large directory",

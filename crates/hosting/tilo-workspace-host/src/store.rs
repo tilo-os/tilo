@@ -104,7 +104,7 @@ pub(crate) fn thread_listed_entries() -> u64 {
     THREAD_LISTED_ENTRIES.with(std::cell::Cell::get)
 }
 
-/// Ledger of admitted `Commit`s, see [`CommitRecord`].
+/// Ledger of admitted `Commit`s, see [`CommitEntry`].
 pub const COMMITS_FILE: &str = "commits.bin";
 
 const COMMIT_RECORD_BYTES: usize = 32 + 16 + 8 + 32;
@@ -112,7 +112,7 @@ const COMMIT_RECORD_BYTES: usize = 32 + 16 + 8 + 32;
 /// One commit the host admitted: resending the same `(author, op)` is
 /// answered from here instead of being persisted and fanned out again.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct CommitRecord {
+pub struct CommitEntry {
     /// Authoring device.
     pub author: [u8; 32],
     /// The author's operation id.
@@ -123,7 +123,7 @@ pub struct CommitRecord {
     pub digest: [u8; 32],
 }
 
-impl CommitRecord {
+impl CommitEntry {
     fn encode(&self) -> Vec<u8> {
         let mut out = Vec::with_capacity(COMMIT_RECORD_BYTES);
         out.extend_from_slice(&self.author);
@@ -474,7 +474,7 @@ impl WorkspaceStore {
     /// # Errors
     ///
     /// Returns an error if the ledger exists but can't be read or trimmed.
-    pub fn load_commits(&self) -> Result<Vec<CommitRecord>, StoreError> {
+    pub fn load_commits(&self) -> Result<Vec<CommitEntry>, StoreError> {
         let path = self.root.join(COMMITS_FILE);
         if !path.exists() {
             return Ok(Vec::new());
@@ -489,7 +489,7 @@ impl WorkspaceStore {
         }
         Ok(bytes
             .chunks_exact(COMMIT_RECORD_BYTES)
-            .filter_map(CommitRecord::decode)
+            .filter_map(CommitEntry::decode)
             .collect())
     }
 
@@ -500,7 +500,7 @@ impl WorkspaceStore {
     /// # Errors
     ///
     /// Returns an error if the ledger can't be opened or written.
-    pub fn append_commit(&self, record: &CommitRecord) -> Result<(), StoreError> {
+    pub fn append_commit(&self, record: &CommitEntry) -> Result<(), StoreError> {
         let mut file = fs::OpenOptions::new()
             .create(true)
             .append(true)
@@ -510,7 +510,7 @@ impl WorkspaceStore {
     }
 
     /// Atomically replace the ledger with `records`, dropping evicted ones.
-    pub fn rewrite_commits(&self, records: &[CommitRecord]) -> Result<(), StoreError> {
+    pub fn rewrite_commits(&self, records: &[CommitEntry]) -> Result<(), StoreError> {
         let mut bytes = Vec::with_capacity(records.len().saturating_mul(COMMIT_RECORD_BYTES));
         for record in records {
             bytes.extend_from_slice(&record.encode());
@@ -573,7 +573,7 @@ mod tests {
     fn commit_ledger_round_trips_and_ignores_a_torn_tail() {
         let tmp = tempfile::tempdir().unwrap();
         let store = WorkspaceStore::open(tmp.path(), WorkspaceId::from_u128(7), true).unwrap();
-        let record = |n: u8| CommitRecord {
+        let record = |n: u8| CommitEntry {
             author: [n; 32],
             op: [n; 16],
             seq: u64::from(n) * 10,

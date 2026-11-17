@@ -1,4 +1,4 @@
-//! Summarises private Tilo session flight records without controlling the
+//! Summarises private Tilo session flight entries without controlling the
 //! desktop.
 
 use std::fs;
@@ -7,7 +7,7 @@ use std::os::unix::fs::{DirBuilderExt as _, OpenOptionsExt as _, PermissionsExt 
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use tilo_session_record::report::{self, RenderBudgets};
+use tilo_flight_log::report::{self, RenderBudgets};
 
 const USAGE: &str = "usage: tilo-session-report [-h] [--root ROOT] [--previous] [--output OUTPUT] \
 [--render-check] [--require-direct] [--key-latency] [--render-budget-ms RENDER_BUDGET_MS] \
@@ -15,7 +15,7 @@ const USAGE: &str = "usage: tilo-session-report [-h] [--root ROOT] [--previous] 
 [--min-damage-limited-percent PERCENT]";
 
 const HELP: &str = "
-Summarise private Tilo session flight records without controlling the desktop.
+Summarise private Tilo session flight entries without controlling the desktop.
 
 options:
   -h, --help            show this help message and exit
@@ -24,7 +24,7 @@ options:
   --output OUTPUT       write private JSON instead of stdout
   --render-check         exit 1 unless presentation meets the render-path contract and budgets
   --require-direct      with --render-check: direct GPU scanout must present even if it never started
-  --key-latency         print key-to-present latency of typing, per app (from KEY-LATENCY records)
+  --key-latency         print key-to-present latency of typing, per app (from KEY-LATENCY entries)
   --render-budget-ms RENDER_BUDGET_MS
   --frame-work-budget-ms FRAME_WORK_BUDGET_MS
   --key-budget-ms KEY_BUDGET_MS
@@ -179,10 +179,10 @@ fn main() -> ExitCode {
         );
         let flight = report.get("flight");
         let frames = report.get("frames");
-        let shown = |section: Option<&tilo_session_record::value::Value>, key: &str| {
+        let shown = |section: Option<&tilo_flight_log::value::Value>, key: &str| {
             section.and_then(|section| section.get(key)).map_or_else(
                 || "None".to_owned(),
-                tilo_session_record::value::Value::repr,
+                tilo_flight_log::value::Value::repr,
             )
         };
         println!(

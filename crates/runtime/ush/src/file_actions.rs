@@ -40,7 +40,7 @@ pub use tilo_environment::files::{
 };
 use tilo_resource::{Id, Invoke, Replica, Settled};
 
-use crate::audit::{AuditLog, AuditRecord};
+use crate::audit::{AuditEntry, AuditLog};
 use crate::broker::{BrokerState, EnvironmentHandle, Response};
 use crate::content::EnvironmentContent;
 use crate::policy::Policy;
@@ -792,12 +792,12 @@ pub fn subjects(action: &FileAction) -> String {
 }
 
 #[must_use]
-pub fn audit_record(session: &str, environment: &str, action: &FileAction) -> AuditRecord {
-    AuditRecord::new(session, environment, action.verb(), true).about(subjects(action))
+pub fn audit_entry(session: &str, environment: &str, action: &FileAction) -> AuditEntry {
+    AuditEntry::new(session, environment, action.verb(), true).about(subjects(action))
 }
 
 pub fn log(log: &AuditLog, session: &str, environment: &str, action: &FileAction) {
-    log.append(&audit_record(session, environment, action));
+    log.append(&audit_entry(session, environment, action));
 }
 
 /// Where an environment's recoverable store lives: under its own `/var`,
@@ -921,7 +921,7 @@ pub fn carry_out_queued(state: &BrokerState) {
 
 fn deny(state: &BrokerState, request: &str, subject: &str, reason: &str) {
     state.audit.append(
-        &AuditRecord::new(&state.session_id, &state.environment.key, request, false)
+        &AuditEntry::new(&state.session_id, &state.environment.key, request, false)
             .about(subject)
             .because(reason),
     );

@@ -1,37 +1,37 @@
-//! Every record of what went wrong on this computer, listed and read as the
+//! Every report of what went wrong on this computer, listed and read as the
 //! facts a person, Settings or an agent asks for.
 //!
 //! The private crash directory ([`super::directory`]) holds a file for each
 //! time the session panicked (`<timestamp>-<pid>.log`), stopped responding
 //! (`…-freeze.log`) or found the computer itself had stopped
-//! (`…-stopped.log`, written from the kernel's record by [`super::stopped`]).
-//! [`list`] says what each record is, newest first and without its text;
-//! [`read`] returns one record's text, stacks included, only when it is asked
-//! for by name. Nothing here sends a record anywhere.
+//! (`…-stopped.log`, written from the kernel's report by [`super::stopped`]).
+//! [`list`] says what each report is, newest first and without its text;
+//! [`read`] returns one report's text, stacks included, only when it is asked
+//! for by name. Nothing here sends a report anywhere.
 
 use std::io::Read as _;
 use std::path::Path;
 
 use chrono::{Local, TimeZone as _};
-use tilo_actions::remote::crash_records::{CrashKind, CrashRecord, CrashRecordText, StopReason};
+use tilo_actions::remote::crash_reports::{CrashKind, CrashReport, CrashReportText, StopReason};
 
 use super::{FILE_TIMESTAMP, FREEZE_SUFFIX};
 
-/// The end of the name of a record of the computer stopping.
+/// The end of the name of a report of the computer stopping.
 pub const STOPPED_SUFFIX: &str = "-stopped.log";
 
-/// How much of a record [`list`] reads: its facts, never its stacks.
+/// How much of a report [`list`] reads: its facts, never its stacks.
 const HEAD_BYTES: u64 = 4 * 1024;
-/// The most of one record [`read`] returns.
+/// The most of one report [`read`] returns.
 pub const MAX_TEXT: u64 = 1024 * 1024;
-/// The most records [`list`] answers, newest first.
+/// The most reports [`list`] answers, newest first.
 const MAX_LISTED: usize = 200;
 
 /// `2026-10-24-225201`: how long [`FILE_TIMESTAMP`] renders, and so the
-/// prefix of every record's name.
+/// prefix of every report's name.
 const FILE_TIMESTAMP_LEN: usize = 17;
 
-/// The local time a record's file name starts with.
+/// The local time a report's file name starts with.
 #[must_use]
 pub fn written_at(name: &str) -> Option<chrono::NaiveDateTime> {
     let stamp = name.get(..FILE_TIMESTAMP_LEN)?;
@@ -40,7 +40,7 @@ pub fn written_at(name: &str) -> Option<chrono::NaiveDateTime> {
 
 /// Whether `name` is a record's: a file name the crash log writes.
 #[must_use]
-pub fn is_record_name(name: &str) -> bool {
+pub fn is_report_name(name: &str) -> bool {
     !name.starts_with('.')
         && !name.contains(['/', '\\'])
         && Path::new(name).extension() == Some("log".as_ref())
@@ -48,7 +48,7 @@ pub fn is_record_name(name: &str) -> bool {
 }
 
 /// The value of the header field `key` (`version:   0.1.0`), from the facts
-/// a record starts with, up to its first blank line. A placeholder the crash
+/// a report starts with, up to its first blank line. A placeholder the crash
 /// log writes for a fact it could not read (`<none>`) is no value.
 fn field<'a>(head: &'a str, key: &str) -> Option<&'a str> {
     head.lines()
@@ -58,7 +58,7 @@ fn field<'a>(head: &'a str, key: &str) -> Option<&'a str> {
         .filter(|value| !value.is_empty() && !value.starts_with('<'))
 }
 
-/// The reason a record names, as the crash log and the kernel write it.
+/// The reason a report names, as the crash log and the kernel write it.
 fn reason_named(name: &str) -> Option<StopReason> {
     match name.trim().to_ascii_lowercase().as_str() {
         "panic" => Some(StopReason::Panic),
@@ -68,11 +68,11 @@ fn reason_named(name: &str) -> Option<StopReason> {
     }
 }
 
-/// What the record `name`, starting with `head`, says happened. `None` for
+/// What the report `name`, starting with `head`, says happened. `None` for
 /// a name the crash log does not write.
 #[must_use]
-pub fn summarize(name: &str, head: &str) -> Option<CrashRecord> {
-    if !is_record_name(name) {
+pub fn summarize(name: &str, head: &str) -> Option<CrashReport> {
+    if !is_report_name(name) {
         return None;
     }
     let at = Local
@@ -97,7 +97,7 @@ pub fn summarize(name: &str, head: &str) -> Option<CrashRecord> {
     } else {
         CrashKind::Crashed
     };
-    Some(CrashRecord {
+    Some(CrashReport {
         id: name.to_owned(),
         at,
         kind,
@@ -119,9 +119,9 @@ pub(crate) fn read_start(path: &Path, limit: u64) -> std::io::Result<(String, bo
     Ok((String::from_utf8_lossy(&bytes).into_owned(), truncated))
 }
 
-/// Every record in `dir`, newest first, without its text.
+/// Every report in `dir`, newest first, without its text.
 #[must_use]
-pub fn list(dir: &Path) -> Vec<CrashRecord> {
+pub fn list(dir: &Path) -> Vec<CrashReport> {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return Vec::new();
     };
@@ -129,7 +129,7 @@ pub fn list(dir: &Path) -> Vec<CrashRecord> {
         .filter_map(|entry| {
             let entry = entry.ok()?;
             let name = entry.file_name().into_string().ok()?;
-            (is_record_name(&name) && entry.file_type().ok()?.is_file()).then_some(name)
+            (is_report_name(&name) && entry.file_type().ok()?.is_file()).then_some(name)
         })
         .collect();
     names.sort_unstable_by(|a, b| b.cmp(a));
@@ -143,23 +143,23 @@ pub fn list(dir: &Path) -> Vec<CrashRecord> {
         .collect()
 }
 
-/// The record `id` in `dir`, with its text.
+/// The report `id` in `dir`, with its text.
 ///
 /// # Errors
 ///
-/// No record is called `id`, or it could not be read.
-pub fn read(dir: &Path, id: &str) -> Result<CrashRecordText, String> {
-    if !is_record_name(id) {
-        return Err(format!("no record is called {id}"));
+/// No report is called `id`, or it could not be read.
+pub fn read(dir: &Path, id: &str) -> Result<CrashReportText, String> {
+    if !is_report_name(id) {
+        return Err(format!("no report is called {id}"));
     }
     let (text, truncated) =
         read_start(&dir.join(id), MAX_TEXT).map_err(|error| match error.kind() {
-            std::io::ErrorKind::NotFound => format!("no record is called {id}"),
-            _ => format!("the record {id} could not be read: {error}"),
+            std::io::ErrorKind::NotFound => format!("no report is called {id}"),
+            _ => format!("the report {id} could not be read: {error}"),
         })?;
-    let record = summarize(id, &text).ok_or_else(|| format!("no record is called {id}"))?;
-    Ok(CrashRecordText {
-        record,
+    let report = summarize(id, &text).ok_or_else(|| format!("no report is called {id}"))?;
+    Ok(CrashReportText {
+        report,
         text,
         truncated,
     })
@@ -176,12 +176,12 @@ mod tests {
         dir
     }
 
-    fn record(dir: &Path, name: &str, body: &str) -> std::path::PathBuf {
-        crate::write_record(dir, name, body).unwrap()
+    fn report(dir: &Path, name: &str, body: &str) -> std::path::PathBuf {
+        crate::write_report(dir, name, body).unwrap()
     }
 
     tilo_test_env::scenario! {
-        fn a_record_is_summarized_by_its_name_and_its_head;
+        fn a_report_is_summarized_by_its_name_and_its_head;
 
         phase a_freeze_and_a_panic_are_told_apart_by_their_facts;
         {
@@ -246,33 +246,33 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        fn records_are_listed_and_read_from_their_directory;
+        fn reports_are_listed_and_read_from_their_directory;
 
-        phase records_are_listed_newest_first_without_their_stacks;
+        phase reports_are_listed_newest_first_without_their_stacks;
         {
             let dir = private_dir();
-            record(dir.path(), "2026-10-20-080000-7-freeze.log", "older\nstack");
-            record(
+            report(dir.path(), "2026-10-20-080000-7-freeze.log", "older\nstack");
+            report(
                 dir.path(),
                 "2026-10-24-225201-9-freeze.log",
                 &format!("newer\n{}", "f".repeat(8192)),
             );
-            record(dir.path(), ".noticed", "2026-10-24-225201-9-freeze.log");
+            report(dir.path(), ".noticed", "2026-10-24-225201-9-freeze.log");
             let listed = list(dir.path());
             assert_eq!(listed.len(), 2);
             assert_eq!(listed[0].id, "2026-10-24-225201-9-freeze.log");
             assert_eq!(listed[1].id, "2026-10-20-080000-7-freeze.log");
         }
 
-        phase one_record_is_read_by_the_name_the_list_gave;
+        phase one_report_is_read_by_the_name_the_list_gave;
         {
             let dir = private_dir();
-            let path = record(dir.path(), "2026-10-24-225201-9-freeze.log", "the text");
+            let path = report(dir.path(), "2026-10-24-225201-9-freeze.log", "the text");
             assert_eq!(path.file_name().unwrap(), "2026-10-24-225201-9-freeze.log");
-            let record = read(dir.path(), "2026-10-24-225201-9-freeze.log").unwrap();
-            assert_eq!(record.text, "the text");
-            assert!(!record.truncated);
-            assert_eq!(record.record.kind, CrashKind::Froze);
+            let report = read(dir.path(), "2026-10-24-225201-9-freeze.log").unwrap();
+            assert_eq!(report.text, "the text");
+            assert!(!report.truncated);
+            assert_eq!(report.report.kind, CrashKind::Froze);
             assert!(read(dir.path(), "2026-10-25-000000-1-freeze.log").is_err());
             assert!(read(dir.path(), "../escape.log").is_err());
         }
@@ -284,12 +284,12 @@ mod tests {
     }
 
     #[test]
-    fn a_long_record_is_read_only_as_far_as_it_is_answered() {
+    fn a_long_report_is_read_only_as_far_as_it_is_answered() {
         let dir = private_dir();
         let body = "x".repeat(usize::try_from(MAX_TEXT).unwrap() + 16);
-        record(dir.path(), "2026-10-24-225201-9-freeze.log", &body);
-        let record = read(dir.path(), "2026-10-24-225201-9-freeze.log").unwrap();
-        assert!(record.truncated);
-        assert_eq!(u64::try_from(record.text.len()).unwrap(), MAX_TEXT);
+        report(dir.path(), "2026-10-24-225201-9-freeze.log", &body);
+        let report = read(dir.path(), "2026-10-24-225201-9-freeze.log").unwrap();
+        assert!(report.truncated);
+        assert_eq!(u64::try_from(report.text.len()).unwrap(), MAX_TEXT);
     }
 }

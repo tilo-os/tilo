@@ -794,7 +794,7 @@ fn serve_request(
         Ok(workspace) => store.for_workspace(&workspace),
         Err(reason) => {
             AuditLog::at(store.audit_dir()).append(
-                &crate::audit::AuditRecord::new("serve", "-", "workspace", false).because(&reason),
+                &crate::audit::AuditEntry::new("serve", "-", "workspace", false).because(&reason),
             );
             reply(writer, &ServeResponse::Denied { reason }, None)?;
             return Ok(Served::Refused);
@@ -833,7 +833,7 @@ fn serve_request(
         Ok(e) => e,
         Err(reason) => {
             AuditLog::at(store.audit_dir()).append(
-                &crate::audit::AuditRecord::new("serve", "-", "open-session", false)
+                &crate::audit::AuditEntry::new("serve", "-", "open-session", false)
                     .because(&reason),
             );
             reply(writer, &ServeResponse::Denied { reason }, None)?;
@@ -912,7 +912,7 @@ fn open_environment(
     };
 
     let id = uuid::Uuid::new_v4().simple().to_string();
-    AuditLog::at(store.audit_dir()).append(&crate::audit::AuditRecord::new(
+    AuditLog::at(store.audit_dir()).append(&crate::audit::AuditEntry::new(
         &id,
         &record,
         "open-session",
@@ -1012,7 +1012,7 @@ fn hand_off_session(
     // close audited rather than left running unseen.
     let undelivered = |error: anyhow::Error| {
         AuditLog::at(store.audit_dir()).append(
-            &crate::audit::AuditRecord::new(&id, &record, close_event, true)
+            &crate::audit::AuditEntry::new(&id, &record, close_event, true)
                 .because("terminal gone before the session was handed over"),
         );
         error
@@ -1039,7 +1039,7 @@ fn hand_off_session(
         });
         let termination = finish_session(transport.stream, child.transfer()?, watch);
         AuditLog::at(audit_dir).append(
-            &crate::audit::AuditRecord::new(&id, &record, close_event, true).because(termination),
+            &crate::audit::AuditEntry::new(&id, &record, close_event, true).because(termination),
         );
         return Ok(());
     }
@@ -1065,7 +1065,7 @@ fn hand_off_session(
     std::thread::spawn(move || {
         let termination = finish_session(&supervisor_lease, child, watch);
         AuditLog::at(audit_dir).append(
-            &crate::audit::AuditRecord::new(&id, &record, close_event, true).because(termination),
+            &crate::audit::AuditEntry::new(&id, &record, close_event, true).because(termination),
         );
         active.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
     });
@@ -1087,7 +1087,7 @@ fn refused_unbuildable(
     };
     tracing::warn!(record = %record, %reason, "ush: the environment cannot be built");
     AuditLog::at(store.audit_dir()).append(
-        &crate::audit::AuditRecord::new("serve", record, "open-session", false).because(&reason),
+        &crate::audit::AuditEntry::new("serve", record, "open-session", false).because(&reason),
     );
     reply(writer, &refusal, None)?;
     Ok(true)
@@ -1163,7 +1163,7 @@ fn branch_workspace(caller: &crate::host::Caller, store: &Store, into: &str) -> 
     };
     let branched = crate::branch::branch_environments(store, &store.for_workspace(&into));
     AuditLog::at(store.audit_dir()).append(
-        &crate::audit::AuditRecord::new("serve", "-", "branch-workspace", branched.is_ok())
+        &crate::audit::AuditEntry::new("serve", "-", "branch-workspace", branched.is_ok())
             .because(format!("{} into {into}", store.workspace_id().as_str())),
     );
     match branched {
@@ -1268,8 +1268,7 @@ fn serve_host(
     {
         let reason = denied.reason();
         AuditLog::at(store.audit_dir()).append(
-            &crate::audit::AuditRecord::new("serve", "host", "open-session", false)
-                .because(&reason),
+            &crate::audit::AuditEntry::new("serve", "host", "open-session", false).because(&reason),
         );
         let response = if denied == crate::host::HostDenied::NotAllowed {
             ServeResponse::HostNotAllowed { reason }
@@ -1294,7 +1293,7 @@ fn serve_host(
     };
     let (master, slave) = open_pty(cols, rows)?;
     let id = uuid::Uuid::new_v4().simple().to_string();
-    AuditLog::at(store.audit_dir()).append(&crate::audit::AuditRecord::new(
+    AuditLog::at(store.audit_dir()).append(&crate::audit::AuditEntry::new(
         &id,
         "host",
         "open-session",

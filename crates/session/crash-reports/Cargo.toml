@@ -1,25 +1,25 @@
 [package]
-name = "tilo-crash-records"
-description = "What ended this computer's session: a private record for each panic and each main loop the watchdog judged hung, the kernel's record of the computer itself stopping, and the records listed and read through the host's api."
+name = "tilo-crash-reports"
+description = "What ended this computer's session: a private report for each panic and each main loop the watchdog judged hung, the kernel's report of the computer itself stopping, and the reports listed and read through the host's api."
 version = "0.1.0"
 edition = "2024"
 publish.workspace = true
 license.workspace = true
 
 [dependencies]
-# A record's file name starts with its local time, and a list sorts by it.
+# A report's file name starts with its local time, and a list sorts by it.
 chrono = { workspace = true, features = ["clock", "std"] }
 tilo-formats = { version = "0.1.0", path = "../../sdk/tilo-formats" }
-# The records are private files of this user's, created and read as such.
+# The reports are private files of this user's, created and read as such.
 tilo-files = { path = "../../platform/tilo-files" }
 tilo-paths.workspace = true
-# `journalctl` for the records the kernel kept across a reset.
+# `journalctl` for the reports the kernel kept across a reset.
 bounded-command = { path = "../../system/bounded-command" }
-# The fact shape Settings, an agent and a script read a record as.
+# The fact shape Settings, an agent and a script read a report as.
 tilo-actions = { path = "../../collab/actions" }
-# The records a session service publishes.
+# The reports a session service publishes.
 tilo-service = { path = "../service" }
-# A record's time reads in the person's own date style.
+# A report's time reads in the person's own date style.
 ui = { package = "tilo-ui", path = "../../sdk/ui-core", default-features = false }
 serde.workspace = true
 serde_json.workspace = true

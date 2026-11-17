@@ -39,7 +39,7 @@ use tilo_relay_protocol::web::{PageHost, PageHostAddress};
 use tilo_session::sync::{Cmd, Event, Outbox};
 use tilo_session_client::device::{Device, HostRefusal};
 use tilo_session_client::{Events, FailureKind, Link, LocalState};
-use tilo_session_client::{PeerConfig, PeerRecord, PeerStore};
+use tilo_session_client::{PeerConfig, PeerEntry, PeerStore};
 use tilo_user_identity::{DeviceCert, RevocationEntry, RevocationList, RevocationReason};
 use tilo_workspace_keys::VAULT_SECRET_APP as CHANNEL_VAULT_APP;
 use wasm_bindgen::prelude::*;
@@ -258,13 +258,13 @@ impl DurablePeerStore {
 }
 
 impl PeerStore for DurablePeerStore {
-    fn load(&self) -> Option<PeerRecord> {
+    fn load(&self) -> Option<PeerEntry> {
         use durable_store::DurableStore as _;
         let stored = self.store.read(&self.key).ok()??;
         postcard::from_bytes(&stored.bytes).ok()
     }
 
-    fn save(&self, record: &PeerRecord) -> Result<(), String> {
+    fn save(&self, record: &PeerEntry) -> Result<(), String> {
         use durable_store::DurableStore as _;
         let bytes = postcard::to_stdvec(record).map_err(|error| error.to_string())?;
         self.store
@@ -370,16 +370,16 @@ impl PeerStore for DurablePeerStore {
 /// The peer record in page storage: loaded before start, saved through a
 /// callback that writes it to `IndexedDB`.
 struct PageStore {
-    current: RefCell<Option<PeerRecord>>,
+    current: RefCell<Option<PeerEntry>>,
     save: Function,
 }
 
 impl PeerStore for PageStore {
-    fn load(&self) -> Option<PeerRecord> {
+    fn load(&self) -> Option<PeerEntry> {
         self.current.borrow().clone()
     }
 
-    fn save(&self, record: &PeerRecord) -> Result<(), String> {
+    fn save(&self, record: &PeerEntry) -> Result<(), String> {
         let bytes = postcard::to_stdvec(record).map_err(|error| error.to_string())?;
         *self.current.borrow_mut() = Some(record.clone());
         self.save
@@ -1771,7 +1771,7 @@ fn peer_store(
         return Ok((Arc::new(durable), Some(kept)));
     }
     let record = record
-        .map(|bytes| postcard::from_bytes::<PeerRecord>(&bytes))
+        .map(|bytes| postcard::from_bytes::<PeerEntry>(&bytes))
         .transpose()
         .map_err(js_error)?;
     let save = save.ok_or_else(|| js_error("a peer needs a namespace or a save callback"))?;

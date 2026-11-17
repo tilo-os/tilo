@@ -14,7 +14,7 @@ SUPPORT = {
     "tilo-fs",
     "launcher",
     "tilo-unlock-helper",
-    "tilo-session-record",
+    "tilo-flight-log",
     "tilo-app-package-cli",
     "install",
     "runtime-bundle",

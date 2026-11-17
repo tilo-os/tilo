@@ -279,10 +279,10 @@ files = [
 # tilo-session records each login through the flight recorder; the report
 # summarises those records. The host packages install the same two programs.
 [[component]]
-name = "session-record"
+name = "flight-log"
 kind = "userspace"
 scope = "session"
-packages = ["tilo-session-record"]
+packages = ["tilo-flight-log"]
 bins = ["tilo-flight-recorder", "tilo-session-report"]
 layer = "desktop-binaries"
 files = [

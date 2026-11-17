@@ -25,7 +25,7 @@ use std::time::Duration;
 
 use chrono::{DateTime, Datelike as _, Months, TimeZone as _, Utc};
 use legacy_vm::hosted::control::{self, Reply, Request};
-use legacy_vm::hosted::meter::{UsageKind, UsageRecord};
+use legacy_vm::hosted::meter::{UsageEntry, UsageKind};
 use legacy_vm::hosted::plan::{Plans, Sells};
 use tilo_actions::remote::host_account::{
     Entitlement, HostAccount, HostKind, Limits, Standing, Usage, WorkspaceUsage,
@@ -185,7 +185,7 @@ pub fn period(plans: &Plans, account: &str, now_ms: u64) -> (u64, u64) {
 /// The usage `records` make, per workspace, most used first; `running` are
 /// the workspaces whose VMs run now.
 #[must_use]
-pub fn usage_of(records: &[UsageRecord], running: &[String], from_ms: u64, to_ms: u64) -> Usage {
+pub fn usage_of(records: &[UsageEntry], running: &[String], from_ms: u64, to_ms: u64) -> Usage {
     let mut workspaces: Vec<WorkspaceUsage> = Vec::new();
     for record in records
         .iter()

@@ -1,26 +1,26 @@
-//! The records as resources: the list as the root's reading, each record's
+//! The reports as resources: the list as the root's reading, each report's
 //! text as its own.
 //!
 //! The session publishes them to the apps it runs, Settings first among
-//! them: an app reads [`wire::RESOURCE`] for every record and
-//! [`wire::record`] of one for its text, and so does an agent or a script
-//! through the same action API. Nothing here draws, and nothing changes a record.
+//! them: an app reads [`wire::RESOURCE`] for every report and
+//! [`wire::report`] of one for its text, and so does an agent or a script
+//! through the same action API. Nothing here draws, and nothing changes a report.
 
 use std::path::PathBuf;
 
 use serde_json::Value;
-use tilo_actions::remote::crash_records::{
-    self as wire, CrashKind, CrashRecord, CrashRecordText, StopReason,
+use tilo_actions::remote::crash_reports::{
+    self as wire, CrashKind, CrashReport, CrashReportText, StopReason,
 };
 use tilo_actions::{ActionAddress, ApiError, ResourcePresentation, ResourceSpec};
 use tilo_service::{Service, reading};
 
 /// The kind of [`wire::RESOURCE`].
-pub const CRASH_RECORDS_KIND: &str = "session.crash-records";
-/// The kind of each record's resource.
-pub const CRASH_RECORD_KIND: &str = "session.crash-record";
+pub const CRASH_REPORTS_KIND: &str = "session.crash-reports";
+/// The kind of each report's resource.
+pub const CRASH_REPORT_KIND: &str = "session.crash-report";
 
-/// What a person calls a record of `kind`, for a reader with no words of its
+/// What a person calls a report of `kind`, for a reader with no words of its
 /// own (an agent's list, a settings row read aloud).
 const fn label(kind: CrashKind) -> &'static str {
     match kind {
@@ -41,35 +41,35 @@ const fn reason_label(reason: StopReason) -> &'static str {
     }
 }
 
-/// A record's facts as its resource's presentation: when it happened, and
+/// A report's facts as its resource's presentation: when it happened, and
 /// what stopped the computer as its badge.
-fn present(record: &CrashRecord) -> ResourcePresentation {
+fn present(report: &CrashReport) -> ResourcePresentation {
     ResourcePresentation {
-        detail: Some(ui::format::timestamp(&ui::format::UnixSecs(record.at))),
-        badge: record.reason.map(|reason| reason_label(reason).to_owned()),
-        preview: record.build.as_ref().map(|build| format!("build {build}")),
+        detail: Some(ui::format::timestamp(&ui::format::UnixSecs(report.at))),
+        badge: report.reason.map(|reason| reason_label(reason).to_owned()),
+        preview: report.build.as_ref().map(|build| format!("build {build}")),
     }
 }
 
-/// What a record's resource is called to a reader with no words of its own.
-fn resource(record: &CrashRecord) -> ResourceSpec {
+/// What a report's resource is called to a reader with no words of its own.
+fn resource(report: &CrashReport) -> ResourceSpec {
     ResourceSpec::new(
-        wire::record(&record.id),
-        CRASH_RECORD_KIND,
-        label(record.kind),
+        wire::report(&report.id),
+        CRASH_REPORT_KIND,
+        label(report.kind),
     )
-    .with_presentation(present(record))
+    .with_presentation(present(report))
 }
 
-/// The records in the crash directory, listed and read as resources. The
+/// The reports in the crash directory, listed and read as resources. The
 /// directory is [`crate::directory`]'s unless [`Self::in_dir`] names one.
 #[derive(Clone, Debug, Default)]
-pub struct CrashRecords {
+pub struct CrashReports {
     dir: Option<PathBuf>,
 }
 
-impl CrashRecords {
-    /// The records in the person's crash directory.
+impl CrashReports {
+    /// The reports in the person's crash directory.
     #[must_use]
     pub fn new() -> Self {
         Self {
@@ -77,7 +77,7 @@ impl CrashRecords {
         }
     }
 
-    /// The records in `dir`.
+    /// The reports in `dir`.
     #[must_use]
     pub fn in_dir(dir: impl Into<PathBuf>) -> Self {
         Self {
@@ -85,33 +85,33 @@ impl CrashRecords {
         }
     }
 
-    /// Every record, newest first.
-    fn records(&self) -> Vec<CrashRecord> {
+    /// Every report, newest first.
+    fn reports(&self) -> Vec<CrashReport> {
         self.dir.as_deref().map_or_else(Vec::new, crate::list)
     }
 }
 
-impl Service for CrashRecords {
+impl Service for CrashReports {
     fn resources(&self) -> Vec<ResourceSpec> {
         vec![
-            ResourceSpec::new(wire::RESOURCE, CRASH_RECORDS_KIND, "Crash records")
-                .with_children(self.records().iter().map(resource)),
+            ResourceSpec::new(wire::RESOURCE, CRASH_REPORTS_KIND, "Crash reports")
+                .with_children(self.reports().iter().map(resource)),
         ]
     }
 
-    /// The root reads as every record's facts, newest first; a record as
+    /// The root reads as every report's facts, newest first; a report as
     /// its facts and its text, stacks included.
     fn read(&self, resource: &str) -> Option<Value> {
         if resource == wire::RESOURCE {
-            return Some(reading(&self.records()));
+            return Some(reading(&self.reports()));
         }
         let dir = self.dir.as_deref()?;
-        let id = resource.strip_prefix(wire::RECORD_PREFIX)?;
-        let text: CrashRecordText = crate::read(dir, id).ok()?;
+        let id = resource.strip_prefix(wire::REPORT_PREFIX)?;
+        let text: CrashReportText = crate::read(dir, id).ok()?;
         Some(reading(&text))
     }
 
-    /// A record is read, never changed: there is nothing to invoke.
+    /// A report is read, never changed: there is nothing to invoke.
     fn invoke(
         &mut self,
         resource: &str,
@@ -131,19 +131,19 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         tilo_files::native::private::directory(dir.path()).unwrap();
         for (name, body) in names {
-            crate::write_record(dir.path(), name, body).unwrap();
+            crate::write_report(dir.path(), name, body).unwrap();
         }
         dir
     }
 
-    fn read_json(service: &CrashRecords, resource: &str) -> Value {
+    fn read_json(service: &CrashReports, resource: &str) -> Value {
         service.read(resource).unwrap()
     }
 
     tilo_test_env::scenario! {
-        fn the_crash_records_service_publishes_the_records_to_read;
+        fn the_crash_reports_service_publishes_the_reports_to_read;
 
-        phase the_root_lists_the_records_and_each_one_reads_as_its_text;
+        phase the_root_lists_the_reports_and_each_one_reads_as_its_text;
         {
             let dir = dir_with(&[
                 (
@@ -155,14 +155,14 @@ mod tests {
                     "tilo session panic\n==================\nversion:   0.1.0\n",
                 ),
             ]);
-            let service = CrashRecords::in_dir(dir.path());
+            let service = CrashReports::in_dir(dir.path());
             let resources = service.resources();
             assert_eq!(resources.len(), 1);
             let children = &resources[0].children;
             assert_eq!(children.len(), 2);
             assert_eq!(
                 children[0].id.as_str(),
-                "crash-record:2026-10-24-225201-9-freeze.log"
+                "crash-report:2026-10-24-225201-9-freeze.log"
             );
             assert_eq!(children[0].label, "Desktop stopped responding");
             assert_eq!(children[1].label, "Desktop stopped unexpectedly");
@@ -171,12 +171,12 @@ mod tests {
             assert_eq!(listed.as_array().unwrap().len(), 2);
             assert_eq!(listed[0]["kind"], "froze");
 
-            let text = read_json(&service, "crash-record:2026-10-24-225201-9-freeze.log");
+            let text = read_json(&service, "crash-report:2026-10-24-225201-9-freeze.log");
             assert_eq!(text["record"]["id"], "2026-10-24-225201-9-freeze.log");
             assert!(text["text"].as_str().unwrap().contains("thread:    412"));
             assert_eq!(text["truncated"], false);
-            assert_eq!(service.read("crash-record:no-such.log"), None);
-            assert_eq!(service.read("crash-record:../escape.log"), None);
+            assert_eq!(service.read("crash-report:no-such.log"), None);
+            assert_eq!(service.read("crash-report:../escape.log"), None);
         }
 
         phase a_computer_that_stopped_reads_as_one;
@@ -185,16 +185,16 @@ mod tests {
                 "2026-10-24-225201-4f00-stopped.log",
                 "tilo computer stopped\n=====================\nreason:    emergency\n",
             )]);
-            let service = CrashRecords::in_dir(dir.path());
+            let service = CrashReports::in_dir(dir.path());
             let children = service.resources().remove(0).children;
             assert_eq!(children[0].label, "Computer stopped");
             let presentation = children[0]
                 .presentation
                 .clone()
-                .expect("a record says when it happened and what stopped it");
+                .expect("a report says when it happened and what stopped it");
             let at =
                 ui::format::NaiveDateTime::parse_from_str("2026-10-24 22:52:01", "%Y-%m-%d %H:%M:%S")
-                    .expect("the record's time");
+                    .expect("the report's time");
             let when = ui::format::timestamp(&at);
             assert_eq!(presentation.detail.as_deref(), Some(when.as_str()));
             assert_eq!(presentation.badge.as_deref(), Some("emergency restart"));
@@ -202,7 +202,7 @@ mod tests {
 
         phase a_reader_with_no_crash_directory_publishes_an_empty_list;
         {
-            let service = CrashRecords::in_dir(Path::new("/nonexistent/tilo/crashes"));
+            let service = CrashReports::in_dir(Path::new("/nonexistent/tilo/crashes"));
             assert!(service.resources().remove(0).children.is_empty());
             assert_eq!(
                 read_json(&service, wire::RESOURCE),
@@ -210,14 +210,14 @@ mod tests {
             );
         }
 
-        phase a_record_is_read_and_never_changed;
+        phase a_report_is_read_and_never_changed;
         {
             let dir = dir_with(&[("2026-10-24-225201-9-freeze.log", "text\n")]);
-            let mut service = CrashRecords::in_dir(dir.path());
+            let mut service = CrashReports::in_dir(dir.path());
             assert!(
                 service
                     .invoke(
-                        "crash-record:2026-10-24-225201-9-freeze.log",
+                        "crash-report:2026-10-24-225201-9-freeze.log",
                         "delete",
                         &serde_json::Map::new()
                     )

@@ -401,3 +401,8 @@ reason = "renames RecordsArrived to ResourcesArrived in place: the runtime inter
 file = "crates/session/network-actor/src/lib.rs"
 enum = "PersonalFabricPayload"
 reason = "renames the RecordContent variants to DocumentContent in place: devices of one person speak one build's format"
+
+[[break]]
+file = "crates/collab/actions/src/remote/workspace_activity.rs"
+enum = "DetailAction"
+reason = "renames UndoRecord to UndoEntry in place: stored formats change with the code and nothing written before is read"

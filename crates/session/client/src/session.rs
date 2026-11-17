@@ -32,7 +32,7 @@ use tilo_relay_protocol::Envelope;
 use tilo_user_identity::{DeviceCert, RevocationList};
 use tokio::sync::mpsc;
 
-use crate::custody::{PeerRecord, PeerStore};
+use crate::custody::{PeerEntry, PeerStore};
 use tilo_lock::MutexRecover as _;
 use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_relay_client::LinkError;
@@ -447,7 +447,7 @@ struct Task {
     /// This page's own live session per joined workspace
     /// ([`crate::session::live_session`]).
     live_sessions: live_session::LiveSessions,
-    record: PeerRecord,
+    record: PeerEntry,
     /// This device's side of the workspaces' encrypted channels: the engine every member runs,
     /// here as a reader that asks for access and follows the members' commits.
     workspace_keys: tilo_workspace_keys::SharedKeys,

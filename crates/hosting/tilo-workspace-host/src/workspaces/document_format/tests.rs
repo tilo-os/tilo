@@ -33,7 +33,7 @@ fn kept_ledger() -> JoinLedger {
     let workspace = kept_workspace();
     let issuer = kept_cert(1);
     let joiner = kept_cert(2);
-    let invitations = [InvitationRecord {
+    let invitations = [InvitationEntry {
         request_id: [9; 32],
         request_digest: [8; 32],
         issued: IssuedInvitation {

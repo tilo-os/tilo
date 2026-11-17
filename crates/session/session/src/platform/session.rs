@@ -2156,11 +2156,11 @@ impl Session {
     /// The watchdog thread could not be started.
     pub fn guard_main_loop(&mut self) -> std::io::Result<()> {
         let watchdog = Watchdog::watch_this_thread(Policy::COMPOSITOR, |hang| {
-            match tilo_crash_records::record_freeze(
+            match tilo_crash_reports::report_freeze(
                 hang.tid,
                 hang.blocked_for,
                 &hang.report,
-                tilo_crash_records::RECORD_WITHIN,
+                tilo_crash_reports::REPORT_WITHIN,
             ) {
                 Some(path) => eprintln!("tilo session: hang recorded in {}", path.display()),
                 None => eprintln!("tilo session: the record of the hang was not written"),

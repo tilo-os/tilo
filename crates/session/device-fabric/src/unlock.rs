@@ -9,7 +9,7 @@
 //! owner approved `device.unlock` or turned on auto-approval for exactly this
 //! device. The half then travels sealed to the request's ephemeral key, and the
 //! owner's answer is a fact every one of their devices keeps
-//! ([`UnlockDecisionRecord`]), so a boot that lost its stream hears it again.
+//! ([`UnlockDecisionEntry`]), so a boot that lost its stream hears it again.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
@@ -188,7 +188,7 @@ pub type DecisionKey = ([u8; 32], BootId, SlotId);
 /// away before the answer reached it therefore hears the answer instead of
 /// asking again, and a boot whose handler died leaves no question behind.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct UnlockDecisionRecord {
+pub struct UnlockDecisionEntry {
     /// The enrolment that asked: the boot certificate's digest.
     pub boot_cert_digest: [u8; 32],
     pub boot_id: BootId,
@@ -201,7 +201,7 @@ pub struct UnlockDecisionRecord {
     pub valid_until_ns: u64,
 }
 
-impl UnlockDecisionRecord {
+impl UnlockDecisionEntry {
     /// The boot this answers.
     #[must_use]
     pub fn key(&self) -> DecisionKey {
@@ -224,12 +224,12 @@ impl UnlockDecisionRecord {
 /// the person's devices kept one.
 #[must_use]
 pub fn decision_for<'a>(
-    decisions: &'a BTreeMap<DecisionKey, UnlockDecisionRecord>,
+    decisions: &'a BTreeMap<DecisionKey, UnlockDecisionEntry>,
     digest: &[u8; 32],
     boot_id: BootId,
     slot: SlotId,
     now_ns: u64,
-) -> Option<&'a UnlockDecisionRecord> {
+) -> Option<&'a UnlockDecisionEntry> {
     decisions
         .get(&(*digest, boot_id, slot))
         .filter(|record| record.valid_until_ns > now_ns)
@@ -244,7 +244,7 @@ pub struct UnlockFabricState {
     /// for any device of the person.
     pub auto_approvals: Vec<AutoApproval>,
     /// This device's answers to boots that asked it, kept while they hold.
-    pub decisions: Vec<UnlockDecisionRecord>,
+    pub decisions: Vec<UnlockDecisionEntry>,
 }
 
 impl UnlockFabricState {
@@ -287,7 +287,7 @@ impl UnlockFabricState {
 pub struct MergedUnlock {
     pub enrolments: BTreeMap<[u8; 32], UnlockEnrolment>,
     pub auto_approvals: BTreeMap<[u8; 32], AutoApproval>,
-    pub decisions: BTreeMap<DecisionKey, UnlockDecisionRecord>,
+    pub decisions: BTreeMap<DecisionKey, UnlockDecisionEntry>,
 }
 
 /// The enrolments, auto-approvals and answers across the person's fabric,
@@ -358,7 +358,7 @@ pub struct UnlockView<'a> {
     pub enrolments: &'a BTreeMap<[u8; 32], UnlockEnrolment>,
     pub auto_approvals: &'a BTreeMap<[u8; 32], AutoApproval>,
     /// The owner's answers still in force, from every device of theirs.
-    pub decisions: &'a BTreeMap<DecisionKey, UnlockDecisionRecord>,
+    pub decisions: &'a BTreeMap<DecisionKey, UnlockDecisionEntry>,
     /// Whether this device holds the person's root, so it can release.
     pub custodian: bool,
     /// The secret-sync key, loaded only where a half is released.
@@ -392,7 +392,7 @@ pub enum UnlockDecision {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Decided {
     pub frame: SiblingFrame,
-    pub record: Option<UnlockDecisionRecord>,
+    pub record: Option<UnlockDecisionEntry>,
 }
 
 #[derive(Clone, Debug)]
@@ -781,8 +781,8 @@ fn decision_record(
     outcome: DecisionOutcome,
     decided_by: [u8; 32],
     now_ns: u64,
-) -> UnlockDecisionRecord {
-    UnlockDecisionRecord {
+) -> UnlockDecisionEntry {
+    UnlockDecisionEntry {
         boot_cert_digest: pending.enrolment,
         boot_id: pending.boot_id,
         slot: pending.slot,

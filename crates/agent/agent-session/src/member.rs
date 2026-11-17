@@ -879,9 +879,9 @@ impl AgentMember {
         let waits = if matches!(step.action, StepAction::Continue(_)) {
             self.touched_keys_pending()
         } else {
-            self.step_record_pending(&step)
+            self.step_entry_pending(&step)
                 || self.edits_arriving(&step)
-                || self.step_record_arriving(&step)
+                || self.step_entry_arriving(&step)
         };
         if waits && self.may_wait_for_host() {
             // A record the task just opened is planned with once it opens,
@@ -1637,7 +1637,7 @@ impl AgentMember {
     /// Whether an open record of the app `step` acts in holds edits it could
     /// not decide yet: waiting for their keys, their surface or the
     /// workspace's governance.
-    fn step_record_pending(&self, step: &Step) -> bool {
+    fn step_entry_pending(&self, step: &Step) -> bool {
         let held = |route: &DocumentRoute| self.undecided.contains(route);
         // By app: the record a step names may not be open yet.
         self.apps

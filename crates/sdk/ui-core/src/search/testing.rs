@@ -107,7 +107,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::search::{FieldWeight, SearchCatalog, SearchCursor, SearchPage, SearchRecord};
+    use crate::search::{FieldWeight, SearchCatalog, SearchCursor, SearchItem, SearchPage};
     use tilo_actions::ActionAddress;
 
     fn catalogue(corpus: Corpus, extra_text: &str) -> SearchCatalog {
@@ -121,7 +121,7 @@ mod tests {
             );
             catalog
                 .upsert_resource(
-                    SearchRecord::new(&id, hit)
+                    SearchItem::new(&id, hit)
                         .field(format!("{}{extra_text}", row.text), FieldWeight::UNRANKED),
                 )
                 .unwrap();

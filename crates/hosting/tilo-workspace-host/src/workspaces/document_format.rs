@@ -9,7 +9,7 @@
 use serde::{Deserialize, Serialize};
 use tilo_files::native::migration::Format;
 use tilo_peer_state::join_ledger::{
-    AdministrationRecord, InvitationRecord, JoinChallengeRecord, JoinCompletionRecord, JoinLedger,
+    AdministrationRecord, InvitationEntry, JoinChallengeRecord, JoinCompletionRecord, JoinLedger,
     MembershipChallengeRecord,
 };
 use tilo_relay_protocol::WorkspaceId;
@@ -84,7 +84,7 @@ pub(super) struct StoredDocumentRef<'a> {
 /// those the receipts file does not hold. The ledger's own layout.
 #[derive(Serialize)]
 pub(super) struct LedgerRef<'a> {
-    pub(super) invitations: &'a [InvitationRecord],
+    pub(super) invitations: &'a [InvitationEntry],
     pub(super) join_challenges: &'a [JoinChallengeRecord],
     pub(super) join_completions: &'a [JoinCompletionRecord],
     pub(super) membership_challenges: &'a [MembershipChallengeRecord],

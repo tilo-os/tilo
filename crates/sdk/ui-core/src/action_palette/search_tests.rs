@@ -60,7 +60,7 @@ tilo_test_env::scenario! {
             let resource_id = format!("item:{id:06}");
             catalog
                 .upsert_resource(
-                    crate::search::SearchRecord::new(
+                    crate::search::SearchItem::new(
                         &resource_id,
                         SearchResult::for_action(
                             "Items",
@@ -75,7 +75,7 @@ tilo_test_env::scenario! {
         let target_id = "item:999999";
         catalog
             .upsert_resource(
-                crate::search::SearchRecord::new(
+                crate::search::SearchItem::new(
                     target_id,
                     SearchResult::for_action(
                         "Items",

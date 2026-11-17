@@ -8,8 +8,8 @@ use std::time::Duration;
 
 use ui::LocalState;
 use ui::framework::{EffectAnswer, EffectCx, Effected, ViewCx};
-use ui::tilo_actions::remote::crash_records::{
-    self as records, CrashKind, CrashRecord, CrashRecordText, StopReason,
+use ui::tilo_actions::remote::crash_reports::{
+    self as reports, CrashKind, CrashReport, CrashReportText, StopReason,
 };
 use ui::tilo_resource;
 use ui::widget::{Element, Widget};
@@ -33,11 +33,11 @@ pub enum AboutEffect {
     /// device.
     #[effect(job)]
     BackUpIdentity,
-    /// Open a problem's page: what happened, when, and the record's text.
+    /// Open a problem's page: what happened, when, and the report's text.
     #[effect(view)]
     OpenProblem {
-        #[param("The record's id, as the crash records' list answers it")]
-        record: String,
+        #[param("The report's id, as the crash reports' list answers it")]
+        report: String,
     },
 }
 
@@ -57,9 +57,9 @@ pub(crate) fn answer(
                 |_: &SettingsApp, opened: Result<(), String>, _| opened.map(|()| Effected::done()),
             ))
         }
-        AboutEffect::OpenProblem { record } => {
+        AboutEffect::OpenProblem { report } => {
             let area = area(app).ok_or_else(|| t("settings-about-problem-missing"))?;
-            area.model().borrow_mut().open_problem(&record)?;
+            area.model().borrow_mut().open_problem(&report)?;
             Ok(Effected::done())
         }
     }
@@ -197,41 +197,41 @@ pub fn area(app: &SettingsApp) -> Option<&AboutArea> {
     app.areas().find()
 }
 
-type RecordsCall<T> = ui::Arriving<T, String>;
+type ReportsCall<T> = ui::Arriving<T, String>;
 
-pub trait ProblemRecords {
-    fn list(&self) -> RecordsCall<Vec<CrashRecord>>;
-    fn read(&self, id: &str) -> RecordsCall<CrashRecordText>;
+pub trait ProblemReports {
+    fn list(&self) -> ReportsCall<Vec<CrashReport>>;
+    fn read(&self, id: &str) -> ReportsCall<CrashReportText>;
 }
 
-struct SessionRecords;
+struct SessionReports;
 
-impl ProblemRecords for SessionRecords {
-    fn list(&self) -> RecordsCall<Vec<CrashRecord>> {
-        published(records::RESOURCE)
+impl ProblemReports for SessionReports {
+    fn list(&self) -> ReportsCall<Vec<CrashReport>> {
+        published(reports::RESOURCE)
     }
 
-    fn read(&self, id: &str) -> RecordsCall<CrashRecordText> {
-        published(&records::record(id))
+    fn read(&self, id: &str) -> ReportsCall<CrashReportText> {
+        published(&reports::report(id))
     }
 }
 
 fn published<T: serde::de::DeserializeOwned + Send + Sync + 'static>(
     resource: &str,
-) -> RecordsCall<T> {
+) -> ReportsCall<T> {
     let resource = resource.to_owned();
-    ui::Arriving::local("the crash records", move || {
+    ui::Arriving::local("the crash reports", move || {
         crate::device_read::off_ui_thread();
-        let records = ui::collaboration::SessionResource::open(&resource)?;
-        let reading = records
+        let reports = ui::collaboration::SessionResource::open(&resource)?;
+        let reading = reports
             .latest()
             .ok_or_else(|| "The session published no reading.".to_string())??;
-        serde_json::from_str(&reading).map_err(|error| format!("a record does not read: {error}"))
+        serde_json::from_str(&reading).map_err(|error| format!("a report does not read: {error}"))
     })
 }
 
 /// What a read answered, once it has; `None` while it still runs.
-fn settled<T: Clone>(call: &RecordsCall<T>) -> Option<Result<T, String>> {
+fn settled<T: Clone>(call: &ReportsCall<T>) -> Option<Result<T, String>> {
     match call.get() {
         ui::Arrival::Pending { .. } => None,
         ui::Arrival::Ready(value) => Some(Ok(value)),
@@ -267,7 +267,7 @@ impl AboutArea {
         self.model.get_or_init(|| {
             let source = self
                 .devices
-                .then(|| Rc::new(SessionRecords) as Rc<dyn ProblemRecords>);
+                .then(|| Rc::new(SessionReports) as Rc<dyn ProblemReports>);
             Rc::new(RefCell::new(AboutModel::new(
                 self.pages.clone(),
                 AboutInfo::from_system(),
@@ -297,20 +297,20 @@ impl AboutArea {
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Problems {
     Reading,
-    Read(Vec<CrashRecord>),
+    Read(Vec<CrashReport>),
     Unreadable,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Shown {
     Reading,
-    Read(CrashRecordText),
+    Read(CrashReportText),
     Unreadable,
 }
 
 struct Opened {
     id: String,
-    call: Option<RecordsCall<CrashRecordText>>,
+    call: Option<ReportsCall<CrashReportText>>,
     shown: Shown,
 }
 
@@ -323,9 +323,9 @@ fn page_key(id: &str) -> String {
 pub struct AboutModel {
     pages: crate::pages::PanePages,
     info: AboutInfo,
-    source: Option<Rc<dyn ProblemRecords>>,
+    source: Option<Rc<dyn ProblemReports>>,
     problems: Problems,
-    listing: Option<RecordsCall<Vec<CrashRecord>>>,
+    listing: Option<ReportsCall<Vec<CrashReport>>>,
     opened: Option<Opened>,
     pages_seen: u64,
     changed: bool,
@@ -335,7 +335,7 @@ impl AboutModel {
     pub fn new(
         pages: crate::pages::PanePages,
         info: AboutInfo,
-        source: Option<Rc<dyn ProblemRecords>>,
+        source: Option<Rc<dyn ProblemReports>>,
     ) -> Self {
         let listing = source.as_ref().map(|source| source.list());
         let problems = if listing.is_some() {
@@ -356,20 +356,20 @@ impl AboutModel {
         }
     }
 
-    fn records(&self) -> &[CrashRecord] {
+    fn reports(&self) -> &[CrashReport] {
         match &self.problems {
-            Problems::Read(records) => records,
+            Problems::Read(reports) => reports,
             Problems::Reading | Problems::Unreadable => &[],
         }
     }
 
     pub fn open_problem(&mut self, id: &str) -> Result<(), String> {
-        let record = self
-            .records()
+        let report = self
+            .reports()
             .iter()
-            .find(|record| record.id == id)
+            .find(|report| report.id == id)
             .ok_or_else(|| t("settings-about-problem-missing"))?;
-        let title = kind_label(record.kind);
+        let title = kind_label(report.kind);
         self.pages.open(Category::About, page_key(id), title);
         self.follow_page();
         Ok(())
@@ -415,14 +415,14 @@ impl AboutModel {
         let items = match &self.problems {
             Problems::Reading => vec![note(&t("settings-about-problems-reading"))],
             Problems::Unreadable => vec![note(&t("settings-about-problems-unreadable"))],
-            Problems::Read(records) if records.is_empty() => {
+            Problems::Read(reports) if reports.is_empty() => {
                 vec![note(&t("settings-about-problems-none"))]
             }
-            Problems::Read(records) => {
-                let mut items: Vec<_> = records
+            Problems::Read(reports) => {
+                let mut items: Vec<_> = reports
                     .iter()
                     .take(LISTED)
-                    .map(|record| problem_row(cx, record))
+                    .map(|report| problem_row(cx, report))
                     .collect();
                 items.push(note(&t("settings-about-problems-private")));
                 items
@@ -432,16 +432,16 @@ impl AboutModel {
     }
 
     fn problem_page(&self, opened: &Opened) -> Box<dyn Widget> {
-        let listed = self.records().iter().find(|record| record.id == opened.id);
-        let record = match &opened.shown {
-            Shown::Read(text) => Some(&text.record),
+        let listed = self.reports().iter().find(|report| report.id == opened.id);
+        let report = match &opened.shown {
+            Shown::Read(text) => Some(&text.report),
             Shown::Reading | Shown::Unreadable => listed,
         };
         let mut sections = Vec::new();
-        if let Some(record) = record {
+        if let Some(report) = report {
             sections.push(section(
                 &t("settings-about-problem-card"),
-                rows(facts(record)),
+                rows(facts(report)),
             ));
         }
         let details = match &opened.shown {
@@ -463,23 +463,23 @@ impl AboutModel {
     }
 }
 
-fn problem_row(cx: &ViewCx<Settings>, record: &CrashRecord) -> provider_settings_ui::widgets::Item {
+fn problem_row(cx: &ViewCx<Settings>, report: &CrashReport) -> provider_settings_ui::widgets::Item {
     let line = thing_row(
-        &format!("settings.about.problem.{}", record.id),
-        &kind_label(record.kind),
-        &[when(record)],
+        &format!("settings.about.problem.{}", report.id),
+        &kind_label(report.kind),
+        &[when(report)],
         None,
     );
     row(Box::new(cx.actions().bind_effect_invocation(
         line,
         &SettingsEffect::from(AboutEffect::OpenProblem {
-            record: record.id.clone(),
+            report: report.id.clone(),
         }),
     )))
 }
 
-fn when(record: &CrashRecord) -> String {
-    ui::format::timestamp(&ui::format::UnixSecs(record.at))
+fn when(report: &CrashReport) -> String {
+    ui::format::timestamp(&ui::format::UnixSecs(report.at))
 }
 
 fn kind_label(kind: CrashKind) -> String {
@@ -500,21 +500,21 @@ fn reason_label(reason: StopReason) -> String {
     })
 }
 
-fn facts(record: &CrashRecord) -> Vec<provider_settings_ui::widgets::Item> {
+fn facts(report: &CrashReport) -> Vec<provider_settings_ui::widgets::Item> {
     let mut facts = vec![
-        value_row(&t("settings-about-problem-what"), &kind_label(record.kind)),
-        value_row(&t("settings-about-problem-when"), &when(record)),
+        value_row(&t("settings-about-problem-what"), &kind_label(report.kind)),
+        value_row(&t("settings-about-problem-when"), &when(report)),
     ];
-    if let Some(reason) = record.reason {
+    if let Some(reason) = report.reason {
         facts.push(value_row(
             &t("settings-about-problem-reason"),
             &reason_label(reason),
         ));
     }
-    if let Some(version) = &record.version {
+    if let Some(version) = &report.version {
         facts.push(value_row(&t("settings-about-problem-version"), version));
     }
-    if let Some(build) = &record.build {
+    if let Some(build) = &report.build {
         facts.push(value_row(&t("settings-about-problem-build"), build));
     }
     facts
@@ -756,16 +756,16 @@ mod tests {
         }
     }
 
-    struct FixtureRecords {
+    struct FixtureReports {
         reads: std::cell::RefCell<Vec<String>>,
     }
 
     const FREEZE: &str = "2026-10-24-225201-412-freeze.log";
     const STOPPED: &str = "2026-10-25-081400-3f9a0c1d2e4b5a69-stopped.log";
 
-    fn fixture_records() -> Vec<CrashRecord> {
+    fn fixture_reports() -> Vec<CrashReport> {
         vec![
-            CrashRecord {
+            CrashReport {
                 id: STOPPED.into(),
                 at: 1_761_376_440,
                 kind: CrashKind::ComputerStopped,
@@ -773,7 +773,7 @@ mod tests {
                 version: None,
                 build: None,
             },
-            CrashRecord {
+            CrashReport {
                 id: FREEZE.into(),
                 at: 1_761_342_721,
                 kind: CrashKind::Froze,
@@ -784,24 +784,24 @@ mod tests {
         ]
     }
 
-    impl ProblemRecords for FixtureRecords {
-        fn list(&self) -> RecordsCall<Vec<CrashRecord>> {
-            ui::Arriving::ready(fixture_records())
+    impl ProblemReports for FixtureReports {
+        fn list(&self) -> ReportsCall<Vec<CrashReport>> {
+            ui::Arriving::ready(fixture_reports())
         }
 
-        fn read(&self, id: &str) -> RecordsCall<CrashRecordText> {
+        fn read(&self, id: &str) -> ReportsCall<CrashReportText> {
             self.reads.borrow_mut().push(id.to_owned());
-            let record = fixture_records()
+            let report = fixture_reports()
                 .into_iter()
-                .find(|record| record.id == id)
+                .find(|report| report.id == id)
                 .unwrap();
-            let text = if record.kind == CrashKind::ComputerStopped {
+            let text = if report.kind == CrashKind::ComputerStopped {
                 "tilo computer stopped\nreason:    panic\n\n<0>[ 1843.212002] Kernel panic - not syncing: Oops: Fatal exception\n"
             } else {
                 "tilo desktop freeze\n\nthread 412 (shell)\n   0: std::sys::sync::mutex::futex::Mutex::lock_contended\n"
             };
-            ui::Arriving::ready(CrashRecordText {
-                record,
+            ui::Arriving::ready(CrashReportText {
+                report,
                 text: text.into(),
                 truncated: false,
             })
@@ -857,15 +857,15 @@ mod tests {
 
     /// About lists a freeze and the computer stopping as the host answers
     /// them, in the person's words and without their stacks; opening one
-    /// reads its record, and only then.
+    /// reads its report, and only then.
     #[test]
-    fn about_lists_the_problems_and_opens_one_to_its_record() {
-        let source = Rc::new(FixtureRecords {
+    fn about_lists_the_problems_and_opens_one_to_its_report() {
+        let source = Rc::new(FixtureReports {
             reads: std::cell::RefCell::default(),
         });
-        let records = Rc::clone(&source) as Rc<dyn ProblemRecords>;
+        let reports = Rc::clone(&source) as Rc<dyn ProblemReports>;
         let mut app = window_on(move |cx| {
-            let model = AboutModel::new(cx, info(), Some(records));
+            let model = AboutModel::new(cx, info(), Some(reports));
             assert_eq!(model.problems, Problems::Reading, "read once asked");
             model
         });
@@ -888,7 +888,7 @@ mod tests {
             !listed
                 .iter()
                 .any(|line| line.contains("Kernel panic") || line.contains("lock_contended")),
-            "no record is read to list it: {listed:#?}"
+            "no report is read to list it: {listed:#?}"
         );
         assert!(source.reads.borrow().is_empty());
 
@@ -924,7 +924,7 @@ mod tests {
     }
 
     #[test]
-    fn about_without_records_says_none_were_recorded() {
+    fn about_without_reports_says_none_were_recorded() {
         let mut app = window_on(|cx| AboutModel::new(cx, info(), None));
         let text = shown(&mut app);
         assert!(

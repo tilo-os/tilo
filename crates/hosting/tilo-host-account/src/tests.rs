@@ -16,8 +16,8 @@ fn selling() -> Plans {
     .unwrap()
 }
 
-fn record(workspace: &str, kind: UsageKind, end_ms: u64, seconds: u64) -> UsageRecord {
-    UsageRecord {
+fn record(workspace: &str, kind: UsageKind, end_ms: u64, seconds: u64) -> UsageEntry {
+    UsageEntry {
         kind,
         identity: VmIdentity {
             vm: format!("{workspace}/default"),

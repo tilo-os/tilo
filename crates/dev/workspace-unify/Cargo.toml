@@ -1175,7 +1175,7 @@ doc = false
 "tilo-control" = { path = "../../../crates/session/control-cli", default-features = false, features = [] }
 "tilo-copy-lint" = { path = "../../../crates/dev/copy-lint", default-features = false, features = [] }
 "tilo-cpu-raster" = { path = "../../../crates/sdk/tilo-cpu-raster", default-features = false, features = [] }
-"tilo-crash-records" = { path = "../../../crates/session/crash-records", default-features = false, features = [] }
+"tilo-crash-reports" = { path = "../../../crates/session/crash-reports", default-features = false, features = [] }
 "tilo-crypto" = { path = "../../../crates/system/tilo-crypto", default-features = false, features = ["default", "pcr-prediction", "release-bundle", "srp", "srp-test-server", "tls-fixture"] }
 "tilo-dav" = { path = "../../../crates/system/tilo-dav", default-features = false, features = ["client", "default", "net", "oauth", "test-support"] }
 "tilo-delivery-protocol" = { path = "../../../crates/hosting/tilo-delivery-protocol", default-features = false, features = [] }
@@ -1318,7 +1318,7 @@ doc = false
 "tilo-session-core" = { path = "../../../crates/session/core", default-features = false, features = [] }
 "tilo-session-logging" = { path = "../../../crates/session/session-logging", default-features = false, features = [] }
 "tilo-session-power" = { path = "../../../crates/session/power-service", default-features = false, features = [] }
-"tilo-session-record" = { path = "../../../crates/session/session-record", default-features = false, features = [] }
+"tilo-flight-log" = { path = "../../../crates/session/flight-log", default-features = false, features = [] }
 "tilo-settings-records" = { path = "../../../crates/platform/tilo-settings-records", default-features = false, features = ["watch"] }
 "tilo-settings-service" = { path = "../../../crates/session/settings-service", default-features = false, features = [] }
 "tilo-sheets" = { path = "../../../crates/session/sheets", default-features = false, features = [] }
@@ -3783,7 +3783,7 @@ doc = false
 "tilo-control" = { path = "../../../crates/session/control-cli", default-features = false, features = [] }
 "tilo-copy-lint" = { path = "../../../crates/dev/copy-lint", default-features = false, features = [] }
 "tilo-cpu-raster" = { path = "../../../crates/sdk/tilo-cpu-raster", default-features = false, features = [] }
-"tilo-crash-records" = { path = "../../../crates/session/crash-records", default-features = false, features = [] }
+"tilo-crash-reports" = { path = "../../../crates/session/crash-reports", default-features = false, features = [] }
 "tilo-crypto" = { path = "../../../crates/system/tilo-crypto", default-features = false, features = ["default", "pcr-prediction", "release-bundle", "srp", "srp-test-server", "tls-fixture"] }
 "tilo-dav" = { path = "../../../crates/system/tilo-dav", default-features = false, features = ["client", "default", "net", "oauth", "test-support"] }
 "tilo-delivery-protocol" = { path = "../../../crates/hosting/tilo-delivery-protocol", default-features = false, features = [] }
@@ -3924,7 +3924,7 @@ doc = false
 "tilo-session-core" = { path = "../../../crates/session/core", default-features = false, features = [] }
 "tilo-session-logging" = { path = "../../../crates/session/session-logging", default-features = false, features = [] }
 "tilo-session-power" = { path = "../../../crates/session/power-service", default-features = false, features = [] }
-"tilo-session-record" = { path = "../../../crates/session/session-record", default-features = false, features = [] }
+"tilo-flight-log" = { path = "../../../crates/session/flight-log", default-features = false, features = [] }
 "tilo-settings-records" = { path = "../../../crates/platform/tilo-settings-records", default-features = false, features = ["watch"] }
 "tilo-settings-service" = { path = "../../../crates/session/settings-service", default-features = false, features = [] }
 "tilo-sheets" = { path = "../../../crates/session/sheets", default-features = false, features = [] }

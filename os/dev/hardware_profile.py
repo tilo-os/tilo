@@ -374,7 +374,7 @@ def validate_definition(data):
     validate_internal_keyboards(data)
     # Every board declares where its record of a crash goes, so a board that
     # keeps none is a written-down decision rather than an omission.
-    validate_crash_record(data, schema)
+    validate_crash_report(data, schema)
     validate_hardening_defaults(data)
     kernel_args = data.get("kernel_args", [])
     if not isinstance(kernel_args, list) or len(kernel_args) > 16:
@@ -491,7 +491,7 @@ def validate_dmi(data):
         raise ValueError("hardware definition DMI requires a firmware-described board")
 
 
-def validate_crash_record(data, schema):
+def validate_crash_report(data, schema):
     """The board's record of a crash, what resets it and what panics first.
 
     An image must be able to say, for every board it ships, where the kernel's

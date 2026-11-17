@@ -5,9 +5,9 @@ use std::process::ExitCode;
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let Some(recording) = tilo_session_record::recorder::Recording::from_args(&args) else {
+    let Some(recording) = tilo_flight_log::recorder::Recording::from_args(&args) else {
         return ExitCode::from(2);
     };
-    tilo_session_record::recorder::record(&recording, std::io::stdin(), std::io::stdout());
+    tilo_flight_log::recorder::record(&recording, std::io::stdin(), std::io::stdout());
     ExitCode::SUCCESS
 }

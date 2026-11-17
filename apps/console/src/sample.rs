@@ -85,7 +85,7 @@ fn action(n: u8, minutes_ago: i64, summary: &str, view: wire::ActionView) -> wir
         record: target.id,
         view,
         undo: undoable.then(|| wire::Offer {
-            action: wire::DetailAction::UndoRecord,
+            action: wire::DetailAction::UndoEntry,
             label: "Undo".to_owned(),
         }),
     }

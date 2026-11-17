@@ -329,7 +329,7 @@ mod app;
 mod drive;
 pub mod driver;
 mod focus;
-pub use driver::{Outcome, Step, StepRecord, StepStatus, drive};
+pub use driver::{Outcome, Step, StepEntry, StepStatus, drive};
 mod invocation_results;
 mod lazy_palette;
 mod nav_gesture;

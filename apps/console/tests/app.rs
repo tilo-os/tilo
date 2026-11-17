@@ -266,7 +266,7 @@ fn run() -> wire::AgentSession {
             app_id: "so.tilo.notes".into(),
             record: "record:plan".into(),
             undo: Some(wire::Offer {
-                action: wire::DetailAction::UndoRecord,
+                action: wire::DetailAction::UndoEntry,
                 label: "Undo".into(),
             }),
         }],

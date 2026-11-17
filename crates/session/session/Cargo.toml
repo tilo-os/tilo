@@ -366,7 +366,7 @@ launcher = { path = "../../packaging/launcher" }
 tilo-session-power = { path = "../power-service" }
 tilo-power-mgmt = { path = "../../system/power" }
 # The records of a session that stopped, and the news of one that did.
-tilo-crash-records = { path = "../crash-records" }
+tilo-crash-reports = { path = "../crash-reports" }
 # The session's own log: its stderr, filtered as `RUST_LOG` says, and a crash
 # record for every panic.
 tilo-session-logging = { path = "../session-logging" }

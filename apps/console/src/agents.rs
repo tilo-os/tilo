@@ -623,7 +623,7 @@ fn actions(
                 Button::new(&format!("console-action-{index}-undo"), &offer.label)
                     .role(ButtonRole::Plain)
                     .on_view(move || match kind {
-                        wire::DetailAction::UndoRecord => {
+                        wire::DetailAction::UndoEntry => {
                             records.history(wire::UNDO_RECORD, &query);
                         }
                         _ => records.history(wire::UNDO, &range),

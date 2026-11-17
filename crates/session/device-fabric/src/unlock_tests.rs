@@ -76,7 +76,7 @@ struct World {
     enrolments: BTreeMap<[u8; 32], UnlockEnrolment>,
     auto_approvals: BTreeMap<[u8; 32], AutoApproval>,
     /// What the person's devices answered, as their fabric carries it.
-    decisions: BTreeMap<DecisionKey, UnlockDecisionRecord>,
+    decisions: BTreeMap<DecisionKey, UnlockDecisionEntry>,
     secret_sync: SecretKey,
     custodian: bool,
 }

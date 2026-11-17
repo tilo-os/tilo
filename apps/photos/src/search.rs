@@ -6,7 +6,7 @@ use tilo_actions::{ActionAddress, ResourceSpec};
 use ui::icons::Icon;
 #[cfg(test)]
 use ui::search::{DEFAULT_SEARCH_CANDIDATE_LIMIT, DEFAULT_SEARCH_RESULT_LIMIT, SearchCursor};
-use ui::search::{FieldWeight, SearchCatalog, SearchCatalogError, SearchRecord, SearchResult};
+use ui::search::{FieldWeight, SearchCatalog, SearchCatalogError, SearchItem, SearchResult};
 use ui::tilo_resource::SearchEntry;
 
 use crate::derived::{
@@ -504,7 +504,7 @@ impl LibraryIndex {
         before_publish();
         let mut state = self.state.write_recover();
         state.catalog.sync_resources(rows.iter().map(|(id, row)| {
-            SearchRecord::new(id, row.result()).field(row.searchable(), FieldWeight::UNRANKED)
+            SearchItem::new(id, row.result()).field(row.searchable(), FieldWeight::UNRANKED)
         }))?;
         state.rows = kinds;
         state.library = library;
@@ -520,7 +520,7 @@ impl LibraryIndex {
     #[cfg(test)]
     fn reject_malformed_snapshot_for_test(&self) -> Result<(), SearchCatalogError> {
         let mut state = self.state.write_recover();
-        state.catalog.replace_all_resources([SearchRecord::new(
+        state.catalog.replace_all_resources([SearchItem::new(
             "photos.photo:malformed",
             SearchResult::new(PHOTO_SEARCH_KIND, "Malformed", "legacy-action"),
         )

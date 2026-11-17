@@ -33,7 +33,7 @@ struct Record {
 
 #[derive(Deserialize)]
 struct Ledger {
-    invitations: Vec<InvitationRecord>,
+    invitations: Vec<InvitationEntry>,
     join_challenges: Vec<JoinChallengeRecord>,
     join_completions: Vec<JoinCompletionRecord>,
     membership_challenges: Vec<MembershipChallengeRecord>,
@@ -63,7 +63,7 @@ struct CancellationRecord {
 
 #[derive(Deserialize)]
 #[expect(dead_code, reason = "read to prove the bytes decode")]
-struct InvitationRecord {
+struct InvitationEntry {
     request_id: [u8; 32],
     request_digest: [u8; 32],
     issued: IssuedInvitation,

@@ -1226,7 +1226,7 @@ fn services(
     services.push(Box::new(tilo_settings_service::SettingsService::new()));
     // What this session ran into: the list as the resource's reading and each record's text as its
     // own, which Settings reads as an app does.
-    services.push(Box::new(tilo_crash_records::CrashRecords::new()));
+    services.push(Box::new(tilo_crash_reports::CrashReports::new()));
     if !machine.is_owned() {
         return (services, following);
     }

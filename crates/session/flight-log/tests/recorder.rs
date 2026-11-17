@@ -1,5 +1,5 @@
 //! The flight recorder program as the session runner starts it: a relay
-//! between the compositor and its stderr that keeps private, bounded records.
+//! between the compositor and its stderr that keeps private, bounded entries.
 
 #![allow(
     clippy::unwrap_used,
@@ -18,7 +18,7 @@ use std::process::{Command, Stdio};
 use std::time::Duration;
 use tilo_test_env::SpawnUnderEnvLock as _;
 
-use tilo_session_record::recorder::LOG_LIMIT;
+use tilo_flight_log::recorder::LOG_LIMIT;
 
 fn recorder() -> std::path::PathBuf {
     tilo_test_env::package_binary!("tilo-flight-recorder")
@@ -35,7 +35,7 @@ const APP_STDERR: &[u8] =
 fn wait_for(path: &Path, expected: &[u8]) {
     tilo_test_env::wait_until(
         format!(
-            "the live flight record to read {:?}",
+            "the live flight entry to read {:?}",
             String::from_utf8_lossy(expected)
         ),
         || fs::read(path).is_ok_and(|actual| actual == expected),
@@ -71,9 +71,9 @@ fn run(args: &[&str], input: &[u8]) -> Vec<u8> {
 }
 
 tilo_test_env::scenario! {
-    fn the_flight_recorder_relays_its_input_and_keeps_bounded_private_records;
+    fn the_flight_recorder_relays_its_input_and_keeps_bounded_private_entries;
 
-    phase the_record_persists_while_the_session_runs_and_keeps_the_last_bytes;
+    phase the_entry_persists_while_the_session_runs_and_keeps_the_last_bytes;
     {
         let directory = tempfile::tempdir().expect("directory");
         let log = directory.path().join("latest.log");
@@ -91,7 +91,7 @@ tilo_test_env::scenario! {
         let mut stdin = child.stdin.take().expect("stdin");
         let mut stdout = child.stdout.take().expect("stdout");
 
-        let header = b"tilo-flight-record-v1 start=now pid=42 shell=/usr/bin/tilo-shell\n";
+        let header = b"tilo-flight-entry-v1 start=now pid=42 shell=/usr/bin/tilo-shell\n";
         wait_for(&log, header);
         let first = b"startup failed before one buffered block\n";
         stdin.write_all(first).expect("write");
@@ -132,7 +132,7 @@ tilo_test_env::scenario! {
         // the compositor's next log line would hit a closed pipe and abort it.
         let directory = tempfile::tempdir().expect("directory");
         let gone = directory.path().join("removed");
-        fs::create_dir(&gone).expect("record directory");
+        fs::create_dir(&gone).expect("entry directory");
         let log = gone.join("latest.log");
         let mut child = Command::new(recorder())
             .args([log.to_str().expect("path"), "now", "1", "/usr/bin/shell"])
@@ -142,7 +142,7 @@ tilo_test_env::scenario! {
             .expect("recorder");
         let mut stdin = child.stdin.take().expect("stdin");
         let mut stdout = child.stdout.take().expect("stdout");
-        tilo_test_env::wait_until("the first record", || log.exists());
+        tilo_test_env::wait_until("the first entry", || log.exists());
         fs::remove_dir_all(&gone).expect("remove storage");
         let reader = std::thread::spawn(move || {
             let mut relayed = Vec::new();
@@ -166,7 +166,7 @@ tilo_test_env::scenario! {
     {
         // An app the compositor started can keep the pipe open after the
         // compositor exits, so the session wrapper ends the recorder with
-        // SIGTERM. The output relayed so far must still reach the record.
+        // SIGTERM. The output relayed so far must still reach the entry.
         let directory = tempfile::tempdir().expect("directory");
         let log = directory.path().join("latest.log");
         let mut child = Command::new(recorder())
@@ -177,7 +177,7 @@ tilo_test_env::scenario! {
             .expect("recorder");
         let mut stdin = child.stdin.take().expect("stdin");
         let mut stdout = child.stdout.take().expect("stdout");
-        let header = b"tilo-flight-record-v1 start=now pid=7 shell=/usr/bin/shell\n";
+        let header = b"tilo-flight-entry-v1 start=now pid=7 shell=/usr/bin/shell\n";
         wait_for(&log, header);
         let last = b"the compositor's last words\n";
         stdin.write_all(last).expect("write");
@@ -208,7 +208,7 @@ tilo_test_env::scenario! {
         let measurement = [PAINT_STATS, PAINT_STATS, FRAME_LIFECYCLE, APP_STDERR]
             .concat()
             .repeat(64);
-        // More than the full record's bound after the events, as a session that
+        // More than the full entry's bound after the events, as a session that
         // has been up for an afternoon writes.
         let filler = measurement.repeat(LOG_LIMIT / measurement.len() + 2);
         let stream = [LAUNCH, XWAYLAND, &filler].concat();
@@ -221,9 +221,9 @@ tilo_test_env::scenario! {
         assert_eq!(full.len(), LOG_LIMIT);
         assert!(
             !full.windows(14).any(|window| window == b"launch_latency"),
-            "the full record lost it"
+            "the full entry lost it"
         );
-        let header = b"tilo-flight-record-v1 start=now pid=42 shell=/usr/bin/shell\n";
+        let header = b"tilo-flight-entry-v1 start=now pid=42 shell=/usr/bin/shell\n";
         assert_eq!(
             fs::read(&events).expect("events"),
             [header.as_slice(), LAUNCH, XWAYLAND].concat()
@@ -231,7 +231,7 @@ tilo_test_env::scenario! {
         assert_eq!(mode(&events), 0o600);
     }
 
-    phase the_event_record_keeps_its_own_bound_and_a_bad_invocation_is_refused;
+    phase the_event_entry_keeps_its_own_bound_and_a_bad_invocation_is_refused;
     {
         let directory = tempfile::tempdir().expect("directory");
         let log = directory.path().join("latest.log");

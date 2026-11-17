@@ -6,13 +6,13 @@
 //! `<cache>/tilo/crashes/<timestamp>-<pid>.log` for every panic and echoes
 //! the message and the log path to stderr.
 //!
-//! The same directory keeps the record of a session that stopped responding
-//! ([`record_freeze`], written by the main loop's watchdog), of the computer
+//! The same directory keeps the report of a session that stopped responding
+//! ([`report_freeze`], written by the main loop's watchdog), of the computer
 //! itself stopping ([`stopped`], the kernel's log from before the reset) and
 //! of a fault the system's core went on from. Everything that ended a
 //! session is therefore in one place on this computer, and nothing leaves it
-//! unless the person sends it: `tilo-crash-records` only ever writes here and
-//! reads back what is here ([`service`] publishes the records to the session
+//! unless the person sends it: `tilo-crash-reports` only ever writes here and
+//! reads back what is here ([`service`] publishes the reports to the session
 //! and to Settings).
 //!
 //! The backtrace is symbolized in the field because release binaries keep
@@ -26,7 +26,7 @@
 //! plant the path.
 
 pub mod news;
-pub mod records;
+pub mod reports;
 pub mod service;
 pub mod stopped;
 
@@ -36,26 +36,26 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 pub use news::{Ended, NOTICED, News, take_news};
-pub use records::{STOPPED_SUFFIX, list, read, summarize};
-pub use service::{CRASH_RECORD_KIND, CRASH_RECORDS_KIND, CrashRecords};
+pub use reports::{STOPPED_SUFFIX, list, read, summarize};
+pub use service::{CRASH_REPORT_KIND, CRASH_REPORTS_KIND, CrashReports};
 
-/// The heading of a record of a session that panicked.
+/// The heading of a report of a session that panicked.
 pub const PANIC_TITLE: &str = "tilo session panic";
 
-/// The end of a freeze record's file name; a panic's ends in `.log` alone.
+/// The end of a freeze report's file name; a panic's ends in `.log` alone.
 pub const FREEZE_SUFFIX: &str = "-freeze.log";
 
-/// The heading of a freeze record.
+/// The heading of a freeze report.
 pub const FREEZE_TITLE: &str = "tilo session freeze";
 
-/// How a record's file name writes its local time. Names sort in the order
-/// the records were written.
+/// How a report's file name writes its local time. Names sort in the order
+/// the reports were written.
 pub const FILE_TIMESTAMP: &str = "%Y-%m-%d-%H%M%S";
 
-/// How long recovery waits for the freeze record to reach the disk. The
-/// record is a few kilobytes; a disk that takes longer is itself stuck, and
+/// How long recovery waits for the freeze report to reach the disk. The
+/// report is a few kilobytes; a disk that takes longer is itself stuck, and
 /// handing the display back comes first.
-pub const RECORD_WITHIN: Duration = Duration::from_secs(5);
+pub const REPORT_WITHIN: Duration = Duration::from_secs(5);
 
 /// The identity of the running binary, recorded once at install time so the
 /// panic path does no file parsing.
@@ -100,7 +100,7 @@ pub struct Panic<'a> {
     pub backtrace: &'a str,
 }
 
-/// What a freeze record says about a main loop that stopped for good.
+/// What a freeze report says about a main loop that stopped for good.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Freeze<'a> {
     /// Local time the watchdog judged the loop hung, already formatted.
@@ -114,7 +114,7 @@ pub struct Freeze<'a> {
     pub report: &'a str,
 }
 
-/// The binary a record names and its build id, or what stands in for them.
+/// The binary a report names and its build id, or what stands in for them.
 fn identity(build: &BuildInfo) -> (String, &str) {
     let executable = build
         .executable
@@ -154,7 +154,7 @@ pub fn render(title: &str, build: &BuildInfo, panic: &Panic<'_>) -> String {
     body
 }
 
-/// Render the record written for a session that stopped responding.
+/// Render the report written for a session that stopped responding.
 #[must_use]
 pub fn render_freeze(build: &BuildInfo, freeze: &Freeze<'_>) -> String {
     let mut body = String::new();
@@ -182,7 +182,7 @@ pub fn render_freeze(build: &BuildInfo, freeze: &Freeze<'_>) -> String {
     body
 }
 
-/// Where the records live: the private `tilo/crashes` directory of the
+/// Where the reports live: the private `tilo/crashes` directory of the
 /// person's cache, created if missing. `None` without a home cache directory,
 /// or when the path is not a private directory of this user's: a shared
 /// fallback such as `/tmp` would let another user plant the path.
@@ -193,22 +193,22 @@ pub fn directory() -> Option<PathBuf> {
         .filter(|dir| tilo_files::native::private::directory(dir).is_ok())
 }
 
-/// The local time now, as a record's file name starts with it.
+/// The local time now, as a report's file name starts with it.
 #[must_use]
 pub fn file_timestamp() -> String {
     tilo_formats::machine!(
-        "the record's file name, which programs sort by",
+        "the report's file name, which programs sort by",
         chrono::Local::now().format(FILE_TIMESTAMP).to_string()
     )
 }
 
-/// Write `body` as the new record `name` in `dir`: a private file, created
+/// Write `body` as the new report `name` in `dir`: a private file, created
 /// only if it does not exist, never through a link.
 ///
 /// # Errors
 ///
 /// The file exists already or could not be created or written.
-pub fn write_record(dir: &Path, name: &str, body: &str) -> std::io::Result<PathBuf> {
+pub fn write_report(dir: &Path, name: &str, body: &str) -> std::io::Result<PathBuf> {
     use std::io::Write as _;
     let path = dir.join(name);
     tilo_files::native::private::create_new(&path)?.write_all(body.as_bytes())?;
@@ -254,7 +254,7 @@ pub fn install(title: &'static str) {
         if let Some(dir) = &dir {
             let name = format!("{timestamp}-{}.log", std::process::id());
             let path = dir.join(&name);
-            if write_record(dir, &name, &body).is_ok() {
+            if write_report(dir, &name, &body).is_ok() {
                 eprintln!("\n[tilo] crash log written to {}", path.display());
             } else {
                 eprintln!("\n[tilo] FAILED to write crash log to {}", path.display());
@@ -266,11 +266,11 @@ pub fn install(title: &'static str) {
     }));
 }
 
-/// Write the record of a main loop its watchdog judged hung, on a thread of
+/// Write the report of a main loop its watchdog judged hung, on a thread of
 /// its own so a stuck disk holds recovery back by `within` at most. Where it
 /// went, or `None` when it did not get there in time.
 #[must_use]
-pub fn record_freeze(
+pub fn report_freeze(
     tid: i32,
     blocked_for: Duration,
     report: &str,
@@ -293,7 +293,7 @@ pub fn record_freeze(
                     },
                 );
                 let name = format!("{timestamp}-{}{}", std::process::id(), FREEZE_SUFFIX);
-                write_record(&dir, &name, &body).ok()
+                write_report(&dir, &name, &body).ok()
             });
             let _ = sent.send(written);
         })
@@ -447,7 +447,7 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        fn a_rendered_record_names_what_ran_and_keeps_its_stacks;
+        fn a_rendered_report_names_what_ran_and_keeps_its_stacks;
 
         phase a_report_names_the_binary_and_keeps_the_backtrace;
         {
@@ -484,14 +484,14 @@ mod tests {
             );
         }
 
-        phase a_freeze_record_names_the_binary_and_keeps_the_stacks;
+        phase a_freeze_report_names_the_binary_and_keeps_the_stacks;
         {
             let build = BuildInfo {
                 version: "0.1.0",
                 executable: Some(PathBuf::from("/usr/bin/tilo-session")),
                 build_id: Some("abc123".to_owned()),
             };
-            let record = render_freeze(
+            let report = render_freeze(
                 &build,
                 &Freeze {
                     timestamp: "2026-10-24-225201",
@@ -500,7 +500,7 @@ mod tests {
                     report: "main loop hung\nthread 412 (session)\n   0: session::x::wait",
                 },
             );
-            assert!(record.starts_with(FREEZE_TITLE), "{record}");
+            assert!(report.starts_with(FREEZE_TITLE), "{report}");
             for line in [
                 "timestamp: 2026-10-24-225201\n",
                 "binary:    /usr/bin/tilo-session\n",
@@ -509,7 +509,7 @@ mod tests {
                 "stalled:   26.4 s\n",
                 "   0: session::x::wait\n",
             ] {
-                assert!(record.contains(line), "{line:?} in:\n{record}");
+                assert!(report.contains(line), "{line:?} in:\n{report}");
             }
         }
 
@@ -539,17 +539,17 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn a_record_is_private_and_never_replaced() {
+    fn a_report_is_private_and_never_replaced() {
         use std::os::unix::fs::PermissionsExt as _;
         let dir = tempfile::tempdir().unwrap();
         tilo_files::native::private::directory(dir.path()).unwrap();
-        let path = write_record(dir.path(), "2026-10-24-225201-1-freeze.log", "first").unwrap();
+        let path = write_report(dir.path(), "2026-10-24-225201-1-freeze.log", "first").unwrap();
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "first");
         assert_eq!(
             std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
             0o600
         );
-        assert!(write_record(dir.path(), "2026-10-24-225201-1-freeze.log", "second").is_err());
+        assert!(write_report(dir.path(), "2026-10-24-225201-1-freeze.log", "second").is_err());
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "first");
     }
 }
