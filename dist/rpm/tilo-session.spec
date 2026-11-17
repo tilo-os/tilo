@@ -201,7 +201,7 @@ makes before it execs anything.
 %install
 install -Dpm 0755 bin/tilo-session           %{buildroot}%{_bindir}/tilo-session
 install -Dpm 0755 bin/tilo                   %{buildroot}%{_bindir}/tilo
-install -Dpm 0755 bin/tilolang-host          %{buildroot}%{_bindir}/tilolang-host
+install -Dpm 0755 bin/tilolang-process          %{buildroot}%{_bindir}/tilolang-process
 install -Dpm 0755 bin/fs %{buildroot}%{_bindir}/fs
 install -Dpm 0755 bin/tilo-server-admin %{buildroot}%{_libexecdir}/tilo/tilo-server-admin
 ln -s ../libexec/tilo/tilo-server-admin %{buildroot}%{_bindir}/tilo-server-admin
@@ -289,7 +289,7 @@ for program in fs tilo-server-admin tilo-enroll; do
 done
 test -x %{buildroot}%{_bindir}/tilo-import-folders
 test -x %{buildroot}%{_bindir}/tilo
-test -x %{buildroot}%{_bindir}/tilolang-host
+test -x %{buildroot}%{_bindir}/tilolang-process
 grep -Fxq "Exec=/usr/bin/tilo-import-folders --import-folders" %{buildroot}%{_datadir}/applications/tilo-import-folders.desktop
 %{buildroot}%{_bindir}/tilo-import-folders --tilo-package-smoke
 # A session entry that names a binary the package does not install is the
@@ -356,7 +356,7 @@ done
 %dir %{_libexecdir}/tilo
 %{_bindir}/tilo-session
 %{_bindir}/tilo
-%{_bindir}/tilolang-host
+%{_bindir}/tilolang-process
 %{_bindir}/fs
 %{_bindir}/tilo-server-admin
 %{_libexecdir}/tilo/tilo-server-admin

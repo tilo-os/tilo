@@ -99,7 +99,7 @@ impl Connect {
     }
     /// Every holder of the workspace a link may reach, each alike: the host
     /// this device's enrollment names, then each holder the workspace's
-    /// governance names ([`crate::workspace_hosts_of`]) in the order it holds
+    /// governance names ([`crate::keeping_devices_of`]) in the order it holds
     /// them. A holder the workspace revoked, or another naming this device,
     /// is left out.
     pub fn hosts(&self, own: &[u8; 32]) -> Result<Vec<TransportHint>, String> {
@@ -109,7 +109,7 @@ impl Connect {
             let named = view
                 .peer()
                 .governance()
-                .workspace_hosts()
+                .keeping_devices()
                 .into_iter()
                 .filter(|hint| {
                     let device = hint.host.device_public_key;

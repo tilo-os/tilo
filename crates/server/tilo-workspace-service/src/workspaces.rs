@@ -66,7 +66,7 @@ mod holding;
 pub(crate) use holding::{HostWorkspaceRequest, decode_hex, owners, work_takes};
 mod host_invitations;
 mod hosts;
-pub use hosts::WorkspaceHost;
+pub use hosts::KeepingDevice;
 /// Wait until this host is reached through a relay, before it names its own
 /// address anywhere ([`tilo_endpoint_reachability::await_relay`]).
 pub use tilo_endpoint_reachability::await_relay;
@@ -938,6 +938,9 @@ struct WorkspacesInner {
     /// `0` keeps the link's own.
     #[cfg(test)]
     link_heard_capacity: std::sync::atomic::AtomicUsize,
+    /// Whether this server is about to restart and hands its work to the
+    /// other holders: it takes and renews no lease ([`Workspaces::drain`]).
+    draining: std::sync::atomic::AtomicBool,
     dir: PathBuf,
     /// The workspaces governed here, each under its id spelled out: the one
     /// id a workspace has, which its channels carry too ([`Workspaces::held`]).
@@ -1234,6 +1237,7 @@ impl Workspaces {
             inner: Arc::new(WorkspacesInner {
                 #[cfg(test)]
                 link_heard_capacity: std::sync::atomic::AtomicUsize::new(0),
+                draining: std::sync::atomic::AtomicBool::new(false),
                 store: Arc::new(store),
                 direct: tilo_peer_state::direct::Serving::new(),
                 dir: dir.clone(),
@@ -1372,6 +1376,24 @@ impl Workspaces {
         self.follow_own_address();
         #[cfg(feature = "agents")]
         self.follow_repaired_documents();
+    }
+
+    /// Stop taking work under leases until this process ends: the server is
+    /// about to restart, and every lease it lets lapse is taken by another
+    /// holder of the workspace. Nothing undoes it; the restart does.
+    pub fn drain(&self) {
+        self.inner
+            .draining
+            .store(true, std::sync::atomic::Ordering::Release);
+    }
+
+    /// Whether this server is draining ([`Workspaces::drain`]): whoever takes
+    /// work under a lease here neither takes nor renews it.
+    #[must_use]
+    pub fn draining(&self) -> bool {
+        self.inner
+            .draining
+            .load(std::sync::atomic::Ordering::Acquire)
     }
 
     /// The certificate this host serves its workspaces with: its own, or the

@@ -566,7 +566,7 @@ pub(crate) fn describe_folder(workspace: &serde_json::Value) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tilo_server_session::workspaces::{PersonalWorkspace, WorkspaceHostAddress};
+    use tilo_server_session::workspaces::{KeepingDeviceAddress, PersonalWorkspace};
 
     /// The host's list names each folder after its workspace, and the folder
     /// of the workspace this device entered exists before any list names it.
@@ -578,7 +578,7 @@ mod tests {
             workspaces: vec![PersonalWorkspace {
                 workspace: second.to_owned(),
                 name: "Second".to_owned(),
-                host: Some(WorkspaceHostAddress {
+                host: Some(KeepingDeviceAddress {
                     name: "tilo.test".to_owned(),
                     hint: None,
                 }),

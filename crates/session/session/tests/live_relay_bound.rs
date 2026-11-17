@@ -55,7 +55,7 @@ fn live_session_of(device: &Device, workspace: &str) -> Value {
 
 /// What `device` says of who hosts `workspace`: `Null` while it does not hold it.
 fn hosting_of(device: &Device, workspace: &str) -> Value {
-    device.ask(&json!({"op": "workspace_hosts"}))["answer"]["workspaces"]
+    device.ask(&json!({"op": "keeping_devices"}))["answer"]["workspaces"]
         .as_array()
         .and_then(|held| {
             held.iter()

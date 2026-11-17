@@ -426,3 +426,44 @@ on a machine with no GPU) crashed mapping it. Every dma-buf supports seeking to 
 `src/wayland/dmabuf/mod.rs` now posts `out_of_bounds` for a plane that cannot be sized.
 
 Remove this once upstream refuses such planes.
+
+## A tablet tool reports its hardware identity whole
+
+`zwp_tablet_tool_v2.hardware_serial` and `hardware_id_wacom` carry a 64-bit value as two uint32
+words, `hi` and `lo`. `src/wayland/tablet_manager/tablet_tool.rs` sent bits 16-47 as `hi`, so
+every identity whose upper half is not zero reached a client truncated and a client that
+compares the value it read against the tool it knows saw a different pen.
+
+Remove this once upstream sends the high word from bit 32.
+## An output's description can be set
+
+`Output::new` derives the description clients read from `xdg-output` (make, model and name) and
+there was no setter. A desktop that knows a display by another name, and a proxy that repeats
+what that desktop said (the app keeper), could not pass it on. `src/output.rs`
+`Output::set_description`, with `src/wayland/output/mod.rs` and `src/wayland/output/xdg.rs`,
+changes it and tells every `wl_output` (version 4 up) and `xdg-output` (version 2 up) instance,
+`wl_output.done` last.
+
+Remove this once upstream lets a compositor name an output's description.
+## A drag does not keep the display alive
+
+`DnDGrab` held a strong `DisplayHandle`, and a compositor holds the grab from its seat, so a
+compositor dropped while a client's drag was open kept its display and every client socket
+alive. A desktop restarts in place by dropping the compositor, and the app keeper learns that its
+desktop went away from that socket closing, so nothing may outlive the drop.
+`src/wayland/selection/data_device/dnd_grab.rs` holds a `WeakHandle` and upgrades it while it
+sends.
+
+Remove this once upstream does not hold the display in a grab.
+## A client the compositor names may set a selection without focus
+
+`wl_data_device.set_selection` and the primary selection's are taken only from the client with
+keyboard focus (and the focus it just left). An app keeper re-asserts what its app owned on the
+desktop that went away as soon as the new desktop attaches, before any window of the app has the
+focus, so the compositor needs a way to name that client itself: `SelectionHandler::
+may_set_selection_without_focus(ty, client, serial)`, asked when the focus rule refuses, with the
+request's serial left to the compositor's meaning. Both `SetSelection` requests in
+`src/wayland/selection/data_device/device.rs` and `src/wayland/selection/primary_selection/
+device.rs` ask it. The compositor bounds the exception; the default refuses.
+
+Remove this once upstream offers a protocol by which a kept client may re-assert a selection.

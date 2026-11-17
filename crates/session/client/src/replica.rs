@@ -475,7 +475,7 @@ impl Replicas {
                 Ok(view
                     .peer()
                     .governance()
-                    .workspace_hosts()
+                    .keeping_devices()
                     .into_iter()
                     .find(|hint| hint.host.device_public_key == host))
             })?

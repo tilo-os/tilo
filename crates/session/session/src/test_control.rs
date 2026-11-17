@@ -332,7 +332,7 @@ enum Op {
     Unlock,
     Watch,
     Windows,
-    WorkspaceHosts,
+    KeepingDevices,
 }
 
 impl Op {
@@ -368,7 +368,7 @@ impl Op {
         Self::Unlock,
         Self::Watch,
         Self::Windows,
-        Self::WorkspaceHosts,
+        Self::KeepingDevices,
     ];
 
     /// The op `request` names, or `None` for one the protocol does not answer at all.
@@ -404,7 +404,7 @@ impl Op {
             "unlock" => Self::Unlock,
             "watch" => Self::Watch,
             "windows" => Self::Windows,
-            "workspace_hosts" => Self::WorkspaceHosts,
+            "keeping_devices" => Self::KeepingDevices,
             _ => return None,
         })
     }
@@ -442,7 +442,7 @@ impl Op {
             Self::Unlock => "unlock",
             Self::Watch => "watch",
             Self::Windows => "windows",
-            Self::WorkspaceHosts => "workspace_hosts",
+            Self::KeepingDevices => "keeping_devices",
         }
     }
 
@@ -465,7 +465,7 @@ impl Op {
                 | Self::StateDump
                 | Self::Watch
                 | Self::Windows
-                | Self::WorkspaceHosts
+                | Self::KeepingDevices
         )
     }
 }
@@ -1165,9 +1165,9 @@ fn asked_of_shell(
         Op::ProfileStatus => json!({"answer": crate::diagnostics::reading()}),
         Op::ProfileStop => json!({"answer": {"profile": tilo_frame_metrics::profile::stop()}}),
         Op::StateDump => shown(ctx, session.handle.read(|tree| state_dump(tree, session))),
-        Op::WorkspaceHosts => session
+        Op::KeepingDevices => session
             .handle
-            .read(|tree| state::workspace_hosts(tree, session, ctx)),
+            .read(|tree| state::keeping_devices(tree, session, ctx)),
         Op::Windows => {
             // Nothing shows a window while the screen is locked.
             let rows = if ctx.who != Audience::Dev && session.locked {
@@ -2643,7 +2643,7 @@ mod tests {
                 Op::StateDump,
                 Op::Watch,
                 Op::Windows,
-                Op::WorkspaceHosts,
+                Op::KeepingDevices,
             ];
             for op in Op::ALL {
                 let served_there = owner.contains(&op);

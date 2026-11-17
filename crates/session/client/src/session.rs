@@ -512,8 +512,9 @@ struct Task {
     /// The workspaces whose host said they send records only when opened.
     when_opened: BTreeSet<WorkspaceId>,
     /// Each waits for the writes that were in this device's ownership when it was called, and
-    /// completes with the host's refusal of any of them.
-    barriers: Vec<(BTreeSet<[u8; 32]>, Option<String>, Completion)>,
+    /// completes with the host's refusal of any of them: the writes of every workspace, or of
+    /// the workspaces it was asked for alone ([`outbound::Scope`]).
+    barriers: Vec<outbound::Owed>,
     /// What this connection sent its host of each workspace's ownership.
     sending: BTreeMap<tilo_desktop_model::WorkspaceId, crate::membership_check::Sending>,
     /// The writes the host was not ready for: each is sent again once the host says the
@@ -535,8 +536,8 @@ struct Task {
     engine: Arc<crate::engine::Engine>,
     /// Barriers called while frames were held, with the routes those frames
     /// are held on: each waits for them to enter the outbox, then for the
-    /// outbox as it stands then.
-    held_barriers: Vec<(BTreeSet<DocumentRoute>, Completion)>,
+    /// outbox as it stands then, in the workspaces it was asked for.
+    held_barriers: Vec<(BTreeSet<DocumentRoute>, Completion, outbound::Scope)>,
     /// When the workspaces not yet admitted were subscribed (ms since the epoch).
     admission_since: Option<u64>,
     /// Retained entry ids of every document delivered or published per
@@ -1615,13 +1616,11 @@ impl Task {
                 true
             }
             Command::Client(Cmd::Barrier(done)) => {
-                let held: BTreeSet<DocumentRoute> =
-                    self.engine.held_writes().lock().keys().cloned().collect();
-                if held.is_empty() {
-                    self.await_ownership(done, None);
-                } else {
-                    self.held_barriers.push((held, done));
-                }
+                self.barrier(done, None);
+                true
+            }
+            Command::Client(Cmd::BarrierOf(workspaces, done)) => {
+                self.barrier(done, Some(workspaces.into_iter().collect()));
                 true
             }
             Command::Client(Cmd::Presence(workspace_id, frames)) => {

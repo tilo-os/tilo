@@ -6,8 +6,11 @@
 //! desktop like any other, including one over another window of the same app.
 //!
 //! Across a desktop restart the app's own selection is kept (`owner`): its source object and its
-//! formats survive, and the first keyboard focus the new desktop gives is used to set it again,
-//! because a desktop takes a selection only from the client holding focus. A selection or drag
+//! formats survive, and it is offered to the new desktop as soon as that desktop attaches. The
+//! compositor takes it from the connection the session handed this keeper within a short while
+//! after the attach, when nothing else owns the selection yet, with the time the app's copy was
+//! made as the request's serial; a newer copy from anywhere else replaces it. The first keyboard
+//! focus remains a second way to offer it, for a desktop whose window it is. A selection or drag
 //! the old desktop had offered is cancelled to the app when it goes away.
 //!
 //! Text is offered under every name it goes by, both ways (`tilo_x11_transfer`): the X11 server
@@ -46,6 +49,23 @@ pub(crate) fn served_as(wanted: String, offered: &[String]) -> String {
 
 /// The `wl_data_device_manager` version the app is offered and the desktop's is bound at.
 const MANAGER_VERSION: u32 = 3;
+
+/// Milliseconds of the machine's monotonic clock, in the low 32 bits: when the app's source was
+/// set. Two keepers' claims meet within seconds of each other, and the wrap every 49 days is the
+/// one a `Serial` already orders.
+pub(crate) fn now_ms() -> u32 {
+    let mut now = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
+    // SAFETY: the pointer names the timespec the call fills.
+    if unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &raw mut now) } != 0 {
+        return 0;
+    }
+    let seconds = u32::try_from(now.tv_sec).unwrap_or(0);
+    let millis = u32::try_from(now.tv_nsec / 1_000_000).unwrap_or(0);
+    seconds.wrapping_mul(1000).wrapping_add(millis)
+}
 
 /// A data source the app created.
 struct Source {
@@ -86,6 +106,9 @@ pub(crate) struct DataDevice {
     focus: Option<ClientId>,
     /// The app's source that owns the clipboard, kept to offer it again after a restart.
     owner: Option<ObjectId>,
+    /// When that source was set, in milliseconds of the machine's monotonic clock: the time the
+    /// new desktop compares two keepers' claims by.
+    owner_at: u32,
     /// The app's source of the drag that runs now.
     drag: Option<ObjectId>,
     /// The app surface the desktop's drag entered, and the app devices told of it.
@@ -103,6 +126,7 @@ impl DataDevice {
             clipboard: None,
             focus: None,
             owner: None,
+            owner_at: 0,
             drag: None,
             entered: None,
         }
@@ -241,12 +265,22 @@ impl State {
     /// still paste after the desktop restarted. The desktop takes it from the client holding
     /// focus, with the first serial that focus arrived with.
     fn reoffer_owner(&mut self) {
-        self.offer_owner(false);
+        self.offer_owner(false, None);
+    }
+
+    /// Offer the app's selection to the desktop as soon as it attaches, before the app's window
+    /// has the focus: the compositor takes it from a session-handed connection for a short while
+    /// after it arrives, when nothing else owns the selection yet, and a keeper whose app copied
+    /// later wins over one whose app copied earlier.
+    pub(crate) fn reassert_owner(&mut self) {
+        let at = self.data_device.owner_at;
+        self.offer_owner(false, Some(at));
     }
 
     /// Offer the app's selection to the desktop: `force` replaces the twin already there (the app
-    /// set a new selection), otherwise a twin that lives is left alone (a focus change).
-    fn offer_owner(&mut self, force: bool) {
+    /// set a new selection), otherwise a twin that lives is left alone (a focus change). `claim`
+    /// is the time the app's copy was made, when this is the first offer after an attach.
+    fn offer_owner(&mut self, force: bool, claim: Option<u32>) {
         let Some(owner) = self.data_device.owner.clone() else {
             return;
         };
@@ -256,7 +290,7 @@ impl State {
         };
         let (has_twin, mimes, actions) =
             (source.up.is_some(), source.mimes.clone(), source.actions);
-        if self.data_device.focus.is_none() || (has_twin && !force) {
+        if (claim.is_none() && self.data_device.focus.is_none()) || (has_twin && !force) {
             return;
         }
         if force
@@ -266,7 +300,7 @@ impl State {
             twin.destroy();
         }
         let actions = c::wl_data_device_manager::DndAction::from_bits_truncate(actions);
-        let serial = self.seat.last_serial();
+        let serial = claim.unwrap_or_else(|| self.seat.last_serial());
         let Some(up) = self.up.as_ref() else {
             return;
         };
@@ -350,7 +384,8 @@ impl State {
             return;
         }
         self.data_device.owner = Some(id);
-        self.offer_owner(true);
+        self.data_device.owner_at = now_ms();
+        self.offer_owner(true, None);
     }
 
     fn app_started_drag(

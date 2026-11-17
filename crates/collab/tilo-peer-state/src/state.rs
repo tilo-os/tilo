@@ -80,8 +80,10 @@ mod native_publication;
 mod publication;
 mod workspace_grants;
 pub use workspace_grants::workspace_grants_of;
-mod workspace_hosts;
-pub use workspace_hosts::{WORKSPACE_HOSTS_KEY, serving_devices_of, workspace_hosts_of};
+mod keeping_devices;
+pub use keeping_devices::{
+    WORKSPACE_KEEPING_DEVICES_KEY, keeping_device_keys_of, keeping_devices_of,
+};
 mod personal;
 pub(crate) mod seed;
 mod workspace_name;

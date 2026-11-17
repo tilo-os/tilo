@@ -1,6 +1,6 @@
-//! A call that made or changed something answers the link that opens it:
-//! the item its answer names after `->`, when the item offers a `share-link`
-//! of its own, else the link to the record it is kept in.
+//! A call that made or changed something answers the link that opens it, as
+//! the server that invoked it minted it in the same answer: the call asks for
+//! nothing more, and a path it invoked before is not resolved again.
 use super::*;
 use std::sync::{Arc, Mutex};
 use tilo_actions::remote::{
@@ -13,25 +13,19 @@ const APP: &str = "so.tilo.test";
 const PROVIDER: &str = "record:so.tilo.test:";
 const ROOT: &str = "test.note";
 const ITEM: &str = "test.note/items/42";
-/// The chain of parts beside the record that keeps the items, when they are
-/// kept so: what the app lists at its top level, the items beneath it.
-const CHAIN: &str = "test.notes";
 const WORKSPACE: &str = "6f1c2b9e-0d4a-4c1e-9b7a-2f3d1e5c8a90";
 const ENTRY: &str = "https://tilo.so/";
 
 /// An app whose `create` makes the item [`ITEM`], served as a record.
-#[derive(Clone)]
+#[derive(Clone, Default)]
 struct Tracker {
-    /// Whether the item it makes offers a `share-link` of its own.
-    linked_item: bool,
-    /// Whether the item is kept in a part of [`CHAIN`] rather than in the
-    /// record itself, so the app lists it a level down.
-    in_chain: bool,
     invoked: Arc<Mutex<Vec<InvokeRequest>>>,
+    /// How many directory queries were asked.
+    queried: Arc<Mutex<usize>>,
 }
 
 fn descriptor(resource: &str, action: &str, kind: OperationKind) -> ActionDescriptor {
-    let mut descriptor = ActionDescriptor {
+    ActionDescriptor {
         did: None,
         state: tilo_actions::ActionState::default(),
         semantic_identity: None,
@@ -51,11 +45,7 @@ fn descriptor(resource: &str, action: &str, kind: OperationKind) -> ActionDescri
         input: InputSpec::None,
         params: Vec::new(),
         view: None,
-    };
-    if kind == OperationKind::View {
-        descriptor.contract = ActionContract::view();
     }
-    descriptor
 }
 
 fn row(resource: &str, parent: &str, action: Option<ActionDescriptor>) -> CatalogueRow {
@@ -76,55 +66,40 @@ fn row(resource: &str, parent: &str, action: Option<ActionDescriptor>) -> Catalo
     }
 }
 
-/// The URL the app answers a `share-link` on `resource` with.
+/// The URL the server minted for the item a `create` made.
 fn url(resource: &str) -> String {
     format!("{ENTRY}app/#/w/{WORKSPACE}/{resource}")
 }
 
 impl Tracker {
-    fn new(linked_item: bool) -> Self {
-        Self {
-            linked_item,
-            in_chain: false,
-            invoked: Arc::default(),
-        }
-    }
-
-    /// An app keeping its items in parts beside its record.
-    fn in_chain(mut self) -> Self {
-        self.in_chain = true;
-        self
-    }
-
-    /// The rows the directory holds under `parent`: the record's own, and the
-    /// item's own (the share-link when the item offers one).
-    fn rows(&self, parent: &str) -> Vec<CatalogueRow> {
+    /// The rows the directory holds under `parent`: the document's own, and the item.
+    fn rows(parent: &str) -> Vec<CatalogueRow> {
         if parent.is_empty() {
-            let mut rows = vec![row(
-                "",
-                "",
-                Some(descriptor("", "create", OperationKind::Document)),
-            )];
-            if self.in_chain {
-                // Listed as a host lists a chain at the top level: not as a
-                // container, its items read a level further down.
-                rows.push(row(CHAIN, "", None));
-            } else {
-                rows.push(row(ITEM, "", None));
-            }
-            return rows;
+            return vec![
+                row(
+                    "",
+                    "",
+                    Some(descriptor("", "create", OperationKind::Document)),
+                ),
+                row(ITEM, "", None),
+            ];
         }
-        if self.in_chain && parent == CHAIN {
-            return vec![row(ITEM, CHAIN, None)];
-        }
-        let link = self.linked_item.then(|| {
-            descriptor(
-                ITEM,
-                tilo_actions::remote::SHARE_LINK_ACTION,
-                OperationKind::Effect,
-            )
-        });
-        vec![row(ITEM, parent, link)]
+        vec![row(ITEM, parent, None)]
+    }
+
+    /// What the app was asked to invoke, as `resource#action`.
+    fn asked(&self) -> Vec<String> {
+        self.invoked
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|request| {
+                format!(
+                    "{}#{}",
+                    request.target.address.resource, request.target.address.action
+                )
+            })
+            .collect()
     }
 }
 
@@ -134,19 +109,21 @@ impl ActionProvider for Tracker {
         _caller: &Caller,
         query: CatalogueQuery,
     ) -> Pending<Result<CataloguePage, ActionCallError>> {
+        let mut queried = self.queried.lock().unwrap();
+        *queried = queried.saturating_add(1);
+        drop(queried);
         let rows = match (query.provider.as_deref(), &query.target) {
             (None, _) => Vec::new(),
             // An exact address is answered at whatever level it stands.
-            (Some(_), Some(target)) => ["", CHAIN, ITEM]
+            (Some(_), Some(target)) => Self::rows("")
                 .into_iter()
-                .flat_map(|parent| self.rows(parent))
                 .filter(|row| {
                     row.action
                         .as_ref()
                         .is_some_and(|action| action.address == *target)
                 })
                 .collect(),
-            (Some(_), None) => self.rows(query.parent_resource.as_deref().unwrap_or("")),
+            (Some(_), None) => Self::rows(query.parent_resource.as_deref().unwrap_or("")),
         };
         let mut page = CataloguePage::from_rows("1".into(), rows, &query);
         page.providers = vec![CatalogueProvider {
@@ -179,29 +156,22 @@ impl ActionProvider for Tracker {
     ) -> Option<InvocationState> {
         let invoked = self.invoked.lock().unwrap();
         let request = invoked.iter().find(|request| request.invocation == *id)?;
-        let (resource, action) = (
-            request.target.address.resource.clone(),
-            request.target.address.action.clone(),
-        );
+        let made = request.target.address.action == "create";
         drop(invoked);
-        let output = match action.as_str() {
-            tilo_actions::remote::SHARE_LINK_ACTION => tilo_actions::ActionOutput {
-                value: Some(json!({ "url": url(&resource) })),
-                resources: Vec::new(),
-            },
-            "create" => tilo_actions::ActionOutput {
-                value: None,
-                resources: vec![ITEM.into()],
-            },
-            _ => tilo_actions::ActionOutput::default(),
+        let output = tilo_actions::ActionOutput {
+            value: None,
+            resources: if made { vec![ITEM.into()] } else { Vec::new() },
         };
-        Some(InvocationState::new(
-            *id,
-            InvocationUpdate::Succeeded {
-                invocation: *id,
-                output,
-            },
-        ))
+        Some(
+            InvocationState::new(
+                *id,
+                InvocationUpdate::Succeeded {
+                    invocation: *id,
+                    output,
+                },
+            )
+            .linked(made.then(|| url(ITEM))),
+        )
     }
 
     fn cancel(
@@ -242,88 +212,43 @@ async fn tool(server: &McpServer<Tracker>, name: &str, arguments: Value) -> (Str
     )
 }
 
-tilo_test_env::scenario! {
-    fn a_create_answers_the_link_that_opens_what_it_made;
-
-    phase a_create_answers_its_items_own_link;
-    // The item the answer names after `->` offers a `share-link` (its app
-    // opens items), so the link names the item, not the app's record.
-    {
-        let host = Tracker::new(true);
-        run(async {
-            let server = agent(&host);
-            let (text, failed) = tool(
-                &server,
-                "tilo_do",
-                json!({"path": "test#create", "args": {"title": "First note"}}),
-            )
-            .await;
-            assert!(!failed, "{text}");
-            assert!(text.contains(&format!("-> {ITEM}")), "{text}");
-            assert!(
-                text.ends_with(&format!("link: {}", url(ITEM))),
-                "the link names the item it made: {text}"
-            );
-            let asked: Vec<String> = host
-                .invoked
-                .lock()
-                .unwrap()
+#[test]
+fn a_create_answers_the_link_minted_with_it_and_a_second_asks_only_the_invocation() {
+    let host = Tracker::default();
+    run(async {
+        let server = agent(&host);
+        let create = json!({"path": "test#create", "args": {"title": "First note"}});
+        let (text, failed) = tool(&server, "tilo_do", create.clone()).await;
+        assert!(!failed, "{text}");
+        assert!(text.contains(&format!("-> {ITEM}")), "{text}");
+        assert!(
+            text.ends_with(&format!("link: {}", url(ITEM))),
+            "the link names the item it made: {text}"
+        );
+        let share = tilo_actions::remote::SHARE_LINK_ACTION;
+        assert!(
+            !host
+                .asked()
                 .iter()
-                .map(|request| {
-                    format!(
-                        "{}#{}",
-                        request.target.address.resource, request.target.address.action
-                    )
-                })
-                .collect();
-            assert!(
-                asked.contains(&format!("{ITEM}#{}", tilo_actions::remote::SHARE_LINK_ACTION)),
-                "the item's own link was asked for, not the record's: {asked:?}"
-            );
-        });
-    }
-
-    phase a_create_answers_the_own_link_of_an_item_kept_in_a_part;
-    // An item kept in a part beside the record is listed under the chain of
-    // parts, which the record's top level does not list as a container; the
-    // link is asked of the item by its address and still names it.
-    {
-        let host = Tracker::new(true).in_chain();
-        run(async {
-            let (text, failed) = tool(
-                &agent(&host),
-                "tilo_do",
-                json!({"path": "test#create", "args": {"title": "First note"}}),
-            )
-            .await;
-            assert!(!failed, "{text}");
-            assert!(text.contains(&format!("-> {ITEM}")), "{text}");
-            assert!(
-                text.ends_with(&format!("link: {}", url(ITEM))),
-                "the link names the item kept in a part: {text}"
-            );
-        });
-    }
-
-    phase a_create_answers_the_records_link_when_the_item_offers_none;
-    {
-        let host = Tracker::new(false);
-        run(async {
-            let (text, failed) = tool(
-                &agent(&host),
-                "tilo_do",
-                json!({"path": "test#create", "args": {"title": "First note"}}),
-            )
-            .await;
-            assert!(!failed, "{text}");
-            assert!(text.contains(&format!("-> {ITEM}")), "{text}");
-            assert!(
-                text.ends_with(&format!(
-                    "link: {}",
-                    url("")
-                )),
-                "the record's link is the fallback: {text}"
-            );
-        });
-    }
+                .any(|asked| asked.ends_with(&format!("#{share}"))),
+            "no link was asked for beside the change: {:?}",
+            host.asked()
+        );
+        // The same path again: the action it resolved to is invoked, and nothing
+        // else is asked (no lookup, and the document's window was shown already).
+        let (asked, queried) = (host.asked().len(), *host.queried.lock().unwrap());
+        let (text, failed) = tool(&server, "tilo_do", create).await;
+        assert!(!failed, "{text}");
+        assert!(text.ends_with(&format!("link: {}", url(ITEM))), "{text}");
+        assert_eq!(
+            *host.queried.lock().unwrap(),
+            queried,
+            "the path was not resolved again"
+        );
+        assert_eq!(
+            host.asked()[asked..],
+            ["#create".to_owned()],
+            "only the action was invoked"
+        );
+    });
 }

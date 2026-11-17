@@ -124,6 +124,56 @@ fn an_hdr_window_shows_its_description_and_its_first_frame_after_a_restart_carri
 }
 
 #[test]
+fn a_surface_waits_for_a_description_that_is_not_ready_and_shows_without_one_that_failed() {
+    let mut rig = Rig::new(None);
+    let mut app = App::connect(&mut rig);
+    app.open_window(&mut rig, "Film", Some("player"));
+    let manager = manager(&mut rig, &mut app);
+    let desc = hdr_description(&app, &manager);
+    ready(&mut rig, &mut app, &desc);
+    let surface = app.surface.clone().unwrap();
+    manager
+        .get_surface(&surface, &app.queue.handle(), ())
+        .set_image_description(&desc, RenderIntent::Perceptual);
+    app.show(&mut rig, SIZE, GREY);
+    assert_hdr(&mut rig);
+
+    // A new desktop holds every description it is asked for: until one is ready, no content of
+    // the surface that names it reaches the desktop.
+    rig.drop_desktop();
+    rig.settle(&mut [&mut app]);
+    rig.attach_new_with(|desktop| desktop.hold_color_descriptions());
+    for _ in 0..10 {
+        rig.settle(&mut [&mut app]);
+    }
+    assert!(
+        rig.windows().is_empty(),
+        "nothing reached the desktop before the description was ready"
+    );
+    rig.desktop().release_color_descriptions();
+    rig.pump(&mut [&mut app], |rig, _| !rig.windows().is_empty());
+    assert_hdr(&mut rig);
+
+    // A desktop that refuses the description: the window shows without it.
+    rig.drop_desktop();
+    rig.settle(&mut [&mut app]);
+    rig.attach_new_with(|desktop| desktop.hold_color_descriptions());
+    for _ in 0..10 {
+        rig.settle(&mut [&mut app]);
+    }
+    assert!(rig.windows().is_empty());
+    rig.desktop()
+        .fail_color_descriptions("the desktop does not serve it");
+    rig.pump(&mut [&mut app], |rig, _| !rig.windows().is_empty());
+    assert!(
+        window_color(&mut rig).is_none(),
+        "the window showed without the description it could not have"
+    );
+    assert!(!app.broken);
+    assert_eq!(rig.keeper.describe().fault, None);
+}
+
+#[test]
 fn an_scrgb_window_keeps_its_description_and_a_desktop_without_scrgb_fails_it() {
     let mut rig = Rig::new(None);
     let mut app = App::connect(&mut rig);

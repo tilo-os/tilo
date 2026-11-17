@@ -595,7 +595,7 @@ impl Workspaces {
             _ => {}
         }
         let servers = self
-            .server_list(&workspace)
+            .keeping_devices(&workspace)
             .await
             .map_err(CollaborationError::new)?;
         Ok(WorkspacesReply::Servers(

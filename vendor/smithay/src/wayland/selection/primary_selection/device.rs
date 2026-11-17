@@ -58,6 +58,14 @@ where
                         .user_data()
                         .get::<RefCell<SeatData<D::SelectionUserData>>>()
                         .unwrap(),
+                    _ if handler.may_set_selection_without_focus(
+                        SelectionTarget::Primary,
+                        client,
+                        Serial::from(serial),
+                    ) => seat
+                        .user_data()
+                        .get::<RefCell<SeatData<D::SelectionUserData>>>()
+                        .unwrap(),
                     _ => {
                         debug!(
                             client = ?client,

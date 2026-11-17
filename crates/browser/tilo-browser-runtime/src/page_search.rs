@@ -124,7 +124,7 @@ impl PageActions {
 
 /// The workspace's host as this page's search asks it: its search of what the workspace holds,
 /// over the session the page holds with it.
-pub(crate) struct WorkspaceHost {
+pub(crate) struct KeepingDevice {
     pub search: Arc<dyn tilo_actions::remote::ResourceSearch>,
     pub workspace: String,
     /// What asks for the shell's pass that lists the host's answer.
@@ -142,7 +142,7 @@ pub(crate) struct SearchParts {
     pub store: tilo_session::platform::Store,
     pub content: tilo_content::ContentStore,
     pub files: Option<Rc<crate::page_files::WorkspaceFiles>>,
-    pub host: Option<WorkspaceHost>,
+    pub host: Option<KeepingDevice>,
     pub wake: Arc<dyn Fn() + Send + Sync>,
     pub reveals: crate::browser::Reveals,
 }

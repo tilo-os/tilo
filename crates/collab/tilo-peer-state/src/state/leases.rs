@@ -414,6 +414,29 @@ mod tests {
         now + Duration::from_secs(seconds)
     }
 
+    /// A claim reaches the workspace's other holders as a change to its
+    /// document, so a server of the previous peer version, still running
+    /// while its person's servers update one at a time, reads the claims of
+    /// this build and this build reads its: the claim as that version wrote
+    /// it is frozen beside `neighbour-wire`.
+    #[test]
+    fn a_claim_reads_and_writes_as_the_previous_peer_version_wrote_it() {
+        const FROZEN: &str = include_str!("../../../neighbour-wire/previous-peer-frames.txt");
+        let kept = FROZEN
+            .lines()
+            .find_map(|line| line.strip_prefix("lease-claim "))
+            .expect("previous-peer-frames.txt keeps a lease claim");
+        let today = serde_json::to_string(&StoredClaim {
+            term: 3,
+            expires_at_ns: 4_000_000_000,
+            rank: rank(250),
+        })
+        .unwrap();
+        assert_eq!(today, kept, "this build writes a lease claim differently");
+        let read: StoredClaim = serde_json::from_str(kept).unwrap();
+        assert_eq!(serde_json::to_string(&read).unwrap(), kept);
+    }
+
     #[test]
     fn one_device_holds_the_lease_and_a_second_takes_it_only_once_it_is_over() {
         let (mut left, _left_key, mut right, _right_key) = desktops();

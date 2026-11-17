@@ -147,7 +147,8 @@ impl Hello {
 /// A handshake frame that is not one this device reads.
 #[derive(Debug, Error)]
 pub enum HandshakeFrameError {
-    /// The other side speaks another [`PEER_PROTOCOL_VERSION`]: `theirs`.
+    /// The other side speaks a [`PEER_PROTOCOL_VERSION`] this one does not
+    /// work with ([`neighbour_wire::works_with_peer_version`]): `theirs`.
     #[error("the other device speaks peer protocol {theirs}, this one {PEER_PROTOCOL_VERSION}")]
     Version {
         /// The version the frame starts with.
@@ -176,18 +177,20 @@ pub const fn this_device_is_behind(theirs: u32) -> bool {
 }
 
 /// Decode a [`Hello`] or [`HelloAck`] frame: its leading version first, so
-/// a frame from another version is refused as such, whatever its shape.
+/// a frame from a version this one does not work with is refused as such,
+/// whatever its shape.
 ///
 /// # Errors
 ///
-/// [`HandshakeFrameError::Version`] when the frame starts with another
-/// [`PEER_PROTOCOL_VERSION`], [`HandshakeFrameError::Codec`] when it does not
-/// decode.
+/// [`HandshakeFrameError::Version`] when the frame starts with a
+/// [`PEER_PROTOCOL_VERSION`] outside this one's window
+/// ([`neighbour_wire::works_with_peer_version`]),
+/// [`HandshakeFrameError::Codec`] when it does not decode.
 pub fn decode_handshake<T: serde::de::DeserializeOwned>(
     frame: &[u8],
 ) -> Result<T, HandshakeFrameError> {
     let (theirs, _) = postcard::take_from_bytes::<u32>(frame)?;
-    if theirs != PEER_PROTOCOL_VERSION {
+    if !neighbour_wire::works_with_peer_version(theirs) {
         return Err(HandshakeFrameError::Version { theirs });
     }
     Ok(postcard::from_bytes(frame)?)
@@ -1448,19 +1451,31 @@ mod tests {
         let peer = server_accepts(&frame(PEER_PROTOCOL_VERSION), &user.public_key).unwrap();
         assert!(peer.cert.capabilities.foreign);
 
-        // Another version, older or newer: refused as such, whatever follows.
-        for theirs in [PEER_PROTOCOL_VERSION - 1, PEER_PROTOCOL_VERSION + 1] {
+        // The next version works with this one while a rollout goes on, and
+        // so does the one before while this build still speaks it.
+        assert!(server_accepts(&frame(PEER_PROTOCOL_VERSION + 1), &user.public_key).is_some());
+        assert_eq!(
+            server_accepts(&frame(PEER_PROTOCOL_VERSION - 1), &user.public_key).is_some(),
+            neighbour_wire::OLDEST_PEER_PROTOCOL_VERSION < PEER_PROTOCOL_VERSION
+        );
+
+        // A version further away, older or newer: refused as such, whatever
+        // follows.
+        for theirs in [
+            neighbour_wire::OLDEST_PEER_PROTOCOL_VERSION - 1,
+            PEER_PROTOCOL_VERSION + 2,
+        ] {
             let refused = decode_handshake::<Hello>(&frame(theirs)).unwrap_err();
             assert_eq!(refused.peer_version(), Some(theirs));
             assert!(server_accepts(&frame(theirs), &user.public_key).is_none());
         }
-        let mut newer = postcard::to_stdvec(&(PEER_PROTOCOL_VERSION + 1)).unwrap();
+        let mut newer = postcard::to_stdvec(&(PEER_PROTOCOL_VERSION + 2)).unwrap();
         newer.extend_from_slice(b"a shape this build has never seen");
         assert_eq!(
             decode_handshake::<Hello>(&newer)
                 .unwrap_err()
                 .peer_version(),
-            Some(PEER_PROTOCOL_VERSION + 1)
+            Some(PEER_PROTOCOL_VERSION + 2)
         );
         assert!(this_device_is_behind(PEER_PROTOCOL_VERSION + 1));
         assert!(!this_device_is_behind(PEER_PROTOCOL_VERSION - 1));

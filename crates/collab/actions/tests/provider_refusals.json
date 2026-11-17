@@ -94,10 +94,10 @@
   {
     "wire": {
       "Refused": {
-        "reason": "{\"reason\":{\"too_many_workspaces\":{\"limit\":1,\"existing\":[\"6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71\"]}},\"message\":\"You already have a workspace of your own on this host; use that one.\",\"next\":[{\"kind\":\"use_existing\",\"url\":null}]}"
+        "reason": "{\"reason\":{\"too_many_workspaces\":{\"limit\":1,\"existing\":[\"6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71\"]}},\"message\":\"You already have a workspace of your own on this server; use that one.\",\"next\":[{\"kind\":\"use_existing\",\"url\":null}]}"
       }
     },
     "code": "refused",
-    "display": "refused: {\"reason\":{\"too_many_workspaces\":{\"limit\":1,\"existing\":[\"6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71\"]}},\"message\":\"You already have a workspace of your own on this host; use that one.\",\"next\":[{\"kind\":\"use_existing\",\"url\":null}]}"
+    "display": "refused: {\"reason\":{\"too_many_workspaces\":{\"limit\":1,\"existing\":[\"6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71\"]}},\"message\":\"You already have a workspace of your own on this server; use that one.\",\"next\":[{\"kind\":\"use_existing\",\"url\":null}]}"
   }
 ]

@@ -281,7 +281,7 @@ fn holder_redemptions(
 ) -> Result<AdmittedWorkspace, AdmissionFailure> {
     let before = input.before.ok_or(WorkspaceRefusal::GovernanceMissing)?;
     let at = super::membership::dependency_state(before, changes).map_err(membership)?;
-    let named = crate::state::workspace_hosts_of(&at)
+    let named = crate::state::keeping_devices_of(&at)
         .iter()
         .any(|hint| hex::encode(hint.host.device_public_key) == input.source.key);
     if !named {

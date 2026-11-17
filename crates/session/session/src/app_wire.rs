@@ -1129,14 +1129,6 @@ fn broker_services(
                 &layout,
             )) as std::sync::Arc<dyn DisplayControlServices>
         });
-    // The answers the person gave for one app using another app's action,
-    // kept in the settings this session holds.
-    let app_consents: Option<std::sync::Arc<dyn tilo_action_broker::services::AppConsents>> =
-        settings.as_ref().map(|source| {
-            std::sync::Arc::new(tilo_action_broker::services::PersonalAppConsents {
-                source: std::sync::Arc::clone(source),
-            }) as std::sync::Arc<dyn tilo_action_broker::services::AppConsents>
-        });
     // What each installed app's signed manifest declares it may do on the
     // action links: a ceiling the broker decides an app's calls against.
     let app_action_access = crate::broker_services::declared_access(lists.clone());
@@ -1303,7 +1295,6 @@ fn broker_services(
         app_resource_kinds: BrokerService::served(app_resource_kinds),
         // An answer the person gives "allow for this issue" is recorded in the
         // workspace's own governance, which this session's engine writes.
-        app_consents: BrokerService::when(app_consents),
         workspace_grants: BrokerService::when(engine.clone().map(|engine| {
             std::sync::Arc::new(SessionGrants::new(
                 engine,

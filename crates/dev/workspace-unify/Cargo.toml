@@ -1362,7 +1362,7 @@ doc = false
 "tilo-vmd" = { path = "../../../crates/dev/tilo-vmd", default-features = false, features = [] }
 "tilo-wake" = { path = "../../../crates/platform/tilo-wake", default-features = false, features = [] }
 "tilo-wallpapers" = { path = "../../../crates/platform/tilo-wallpapers", default-features = false, features = [] }
-"tilo-wayland-ext" = { path = "../../../crates/session/wayland-ext", default-features = false, features = [] }
+"tilo-wayland-ext" = { path = "../../../crates/session/wayland-ext", default-features = false, features = ["test-support"] }
 "tilo-web-desktop" = { path = "../../../crates/browser/tilo-web-desktop", default-features = false, features = [] }
 "tilo-web-search" = { path = "../../../crates/platform/tilo-web-search", default-features = false, features = ["fixture-servers"] }
 "tilo-wet-media" = { path = "../../../crates/media/wet-media", default-features = false, features = [] }

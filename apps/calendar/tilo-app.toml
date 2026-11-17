@@ -55,6 +55,7 @@ landlock   = "strict"
 mode = "host"
 
 [sandbox.portals]
+notifications = "via-host"
 open-uri = "via-host"
 
 [sandbox.services]

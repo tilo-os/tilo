@@ -389,10 +389,12 @@ tilo_test_env::scenario! {
             let bin = launcher::dbus_proxy::find_proxy_binary().expect("PROXY_BIN_ENV was set above");
             // The launch's own readiness bound is sized for the real proxy on an idle machine; this
             // asserts the wiring, not the startup latency of a shell script on a loaded test host.
-            let guard = launcher::dbus_proxy::spawn_dbus_proxy_within(
+            let filter = launcher::dbus_proxy::session_filter_args(&m.sandbox.portals, false, None);
+            let guard = launcher::dbus_proxy::spawn_filtered_proxy_within(
                 &bin,
                 "unix:path=/run/user/1234/bus",
                 &sock,
+                &filter.iter().map(String::as_str).collect::<Vec<_>>(),
                 tilo_test_env::hang_bound(),
             )
             .expect("spawn mock proxy");

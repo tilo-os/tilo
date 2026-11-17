@@ -2859,7 +2859,7 @@ async fn a_workspace_names_its_own_host_to_every_member() {
     .unwrap();
     let hosts = {
         let governed = governed.lock().await;
-        governed.peer().governance().workspace_hosts()
+        governed.peer().governance().keeping_devices()
     };
     assert_eq!(hosts.len(), 1, "{hosts:?}");
     assert_eq!(hosts[0].host.device_public_key, cert.device_public_key);

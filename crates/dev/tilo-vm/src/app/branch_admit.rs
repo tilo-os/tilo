@@ -489,7 +489,7 @@ fn timed_out(src: &str, still: &[(String, String)], rerun: &str) -> CliError {
     refuse_admit(
         format!("{src}'s branches were not taken in in time: {what}"),
         format!(
-            "the branches are made and stopped, {src} is as it was; see what the branch's session says of its workspaces (tilo-vm vm start <branch>, then tilo-vm control --account <account> raw '{{\"op\":\"workspace_hosts\"}}'), and rerun to try again: {rerun}   (--admit-timeout gives it longer)"
+            "the branches are made and stopped, {src} is as it was; see what the branch's session says of its workspaces (tilo-vm vm start <branch>, then tilo-vm control --account <account> raw '{{\"op\":\"keeping_devices\"}}'), and rerun to try again: {rerun}   (--admit-timeout gives it longer)"
         ),
     )
 }
@@ -634,7 +634,7 @@ pub(super) fn machine_line() -> Vec<String> {
     vec![format!("sh -c {}", crate::vmbuild::sh_quote(MACHINE))]
 }
 
-const HOSTS: [&str; 2] = ["raw", r#"{"op":"workspace_hosts"}"#];
+const HOSTS: [&str; 2] = ["raw", r#"{"op":"keeping_devices"}"#];
 
 pub(super) fn held_of(answer: &Value) -> Vec<Held> {
     answer

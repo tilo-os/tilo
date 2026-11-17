@@ -1,7 +1,7 @@
 //! One way into one of the person's workspaces, for a key of theirs: the
 //! person's own device, an agent's grant, a script's key. Their workspace
-//! list names each workspace's host with the host's own signed address
-//! (`tilo_server_session::workspaces::WorkspaceHostAddress`), and the key
+//! list names each workspace's device with the device's own signed address
+//! (`tilo_server_session::workspaces::KeepingDeviceAddress`), and the key
 //! enters it there, over iroh, wherever it is hosted:
 //!
 //! - **A device of the person's** (their desktop, a paired box) hosts it: the
@@ -11,12 +11,11 @@
 //!   reaching the workspace, and the person's "allow this agent?" where the
 //!   device asks it. The device serves the agent's MCP itself, with its own
 //!   presence and history, so this side carries the lines.
-//! - **A dedicated host** (a server) hosts it: the key opens a session with the
-//!   host as one of the person's devices and enters the workspace as every
-//!   device does ([`tilo_session_client::device::Device::enter_workspace`]): the
-//!   host invites it in on that session and it redeems the invitation there.
-//!   The agent surface ([`crate::McpServer`]) runs here over the host's
-//!   actions.
+//! - **A dedicated server** hosts it: the key opens a session with the server as
+//!   one of the person's devices and enters the workspace as every device does
+//!   ([`tilo_session_client::device::Device::enter_workspace`]): the server
+//!   invites it in on that session and it redeems the invitation there. The
+//!   agent surface ([`crate::McpServer`]) runs here over the server's actions.
 //!
 //! Either way the caller gets an [`Entered`], which answers MCP JSON-RPC.
 
@@ -24,7 +23,7 @@ use ed25519_dalek::SigningKey;
 use iroh::Endpoint;
 use serde_json::Value;
 use tilo_delivery_protocol::workspace_join::WorkspaceDeviceHintV1;
-use tilo_server_session::workspaces::WorkspaceHostAddress;
+use tilo_server_session::workspaces::KeepingDeviceAddress;
 use tilo_session_client::device::Device;
 use tilo_session_client::remote::SessionActions;
 use tilo_user_identity::DeviceCert;
@@ -44,8 +43,8 @@ pub struct Key {
 pub enum Entered {
     /// A device of the person's serves it; its MCP server carries the lines.
     Device(Box<DeviceLines>),
-    /// A dedicated host's actions, served by the agent surface here.
-    Host {
+    /// A dedicated server's actions, served by the agent surface here.
+    Server {
         server: Box<McpServer<SessionActions>>,
         device: Box<Device>,
         workspace_id: WorkspaceId,
@@ -58,51 +57,51 @@ impl Entered {
     pub async fn handle(&self, request: Value) -> Option<Value> {
         match self {
             Self::Device(lines) => lines.call(request).await,
-            Self::Host { server, .. } => server.handle(request).await,
+            Self::Server { server, .. } => server.handle(request).await,
         }
     }
 
-    /// Whether the workspace's host serves this entry still.
+    /// Whether the workspace's device serves this entry still.
     #[must_use]
     pub fn is_live(&self) -> bool {
         match self {
             Self::Device(lines) => lines.is_live(),
-            Self::Host { device, .. } => device.is_live(),
+            Self::Server { device, .. } => device.is_live(),
         }
     }
 }
 
 impl Drop for Entered {
     fn drop(&mut self) {
-        if let Self::Host { device, .. } = self {
+        if let Self::Server { device, .. } = self {
             device.close();
         }
     }
 }
 
-/// Where `address` says a workspace is hosted, checked against the host's
+/// Where `address` says a workspace is kept, checked against the device's
 /// certificate it carries.
 ///
 /// # Errors
 /// It is no signed workspace address.
-pub fn host_of(address: &WorkspaceHostAddress) -> Result<WorkspaceDeviceHintV1, String> {
+pub fn keeping_device_of(address: &KeepingDeviceAddress) -> Result<WorkspaceDeviceHintV1, String> {
     address.address()
 }
 
-/// Enter `workspace` at `address`, its host as the person's list names it,
+/// Enter `workspace` at `address`, its device as the person's list names it,
 /// as `key`, dialing from `endpoint` (whose secret key is `key`'s). `name` is
 /// what the run is called where it acts.
 ///
 /// # Errors
-/// The address is not the workspace's, the host does not answer, or it does
+/// The address is not the workspace's, the device does not answer, or it does
 /// not admit this key, with its reason.
 pub async fn enter(
     endpoint: &Endpoint,
     key: &Key,
     workspace: &str,
-    address: &WorkspaceHostAddress,
+    address: &KeepingDeviceAddress,
 ) -> Result<Entered, String> {
-    let device = host_of(address)?;
+    let device = keeping_device_of(address)?;
     if device.workspace_id.to_string() != workspace {
         return Err("that address is another workspace's".to_owned());
     }
@@ -123,7 +122,7 @@ pub async fn enter(
         }
         crate::devices::NotOpened::Unreachable(reason) => {
             tracing::debug!(%reason, name = %address.name, "a key did not enter its workspace");
-            "The computer that hosts this workspace is offline. Ask the person to open Tilo on \
+            "The device that keeps this workspace is offline. Ask the person to open Tilo on \
              it, then try again."
                 .to_owned()
         }
@@ -132,15 +131,16 @@ pub async fn enter(
 }
 
 impl Entered {
-    /// `device`'s entry into `workspace` (`workspace_id` on its session), which a dedicated host
-    /// serves: the agent surface runs here over the host's actions, as the run called `name`.
+    /// `device`'s entry into `workspace` (`workspace_id` on its session), which a dedicated
+    /// server serves: the agent surface runs here over the server's actions, as the run called
+    /// `name`.
     #[must_use]
     pub fn on_host(device: Device, workspace_id: WorkspaceId, workspace: &str, name: &str) -> Self {
         let cert = device.cert();
         let (user, key) = (cert.user_public_key, cert.device_public_key);
         let person = hex::encode(user);
         let actions = device.actions(workspace_id);
-        // The apps the host lists for this workspace: what a task's programs compile against
+        // The apps the device lists for this workspace: what a task's programs compile against
         // there.
         let catalogue = crate::task_hosts::WorkspaceCatalogue::new(
             actions.clone(),
@@ -151,7 +151,7 @@ impl Entered {
             .with_task_hosts(Some(std::sync::Arc::new(
                 crate::task_hosts::TaskHosts::new(Some(&person), std::sync::Arc::new(catalogue)),
             )));
-        Self::Host {
+        Self::Server {
             server: Box::new(server),
             device: Box::new(device),
             workspace_id,
@@ -203,7 +203,7 @@ impl DeviceLines {
 }
 
 /// What a connection the workspace's computer ended says.
-const CLOSED: &str = "The computer that hosts this workspace closed the connection. Ask the \
+const CLOSED: &str = "The device that keeps this workspace closed the connection. Ask the \
      person to open Tilo on it, then try again.";
 
 fn failed(id: &Value, message: &str) -> Value {

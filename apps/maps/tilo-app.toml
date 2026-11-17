@@ -65,6 +65,7 @@ hosts = [
 
 [sandbox.portals]
 file-chooser = "via-host"
+location = "via-host"
 
 [sandbox.services]
 collab = "optional@31"

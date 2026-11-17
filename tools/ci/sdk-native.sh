@@ -46,7 +46,7 @@ build() {
   cp "$target/debug/libtilo_sdk_node_native.so" "$out/typescript/tilo-sdk-native.$(platform).node"
   cp "$target/debug/tilo-automerge-worker" "$out/python/tilo/"
   cp "$target/debug/tilo-automerge-worker" "$out/typescript/"
-  cp "$target/debug/examples/api-on-relay" "$out/api-on-server"
+  cp "$target/debug/examples/api-on-server" "$out/api-on-server"
   cp -a "$target/debug/font-catalogs" "$out/font-catalogs"
 }
 

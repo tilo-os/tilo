@@ -2554,11 +2554,10 @@ async fn an_open_that_answers_with_its_run_places_the_window_when_the_record_exi
                     },
                 }
             };
-            Some(tilo_actions::remote::InvocationState {
+            Some(tilo_actions::remote::InvocationState::new(
+                update.invocation(),
                 update,
-                untrusted: false,
-                left_at: None,
-            })
+            ))
         })
     };
     let answer = tilo_server::hosted_browser::placed(

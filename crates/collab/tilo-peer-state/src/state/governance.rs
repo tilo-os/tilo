@@ -5,7 +5,7 @@ use super::{
     BTreeMap, BTreeSet, DeviceCert, GovernedAccess, GovernedIdentity, Grant, GrantId, Grantee,
     Member, MemberAccess, MemberId, MemberList, MembershipError, Person, ROOT, ReadDoc,
     RevocationList, Role, SystemTime, Transactable, administrator_grant_id, err, governed_map,
-    now_ns, person_of, serving_devices_of, workspace,
+    keeping_device_keys_of, now_ns, person_of, workspace,
 };
 use crate::join::WorkspaceId;
 use collab_types::signer::DeviceSigner;
@@ -110,7 +110,7 @@ impl PeerGovernance<'_> {
         // A host the governance names holds the workspace: its device is let
         // in wherever the workspace is held, and its person, whose host holds
         // all of it already, is let reach the hosts holding it.
-        for hint in self.workspace_hosts() {
+        for hint in self.keeping_devices() {
             let cert = &hint.host;
             if tilo_user_identity::verify_device_cert_at(cert, now_ns(now)).is_ok()
                 && !self.peer.core.revocations.refuses(cert)
@@ -319,7 +319,7 @@ impl PeerGovernance<'_> {
         // A device the workspace names among its servers holds it by that
         // name: it is no member's device, though it founded the workspace, so
         // no member list names it as one.
-        let serving: BTreeSet<[u8; 32]> = serving_devices_of(doc);
+        let serving: BTreeSet<[u8; 32]> = keeping_device_keys_of(doc);
         let workspace_policy = doc.workspace_policy(&self.peer.core.workspace);
         let certificates = doc.identity_certificates();
         let mut people: BTreeMap<[u8; 32], GovernedMember> = BTreeMap::new();

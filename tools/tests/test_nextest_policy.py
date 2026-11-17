@@ -405,15 +405,17 @@ class WrapperHandedProgramTests(unittest.TestCase):
 
     # The run's cargo argv, as the fake cargo records it: everything after `cargo`.
     RUN = "nextest run --locked --profile ci -E all() --test it --no-fail-fast"
-    # Package whose shards run the wrapper -> the program they need and the build a run handed
-    # none makes.
+    # Each program a package's tests need, and the build a shard that was handed none makes.
+    BUILDS = {
+        "tilo-video-render": "build --locked -p tilo-video-render --bin tilo-video-render",
+        "tilo-install": "build --locked -p install --bin tilo-install",
+        "tilolang-process": "build --locked -p tilolang-process --bin tilolang-process",
+    }
+    # Package whose shards go through the wrapper -> the programs they need, built in this order.
     PROGRAMS = {
-        "tilo-agent-session": (
-            "tilo-video-render",
-            "build --locked -p tilo-video-render --bin tilo-video-render",
-        ),
-        "app-process": ("tilo-install", "build --locked -p install --bin tilo-install"),
-        "app-cli": ("tilo-install", "build --locked -p install --bin tilo-install"),
+        "tilo-agent-session": ("tilo-video-render", "tilolang-process"),
+        "app-process": ("tilo-install",),
+        "app-cli": ("tilo-install",),
     }
     # The pam-tilo shards' cdylib: the wrapper exports it as TILO_PAM_TILO_MODULE, which the tests
     # load, and builds the package's library when handed none.
@@ -468,25 +470,25 @@ class WrapperHandedProgramTests(unittest.TestCase):
             return result, ran, named, modules, paths
 
     def test_a_handed_program_is_not_built(self):
-        for package, (program, _) in self.PROGRAMS.items():
-            with self.subTest(package=package, program=program):
-                result, ran, _, _, _ = self.run_wrapper(package, handed=(program,))
+        for package, programs in self.PROGRAMS.items():
+            with self.subTest(package=package):
+                result, ran, _, _, _ = self.run_wrapper(package, handed=programs)
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertEqual(ran, [self.RUN], "the run, and no build")
 
     def test_a_handed_render_helper_is_named_to_the_run(self):
-        result, _, named, _, paths = self.run_wrapper("tilo-agent-session",
-                                                     handed=("tilo-video-render",))
+        result, _, named, _, paths = self.run_wrapper(
+            "tilo-agent-session", handed=self.PROGRAMS["tilo-agent-session"])
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(named, [paths["tilo-video-render"]])
 
     def test_a_run_not_handed_builds_the_program(self):
         # A developer's run has no NEXTEST_BIN_EXE_<bin>: it builds the program, as it always did.
-        for package, (_, build) in self.PROGRAMS.items():
+        for package, programs in self.PROGRAMS.items():
             with self.subTest(package=package):
                 result, ran, _, _, _ = self.run_wrapper(package)
                 self.assertEqual(result.returncode, 0, result.stderr)
-                self.assertEqual(ran, [build, self.RUN])
+                self.assertEqual(ran, [*(self.BUILDS[program] for program in programs), self.RUN])
 
     def test_a_handed_program_that_cannot_run_fails_instead_of_building(self):
         # Building here would hide a broken handoff and compile the program in every shard again.

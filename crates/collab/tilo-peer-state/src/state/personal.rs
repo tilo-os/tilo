@@ -833,9 +833,9 @@ impl PersonalStore {
                 cert,
                 revocations,
             } => {
-                // A device at another peer protocol version is admitted to
-                // nothing: what it says is not read at this one.
-                if protocol != neighbour_wire::PEER_PROTOCOL_VERSION {
+                // A device at a peer protocol version this one does not work
+                // with is admitted to nothing: what it says is not read here.
+                if !neighbour_wire::works_with_peer_version(protocol) {
                     return Err(format!(
                         "the device speaks peer protocol {protocol}, this one {}",
                         neighbour_wire::PEER_PROTOCOL_VERSION

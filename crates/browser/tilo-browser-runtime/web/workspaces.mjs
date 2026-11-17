@@ -346,16 +346,16 @@ export function entryWorkspace(workspace) {
   return (typeof workspace?.admission === 'string' && workspace.admission.match(/\/directory\/([^/]+)\/?$/)?.[1]) || null;
 }
 
-/** An entry's refusal as the shared entry read it (`HostRefusal`: the entry's
+/** An entry's refusal as the shared entry read it (`DeviceRefusal`: the entry's
  * code and the wait it asked for), as this page's screens tell them apart: a
  * ban and a removal alike are `removed`; an entry not reached is `unavailable`.
  * Anything else stands. */
 function entryRefused(error) {
-  if (error?.name !== 'HostRefusal') return error;
+  if (error?.name !== 'DeviceRefusal') return error;
   const code = {banned: 'removed', removed: 'removed', 'invitation-only': 'invitation-only', full: 'full', unanswered: 'unavailable'}[error.code] ?? 'refused';
   // A workspace taking people by invitation may keep a wait list, and name
   // where to ask to be taken off it: the entry's own words, as the shared
-  // entry read them (`HostRefusal.entry`).
+  // entry read them (`DeviceRefusal.entry`).
   const entry = code === 'invitation-only' && error.entry?.waitList === true
     ? {waitList: true, contact: typeof error.entry.contact === 'string' && error.entry.contact ? error.entry.contact : null, mail: error.entry.mail === true} : null;
   return new HostAdmissionError(code, error.message, Number.isFinite(error.retryAfter) && error.retryAfter > 0 ? error.retryAfter : null, entry);

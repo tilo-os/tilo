@@ -1574,8 +1574,8 @@ async fn a_host_reaches_its_own_network_only_with_its_operators_leave() {
 const SAID_INSIDE: &str = "what a service inside says";
 
 /// Which holders keep a workspace is its owners' decision: another person's
-/// device asking to list, add or remove them is refused, and nothing is
-/// asked of the site it names.
+/// device asking to list, add or remove them is answered as a workspace
+/// that offers no such action, and nothing is asked of the site it names.
 #[tokio::test]
 async fn only_an_owner_chooses_a_workspaces_holders() {
     use test_http::{Reply, Responder};
@@ -1593,7 +1593,11 @@ async fn only_an_owner_chooses_a_workspaces_holders() {
         (super::REMOVE_SERVER, json!({ "server": site.url() })),
     ] {
         let asked = request(&workspace, verb, argument);
-        holder_refused(invoke(&governance, workspace_id, &stranger, asked).await);
+        assert_eq!(
+            invoke(&governance, workspace_id, &stranger, asked).await,
+            Err(ActionCallError::UnknownAction),
+            "a stranger is offered no say in the workspace's holders"
+        );
     }
     assert!(
         site.drain_requests().is_empty(),

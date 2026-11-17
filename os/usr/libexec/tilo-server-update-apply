@@ -9,6 +9,13 @@
 # a staged update into the next boot, so a server follows its channel without
 # anyone logging in to it, and a generation that fails its own health check is
 # the boot loader's to take back, not this unit's.
+#
+# A paired server also waits its turn among its person's servers: the server
+# daemon restarts it only while it holds the update lease of the person's admin
+# workspace, after it handed its work to the other holders (`tilo-server-admin
+# rollout prepare`), and lets the lease go once this machine runs the update
+# and passed its health verdict (`rollout booted`). A generation the boot loader
+# took back keeps the lease, so the person's other servers never start it.
 set -uo pipefail
 
 log()  { printf 'tilo-server-update-apply: %s\n' "$*"; }
@@ -17,14 +24,14 @@ BOOTC="${TILO_SERVER_UPDATE_BOOTC:-/usr/bin/bootc}"
 FIELD="${TILO_SERVER_UPDATE_FIELD:-/usr/bin/tilo-image-trust}"
 WINDOW="${TILO_SERVER_UPDATE_WINDOW:-/usr/libexec/tilo-server-update-window}"
 HEALTH="${TILO_SERVER_UPDATE_HEALTH:-tilo-boot-health.service}"
+ADMIN="${TILO_SERVER_UPDATE_ADMIN:-/usr/libexec/tilo/tilo-server-admin}"
+CERT="${TILO_SERVER_UPDATE_CERT:-/var/lib/tilo/device/cert.bin}"
 
-# No staged deployment: nothing to boot into.
-staged="$("$BOOTC" status --format json 2>/dev/null | "$FIELD" bootc-status-field staged-image 2>/dev/null)" \
-  || true
-if [ -z "$staged" ]; then
-  log 'no staged deployment; nothing to apply'
-  exit 0
-fi
+status="$("$BOOTC" status --format json 2>/dev/null)" || true
+field() { "$FIELD" bootc-status-field "$1" <<<"$status" 2>/dev/null || true; }
+staged="$(field staged-image)"
+paired=no
+[ -e "$CERT" ] && paired=yes
 
 # The running generation's verdict. A boot the boot loader counts keeps
 # tilo-boot-health, and only an active unit means the boot was judged good and
@@ -42,7 +49,27 @@ if [ -e /sys/firmware/efi/efivars/LoaderBootCountPath-4a67b082-0a4c-41cf-b6c7-44
   exit 0
 fi
 
+# This boot is judged good: an update this server restarted into under the
+# lease is done, and the next server may take its turn.
+if [ "$paired" = yes ]; then
+  booted="$(field booted-digest)"
+  [ -z "$booted" ] || log "$("$ADMIN" rollout booted "$booted")"
+fi
+
+# No staged deployment: nothing to boot into.
+if [ -z "$staged" ]; then
+  log 'no staged deployment; nothing to apply'
+  exit 0
+fi
+
 "$WINDOW" || exit 0
+
+if [ "$paired" = yes ]; then
+  said="$("$ADMIN" rollout prepare "$(field staged-digest)")"
+  code=$?
+  log "$said"
+  [ "$code" -eq 0 ] || exit 0
+fi
 
 log "booting into the staged $staged"
 systemctl reboot

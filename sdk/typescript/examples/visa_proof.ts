@@ -16,7 +16,7 @@
  * The program prints the reviewer's invitation, then the links to the form and
  * the letter the agent changed, and asks for the key the reviewer made after
  * following the invitation; `TILO_INVITEE` instead names an endpoint that
- * plays the reviewer (the `api-on-relay` harness): it is posted the link and
+ * plays the reviewer (the `api-on-server` harness): it is posted the link and
  * answers the reviewer's key.
  *
  * `VISA_APPLICANTS` sets how many workspaces it makes (3).

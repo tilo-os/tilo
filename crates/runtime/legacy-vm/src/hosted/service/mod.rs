@@ -1723,7 +1723,7 @@ fn forget_files(files: &VmFiles, id: &str) {
 
 /// The connection to the machine at `to`: the socket the other machine serves what it is sent on.
 fn ask_link(to: &Path) -> Result<UnixStream, MoveError> {
-    let stream = UnixStream::connect(to)?;
+    let stream = tilo_files::native::socket::connect(to)?;
     stream.set_read_timeout(Some(LINK_PATIENCE))?;
     stream.set_write_timeout(Some(LINK_PATIENCE))?;
     Ok(stream)

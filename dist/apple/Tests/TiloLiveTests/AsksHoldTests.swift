@@ -488,5 +488,61 @@ final class AsksHoldTests: XCTestCase {
         try await inPage(Self.reminderComes)
         try await isReminder()
     }
+
+    func testTheFirstListOfTheWorkspacesAgentsThatGoesUnansweredIsAskedAgainAndNoSentenceIsSaid() async throws {
+        try await start()
+        try await enter("window.agents = [kept('reed', {name: 'Reed'})]; window.plan = {'chat read': ['lost']}")
+        try await until("nothing more stands in the way") { self.setups.last == .ready }
+        XCTAssertFalse(saidNoAssistant, "one unanswered ask was said to her")
+        let made = try await asked("chat create-agent")
+        XCTAssertEqual(made, 0)
+    }
+
+    func testAListOfTheWorkspacesAgentsWithNothingInItIsNotTakenForAServerThatOffersNone() async throws {
+        try await start()
+        try await enter("window.agents = [kept('reed', {name: 'Reed'})]; window.plan = {'chat read': ['empty']}")
+        try await until("nothing more stands in the way") { self.setups.last == .ready }
+        XCTAssertFalse(saidNoAssistant, "one answer with nothing in it was said to her")
+        let made = try await asked("chat create-agent")
+        XCTAssertEqual(made, 0)
+    }
+
+    func testTwoUnansweredAsksToHaveHerServerAnswerForTheAssistantDoNotEndItsSettingUp() async throws {
+        try await start()
+        try await enter("window.agents = []; window.plan = {'chat answer-for': ['lost', 'lost']}")
+        try await until("nothing more stands in the way") { self.setups.last == .ready }
+        XCTAssertFalse(saidNoAssistant, "two unanswered asks were said to her")
+        let kept = try await agentsKept()
+        XCTAssertEqual(kept, #"[["assistant",true]]"#)
+        let made = try await asked("chat create-agent")
+        XCTAssertEqual(made, 1)
+    }
+
+    /// As an ask that ended by the engine's own bound: her server never answered it.
+    func testAListOfTheWorkspacesAgentsThatIsNeverAnsweredIsAskedAgainOnceItEndedAndNoSentenceIsSaid() async throws {
+        try await start()
+        source.engine.askPatience = .milliseconds(400)
+        try await enter("window.agents = [kept('reed', {name: 'Reed'})]; window.plan = {'chat read': ['never']}")
+        try await until("nothing more stands in the way") { self.setups.last == .ready }
+        XCTAssertFalse(saidNoAssistant, "one ask that was never answered was said to her")
+        let made = try await asked("chat create-agent")
+        XCTAssertEqual(made, 0)
+    }
+
+    func testWhereHerServerAnswersNoneOfFiveAsksForTheWorkspacesAgentsTheMainChatSaysSoAndHerPressFindsHerAssistant() async throws {
+        try await start()
+        source.firstPause = .milliseconds(20)
+        try await enter("window.agents = [kept('reed', {name: 'Reed'})]; window.plan = {'chat read': ['lost', 'lost', 'lost', 'lost', 'lost']}")
+        try await until("the main chat says that her server did not answer") {
+            self.setups.last == .noAssistant("Tilo did not answer while your assistant was being set up")
+        }
+        let asks = try await asked("chat read")
+        XCTAssertEqual(asks, 5)
+        // Her own press asks again: her server answers, and her assistant is found.
+        try await source.makeAssistant()
+        try await until("nothing more stands in the way") { self.setups.last == .ready }
+        let made = try await asked("chat create-agent")
+        XCTAssertEqual(made, 0)
+    }
 }
 #endif

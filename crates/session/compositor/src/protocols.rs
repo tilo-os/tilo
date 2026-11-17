@@ -373,7 +373,17 @@ impl KeyboardShortcutsInhibitHandler for State {
     }
 }
 
-impl TabletSeatHandler for State {}
+/// A tool's client named the image drawn where that tool is, as it does for a pointer; the pen
+/// draws it there until it leaves.
+impl TabletSeatHandler for State {
+    fn tablet_tool_image(
+        &mut self,
+        tool: &smithay::backend::input::TabletToolDescriptor,
+        image: smithay::input::pointer::CursorImageStatus,
+    ) {
+        self.tool_cursor(tool, image);
+    }
+}
 
 smithay::delegate_dmabuf!(State);
 smithay::delegate_viewporter!(State);

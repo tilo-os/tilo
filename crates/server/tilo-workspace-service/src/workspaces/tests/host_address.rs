@@ -30,7 +30,7 @@ async fn a_host_reached_through_a_relay_names_it_from_the_start() {
         .await
         .peer()
         .governance()
-        .workspace_hosts();
+        .keeping_devices();
     assert_eq!(hosts.len(), 1, "{hosts:?}");
     let hint = WorkspaceDeviceHintV1::from_transport_hint(&hosts[0]).unwrap();
     // A workspace says of its host what a stranger can dial of the address
@@ -73,7 +73,7 @@ async fn a_host_that_comes_back_elsewhere_names_its_new_address_in_the_workspace
         .await
         .peer()
         .governance()
-        .workspace_hosts();
+        .keeping_devices();
     assert_eq!(hosts.len(), 1, "the host is named once: {hosts:?}");
     assert_eq!(hosts[0].host.device_public_key, cert.device_public_key);
     let hint = WorkspaceDeviceHintV1::from_transport_hint(&hosts[0]).unwrap();

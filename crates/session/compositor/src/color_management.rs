@@ -63,6 +63,33 @@ impl State {
     }
 }
 
+#[cfg(feature = "test-support")]
+impl crate::Compositor {
+    /// Hold the `ready` of every image description a client makes from now on, so a test can see
+    /// what a surface does while its description is not ready.
+    pub fn hold_color_descriptions(&self) {
+        self.data.state.protocols.color_manager.hold_descriptions();
+    }
+
+    /// Tell every held image description it is ready.
+    pub fn release_color_descriptions(&self) {
+        self.data
+            .state
+            .protocols
+            .color_manager
+            .release_descriptions();
+    }
+
+    /// Tell every held image description it failed, with `message`.
+    pub fn fail_color_descriptions(&self, message: &str) {
+        self.data
+            .state
+            .protocols
+            .color_manager
+            .fail_descriptions(message);
+    }
+}
+
 impl crate::Compositor {
     /// Tell colour-managed clients what each output displays: the HDR signal
     /// of an output driven in HDR, SDR otherwise. Surfaces are asked to

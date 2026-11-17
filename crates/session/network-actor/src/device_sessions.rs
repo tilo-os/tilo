@@ -178,7 +178,7 @@ impl ActorState {
     /// of a root this device acts for (`own`), unrevoked; `None` when none
     /// does, or the device runs another peer protocol version.
     fn proven(peer: EndpointId, hello: &Hello, own: &Hello) -> Option<Vec<DeviceCert>> {
-        if hello.protocol != neighbour_wire::PEER_PROTOCOL_VERSION {
+        if !neighbour_wire::works_with_peer_version(hello.protocol) {
             tracing::info!(peer = %peer, protocol = hello.protocol, "a device of the person runs another peer protocol version");
             return None;
         }

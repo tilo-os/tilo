@@ -12,9 +12,10 @@
 //! Otherwise [`State::tablet_pad`] says nobody took the event and the
 //! backend acts on it itself (a ring scrolls).
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
-use smithay::backend::input::{ButtonState, TabletToolCapabilities as Caps};
+use smithay::backend::input::{ButtonState, TabletToolCapabilities as Caps, TabletToolDescriptor};
+use smithay::input::pointer::CursorImageStatus;
 use smithay::reexports::wayland_protocols::wp::tablet::zv2::server::zwp_tablet_manager_v2::{
     self, ZwpTabletManagerV2,
 };
@@ -36,6 +37,13 @@ const BTN_EXTRA: u32 = 0x114;
 const BTN_STYLUS: u32 = 0x14b;
 const BTN_STYLUS2: u32 = 0x14c;
 
+/// What a tool draws where its tip is: the image its client named, and where the tool was last.
+#[derive(Debug)]
+pub(crate) struct ToolCursor {
+    pub(crate) image: CursorImageStatus,
+    pub(crate) at: Point<f64, Logical>,
+}
+
 /// Clients that take tablet input, and the stroke in progress.
 #[derive(Debug, Default)]
 pub(crate) struct Tablets {
@@ -45,6 +53,15 @@ pub(crate) struct Tablets {
     stroke: Option<(WlSurface, Point<f64, Logical>)>,
     /// Where the tool was last, for events that carry no position.
     position: Point<f64, Logical>,
+    /// Each tool's cursor, by tool: a pen and an eraser draw their own images.
+    cursors: HashMap<TabletToolDescriptor, ToolCursor>,
+}
+
+impl Tablets {
+    /// The cursors to draw, one per tool that named one and has not left.
+    pub(crate) fn cursor_images(&self) -> impl Iterator<Item = &ToolCursor> {
+        self.cursors.values()
+    }
 }
 
 impl Dispatch<ZwpTabletManagerV2, (), State> for State {
@@ -107,6 +124,26 @@ impl State {
         under.filter(|(surface, _)| self.takes_tablet_input(surface))
     }
 
+    /// The client of a tool named the image it draws where the tool is, or that it draws none.
+    pub(crate) fn tool_cursor(&mut self, tool: &TabletToolDescriptor, image: CursorImageStatus) {
+        if image == CursorImageStatus::Hidden {
+            self.tablets.cursors.remove(tool);
+            return;
+        }
+        self.tablets.cursors.insert(
+            tool.clone(),
+            ToolCursor {
+                image,
+                at: self.tablets.position,
+            },
+        );
+    }
+
+    /// The tool left the surface it was over: what it drew goes with it.
+    fn hide_tool_cursor(&mut self, tool: &TabletToolDescriptor) {
+        self.tablets.cursors.remove(tool);
+    }
+
     pub(crate) fn tablet_input(&mut self, event: &TabletEvent, serial: Serial, time: u32) {
         let at = if event.x.is_finite() && event.y.is_finite() {
             self.clamp_to_outputs(Point::from((event.x, event.y)))
@@ -114,6 +151,9 @@ impl State {
             self.tablets.position
         };
         self.tablets.position = at;
+        if let Some(cursor) = self.tablets.cursors.get_mut(&event.tool) {
+            cursor.at = at;
+        }
         let target = if event.as_pointer {
             None
         } else {
@@ -127,12 +167,14 @@ impl State {
             // A pointer to everything else; the tool leaves any tablet-aware surface it was over.
             tool.proximity_out(time);
             self.tablets.stroke = None;
+            self.hide_tool_cursor(&event.tool);
             self.tablet_as_pointer(event, at, serial, time);
             return;
         };
         if event.phase == TabletPhase::ProximityOut {
             tool.proximity_out(time);
             self.tablets.stroke = None;
+            self.hide_tool_cursor(&event.tool);
             return;
         }
         let capabilities = event.tool.capabilities;

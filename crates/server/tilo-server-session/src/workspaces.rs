@@ -352,7 +352,7 @@ pub struct PersonalWorkspace {
     /// Where it is hosted, when the list says: `None` for a workspace no
     /// device of the person said the host of yet.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub host: Option<WorkspaceHostAddress>,
+    pub host: Option<KeepingDeviceAddress>,
     /// The part the person takes in it, when the host that answers knows:
     /// `owner` for one of their own, else the role they hold.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -370,7 +370,7 @@ pub struct PersonalWorkspace {
 
 /// Where a workspace is hosted, as a device dials it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct WorkspaceHostAddress {
+pub struct KeepingDeviceAddress {
     /// The host as people know it: a server's name (`eu1.tilo.sh`), or the
     /// label of the person's device that hosts it.
     pub name: String,
@@ -384,7 +384,7 @@ pub struct WorkspaceHostAddress {
     pub hint: Option<String>,
 }
 
-impl WorkspaceHostAddress {
+impl KeepingDeviceAddress {
     /// The address `hint` (a `TransportHint`, postcard) gives, named as its
     /// host's certificate names it; `None` for a hint that is no signed
     /// workspace address.

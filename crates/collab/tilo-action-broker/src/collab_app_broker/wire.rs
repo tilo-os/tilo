@@ -967,7 +967,10 @@ impl JoinedChannel {
                 },
             );
             let Some(api) = api else {
-                return refusal(&request.message);
+                return refusal(
+                    &request.message,
+                    tilo_actions::remote::ActionCallError::NotPermitted,
+                );
             };
             let answer =
                 tilo_actions::remote::serve(&api, &caller, request.message).ok_or_else(|| {
@@ -1009,8 +1012,8 @@ impl JoinedChannel {
             (Some(app_id), tilo_actions::remote::RemoteActionMessage::Invoke(invoke)) => {
                 match self.state.app_action_consent(&person, app_id, invoke) {
                     app_consent::ConsentStep::Serve => None,
-                    app_consent::ConsentStep::Refuse => {
-                        return refusal(&request.message);
+                    app_consent::ConsentStep::Refuse(refused) => {
+                        return refusal(&request.message, refused);
                     }
                     app_consent::ConsentStep::Ask(consent) => Some(consent),
                 }
@@ -2412,11 +2415,12 @@ fn ready<T: 'static>(answer: T) -> Answer<T> {
     Box::pin(std::future::ready(Ok(answer)))
 }
 
-/// The app's remote-action `message` refused as not permitted.
+/// The app's remote-action `message` refused with `error`.
 fn refusal(
     message: &tilo_actions::remote::RemoteActionMessage,
+    error: tilo_actions::remote::ActionCallError,
 ) -> Result<Answer<tilo_actions::remote::RemoteActionMessage>, BrokerError> {
-    tilo_actions::remote::refuse(message, tilo_actions::remote::ActionCallError::NotPermitted)
+    tilo_actions::remote::refuse(message, error)
         .map(ready)
         .ok_or_else(|| BrokerError::failed("only remote-action requests are answered".into()))
 }

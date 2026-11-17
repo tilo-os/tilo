@@ -34,18 +34,38 @@ pub use tilo_actions::document_sync::{
 
 use serde::{Deserialize, Serialize};
 
-/// The device ↔ device interface's one version: the certified handshake
+/// The device ↔ device interface's version: the certified handshake
 /// (`tilo_server_protocol::auth`), the server session's frames and the
-/// peer-sync messages they carry. Two devices sync only when theirs are
-/// equal; there is no negotiation and nothing kept for an older version
-/// (docs/architecture/compatibility.md). `interface.toml` beside this crate
-/// holds the schema, and the repository policy fails a change to it that
-/// keeps the number.
+/// peer-sync messages they carry. Two devices sync when theirs are at most
+/// one apart ([`works_with_peer_version`]), so a person's servers updating
+/// one at a time keep serving each other and their devices while the
+/// rollout goes on; there is no negotiation and nothing kept for any older
+/// version (docs/architecture/compatibility.md). `interface.toml` beside this
+/// crate holds the schema, and the repository policy fails a change to it
+/// that keeps the number.
 ///
 /// [`NeighbourMsg::IdentityHello`] carries it first, at a variant index that
 /// never changes ([`IDENTITY_HELLO_INDEX`]), so every version reads another
 /// device's number before anything else it says.
 pub const PEER_PROTOCOL_VERSION: u32 = 54;
+
+/// The oldest peer version this build still works with: the one before
+/// [`PEER_PROTOCOL_VERSION`] when this build reads and writes the frames of
+/// its main flows (a server holding a workspace, sync, a governance change,
+/// a lease) exactly as that version did, otherwise this one. The frames that
+/// version wrote are kept beside `tilo-server-protocol`
+/// (`previous/peer-v<N>.txt`), and its test fails a build that reads or
+/// writes them differently.
+pub const OLDEST_PEER_PROTOCOL_VERSION: u32 = 53;
+
+/// Whether a device at peer version `theirs` and this one work together:
+/// the same version, the one before when this build still speaks it
+/// ([`OLDEST_PEER_PROTOCOL_VERSION`]), or the one after, which speaks this
+/// one's by the same rule. The window is exactly one version wide.
+#[must_use]
+pub const fn works_with_peer_version(theirs: u32) -> bool {
+    theirs >= OLDEST_PEER_PROTOCOL_VERSION && theirs <= PEER_PROTOCOL_VERSION.saturating_add(1)
+}
 
 /// [`NeighbourMsg::IdentityHello`]'s postcard variant index, frozen: the one
 /// message every version decodes far enough to learn the sender's

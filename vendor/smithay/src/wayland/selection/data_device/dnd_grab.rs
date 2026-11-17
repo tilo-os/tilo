@@ -7,7 +7,7 @@ use std::{
 
 use wayland_server::{
     Client,
-    backend::{protocol::Message, ClientId, Handle, ObjectData, ObjectId},
+    backend::{protocol::Message, ClientId, Handle, ObjectData, ObjectId, WeakHandle},
     protocol::{
         wl_data_device::WlDataDevice,
         wl_data_device_manager::DndAction,
@@ -37,7 +37,9 @@ use super::{with_source_metadata, ClientDndGrabHandler, DataDeviceHandler};
 
 /// Grab during a client-initiated DnD operation.
 pub struct DnDGrab<D: SeatHandler> {
-    dh: DisplayHandle,
+    /// The display, weakly: a grab the seat holds must not keep the display (and its clients'
+    /// sockets) alive after the compositor is dropped with a drag still open.
+    dh: WeakHandle,
     pointer_start_data: Option<PointerGrabStartData<D>>,
     touch_start_data: Option<TouchGrabStartData<D>>,
     data_source: Option<wl_data_source::WlDataSource>,
@@ -80,7 +82,7 @@ impl<D: SeatHandler> DnDGrab<D> {
         icon: Option<WlSurface>,
     ) -> Self {
         Self {
-            dh: dh.clone(),
+            dh: dh.backend_handle().downgrade(),
             pointer_start_data: Some(start_data),
             touch_start_data: None,
             data_source: source,
@@ -103,7 +105,7 @@ impl<D: SeatHandler> DnDGrab<D> {
         icon: Option<WlSurface>,
     ) -> Self {
         Self {
-            dh: dh.clone(),
+            dh: dh.backend_handle().downgrade(),
             pointer_start_data: None,
             touch_start_data: Some(start_data),
             data_source: source,
@@ -131,6 +133,9 @@ where
         serial: Serial,
         time: u32,
     ) {
+        let Some(dh) = self.dh.upgrade().map(DisplayHandle::from) else {
+            return;
+        };
         let seat_data = self
             .seat
             .user_data()
@@ -161,7 +166,7 @@ where
             .and_then(|(h, loc)| h.wl_surface().map(|s| (s, loc)))
         {
             // early return if the surface is no longer valid
-            let client = match self.dh.get_client(surface.id()) {
+            let client = match dh.get_client(surface.id()) {
                 Ok(c) => c,
                 Err(_) => return,
             };
@@ -180,7 +185,7 @@ where
                         .known_data_devices()
                         .filter(|d| d.id().same_client_as(&surface.id()))
                     {
-                        let offer = make_offer::<D>(&self.dh, &client, device, source, offer_data.clone());
+                        let offer = make_offer::<D>(&dh, &client, device, source, offer_data.clone());
                         device.enter(serial.into(), &surface, x, y, Some(&offer));
                         self.pending_offers.push(offer);
                         self.entered_devices.push(device.clone());
@@ -214,7 +219,7 @@ where
                         {
                             let offer = match (&self.data_source, &self.offer_data) {
                                 (Some(source), Some(offer_data)) => Some(make_offer::<D>(
-                                    &self.dh,
+                                    &dh,
                                     &client,
                                     device,
                                     source,

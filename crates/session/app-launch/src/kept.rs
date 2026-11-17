@@ -196,7 +196,7 @@ impl Kept {
     pub(crate) fn answers(&self) -> bool {
         // An outdated keeper is never described; the next session meets it as this one did.
         if self.outdated {
-            return UnixStream::connect(self.dir.join("control")).is_ok();
+            return tilo_files::native::socket::connect(&self.dir.join("control")).is_ok();
         }
         self.described.load(Ordering::Acquire)
             && self.control.lock_recover().is_some()

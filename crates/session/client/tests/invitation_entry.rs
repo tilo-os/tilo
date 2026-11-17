@@ -20,7 +20,7 @@ use tilo_session_client::{Cmd, Outbox};
 use ed25519_dalek::SigningKey;
 use getrandom::{SysRng, rand_core::UnwrapErr};
 use tilo_session_client::device::{
-    Device, Entering, Held, HostRefusal, entered, entering_certificate, invitation_entry,
+    Device, DeviceRefusal, Entering, Held, entered, entering_certificate, invitation_entry,
 };
 use tilo_session_client::{MemoryPeerStore, PeerConfig};
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, UserIdentity};
@@ -137,7 +137,7 @@ async fn a_device_accepts_an_invitation_on_its_session_under_its_own_certificate
     )
     .await
     .unwrap_err();
-    assert_eq!(none.code, HostRefusal::NO_CERTIFICATE, "{none:?}");
+    assert_eq!(none.code, DeviceRefusal::NO_CERTIFICATE, "{none:?}");
 
     // An invitation bound to someone else does not admit Bob's device: the workspace refuses on
     // the session, and the session stops.
@@ -300,7 +300,7 @@ async fn a_held_certificate_serves_only_from_the_same_host_for_the_same_person_w
             .await
             .unwrap_err()
             .code,
-        HostRefusal::NO_CERTIFICATE
+        DeviceRefusal::NO_CERTIFICATE
     );
     // Another person's, where this person's root is at hand.
     let carol = new_key();
@@ -357,7 +357,7 @@ async fn a_held_certificate_serves_only_from_the_same_host_for_the_same_person_w
     // Ending within a day with no root at hand: nothing held serves, and nothing certifies.
     assert_eq!(
         choose(held(ending, &host), None).await.unwrap_err().code,
-        HostRefusal::NO_CERTIFICATE
+        DeviceRefusal::NO_CERTIFICATE
     );
     // Kept without the host it was kept for: it serves no host, so only a root enters.
     let hostless = |cert: DeviceCert| Held {
@@ -366,7 +366,7 @@ async fn a_held_certificate_serves_only_from_the_same_host_for_the_same_person_w
     };
     assert_eq!(
         choose(hostless(cert.clone()), None).await.unwrap_err().code,
-        HostRefusal::NO_CERTIFICATE
+        DeviceRefusal::NO_CERTIFICATE
     );
     assert_eq!(
         choose(hostless(lasting.clone()), Some(&bob))
@@ -394,7 +394,7 @@ async fn a_held_certificate_serves_only_from_the_same_host_for_the_same_person_w
             .await
             .unwrap_err()
             .code,
-        HostRefusal::NO_CERTIFICATE
+        DeviceRefusal::NO_CERTIFICATE
     );
 }
 
@@ -419,7 +419,7 @@ async fn an_invitation_that_names_no_workspace_is_refused_before_a_certificate_i
             let case = format!("{row}, with a root: {}: {refused:?}", root.is_some());
             // Without a root and with nothing held, choosing a certificate first would have said
             // `no_certificate`: the invitation is read before that.
-            assert_eq!(refused.code, HostRefusal::NOT_ADMITTED, "{case}");
+            assert_eq!(refused.code, DeviceRefusal::NOT_ADMITTED, "{case}");
             assert!(
                 refused
                     .message

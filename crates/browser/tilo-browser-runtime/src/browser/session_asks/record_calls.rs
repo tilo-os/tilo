@@ -19,12 +19,12 @@ use tilo_session_client::remote::SessionActions;
 
 /// The workspace's host as this page reaches it now. The page's session with its host comes and
 /// goes, so the host's action API is looked up for every request.
-pub(in crate::browser) struct WorkspaceHost {
+pub(in crate::browser) struct KeepingDevice {
     peer: u32,
     workspace: WorkspaceId,
 }
 
-impl WorkspaceHost {
+impl KeepingDevice {
     /// The host of the workspace `config`'s page shows; `None` for a page with no workspace host.
     pub(in crate::browser) fn of(config: &super::super::Config) -> Option<Arc<Self>> {
         Some(Arc::new(Self {
@@ -42,7 +42,7 @@ impl WorkspaceHost {
     }
 }
 
-impl ActionProvider for WorkspaceHost {
+impl ActionProvider for KeepingDevice {
     fn query(
         &self,
         caller: &Caller,

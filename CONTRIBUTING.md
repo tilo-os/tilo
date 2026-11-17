@@ -163,6 +163,12 @@ files passes immediately. Every failure prints the command that reruns it.
 Each package is linted as its default build; CI's wider matrix also covers the
 features a package's tests turn on.
 
+When `main` moved while the lint ran, the push is refused: rebase and push
+again. Commits that passed are not linted a second time when the rebase left
+them as they were and you push again within twenty minutes, so the retry takes
+seconds; what the commits `main` gained in between do to yours is linted on
+`main`.
+
 The lint compiles with the `cargo` on your `PATH`, or with the drop-in named in
 `CARGO` when you set one (`CARGO` may build on another machine). The wasm32
 pass needs that target installed: `rustup target add wasm32-unknown-unknown`.

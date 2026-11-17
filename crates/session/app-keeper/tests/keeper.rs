@@ -305,6 +305,37 @@ fn the_output_stays_and_a_new_mode_updates_it_in_place() {
 }
 
 #[test]
+fn the_desktops_own_output_description_reaches_a_kept_app() {
+    use crate::support::OUTPUT;
+
+    let mut rig = Rig::new(None);
+    let mut app = App::connect(&mut rig);
+    app.describe_output();
+    rig.pump(&mut [&mut app], |_, apps| {
+        apps[0].heard.xdg_name.is_some() && apps[0].heard.xdg_description.is_some()
+    });
+    assert_eq!(app.heard.xdg_name.as_deref(), Some(OUTPUT));
+
+    // A desktop that calls the display by a name of its own: the app behind the keeper reads
+    // that name and description, not one it derived from make, model and connector.
+    rig.drop_desktop();
+    rig.settle(&mut [&mut app]);
+    rig.attach_new_with(|desktop| {
+        desktop
+            .set_output_description(OUTPUT, "Studio display")
+            .expect("the output's description");
+    });
+    rig.pump(&mut [&mut app], |_, apps| {
+        apps[0].heard.xdg_description.as_deref() == Some("Studio display")
+    });
+    assert_eq!(
+        rig.desktop().outputs()[0].description.as_deref(),
+        Some("Studio display"),
+        "the desktop's own description is what the app reads"
+    );
+}
+
+#[test]
 fn a_fault_is_held_and_reported_and_a_second_ends_the_app() {
     let mut rig = Rig::new(None);
     let mut app = App::connect(&mut rig);
@@ -1165,8 +1196,12 @@ fn assert_pen_matches(
     assert_eq!(tablet.id, Some((0x056a, 0x0374)));
     assert!(tablet.done, "the description is finished");
     assert_eq!(tool.tool_type, Some(u32::from(Type::Pen)), "the pen's type");
-    assert_eq!(tool.hardware_serial, Some((0, 0x5678)));
-    assert_eq!(tool.hardware_id, Some((0x0000, 0x0802)));
+    assert_eq!(
+        tool.hardware_serial,
+        Some((0x1, 0x2345_6789)),
+        "the tool's 64-bit serial reaches the app as two words, whole"
+    );
+    assert_eq!(tool.hardware_id, Some((0x1, 0x0000_0802)));
     assert!(
         tool.capabilities.contains(&u32::from(Capability::Pressure))
             && tool.capabilities.contains(&u32::from(Capability::Tilt)),
@@ -1238,8 +1273,8 @@ fn pen_input(x: f64, y: f64, phase: TabletPhase) -> InputEvent {
         },
         tool: TabletToolDescriptor {
             tool_type: TabletToolType::Pen,
-            hardware_serial: 0x5678,
-            hardware_id_wacom: 0x0802,
+            hardware_serial: 0x1_2345_6789,
+            hardware_id_wacom: 0x1_0000_0802,
             capabilities: TabletToolCapabilities::PRESSURE
                 | TabletToolCapabilities::DISTANCE
                 | TabletToolCapabilities::TILT
@@ -1288,6 +1323,7 @@ fn pad_input(action: PadAction) -> InputEvent {
 
 #[test]
 fn a_pen_reaches_a_kept_app_with_its_values_and_its_surface() {
+    const BLUE: [u8; 4] = [0, 0, 255, 255];
     let mut rig = Rig::new(None);
     let mut app = App::connect(&mut rig);
     app.open_window(&mut rig, "Canvas", Some("canvas"));
@@ -1313,8 +1349,8 @@ fn a_pen_reaches_a_kept_app_with_its_values_and_its_surface() {
         app.surface.as_ref().unwrap(),
     );
 
-    // The tool's cursor shape goes to the desktop's shape device for that tool, and a cursor
-    // surface set with the desktop's own serial is mirrored like any surface.
+    // The tool's cursor shape goes to the desktop's shape device for that tool, and the desktop
+    // draws it where the pen is.
     let shape = {
         use wayland_protocols::wp::cursor_shape::v1::client::wp_cursor_shape_device_v1::Shape;
         Shape::Crosshair
@@ -1323,29 +1359,54 @@ fn a_pen_reaches_a_kept_app_with_its_values_and_its_surface() {
     app.set_tool_cursor_shape(&tablet_tool, app.heard.tools[0].proximity_in[0].0, shape);
     rig.settle(&mut [&mut app]);
     assert_eq!(rig.keeper.describe().fault, None);
+    assert_ne!(
+        rig.pixel_with_cursor(x as u32, y as u32),
+        GREEN,
+        "the pen's named shape is drawn at the pen"
+    );
 
+    // A cursor surface the app gives the tool is drawn as the tool's image.
     let cursor = app
         .heard
         .compositor
         .as_ref()
         .unwrap()
         .create_surface(&app.queue.handle(), ());
-    cursor.commit();
+    app.draw(&cursor, (16, 16), BLUE);
     let proxy = app.heard.tool.clone().unwrap();
     let serial = app.heard.tools[0].proximity_in[0].0;
-    proxy.set_cursor(serial, Some(&cursor), 1, 2);
+    proxy.set_cursor(serial, Some(&cursor), 0, 0);
     rig.settle(&mut [&mut app]);
     assert_eq!(rig.keeper.describe().fault, None);
+    assert_eq!(
+        rig.pixel_with_cursor(x as u32, y as u32),
+        BLUE,
+        "the tool's own surface is drawn at the pen"
+    );
     proxy.set_cursor(serial, None, 0, 0);
     rig.settle(&mut [&mut app]);
     assert_eq!(rig.keeper.describe().fault, None);
+    assert_eq!(
+        rig.pixel_with_cursor(x as u32, y as u32),
+        GREEN,
+        "a tool with no image draws nothing"
+    );
 
+    // The pen leaving takes the tool's image with it.
+    proxy.set_cursor(serial, Some(&cursor), 0, 0);
+    rig.settle(&mut [&mut app]);
+    assert_eq!(rig.pixel_with_cursor(x as u32, y as u32), BLUE);
     rig.desktop()
         .input(pen_input(x, y, TabletPhase::ProximityOut))
         .unwrap();
     rig.pump(&mut [&mut app], |_, apps| {
         apps[0].heard.tools[0].proximity_out >= 1
     });
+    assert_eq!(
+        rig.pixel_with_cursor(x as u32, y as u32),
+        GREEN,
+        "the tool's image goes when the pen leaves"
+    );
 }
 
 #[test]

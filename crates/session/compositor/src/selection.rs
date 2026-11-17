@@ -29,6 +29,8 @@ use std::os::fd::OwnedFd;
 use std::sync::Arc;
 
 use smithay::input::Seat;
+use smithay::reexports::wayland_server::Client;
+use smithay::utils::Serial;
 use smithay::wayland::selection::data_device::{
     clear_data_device_selection, current_data_device_selection_userdata,
     request_data_device_client_selection, set_data_device_selection,
@@ -52,6 +54,11 @@ use tilo_x11_transfer::{MAX_MIMES, TEXT_MIMES, is_text_mime, valid_mime};
 
 /// Cap on what a hosted app's offer holds in all.
 pub const MAX_SELECTION_BYTES: usize = 8 * 1024 * 1024;
+
+/// How long after a connection arrives the session's keeper may re-assert the selection its app
+/// owned: long enough for the new desktop to hand out its globals, short enough that the person
+/// cannot have copied into anything else first.
+const KEEPER_CLAIM_WINDOW: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// Which selection.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -80,6 +87,22 @@ impl From<Selection> for SelectionTarget {
     }
 }
 
+impl Selection {
+    /// Its place in the two-entry tables this module keeps.
+    fn index(self) -> usize {
+        match self {
+            Self::Clipboard => 0,
+            Self::Primary => 1,
+        }
+    }
+}
+
+/// A selection a session-handed connection re-asserted: the time its app set it, which orders
+/// two keepers' claims.
+struct Claim {
+    at: u32,
+}
+
 /// Who serves a selection the compositor set on the seat.
 #[derive(Clone, Debug)]
 pub enum Served {
@@ -99,6 +122,10 @@ pub(crate) struct Selections {
     /// How often each selection changed hands: a snapshot of `offered` and this number tells a new
     /// selection from none.
     changes: [u64; 2],
+    /// The keeper claim on each selection, when one is there.
+    claims: [Option<Claim>; 2],
+    /// The claim accepted for the request being handled, which `new_selection` keeps.
+    pending: [Option<Claim>; 2],
 }
 
 impl Selections {
@@ -116,6 +143,8 @@ impl Selections {
             ext: ExtDataControlState::new::<State, _>(display, Some(primary), trusted),
             offered: [Vec::new(), Vec::new()],
             changes: [0; 2],
+            claims: [None, None],
+            pending: [None, None],
         }
     }
 
@@ -143,6 +172,50 @@ impl Selections {
                 *changed_primary = changed_primary.wrapping_add(1);
             }
         }
+    }
+
+    /// Whether `client` may set `selection` without holding the keyboard: a session-handed
+    /// connection's one claim, at the time its app's copy was made, while nothing else owns the
+    /// selection — or a keeper's own earlier claim, which a later copy replaces.
+    fn may_claim(&mut self, selection: Selection, client: &Client, at: u32) -> bool {
+        let Some(data) = client.get_data::<ClientState>() else {
+            return false;
+        };
+        if !data.handed() || data.attached().elapsed() > KEEPER_CLAIM_WINDOW {
+            return false;
+        }
+        // One claim per connection and selection: an attempt that loses is spent too.
+        if data.spend_claim(selection) {
+            return false;
+        }
+        let index = selection.index();
+        let accepted = match self.claims.get(index).and_then(Option::as_ref) {
+            Some(claim) => self.changes(selection) > 0 && Serial::from(claim.at) < Serial::from(at),
+            None => self.changes(selection) == 0,
+        };
+        if accepted && let Some(pending) = self.pending.get_mut(index) {
+            *pending = Some(Claim { at });
+        }
+        accepted
+    }
+
+    /// The claim the request being handled was accepted for, if any.
+    fn take_pending(&mut self, selection: Selection) -> Option<Claim> {
+        self.pending
+            .get_mut(selection.index())
+            .and_then(Option::take)
+    }
+
+    /// A client set `selection`: a keeper claim holds only when this was its own request.
+    fn keep_claim(&mut self, selection: Selection, claim: Option<Claim>) {
+        if let Some(kept) = self.claims.get_mut(selection.index()) {
+            *kept = claim;
+        }
+    }
+
+    /// `selection` is set by something other than a keeper's claim.
+    fn clear_claim(&mut self, selection: Selection) {
+        self.keep_claim(selection, None);
     }
 
     /// The formats `selection` offers now.
@@ -204,6 +277,7 @@ impl State {
         let display = self.display.clone();
         let Some(values) = host_offer(offer) else {
             if matches!(self.served(selection), Some(Served::Host(_))) {
+                self.selections.clear_claim(selection);
                 match selection {
                     Selection::Clipboard => clear_data_device_selection(&display, &self.seat),
                     Selection::Primary => clear_primary_selection(&display, &self.seat),
@@ -216,6 +290,7 @@ impl State {
             return;
         };
         let mimes = normalized_mimes(values.keys().cloned());
+        self.selections.clear_claim(selection);
         let served = Served::Host(Arc::new(values));
         match selection {
             Selection::Clipboard => {
@@ -346,6 +421,7 @@ impl State {
         mimes: Vec<String>,
     ) {
         let display = self.display.clone();
+        self.selections.clear_claim(selection);
         match selection {
             Selection::Clipboard => {
                 set_data_device_selection(&display, &self.seat, mimes.clone(), Served::X11(xwm));
@@ -363,6 +439,7 @@ impl State {
             return;
         }
         let display = self.display.clone();
+        self.selections.clear_claim(selection);
         match selection {
             Selection::Clipboard => clear_data_device_selection(&display, &self.seat),
             Selection::Primary => clear_primary_selection(&display, &self.seat),
@@ -377,6 +454,7 @@ impl State {
                 continue;
             }
             let display = self.display.clone();
+            self.selections.clear_claim(selection);
             match selection {
                 Selection::Clipboard => clear_data_device_selection(&display, &self.seat),
                 Selection::Primary => clear_primary_selection(&display, &self.seat),
@@ -413,10 +491,28 @@ impl SelectionHandler for State {
         source: Option<SelectionSource>,
         _seat: Seat<Self>,
     ) {
-        let mimes = source.map(|source| source.mime_types());
+        let selection: Selection = ty.into();
+        let mimes = source.as_ref().map(SelectionSource::mime_types);
+        // A claim stands only for the request the compositor accepted it for; every other
+        // selection takes it over, as a fresh desktop's first copy does.
+        let pending = self.selections.take_pending(selection);
         self.selections
-            .set_offered(ty.into(), mimes.clone().unwrap_or_default());
-        self.offer_to_x11(ty.into(), mimes.as_deref());
+            .keep_claim(selection, pending.filter(|_| source.is_some()));
+        self.selections
+            .set_offered(selection, mimes.clone().unwrap_or_default());
+        self.offer_to_x11(selection, mimes.as_deref());
+    }
+
+    /// A session-handed connection asks to set a selection without holding the keyboard, as an
+    /// app keeper does once after its desktop restarts. See [`Selections::may_claim`].
+    fn may_set_selection_without_focus(
+        &mut self,
+        ty: SelectionTarget,
+        client: &Client,
+        serial: Serial,
+    ) -> bool {
+        self.selections
+            .may_claim(ty.into(), client, u32::from(serial))
     }
 
     fn send_selection(

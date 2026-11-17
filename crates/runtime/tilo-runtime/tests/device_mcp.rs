@@ -713,7 +713,7 @@ const ON_SERVER: &str = "22222222-2222-4222-8222-222222222222";
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_key_of_the_persons_reads_their_workspace_list_from_a_device_and_no_one_else_does() {
-    use tilo_server_session::workspaces::{PersonalList, PersonalWorkspace, WorkspaceHostAddress};
+    use tilo_server_session::workspaces::{KeepingDeviceAddress, PersonalList, PersonalWorkspace};
     let person = Person::new();
     let b = b(&person, &[]).await;
     let all = grant(
@@ -730,7 +730,7 @@ async fn a_key_of_the_persons_reads_their_workspace_list_from_a_device_and_no_on
     let entry = |workspace: &str, host: &str| PersonalWorkspace {
         workspace: workspace.into(),
         name: workspace.into(),
-        host: Some(WorkspaceHostAddress {
+        host: Some(KeepingDeviceAddress {
             name: host.into(),
             hint: Some("00".into()),
         }),
@@ -799,7 +799,7 @@ fn address_on_b(
     person: &Person,
     b: &B,
     workspace: &str,
-) -> tilo_server_session::workspaces::WorkspaceHostAddress {
+) -> tilo_server_session::workspaces::KeepingDeviceAddress {
     let hint = tilo_delivery_protocol::workspace_join::WorkspaceDeviceHintV1 {
         version: 1,
         holds_keys: true,
@@ -812,7 +812,7 @@ fn address_on_b(
     }
     .transport_hint(&person.b.0)
     .unwrap();
-    tilo_server_session::workspaces::WorkspaceHostAddress::of_hint(
+    tilo_server_session::workspaces::KeepingDeviceAddress::of_hint(
         &postcard::to_stdvec(&hint).unwrap(),
     )
     .unwrap()

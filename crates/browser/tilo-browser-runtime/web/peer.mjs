@@ -1157,7 +1157,7 @@ async function connect({
      * each `name`. `entered(id)` says this browser is in that workspace already,
      * so it is not redeemed again. Resolves to the workspace's listing
      * `{workspace, workspace_id, name}`; rejects with the host's refusal as it
-     * typed it (`HostRefusal`: `code`, and `refusal` where the host gave one). */
+     * typed it (`DeviceRefusal`: `code`, and `refusal` where the host gave one). */
     enterOwnWorkspace: async ({name = null, entered = () => false} = {}) => JSON.parse(
       await peer.enterOwnWorkspace(name, fitDisplayName(displayName || label), entered)),
     /** Who is in the workspace, for its owner (`workspaces.rs`): `list()`,
@@ -1620,12 +1620,12 @@ const ENTRY_TIMEOUT_MS = 45_000;
  * asks the host who it is (`site-host.mjs`): an entry reaches it in about a second. */
 const SITE_HOST_CHECK_MS = 8_000;
 
-/** A refusal as the shared entry reads it (`HostRefusal`): its `code`, the wait the entry
+/** A refusal as the shared entry reads it (`DeviceRefusal`): its `code`, the wait the entry
  * asked for in seconds, and, when a workspace's entry turned the person away, the entry's own
  * answer (`entry`: whether it keeps a wait list, and where its contact is). */
 function hostRefusal(code, message, retryAfter = null, entry = null) {
   const error = new Error(message);
-  error.name = 'HostRefusal';
+  error.name = 'DeviceRefusal';
   error.code = code;
   if (Number.isFinite(retryAfter) && retryAfter > 0) error.retryAfter = retryAfter;
   if (entry) error.entry = entry;

@@ -2301,6 +2301,16 @@ impl Compositor {
         Ok(self.data.backend.screenshot(&mut self.data.state, name)?)
     }
 
+    /// What `name` shows with the pointer and every pen's cursor in front, read back: what the
+    /// display draws, where [`Compositor::screenshot`] leaves cursors out so a scene can be
+    /// compared on its own.
+    pub fn screenshot_with_cursor(&mut self, name: &str) -> Result<Screenshot, Error> {
+        Ok(self
+            .data
+            .backend
+            .screenshot_with_cursor(&mut self.data.state, name)?)
+    }
+
     /// Route one input event from another device — a portal `RemoteDesktop` or `InputCapture`
     /// session, a share, a remote-typing link — through the firewall ([`remote_input`]): it reaches
     /// the seat only while the person allows it.
@@ -2601,6 +2611,16 @@ impl Compositor {
             .into_iter()
             .map(|(info, rect)| (info, (rect.loc.x, rect.loc.y, rect.size.w, rect.size.h)))
             .collect()
+    }
+
+    /// Set what the output `name` says it is, as a desktop whose display has a name of its own
+    /// does: what its clients read through `xdg-output`.
+    #[cfg(feature = "test-support")]
+    pub fn set_output_description(&mut self, name: &str, description: &str) -> Result<(), Error> {
+        Ok(self
+            .data
+            .backend
+            .set_output_description(name, description)?)
     }
 
     /// The current buffer of the window `id`, if it is a linear dma-buf, read on the CPU: its

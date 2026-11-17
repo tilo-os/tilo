@@ -186,7 +186,7 @@ tilo_test_env::scenario! {
         let session_proxy = Proxy::start(
             session.address(),
             &dir.path().join("session-proxy"),
-            &session_filter_args(false, true, None)
+            &session_filter_args(&std::collections::BTreeMap::new(), true, None)
                 .iter()
                 .map(String::as_str)
                 .collect::<Vec<_>>(),
@@ -338,7 +338,7 @@ tilo_test_env::scenario! {
         let dir = tempfile::tempdir().unwrap();
         let session = PrivateBus::start_at(&dir.path().join("session"));
         let player = launcher::dbus_proxy::media_player_name("so.tilo.music").unwrap();
-        let filter = session_filter_args(false, true, Some(&player));
+        let filter = session_filter_args(&std::collections::BTreeMap::new(), true, Some(&player));
         let proxy = Proxy::start(
             session.address(),
             &dir.path().join("session-proxy"),
@@ -811,5 +811,138 @@ fn another_client_reads_an_apps_tree_but_cannot_act_on_it() {
         *requests.lock().unwrap(),
         vec![(accesskit::Action::Click, BUTTON)],
         "no refused call reached the app's action handler"
+    );
+}
+
+/// The portal frontend's two faces under test, counting the calls that reach it.
+struct PortalInterface {
+    calls: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+}
+
+struct NotificationPortal(PortalInterface);
+
+#[zbus::interface(name = "org.freedesktop.portal.Notification")]
+impl NotificationPortal {
+    fn add_notification(&self, id: &str) {
+        assert_eq!(id, "hello");
+        self.0
+            .calls
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+struct ScreenCastPortal(PortalInterface);
+
+#[zbus::interface(name = "org.freedesktop.portal.ScreenCast")]
+impl ScreenCastPortal {
+    fn create_session(&self) {
+        self.0
+            .calls
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+/// A real sandboxed launch of an app whose manifest allows notifications and denies screencast:
+/// inside the sandbox, a notification call reaches the portal and a screencast call is refused by
+/// the bus proxy before the portal sees it.
+#[test]
+fn a_launched_app_reaches_only_the_portals_its_manifest_allows() {
+    use launcher::manifest::PortalPolicy;
+    use launcher::run as launch;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    // The fixture is built before the environment is held: its build takes the environment lock.
+    // The fixture with `dbus-send` beside it, the app's own D-Bus client.
+    let dir = tempfile::tempdir().unwrap();
+    let payload = dir.path().join("payload");
+    std::fs::create_dir_all(payload.join("bin")).unwrap();
+    for (from, name) in [
+        (
+            crate::support::workspacetest_payload().join("bin/workspacetest"),
+            "workspacetest",
+        ),
+        (std::path::PathBuf::from("/usr/bin/dbus-send"), "dbus-send"),
+    ] {
+        std::fs::copy(from, payload.join("bin").join(name)).unwrap();
+    }
+    let session = PrivateBus::start_at(&dir.path().join("session"));
+    let (notified, cast) = (Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0)));
+    let _portal = connect(session.address())
+        .name("org.freedesktop.portal.Desktop")
+        .unwrap()
+        .serve_at(
+            "/org/freedesktop/portal/desktop",
+            NotificationPortal(PortalInterface {
+                calls: notified.clone(),
+            }),
+        )
+        .unwrap()
+        .serve_at(
+            "/org/freedesktop/portal/desktop",
+            ScreenCastPortal(PortalInterface {
+                calls: cast.clone(),
+            }),
+        )
+        .unwrap()
+        .build()
+        .unwrap();
+    let runtime = dir.path().join("runtime");
+    std::fs::create_dir(&runtime).unwrap();
+    let mut env = tilo_test_env::ScopedEnv::new();
+    env.set("DBUS_SESSION_BUS_ADDRESS", session.address())
+        .set("XDG_RUNTIME_DIR", &runtime);
+
+    let mut manifest = crate::support::manifest("so.tilo.portaltest", "bin/workspacetest", "off");
+    manifest.sandbox.portals = std::collections::BTreeMap::from([
+        ("notifications".to_owned(), PortalPolicy::ViaHost),
+        ("screencast".to_owned(), PortalPolicy::Deny),
+    ]);
+    let data = tempfile::tempdir().unwrap();
+    let call = |method: &str, arg: Option<&str>| {
+        let mut argv = vec![
+            "exec",
+            "dbus-send",
+            "--session",
+            "--print-reply",
+            "--dest=org.freedesktop.portal.Desktop",
+            "/org/freedesktop/portal/desktop",
+            method,
+        ];
+        argv.extend(arg);
+        let mut opts = crate::support::isolated_options(data.path());
+        opts.no_services = true;
+        opts.bwrap_bin = Some(crate::support::bwrap());
+        opts.sandbox_shim_bin = Some(tilo_test_env::package_binary!("tilo-launcher"));
+        opts.mode = launch::LaunchMode::Cli {
+            command: "workspacetest".to_owned(),
+            passthrough_argv: argv.iter().map(|arg| (*arg).to_owned()).collect(),
+        };
+        let (status, out) = launch::run_with_captured(&manifest, &payload, &opts).expect("launch");
+        let out = String::from_utf8_lossy(&out).trim().to_owned();
+        assert!(status.success(), "fixture exited {status:?}: {out}");
+        out
+    };
+
+    let allowed = call(
+        "org.freedesktop.portal.Notification.AddNotification",
+        Some("string:hello"),
+    );
+    assert!(
+        allowed.starts_with("EXIT 0"),
+        "the allowed portal answers: {allowed}"
+    );
+    assert_eq!(notified.load(Ordering::SeqCst), 1);
+
+    let refused = call("org.freedesktop.portal.ScreenCast.CreateSession", None);
+    assert!(
+        refused.starts_with("EXIT 1")
+            && refused.contains("org.freedesktop.DBus.Error.AccessDenied"),
+        "the proxy refuses the denied portal: {refused}"
+    );
+    assert_eq!(
+        cast.load(Ordering::SeqCst),
+        0,
+        "the denied portal never sees the call"
     );
 }

@@ -1942,7 +1942,7 @@ mod tests {
             let granted = crate::dbus_proxy::media_player_for(&m);
             assert_eq!(granted.as_deref(), Some(requested.as_str()));
             assert!(
-                crate::dbus_proxy::session_filter_args(false, true, granted.as_deref())
+                crate::dbus_proxy::session_filter_args(&BTreeMap::new(), true, granted.as_deref())
                     .contains(&format!("--own={requested}"))
             );
             // Without the declaration there is no player to own.

@@ -730,34 +730,6 @@ pub trait FileClipboardServices: Send + Sync {
         Err("write attribution is unavailable".into())
     }
 }
-/// Where one app's answers for another app's actions are kept: the person's
-/// settings on the device they use (`settings_store::app_consent`).
-pub trait AppConsents: Send + Sync {
-    /// Whether `app` may use `target_app`'s `action` on `resource`.
-    fn allows(&self, consent: &settings_store::app_consent::Consent) -> bool;
-    /// Keep the person's answer for `consent`.
-    ///
-    /// # Errors
-    /// The answer could not be kept.
-    fn allow(&self, consent: &settings_store::app_consent::Consent) -> Result<(), String>;
-}
-
-/// [`AppConsents`] over a settings source: what the person answered, in their
-/// own settings document.
-pub struct PersonalAppConsents {
-    pub source: Arc<dyn settings_store::SettingsSource>,
-}
-
-impl AppConsents for PersonalAppConsents {
-    fn allows(&self, consent: &settings_store::app_consent::Consent) -> bool {
-        settings_store::app_consent::allows(self.source.as_ref(), consent)
-    }
-
-    fn allow(&self, consent: &settings_store::app_consent::Consent) -> Result<(), String> {
-        settings_store::app_consent::allow(self.source.as_ref(), consent)
-            .map_err(|error| format!("the answer could not be saved: {error}"))
-    }
-}
 
 /// A grant being recorded ([`WorkspaceGrants::record`]): its id once it is in
 /// force, or why it is not.
@@ -888,10 +860,6 @@ pub struct ProcessServices {
     /// Where this host records the answers a person gave for its workspaces'
     /// grants.
     pub workspace_grants: Option<Arc<dyn WorkspaceGrants>>,
-    /// Where the person's answers for one app using another app's action are
-    /// kept: their own settings, on the device they answered on.
-    pub app_consents: Option<Arc<dyn AppConsents>>,
-    /// Records grants people give apps for other apps' actions; without it no grant is asked.
     /// Where the launchable action catalogue survives a restart; without it it lives as long as
     /// this broker.
     pub launchable_catalogue: Option<std::path::PathBuf>,
@@ -960,7 +928,6 @@ impl ProcessServices {
         "app_action_access",
         "app_resource_kinds",
         "workspace_grants",
-        "app_consents",
         "launchable_catalogue",
         "document_content",
         "group_keys",

@@ -195,7 +195,7 @@ an invitation admitted them), a person an invitation into it still names, or a
 person who already keeps workspaces of their own there. Every key and agent of
 that person is the person, within its scope. Anyone else, a fresh root or any
 key it certified, is refused with the API server's own refusal (`EntryRefused`, read
-back as `HostRefusal::entry`), which offers the wait list when the API server takes
+back as `DeviceRefusal::entry`), which offers the wait list when the API server takes
 people by invitation. Entering a workspace a person was invited into stays
 theirs either way, and so does keeping their workspace list once they are a
 member of any workspace there.

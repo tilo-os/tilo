@@ -1149,7 +1149,7 @@ fn a_workspace_refusal_is_read_by_its_case() {
         let error = tilo_actions::remote::ActionCallError::Refused {
             reason: refusal.to_reason(),
         };
-        server::ServerError::from(tilo_session_client::device::HostRefusal::of(&error))
+        server::ServerError::from(tilo_session_client::device::DeviceRefusal::of(&error))
     };
     assert_eq!(
         refused(Refusal::NotYourOwn),

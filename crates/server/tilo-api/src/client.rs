@@ -226,8 +226,21 @@ enum Transport {
 
 impl Client {
     /// The client `reach` names: its key file, else `TILO_API_KEY` at an API
-    /// server, else this computer's own key as `tilo login` kept it.
+    /// server, else this desktop's own API at its socket when one serves it,
+    /// else this computer's own key as `tilo login` kept it.
     pub fn open(reach: Reach<'_>) -> Result<Self> {
+        // A desktop of this login serves its person at its own socket, and a
+        // program of this login answers as the person there with no key of its
+        // own: the socket's directory and permissions and the kernel's account
+        // of the peer are what admit it ([`desktop_socket`]). A server named
+        // outright, and any key, still decide.
+        if reach.api.is_none()
+            && reach.key_file.is_none()
+            && api_key().is_none()
+            && let Some(socket) = desktop_socket()
+        {
+            return Ok(Self::session(&socket));
+        }
         if let Some(path) = reach.key_file {
             let file = crate::direct::KeyFile::read(path).map_err(anyhow::Error::msg)?;
             return Self::direct(&file);
@@ -756,9 +769,9 @@ impl Client {
             }
             Transport::Session(socket) => {
                 let reached = || format!("reaching the Tilo desktop at {}", socket.display());
-                let stream = tokio::net::UnixStream::connect(socket)
-                    .await
-                    .with_context(reached)?;
+                let stream = tilo_files::native::socket::connect(socket).with_context(reached)?;
+                stream.set_nonblocking(true).with_context(reached)?;
+                let stream = tokio::net::UnixStream::from_std(stream).with_context(reached)?;
                 let (mut sender, connection) =
                     hyper::client::conn::http1::handshake(hyper_util::rt::TokioIo::new(stream))
                         .await
@@ -846,6 +859,35 @@ fn api_key() -> Option<String> {
         .map(|key| key.trim().to_owned())
         .filter(|key| !key.is_empty())
 }
+
+/// The socket this login's desktop serves Tilo's API to its person's own
+/// programs at, when one serves it: `API_SOCKET_FILE` in the session's
+/// directory under the login's runtime directory
+/// ([`tilo_paths::login::session_dir`]). A program of this login finds it by
+/// the runtime directory alone, and one at another account's session never
+/// does.
+#[must_use]
+pub fn desktop_socket() -> Option<std::path::PathBuf> {
+    if let Some(named) = std::env::var_os(DESKTOP_ENV)
+        .map(std::path::PathBuf::from)
+        .filter(|path| path.is_absolute())
+    {
+        return Some(named);
+    }
+    let directory = tilo_paths::login::session_dir(std::env::var_os("XDG_RUNTIME_DIR"))?;
+    let socket = directory.join(tilo_paths::login::API_SOCKET_FILE);
+    // A socket that answers is one this session serves still; one a session
+    // left behind is not.
+    let is_socket = std::os::unix::fs::FileTypeExt::is_socket(
+        &std::fs::symlink_metadata(&socket).ok()?.file_type(),
+    );
+    is_socket.then_some(socket)
+}
+
+/// Names the desktop's own API socket, as `TILO_MCP_SERVER` names the agent
+/// socket: `TILO_API_SOCKET`. A program of a login whose runtime directory is
+/// not the one the desktop was started in finds it here.
+pub const DESKTOP_ENV: &str = "TILO_API_SOCKET";
 
 /// The API server `api` names, else `TILO_API_URL`, else [`DEFAULT_API_URL`].
 pub fn api_url(api: Option<&str>) -> String {
@@ -953,6 +995,44 @@ mod tests {
                 bare.refused().to_string(),
                 "the API refused the call (HTTP 500)"
             );
+        }
+
+        phase a_desktop_serving_this_login_is_found_before_any_key_is_looked_for;
+        {
+            let root = std::env::temp_dir().join(format!("tilo-desktop-socket-{}", std::process::id()));
+            std::fs::create_dir_all(&root).expect("a directory for the socket");
+            let socket = root.join(tilo_paths::login::API_SOCKET_FILE);
+            let _ = std::fs::remove_file(&socket);
+            let listener = std::os::unix::net::UnixListener::bind(&socket).expect("a socket");
+            // Named outright, so the test needs no runtime directory of its own.
+            let mut env = tilo_test_env::ScopedEnv::new();
+            env.set(DESKTOP_ENV, &socket)
+                .remove(KEY_ENV)
+                .remove(API_URL_ENV);
+            assert_eq!(
+                desktop_socket().as_deref(),
+                Some(socket.as_path()),
+                "a socket this login's desktop serves is found by its name"
+            );
+            // No key file, no `TILO_API_KEY`, no API server named: the desktop is what is
+            // reached, so opening the client is no error about a missing key. Before the socket
+            // is looked for, this is the "no key" refusal, which is what main answered.
+            let client = Client::open(Reach {
+                api: None,
+                key_file: None,
+                json: false,
+            });
+            assert!(
+                matches!(
+                    client.as_ref().map(|client| &client.transport),
+                    Ok(Transport::Session(found)) if found == &socket
+                ),
+                "a desktop's socket is reached with no key: {:?}",
+                client.err().map(|error| error.to_string())
+            );
+            drop(listener);
+            drop(env);
+            std::fs::remove_dir_all(&root).expect("the socket's directory goes");
         }
     }
 }
