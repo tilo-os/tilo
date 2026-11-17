@@ -288,7 +288,7 @@ fn staged_changes(staged: &mut stage::Staged) -> Vec<(String, String, String)> {
     for (key, row) in &rows {
         for mark in nodes_of(row, "ui.ChangeMark") {
             let identity = match mark.props.get("by") {
-                Some(tilo_render_protocol::patch::Value::Actor(who)) => who.id.clone(),
+                Some(tilo_render_protocol::patch::Value::Actor(who)) => who.id.to_string(),
                 other => panic!("a marked row names who changed it: {other:?}"),
             };
             let said = match mark.props.get("said") {
