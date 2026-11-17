@@ -1,0 +1,404 @@
+//! Holding a workspace that was made on another host.
+//!
+//! A holder of the workspace hands it over with
+//! [`HOST_WORKSPACE`](tilo_server_session::workspaces::HOST_WORKSPACE): the
+//! workspace as a joining member gets it (its signed governance, roster and
+//! revocations) and the handing holder's own signed address. This host then
+//! keeps a writable copy of its own ([`GovernedWorkspace::adopt`]), as the host
+//! the workspace was made on does: it writes what it changes under its own
+//! device's key, takes in what every other holder and member writes, admits
+//! whom the workspace's governance admits, and keeps a session to every
+//! holder its governance names ([`Workspaces::dial_holders`]). Losing any one
+//! holder loses nothing the others hold, and leaves the workspace writable at
+//! each of them.
+//!
+//! Which device owns the workspace is its own fact, kept with it as it was
+//! handed over; this host's device is only the one writing its changes, and
+//! the workspace's compacted base stays the owning device's to publish.
+//! A host of another person holds the workspace without being a member: of
+//! who is in it, it writes only the redemptions of invitations it answers
+//! ([`tilo_peer_state::workspace::SenderAccess::Holder`]).
+//!
+//! The host lets the workspace go ([`Workspaces::release`]) when its owners
+//! ask ([`UNHOST_WORKSPACE`](tilo_server_session::workspaces::UNHOST_WORKSPACE))
+//! or when the workspace's governance no longer names it. The files stay; a
+//! later hand-over serves the workspace from them again.
+
+use std::collections::HashMap;
+use std::sync::Arc;
+
+use neighbour_wire::NeighbourMsg;
+use tilo_delivery_protocol::workspace_join::WorkspaceDeviceHintV1;
+use tilo_peer_state::join::{JoinBootstrap, TransportHint};
+use tilo_peer_state::{StatePeer, TransportOrigin};
+use tilo_server_protocol::{Whose, WorkSetting, WorkspaceId};
+use tilo_user_identity::DeviceCert;
+use tokio::sync::Mutex as AsyncMutex;
+use web_time::SystemTime;
+
+use super::{GovernedWorkspace, Workspaces, appended, peer_parts};
+use crate::attach::{HostDialer, Upstream};
+use crate::handshake::LiveIdentity;
+
+/// What a holder hands the host it asks to hold one of its workspaces.
+#[derive(Clone, Debug)]
+pub struct HostWorkspaceRequest {
+    /// The workspace's UUID: its id spelled out, and nothing else
+    /// ([`HostWorkspaceRequest::named`]).
+    pub workspace: String,
+    /// The workspace's transport shard.
+    pub workspace_id: WorkspaceId,
+    /// The handing holder's own signed address for the workspace.
+    pub holder_hint: TransportHint,
+    /// The workspace as a joining member gets it, this host's device
+    /// admitted.
+    pub bootstrap: JoinBootstrap,
+}
+
+impl HostWorkspaceRequest {
+    /// The workspace's name, checked to be its own id in the form the id
+    /// spells itself: what is kept of a workspace here is found by that id,
+    /// so no text a caller wrote names a file or a held workspace.
+    ///
+    /// # Errors
+    ///
+    /// The request names its workspace by anything but its own id.
+    fn named(&self) -> Result<String, String> {
+        match WorkspaceId::parse(&self.workspace) {
+            Some(id) if id == self.workspace_id && id.to_string() == self.workspace => {
+                Ok(id.to_string())
+            }
+            _ => Err("a workspace is handed over under its own id and no other name".into()),
+        }
+    }
+}
+
+/// `text`, postcard in hex, decoded.
+pub(crate) fn decode_hex<T: serde::de::DeserializeOwned>(text: &str) -> Result<T, String> {
+    let bytes = hex::decode(text).map_err(|error| error.to_string())?;
+    postcard::from_bytes(&bytes).map_err(|error| error.to_string())
+}
+
+/// Aborts its task when dropped.
+pub(super) struct AbortOnDrop(tokio::task::JoinHandle<()>);
+
+impl Drop for AbortOnDrop {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
+/// The replica `bootstrap` hands over: its governance taken in from the
+/// bootstrap's signed messages, its changes written under this host's own
+/// actor.
+fn replica(bootstrap: &JoinBootstrap, now: SystemTime) -> Result<StatePeer, String> {
+    let mut peer = StatePeer::from_join(
+        &bootstrap.workspace_id.to_string(),
+        bootstrap.host.clone(),
+        bootstrap.certified_roster.clone(),
+        &bootstrap.revocations,
+        now,
+    )?;
+    super::select_exact_admission(&mut peer)?;
+    take_governance(&mut peer, bootstrap, now)?;
+    if !peer.has_governance() {
+        return Err("the workspace was handed over without its governance".into());
+    }
+    Ok(peer)
+}
+
+/// Take `bootstrap`'s governance messages into `peer`.
+fn take_governance(
+    peer: &mut StatePeer,
+    bootstrap: &JoinBootstrap,
+    now: SystemTime,
+) -> Result<(), String> {
+    let origin = TransportOrigin::RetainedServerDelta(bootstrap.host.device_public_key);
+    for bytes in &bootstrap.governance_messages {
+        let message: NeighbourMsg =
+            postcard::from_bytes(bytes).map_err(|error| error.to_string())?;
+        if matches!(message, NeighbourMsg::AppDocument { .. }) {
+            continue;
+        }
+        peer.receive_from(origin, message, now)
+            .map_err(|error| error.to_string())?;
+    }
+    Ok(())
+}
+
+/// The owners of the workspace `request` hands over, by their user public
+/// keys: the person who owns it, then the people it is kept for, as its
+/// governance says.
+///
+/// # Errors
+///
+/// The workspace's governance does not hold up.
+pub(crate) fn owners(request: &HostWorkspaceRequest) -> Result<Vec<[u8; 32]>, String> {
+    let peer = replica(&request.bootstrap, tilo_clock::wall())?;
+    let policy = peer.governance().governed_policy()?;
+    let mut owners = vec![peer.owner()];
+    for person in policy.keepers() {
+        let mut key = [0; 32];
+        if hex::decode_to_slice(person, &mut key).is_ok() && !owners.contains(&key) {
+            owners.push(key);
+        }
+    }
+    Ok(owners)
+}
+
+/// Whether `work` takes the workspace `request` hands over from `caller`,
+/// for this host `own`, whoever its owners are.
+pub(crate) fn work_takes(
+    work: &WorkSetting,
+    caller: &DeviceCert,
+    own: &DeviceCert,
+    request: &HostWorkspaceRequest,
+) -> bool {
+    let mut whose = Whose::of_roots(caller.user_public_key, own.user_public_key);
+    whose.workspace = Some(request.workspace_id);
+    work.from.admits(&whose)
+}
+
+/// Why a hand-over of a workspace kept here is refused to a device its copy
+/// does not name among its holders.
+const NOT_A_HOLDER: &str =
+    "the workspace kept here is another's: it is handed over only by one of its holders";
+
+/// Whether `peer`'s governance names `caller`'s device among the
+/// workspace's holders, by the address it signed.
+fn names_holder(peer: &StatePeer, caller: &DeviceCert) -> bool {
+    peer.governance()
+        .workspace_hosts()
+        .iter()
+        .any(|hint| hint.host.device_public_key == caller.device_public_key)
+}
+
+impl GovernedWorkspace {
+    /// A writable copy of the workspace `request` hands over, kept under
+    /// `dir`: its owner as the bootstrap names it, nothing of its own
+    /// published yet.
+    fn adopt(
+        path: std::path::PathBuf,
+        workspace: String,
+        request: &HostWorkspaceRequest,
+        device: Option<&super::DeviceKeys>,
+        now: SystemTime,
+    ) -> Result<Self, String> {
+        let peer = replica(&request.bootstrap, now)?;
+        let mut parts = peer_parts::PeerParts::open(&path)?;
+        let entry = super::WorkspaceDocumentEntry {
+            version: super::DOCUMENT_VERSION,
+            workspace,
+            workspace_id: request.workspace_id,
+            owner: request.bootstrap.host.clone(),
+            peer: parts.stage(&peer)?,
+            generation: request.bootstrap.generation.max(1),
+            outgoing: Vec::new(),
+            published: 0,
+            collaboration: super::collaboration::CollaborationState::default(),
+        };
+        let (publications, _) = appended::Appended::open(&path, super::PUBLICATIONS, 0)?;
+        let (receipts, _) = appended::Appended::open(&path, super::RECEIPTS, 0)?;
+        let mut this = Self::assemble(entry, peer, path, parts, (publications, receipts), device)?;
+        this.persist()?;
+        Ok(this)
+    }
+}
+
+impl Workspaces {
+    /// Hold the workspace `request` hands over, `caller`'s request: a
+    /// writable copy of it here, current with its governance. Answers this
+    /// host's own signed address for it. Asked again, it takes in what the
+    /// hand-over carries.
+    ///
+    /// # Errors
+    ///
+    /// The request does not hold up, the caller is not the holder whose
+    /// address it carries, or the workspace could not be kept here.
+    pub(crate) async fn hold(
+        &self,
+        caller: &DeviceCert,
+        request: &HostWorkspaceRequest,
+    ) -> Result<TransportHint, String> {
+        // Refused before any path is built from it.
+        let workspace = request.named()?;
+        let holder = WorkspaceDeviceHintV1::from_transport_hint(&request.holder_hint)
+            .map_err(|error| error.to_string())?;
+        holder
+            .validate_bootstrap(&request.bootstrap)
+            .map_err(|error| error.to_string())?;
+        if holder.workspace_id != request.workspace_id
+            || request.bootstrap.workspace_id != request.workspace_id
+        {
+            return Err("the holder's address names another workspace".into());
+        }
+        if holder.device_certificate.device_public_key != caller.device_public_key {
+            return Err("only a holder of the workspace hands it over".into());
+        }
+        let now = tilo_clock::wall();
+        let held = self.inner.workspaces.lock().await.get(&workspace).cloned();
+        let state = if let Some(held) = held {
+            if !names_holder(&held.lock().await.peer(), caller) {
+                return Err(NOT_A_HOLDER.into());
+            }
+            held
+        } else {
+            let path = self.inner.dir.join(format!("{workspace}.workspace"));
+            let device = self.device_keys();
+            let mut governed = if path.exists() {
+                // Held here before and let go: its files are where it
+                // stands, and the hand-over brings what it missed, from one
+                // of the holders those files name.
+                let governed = GovernedWorkspace::open(path.clone(), device.as_ref())?;
+                if !names_holder(&governed.peer(), caller) {
+                    return Err(NOT_A_HOLDER.into());
+                }
+                let _ = std::fs::remove_file(path.with_extension(super::RELEASED));
+                let mut peer = governed.peer().clone();
+                take_governance(&mut peer, &request.bootstrap, now)?;
+                *governed.peer.lock() = peer;
+                governed
+            } else {
+                GovernedWorkspace::adopt(path, workspace.clone(), request, device.as_ref(), now)?
+            };
+            self.bind(&governed).await?;
+            governed.handed_by = Some(holder.clone());
+            let state = Arc::new(AsyncMutex::new(governed));
+            self.inner
+                .workspaces
+                .lock()
+                .await
+                .insert(workspace.clone(), Arc::clone(&state));
+            let governed = state.lock().await;
+            self.serve_direct(&governed)?;
+            drop(governed);
+            state
+        };
+        let mut governed = state.lock().await;
+        self.settle(&mut governed).await?;
+        tracing::info!(%workspace, workspace_id = %request.workspace_id, "holding a workspace another host handed over");
+        self.transport_hint(&governed)
+            .map_err(|error| error.to_string())
+    }
+
+    /// Let `workspace` go, `caller`'s request: a device of this host's own
+    /// person or of the workspace's owner. Whether it was held here.
+    ///
+    /// # Errors
+    ///
+    /// The caller may not ask, or the release could not be recorded.
+    pub(crate) async fn unhold(
+        &self,
+        caller: &DeviceCert,
+        workspace: &str,
+    ) -> Result<bool, String> {
+        // Named by its id, as it was handed over: no other text is looked up
+        // among the files here.
+        WorkspaceId::parse(workspace).ok_or_else(|| "a workspace is named by its id".to_owned())?;
+        // A workspace being let go as its governance stopped naming this host
+        // is gone here once this answers.
+        drop(self.inner.releasing.lock().await);
+        let Ok(state) = self.workspace(workspace).await else {
+            return Ok(false);
+        };
+        let owner = state.lock().await.peer().owner();
+        if caller.user_public_key != self.inner.host.cert.user_public_key
+            && caller.user_public_key != owner
+        {
+            return Err(
+                "only its own person or the workspace's owner asks a host to let it go".into(),
+            );
+        }
+        match self.release(workspace).await {
+            Ok(()) => Ok(true),
+            // Let go meanwhile, as its governance stopped naming this host.
+            Err(_) if self.workspace(workspace).await.is_err() => Ok(true),
+            Err(error) => Err(error),
+        }
+    }
+
+    /// Keep a session to every other holder `governed`'s governance names,
+    /// and to the holder that handed it over, and to none other; let the
+    /// workspace go once its governance named this host and names it no
+    /// more.
+    pub(super) fn dial_holders(&self, governed: &mut GovernedWorkspace) {
+        let host = &self.inner.host;
+        let own = host.cert.device_public_key;
+        let mut named: Vec<WorkspaceDeviceHintV1> = governed
+            .peer()
+            .governance()
+            .workspace_hosts()
+            .iter()
+            .filter_map(|hint| WorkspaceDeviceHintV1::from_transport_hint(hint).ok())
+            .collect();
+        let names_this = named
+            .iter()
+            .any(|holder| holder.device_certificate.device_public_key == own);
+        if governed.holders.named && !names_this {
+            governed.holders.sessions.clear();
+            let workspace = governed.workspace().to_owned();
+            let this = self.clone();
+            tokio::spawn(async move {
+                tracing::info!(%workspace, "the workspace's governance no longer names this host");
+                if let Err(error) = this.release(&workspace).await {
+                    tracing::warn!(%workspace, %error, "a workspace no longer held here was not let go");
+                }
+            });
+            return;
+        }
+        governed.holders.named |= names_this;
+        named.extend(governed.handed_by.clone());
+        governed.holders.sessions.retain(|device, _| {
+            named
+                .iter()
+                .any(|holder| holder.device_certificate.device_public_key == *device)
+        });
+        let workspace_id = governed.workspace_id();
+        for holder in named {
+            let device = holder.device_certificate.device_public_key;
+            if device == own || governed.holders.sessions.contains_key(&device) {
+                continue;
+            }
+            let dialer = HostDialer {
+                endpoint: host.endpoint.clone(),
+                identity: LiveIdentity {
+                    user_public_key: host.cert.user_public_key,
+                    cert: host.cert.clone(),
+                    signing_key: host.key.clone(),
+                    revocations: host.revocations.clone(),
+                },
+                trust_policy: host.trust_policy.clone(),
+                workspaces: host.workspaces.clone(),
+                metrics: host.metrics.clone(),
+                scope: Some(vec![workspace_id]),
+            }
+            .spawn_woken(
+                Upstream {
+                    addr: holder.endpoint_addr.clone(),
+                    device,
+                    person: holder.device_certificate.user_public_key,
+                },
+                format!(
+                    "holder {} of {}",
+                    hex::encode(&device[..4]),
+                    governed.workspace()
+                ),
+                &host.arrivals,
+            );
+            governed
+                .holders
+                .sessions
+                .insert(device, AbortOnDrop(dialer));
+        }
+    }
+}
+
+/// This host's sessions to a workspace's other holders.
+#[derive(Default)]
+pub(super) struct Holders {
+    /// A session to each other holder, by device.
+    sessions: HashMap<[u8; 32], AbortOnDrop>,
+    /// Whether the workspace's governance has named this host among its
+    /// holders: once it has, naming it no more lets the workspace go here.
+    named: bool,
+}

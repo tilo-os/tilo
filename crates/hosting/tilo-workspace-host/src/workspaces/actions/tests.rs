@@ -1529,6 +1529,34 @@ async fn a_host_reaches_its_own_network_only_with_its_operators_leave() {
 /// What a service on this device's own network says to whoever asks it.
 const SAID_INSIDE: &str = "what a service inside says";
 
+/// Which holders keep a workspace is its owners' decision: another person's
+/// device asking to list, add or remove them is refused, and nothing is
+/// asked of the site it names.
+#[tokio::test]
+async fn only_an_owner_chooses_a_workspaces_holders() {
+    use test_http::{Reply, Responder};
+
+    let dir = tempfile::tempdir().unwrap();
+    let (key, owner) = governor();
+    let server = test_host(dir.path(), &key, &owner).await;
+    let (workspace, workspace_id, governance) = governed(server.workspaces()).await;
+    let (_, stranger) = governor();
+    let stranger = caller(&stranger);
+    let site = Responder::handle(|_| Some(Reply::status(404)));
+    for (verb, argument) in [
+        (super::HOSTS, json!({})),
+        (super::ADD_HOST, json!({ "origin": site.url() })),
+        (super::REMOVE_HOST, json!({ "host": site.url() })),
+    ] {
+        let asked = request(&workspace, verb, argument);
+        holder_refused(invoke(&governance, workspace_id, &stranger, asked).await);
+    }
+    assert!(
+        site.drain_requests().is_empty(),
+        "a stranger's holder was asked"
+    );
+}
+
 /// Why what was asked about a workspace's holders was refused.
 fn holder_refused(answered: Result<Value, ActionCallError>) -> String {
     match answered {

@@ -62,6 +62,8 @@ mod hard_stop_tests;
 #[cfg(test)]
 mod returning_person_tests;
 pub(crate) use desktop_writes::writes_desktop;
+mod holding;
+pub(crate) use holding::{HostWorkspaceRequest, decode_hex, owners, work_takes};
 mod host_invitations;
 mod hosts;
 pub use hosts::WorkspaceHost;
@@ -266,6 +268,9 @@ impl WorkspaceDocumentEntry {
     }
 }
 
+/// The file of a workspace's join receipts.
+type Receipts = appended::Appended<tilo_peer_state::join_log::JoinCompletionRecord>;
+
 /// A workspace this server governs.
 struct GovernedWorkspace {
     record: WorkspaceDocumentEntry,
@@ -276,7 +281,7 @@ struct GovernedWorkspace {
     /// `record.outgoing`, in its own file.
     publications: appended::Appended<Publication>,
     /// The join receipts of `record.collaboration`, in their own file.
-    receipts: appended::Appended<tilo_peer_state::join_log::JoinCompletionRecord>,
+    receipts: Receipts,
     /// The channel keys of the device this host runs on, asked for the
     /// records of this workspace: `None` when that device keeps no channel
     /// keys, and the workspace's records are then held in the clear.
@@ -331,9 +336,12 @@ struct GovernedWorkspace {
     /// back from its file counts as having withdrawn something until it next
     /// starts over.
     since_base: SinceBase,
-    /// The session each of those hosts last opened here that this host
-    /// answered ([`Workspaces::answer_host`]), by the host's device.
-    answered: HashMap<[u8; 32], hosts::Answer>,
+    /// This host's sessions to the workspace's other holders
+    /// ([`Workspaces::dial_holders`]).
+    holders: holding::Holders,
+    /// The holder that handed the workspace to this host, dialled whether or
+    /// not the governance names its address yet.
+    handed_by: Option<tilo_delivery_protocol::workspace_join::WorkspaceDeviceHintV1>,
 }
 
 /// The people `peer`'s governance admits now.
@@ -435,29 +443,7 @@ impl GovernedWorkspace {
         };
         let (publications, _) = appended::Appended::open(&path, PUBLICATIONS, 0)?;
         let (receipts, _) = appended::Appended::open(&path, RECEIPTS, 0)?;
-        let mut this = Self {
-            admissions: admissions::Admissions::open(&path)?,
-            wait_list: wait_list::WaitList::open(&path)?,
-            removals: removals::Removals::open(&path)?,
-            parts,
-            publications,
-            receipts,
-            path,
-            device: device.cloned(),
-            record,
-            peer: Replica::new(peer),
-            publisher: Arc::default(),
-            compaction_wait: 0,
-            desktop: None,
-            desktop_segments: collab_types::DocumentReassembler::default(),
-            unkept: false,
-            keeping: false,
-            #[cfg(any(feature = "agents", feature = "web"))]
-            asking: std::collections::BTreeSet::new(),
-            rebased: false,
-            since_base: SinceBase::Withdrew,
-            answered: HashMap::new(),
-        };
+        let mut this = Self::assemble(record, peer, path, parts, (publications, receipts), device)?;
         this.persist()?;
         Ok(this)
     }
@@ -514,6 +500,19 @@ impl GovernedWorkspace {
         }
         // Parts an interrupted write left behind.
         parts.collect(&record.peer);
+        Self::assemble(record, peer, path, parts, (publications, receipts), device)
+    }
+
+    /// A workspace of `entry` and its replica `peer`, kept at `path` with
+    /// its `parts` and its publications' and receipts' files.
+    fn assemble(
+        entry: WorkspaceDocumentEntry,
+        peer: StatePeer,
+        path: PathBuf,
+        parts: peer_parts::PeerParts,
+        (publications, receipts): (appended::Appended<Publication>, Receipts),
+        device: Option<&DeviceKeys>,
+    ) -> Result<Self, String> {
         Ok(Self {
             admissions: admissions::Admissions::open(&path)
                 .map_err(|error| format!("admissions: {error}"))?,
@@ -521,7 +520,7 @@ impl GovernedWorkspace {
                 .map_err(|error| format!("wait list: {error}"))?,
             removals: removals::Removals::open(&path)
                 .map_err(|error| format!("removals: {error}"))?,
-            record,
+            record: entry,
             peer: Replica::new(peer),
             parts,
             publications,
@@ -538,7 +537,8 @@ impl GovernedWorkspace {
             asking: std::collections::BTreeSet::new(),
             rebased: false,
             since_base: SinceBase::Withdrew,
-            answered: HashMap::new(),
+            holders: holding::Holders::default(),
+            handed_by: None,
         })
     }
 
@@ -682,9 +682,13 @@ impl GovernedWorkspace {
         crate::timing::window("workspace.commit.record", copying);
         // A member admitted from now on is given the workspace as it stands,
         // not what was withdrawn before they joined.
-        let started_over = starts_over(&record.outgoing)
-            || (self.since_base == SinceBase::Withdrew
-                && !member_roots(&candidate, now).is_subset(&member_roots(replica, now)));
+        // The workspace's compacted base stays with the device that made it:
+        // every other holder publishes only its own changes after it.
+        let makes_base = record.owner.device_public_key == key.verifying_key().to_bytes();
+        let started_over = makes_base
+            && (starts_over(&record.outgoing)
+                || (self.since_base == SinceBase::Withdrew
+                    && !member_roots(&candidate, now).is_subset(&member_roots(replica, now))));
         let mut since_base = self.since_base;
         let mut rebased = false;
         if started_over {
@@ -1014,12 +1018,12 @@ struct WorkspacesInner {
     /// Whether the records its workspaces hold in the clear are sealed: only once
     /// the host's operator decided it (the server's `reseal`).
     resealing: std::sync::atomic::AtomicBool,
-    /// The workspaces this host serves for the device of its person that governs
-    /// them ([`crate::hosted`]).
-    hosting: crate::hosted::Hosting,
     /// The entry's wait list, once whoever runs the server offers one
     /// ([`Workspaces::offer_wait_list`], [`Workspaces::mail_wait_list`]).
     entry: wait_list::EntrySettings,
+    /// Held while a workspace is let go ([`Workspaces::release`]): whoever
+    /// asks after it waits until what the host served of it is gone.
+    releasing: AsyncMutex<()>,
     /// The workspaces of people's own, once the host's operator offers them
     /// ([`Workspaces::offer_own_workspaces`]).
     own: std::sync::OnceLock<own::OwnWorkspaces>,
@@ -1265,9 +1269,9 @@ impl Workspaces {
                 unbuildable_windows: std::sync::Mutex::default(),
                 directory: listing::Directory::default(),
                 resealing: std::sync::atomic::AtomicBool::new(false),
-                hosting: crate::hosted::Hosting::new(host.clone()),
                 host,
                 entry: wait_list::EntrySettings::default(),
+                releasing: AsyncMutex::new(()),
                 own: std::sync::OnceLock::new(),
                 memberships: memberships::Memberships::default(),
                 owner_invitations: host_invitations::OwnerInvitations::open(&dir),
@@ -1312,7 +1316,7 @@ impl Workspaces {
         await_relay(&this.inner.host.endpoint).await;
         this.serve_kept(workspaces).await?;
         this.adopt_listings_file().await?;
-        this.start_following().await;
+        this.start_following();
         Ok(this)
     }
 
@@ -1358,14 +1362,13 @@ impl Workspaces {
     /// activity, the app surfaces their writes wait for, each record's
     /// repair, and the address it answers at, then whatever its hosted
     /// workspaces left running.
-    async fn start_following(&self) {
+    fn start_following(&self) {
         self.follow_activity();
         self.follow_missing_surfaces();
         self.follow_personal_changes();
         self.follow_own_address();
         #[cfg(feature = "agents")]
         self.follow_repaired_documents();
-        self.inner.hosting.resume().await;
     }
 
     /// The certificate this host serves its workspaces with: its own, or the
@@ -1496,6 +1499,7 @@ impl Workspaces {
     /// The workspace is not governed here, or the release could not be recorded
     /// or its access narrowed.
     pub async fn release(&self, workspace: &str) -> Result<(), String> {
+        let _releasing = self.inner.releasing.lock().await;
         let governed = self
             .inner
             .workspaces
@@ -1504,7 +1508,7 @@ impl Workspaces {
             .get(workspace)
             .cloned()
             .ok_or("this host does not govern that workspace")?;
-        let governed = governed.lock().await;
+        let mut governed = governed.lock().await;
         // Recorded first: a host stopped halfway keeps it released.
         let marker = governed.path.with_extension(RELEASED);
         let file = std::fs::File::create(&marker).map_err(|error| error.to_string())?;
@@ -1516,11 +1520,35 @@ impl Workspaces {
         }
         self.inner.workspaces.lock().await.remove(workspace);
         self.inner.direct.release(governed.workspace_id());
+        // Its sessions to the other holders end with it, and what it was
+        // publishing lands before what this host served of it goes.
+        drop(std::mem::take(&mut governed.holders));
+        Arc::clone(&governed.publisher).flushed().await;
+        self.stop_serving(governed.workspace_id()).await?;
+        tracing::info!(%workspace, workspace_id = %governed.workspace_id(), "governed workspace released");
+        // Nobody lists a workspace this host governs no longer.
+        self.inner.memberships.forget(workspace);
+        drop(governed);
+        let _ = self.inner.changes.send(workspace.to_owned());
+        // No list here names a workspace the host governs no longer.
+        self.personal_changed();
+        Ok(())
+    }
+
+    /// Stop serving the workspace `workspace_id` here: nobody is admitted to it
+    /// any more, and then what this host served of it goes, so nothing a
+    /// session still carried opens it again. Its files stay for whenever it
+    /// is held here again.
+    ///
+    /// # Errors
+    ///
+    /// Its access could not be narrowed.
+    pub(super) async fn stop_serving(&self, workspace_id: WorkspaceId) -> Result<(), String> {
         self.inner
             .host
             .access
             .replace(
-                governed.workspace_id(),
+                workspace_id,
                 true,
                 GovernedAccess {
                     member_devices: Vec::new(),
@@ -1529,13 +1557,7 @@ impl Workspaces {
             )
             .await
             .map_err(|error| error.to_string())?;
-        tracing::info!(%workspace, workspace_id = %governed.workspace_id(), "governed workspace released");
-        // Nobody lists a workspace this host governs no longer.
-        self.inner.memberships.forget(workspace);
-        drop(governed);
-        let _ = self.inner.changes.send(workspace.to_owned());
-        // No list here names a workspace the host governs no longer.
-        self.personal_changed();
+        crate::workspace_io::evict(&self.inner.host.workspaces, workspace_id).await;
         Ok(())
     }
 
@@ -2856,6 +2878,7 @@ impl Workspaces {
         crate::timing::event("workspace.settle.publish", publishing, 0);
         let observing = crate::timing::start();
         self.observe_calls(workspace);
+        self.dial_holders(workspace);
         self.governance_moved(workspace);
         crate::timing::event("workspace.settle.observe", observing, 0);
         Ok(())

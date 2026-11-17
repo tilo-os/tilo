@@ -341,7 +341,7 @@ pub(super) fn handle_host_action(
     // A host whose work setting takes other people's workspaces is handed
     // one by its governing host, whose person nothing here trusts yet: that
     // one operation is asked of it, and the setting decides
-    // ([`crate::hosted`]). Every other one needs a device the host trusts.
+    // ([`crate::workspaces`]). Every other one needs a device the host trusts.
     match session.trust().cert(peer, tilo_clock::unix_now_ns()) {
         Ok(()) => {}
         Err(crate::workspace_access::DenyReason::NotTrusted) if asks_to_hold(&request.message) => {}

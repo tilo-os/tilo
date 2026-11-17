@@ -1231,7 +1231,7 @@ impl Workspaces {
                         return verb.id == NAME && speaks_for_themselves(caller);
                     }
                     if verb.check == CHOOSES_HOSTS {
-                        return self.chooses_hosts(&workspace, &device);
+                        return Self::chooses_hosts(&workspace, &device);
                     }
                     self.permits(
                         &device,
@@ -1486,7 +1486,7 @@ impl Workspaces {
             // themselves, in [`NAME`]'s case, and nobody else.
             let permitted = match check {
                 "" => true,
-                CHOOSES_HOSTS => self.chooses_hosts(&workspace, &device),
+                CHOOSES_HOSTS => Self::chooses_hosts(&workspace, &device),
                 check => self.permits(
                     &device,
                     Some(&workspace),
@@ -1921,27 +1921,24 @@ impl Workspaces {
         call: GovernanceCall<'_>,
     ) -> Result<Value, ActionCallError> {
         let GovernanceCall {
-            workspace,
-            device,
-            args,
-            ..
+            workspace, args, ..
         } = call;
         let confirmed = match action {
             ADD_HOST => {
-                self.add_host(workspace, device, args.required_text("origin")?)
+                self.add_host(workspace, args.required_text("origin")?)
                     .await
                     .map_err(|error| refused(&error))?;
                 None
             }
             REMOVE_HOST => Some(
-                self.remove_host(workspace, device, args.required_text("host")?)
+                self.remove_host(workspace, args.required_text("host")?)
                     .await
                     .map_err(|error| refused(&error))?,
             ),
             _ => None,
         };
         let hosts = self
-            .host_list(workspace, device)
+            .host_list(workspace)
             .await
             .map_err(|error| refused(&error))?;
         let mut answered = json!({ "workspace": workspace, "hosts": hosts });

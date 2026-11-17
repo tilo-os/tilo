@@ -157,13 +157,7 @@ async fn write_bootstrap<W: tokio::io::AsyncWrite + Unpin>(
     {
         return Ok(());
     }
-    let (authority, hosted) = {
-        let runtime = ws.lock().await;
-        (
-            runtime.workspace_authority.clone(),
-            runtime.hosted_replica.clone(),
-        )
-    };
+    let authority = ws.lock().await.workspace_authority.clone();
     let bootstrap = match authority.and_then(|authority| {
         authority
             .workspaces()
@@ -174,7 +168,7 @@ async fn write_bootstrap<W: tokio::io::AsyncWrite + Unpin>(
                 .subscriber_bootstrap(authority.workspace(), &peer.cert)
                 .await
         }
-        None => hosted.and_then(|replica| replica.bootstrap(workspace_id, &peer.cert)),
+        None => None,
     };
     let Some((bootstrap, certified)) = bootstrap else {
         return Ok(());

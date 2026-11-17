@@ -27,6 +27,11 @@ pub enum SenderAccess {
     /// decide it again (the shell's network check, `peer_workspace_allows`). Every
     /// other check still applies.
     TransportAuthorized,
+    /// The sender is a device of `person`, who is no member, named among the
+    /// workspace's holders by its own signed address: a server of another
+    /// person keeping the workspace. It writes the redemptions of
+    /// invitations it answers and nothing else ([`holder_redemptions`]).
+    Holder { person: [u8; 32] },
 }
 
 /// The sender of a batch, as the receiver's transport authenticated it.
@@ -41,7 +46,7 @@ pub struct Writer<'a> {
 impl Writer<'_> {
     fn person(&self) -> Option<&[u8; 32]> {
         match &self.access {
-            SenderAccess::Member { person, .. } => Some(person),
+            SenderAccess::Member { person, .. } | SenderAccess::Holder { person } => Some(person),
             SenderAccess::TransportAuthorized => None,
         }
     }
@@ -51,7 +56,7 @@ impl Writer<'_> {
     /// knows the owner from what it joined through, never from the batch,
     /// so a first answer cannot make its sender the owner.
     fn governs(&self, owner: &[u8; 32]) -> bool {
-        self.person() == Some(owner)
+        matches!(self.access, SenderAccess::Member { person, .. } if person == *owner)
     }
 }
 
@@ -201,6 +206,9 @@ pub fn admit_workspace_changes(
     input: WorkspaceAdmission<'_>,
     changes: &[Vec<u8>],
 ) -> Result<AdmittedWorkspace, AdmissionFailure> {
+    if matches!(input.source.access, SenderAccess::Holder { .. }) {
+        return holder_redemptions(&input, changes);
+    }
     let governs = input.source.governs(input.owner);
     let writes = governs || may_write(input.before, input.workspace, &input.source, input.now_ns)?;
     match super::base::lineage(input.before, changes) {
@@ -258,6 +266,63 @@ pub fn admit_workspace_changes(
         }
         super::base::Lineage::Newer { .. } => Err(WorkspaceRefusal::GovernanceWriter.into()),
     }
+}
+
+/// What a holder that is no member may write: the redemptions of
+/// invitations, each admitting the person its signed invitation names
+/// ([`super::membership::admit_operations`]), and nothing else. Whether the
+/// sender is a holder is read where the batch was written (its
+/// dependencies), from the signed holder entries there, so every receiver
+/// decides it alike whenever the batch reaches it. Adding people otherwise,
+/// and every change of a role, stays a member's.
+fn holder_redemptions(
+    input: &WorkspaceAdmission<'_>,
+    changes: &[Vec<u8>],
+) -> Result<AdmittedWorkspace, AdmissionFailure> {
+    let before = input.before.ok_or(WorkspaceRefusal::GovernanceMissing)?;
+    let at = super::membership::dependency_state(before, changes).map_err(membership)?;
+    let named = crate::state::workspace_hosts_of(&at)
+        .iter()
+        .any(|hint| hex::encode(hint.host.device_public_key) == input.source.key);
+    if !named {
+        return Err(WorkspaceRefusal::WriteForbidden.into());
+    }
+    let super::base::Lineage::Same { changes, replaced } =
+        super::base::lineage(Some(before), changes)
+    else {
+        return Err(WorkspaceRefusal::GovernanceWriter.into());
+    };
+    let pruned = super::base::pruned(Some(before), replaced);
+    let candidate = super::candidate(Some(pruned.as_ref().unwrap_or(before)), &changes)?;
+    let held = crate::members::ops(before);
+    let only_admissions = crate::members::ops(&candidate)
+        .iter()
+        .filter(|(id, _)| !held.contains_key(*id))
+        .all(|(_, op)| {
+            matches!(
+                op.command,
+                crate::members::MembershipOpCommand::Admit { .. }
+            )
+        });
+    let grown =
+        crate::members::growth(Some(before), &candidate).map_err(WorkspaceRefusal::Membership)?;
+    if !only_admissions || grown == 0 {
+        return Err(WorkspaceRefusal::WriteForbidden.into());
+    }
+    super::membership::admit_operations(
+        Some(before),
+        &candidate,
+        &changes,
+        input.workspace,
+        input.now_ns,
+    )
+    .map_err(membership)?;
+    let media = checked(input, &candidate, true)?;
+    Ok(AdmittedWorkspace {
+        candidate,
+        media,
+        rebased: false,
+    })
 }
 
 fn membership(refusal: super::membership::MembershipRefusal) -> AdmissionFailure {

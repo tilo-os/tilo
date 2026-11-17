@@ -71,28 +71,9 @@ async fn a_certified_host_of_the_person_serves_a_workspace_its_device_governs() 
     let workspaces = governor.host.workspaces();
     let workspace = workspaces.create("Notes").await.unwrap();
 
-    // Which holders serve the workspace is its owner's decision: another person's
-    // device asking is refused.
-    let bob = TestUser::fresh("Bob");
-    let bobs = bob.enrol("bob-phone", DeviceCapabilities::member());
-    let refused = workspaces
-        .attach_host(
-            &workspace.workspace,
-            &bobs.cert,
-            nas.device_pubkey(),
-            member.host.node_addr(),
-        )
-        .await;
-    assert!(refused.is_err(), "{refused:?}");
-    assert_eq!(
-        workspaces.hosts(&workspace.workspace).await.unwrap().len(),
-        1
-    );
-
     let hint = workspaces
         .attach_host(
             &workspace.workspace,
-            &laptop.cert,
             nas.device_pubkey(),
             member.host.node_addr(),
         )
@@ -154,12 +135,7 @@ async fn a_certified_host_of_the_person_serves_a_workspace_its_device_governs() 
     // Detached, the host is no longer named and admits nobody to the workspace.
     assert!(
         workspaces
-            .detach_host(
-                &workspace.workspace,
-                &laptop.cert,
-                nas.device_pubkey(),
-                None
-            )
+            .detach_host(&workspace.workspace, nas.device_pubkey(), None)
             .await
             .unwrap(),
         "the host confirms it stopped"
@@ -193,7 +169,6 @@ async fn a_device_serves_no_workspace_another_device_governs() {
     let refused = workspaces
         .attach_host(
             &workspace.workspace,
-            &laptop.cert,
             desktop.device_pubkey(),
             other.host.node_addr(),
         )
@@ -231,7 +206,6 @@ async fn a_detached_host_lets_the_workspace_go_and_serves_it_again_from_its_file
     workspaces
         .attach_host(
             &workspace.workspace,
-            &laptop.cert,
             nas.device_pubkey(),
             member.host.node_addr(),
         )
@@ -253,12 +227,7 @@ async fn a_detached_host_lets_the_workspace_go_and_serves_it_again_from_its_file
 
     assert!(
         workspaces
-            .detach_host(
-                &workspace.workspace,
-                &laptop.cert,
-                nas.device_pubkey(),
-                None
-            )
+            .detach_host(&workspace.workspace, nas.device_pubkey(), None)
             .await
             .unwrap()
     );
@@ -273,7 +242,6 @@ async fn a_detached_host_lets_the_workspace_go_and_serves_it_again_from_its_file
     workspaces
         .attach_host(
             &workspace.workspace,
-            &laptop.cert,
             nas.device_pubkey(),
             member.host.node_addr(),
         )
@@ -303,86 +271,140 @@ async fn a_detached_host_lets_the_workspace_go_and_serves_it_again_from_its_file
 }
 
 /// Every holder of a workspace carries what is written through it to all the
-/// others: with three holders, the one that made the workspace can go away and
-/// a change written through either other holder still reaches the members on
-/// the third.
+/// others, and none of them is needed: with three holders, whichever one goes
+/// away, a device admitted through either other holder reaches the third,
+/// changes written through either reach the other, and both say the same of
+/// who holds the workspace and who is in it. The holder that went away comes
+/// back from its files before the next one goes.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one scenario per lost holder: its steps and assertions stay together"
+)]
 #[expect(
     clippy::significant_drop_tightening,
     reason = "Hosted::stop consumes each host after the assertions"
 )]
-async fn three_holders_keep_carrying_changes_when_one_goes_away() {
+async fn losing_any_one_of_three_holders_leaves_the_workspace_writable_and_governed() {
     let alice = TestUser::fresh("Alice");
     let laptop = alice.enrol("laptop", DeviceCapabilities::primary());
     let phone = alice.enrol("phone", DeviceCapabilities::primary());
     let tablet = alice.enrol("tablet", DeviceCapabilities::primary());
     let first = alice.enrol("nas", DeviceCapabilities::member());
     let second = alice.enrol("server", DeviceCapabilities::member());
-    let made_on = host_on(&alice, &laptop, WorkSetting::none()).await;
-    let one = host_on(&alice, &first, WorkSetting::own_person()).await;
-    let two = host_on(&alice, &second, WorkSetting::own_person()).await;
-    let workspaces = made_on.host.workspaces();
-    let workspace = workspaces.create("Notes").await.unwrap();
-    for (device, host) in [(&first, &one), (&second, &two)] {
-        workspaces
+    let devices = [&laptop, &first, &second];
+    let settings = [
+        WorkSetting::none(),
+        WorkSetting::own_person(),
+        WorkSetting::own_person(),
+    ];
+    let mut holders = Vec::new();
+    for (device, work) in devices.iter().zip(&settings) {
+        holders.push(Some(host_on(&alice, device, work.clone()).await));
+    }
+    let made_on = holders[0].as_ref().unwrap().host.workspaces();
+    let workspace = made_on.create("Notes").await.unwrap();
+    for at in 1..3 {
+        made_on
             .attach_host(
                 &workspace.workspace,
-                &laptop.cert,
-                device.device_pubkey(),
-                host.host.node_addr(),
+                devices[at].device_pubkey(),
+                holders[at].as_ref().unwrap().host.node_addr(),
             )
             .await
             .unwrap();
     }
-    assert_eq!(
-        workspaces.hosts(&workspace.workspace).await.unwrap().len(),
-        3
-    );
+    assert_eq!(made_on.hosts(&workspace.workspace).await.unwrap().len(), 3);
     for device in [&phone, &tablet] {
-        workspaces
+        made_on
             .enter(&workspace.workspace, &device.cert)
             .await
             .unwrap();
     }
-    let on_one = session_to(&alice, &phone, &one).await;
-    let on_two = session_to(&alice, &tablet, &two).await;
-    tilo_test_env::within("both holders admit the members", async {
-        while !(admitted(&on_one, workspace.workspace_id).await
-            && admitted(&on_two, workspace.workspace_id).await)
-        {
-            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-        }
-    })
-    .await;
 
-    // The holder the workspace was made on goes away.
-    made_on.stop().await;
-    tilo_test_env::within(
-        "a change through one holder reaches the other",
-        carried(
-            &on_one,
-            &phone,
-            &on_two,
-            workspace.workspace_id,
-            b"through one",
-        ),
-    )
-    .await;
-    tilo_test_env::within(
-        "and back",
-        carried(
-            &on_two,
-            &tablet,
-            &on_one,
-            workspace.workspace_id,
-            b"through two",
-        ),
-    )
-    .await;
+    for gone in 0..3 {
+        let state = holders[gone].take().unwrap().stop_keeping().await;
+        let [one, two] = [(gone + 1) % 3, (gone + 2) % 3].map(|at| holders[at].as_ref().unwrap());
 
-    drop((on_one, on_two));
-    two.stop().await;
-    one.stop().await;
+        // Who is in the workspace still changes, through either holder.
+        let newcomer = alice.enrol(&format!("device {gone}"), DeviceCapabilities::primary());
+        one.host
+            .workspaces()
+            .enter(&workspace.workspace, &newcomer.cert)
+            .await
+            .unwrap();
+        let on_two = session_to(&alice, &newcomer, two).await;
+        tilo_test_env::within("the other holder admits the device", async {
+            while !admitted(&on_two, workspace.workspace_id).await {
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+        })
+        .await;
+
+        // And what members write reaches each through the other.
+        let on_one = session_to(&alice, &phone, one).await;
+        assert!(admitted(&on_one, workspace.workspace_id).await);
+        tilo_test_env::within(
+            "a change through one holder reaches the other",
+            carried(
+                &on_one,
+                &phone,
+                &on_two,
+                workspace.workspace_id,
+                b"through one",
+            ),
+        )
+        .await;
+        tilo_test_env::within(
+            "and back",
+            carried(
+                &on_two,
+                &newcomer,
+                &on_one,
+                workspace.workspace_id,
+                b"through two",
+            ),
+        )
+        .await;
+
+        // Both say the same of who holds the workspace and who is in it.
+        tilo_test_env::within("both holders agree", async {
+            loop {
+                let said = |holder: &crate::common::Hosted| {
+                    let workspaces = holder.host.workspaces().clone();
+                    let workspace = workspace.workspace.clone();
+                    async move {
+                        let mut hosts: Vec<[u8; 32]> = workspaces
+                            .hosts(&workspace)
+                            .await
+                            .unwrap()
+                            .iter()
+                            .map(|hint| hint.host.device_public_key)
+                            .collect();
+                        hosts.sort_unstable();
+                        let summary = workspaces.summary(&workspace).await.unwrap();
+                        (hosts, summary.members, summary.devices)
+                    }
+                };
+                let (on_one, on_two) = (said(one).await, said(two).await);
+                if on_one == on_two {
+                    assert_eq!(on_one.0.len(), 3, "every holder is still named");
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+        })
+        .await;
+        drop((on_one, on_two));
+
+        holders[gone] = Some(
+            crate::common::host_in(&alice, devices[gone], settings[gone].clone(), state).await,
+        );
+    }
+
+    for holder in holders.into_iter().flatten() {
+        holder.stop().await;
+    }
 }
 
 /// Send `body`, `author`'s change, on `from` and expect it on `to`.
@@ -499,7 +521,6 @@ async fn another_persons_host_refuses_a_workspace_its_setting_does_not_take() {
     let refused = workspaces
         .attach_host(
             &workspace.workspace,
-            &laptop.cert,
             server.device_pubkey(),
             refusing.host.node_addr(),
         )
@@ -529,6 +550,10 @@ async fn another_persons_host_refuses_a_workspace_its_setting_does_not_take() {
     clippy::significant_drop_tightening,
     reason = "Hosted::stop consumes each host after the assertions; the suggested earlier drop would use a moved value"
 )]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one end-to-end scenario: its setup and assertions stay together"
+)]
 async fn another_persons_host_holds_a_workspace_its_governor_grants_it() {
     let alice = TestUser::fresh("Alice");
     let laptop = alice.enrol("laptop", DeviceCapabilities::primary());
@@ -550,7 +575,6 @@ async fn another_persons_host_holds_a_workspace_its_governor_grants_it() {
     let hint = workspaces
         .attach_host(
             &workspace.workspace,
-            &laptop.cert,
             server.device_pubkey(),
             holder.host.node_addr(),
         )
@@ -619,18 +643,36 @@ async fn another_persons_host_holds_a_workspace_its_governor_grants_it() {
     // Detached, the holder lets the workspace go.
     assert!(
         workspaces
-            .detach_host(
-                &workspace.workspace,
-                &laptop.cert,
-                server.device_pubkey(),
-                None
-            )
+            .detach_host(&workspace.workspace, server.device_pubkey(), None)
             .await
             .unwrap(),
         "the holder confirms it stopped"
     );
+    // It keeps nothing of the person's any more, so it answers them no
+    // session at all, or one that refuses the workspace.
     let gone = session_at(&phone, &site, &server, &holder).await;
-    assert!(!admitted(&gone, workspace.workspace_id).await);
+    gone.send(Envelope::Subscribe {
+        workspace_id: workspace.workspace_id,
+    })
+    .unwrap();
+    let refused = tilo_test_env::within("the holder answers", async {
+        loop {
+            match gone.recv().await {
+                None => break true,
+                Some(Envelope::Ready {
+                    workspace_id: ready,
+                    ..
+                }) if ready == workspace.workspace_id => break false,
+                Some(Envelope::NotAuthorised {
+                    workspace_id: refused,
+                    ..
+                }) if refused == workspace.workspace_id => break true,
+                Some(_) => {}
+            }
+        }
+    })
+    .await;
+    assert!(refused, "a detached holder still admits the member");
 
     drop((again, gone, local));
     holder.stop().await;
@@ -674,7 +716,6 @@ async fn a_host_holds_a_workspace_for_an_owner_it_let_in() {
     let attach = || {
         workspaces.attach_host(
             &workspace.workspace,
-            &laptop.cert,
             server.device_pubkey(),
             holder.host.node_addr(),
         )
@@ -730,12 +771,12 @@ async fn a_host_holds_a_workspace_for_an_owner_it_let_in() {
     governor.stop().await;
 }
 
-/// A device that is handed a workspace keeps one file for it, named by the
+/// A device that is handed a workspace keeps its files under the
 /// workspace's id. A hand-over that names its workspace by anything else (a
 /// path that climbs out of the folder, an absolute path, a name with a
 /// separator in it, another workspace's id) is refused, and nothing is
 /// written anywhere for it. Under the workspace's own id the same hand-over
-/// is taken, and its file is the only one kept.
+/// is taken, and its files are the only ones kept.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[expect(
     clippy::significant_drop_tightening,
@@ -755,21 +796,21 @@ async fn a_hand_over_names_its_workspace_by_its_id_and_writes_nowhere_else() {
 
     // Folders a written name could point into: on a device that keeps many
     // people's files, another person's lie beside this one.
-    let kept = root.join("hosted");
+    let kept = root.join("workspaces");
     std::fs::create_dir_all(kept.join("inner")).unwrap();
     let elsewhere = tempfile::tempdir().unwrap();
     let another = WorkspaceId::new().to_string();
     let names = [
-        ("../outside".to_owned(), root.join("outside.json")),
+        ("../outside".to_owned(), root.join("outside.workspace")),
         (
             elsewhere.path().join("planted").display().to_string(),
-            elsewhere.path().join("planted.json"),
+            elsewhere.path().join("planted.workspace"),
         ),
         (
             "inner/within".to_owned(),
-            kept.join("inner").join("within.json"),
+            kept.join("inner").join("within.workspace"),
         ),
-        (another.clone(), kept.join(format!("{another}.json"))),
+        (another.clone(), kept.join(format!("{another}.workspace"))),
     ];
     for (name, written) in &names {
         let answered = workspaces
@@ -787,7 +828,7 @@ async fn a_hand_over_names_its_workspace_by_its_id_and_writes_nowhere_else() {
     }
 
     workspaces
-        .attach_host(&workspace.workspace, &laptop.cert, nas.device_pubkey(), at)
+        .attach_host(&workspace.workspace, nas.device_pubkey(), at)
         .await
         .unwrap();
     let files: Vec<String> = std::fs::read_dir(&kept)
@@ -796,7 +837,20 @@ async fn a_hand_over_names_its_workspace_by_its_id_and_writes_nowhere_else() {
         .filter(|entry| entry.path().is_file())
         .map(|entry| entry.file_name().to_string_lossy().into_owned())
         .collect();
-    assert_eq!(files, [format!("{}.json", workspace.workspace)]);
+    assert!(
+        files.contains(&format!("{}.workspace", workspace.workspace))
+            && files
+                .iter()
+                .all(|file| file.starts_with(&workspace.workspace)),
+        "{files:?}"
+    );
+    assert!(
+        std::fs::read_dir(elsewhere.path())
+            .unwrap()
+            .next()
+            .is_none(),
+        "a hand-over wrote outside the folder"
+    );
 
     member.stop().await;
     governor.stop().await;
@@ -832,12 +886,7 @@ async fn a_held_workspace_is_not_taken_from_another_governor() {
     let holder = host_on(&site, &kept_on, takes).await;
     let at = holder.host.node_addr();
     workspaces
-        .attach_host(
-            &workspace.workspace,
-            &laptop.cert,
-            kept_on.device_pubkey(),
-            at.clone(),
-        )
+        .attach_host(&workspace.workspace, kept_on.device_pubkey(), at.clone())
         .await
         .unwrap();
     let on_holder = session_at(&phone, &site, &kept_on, &holder).await;
@@ -856,17 +905,12 @@ async fn a_held_workspace_is_not_taken_from_another_governor() {
         .await
         .unwrap();
     let answered = of_mallory
-        .attach_host(
-            &workspace.workspace,
-            &hers.cert,
-            kept_on.device_pubkey(),
-            at,
-        )
+        .attach_host(&workspace.workspace, kept_on.device_pubkey(), at)
         .await;
     assert!(
         answered
             .as_ref()
-            .is_err_and(|error| error.contains("another governor")),
+            .is_err_and(|error| error.contains("one of its holders")),
         "a workspace held for its governor was taken from somebody else: {answered:?}"
     );
     assert!(

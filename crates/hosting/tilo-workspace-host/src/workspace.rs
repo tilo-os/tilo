@@ -84,10 +84,6 @@ pub struct WorkspaceRuntime {
     /// The in-process authority governing this workspace, if any: it
     /// answers the workspace's calls.
     pub workspace_authority: Option<crate::workspaces::WorkspaceAuthority>,
-    /// This host's replica of a workspace it hosts for a governor elsewhere, if
-    /// it hosts this workspace: what a subscribing device builds its
-    /// own replica from.
-    pub(crate) hosted_replica: Option<std::sync::Arc<crate::hosted::HostedReplica>>,
     /// The access of each member device, as the workspace's governor projects
     /// it: what the server decides each change's claimed action against.
     /// `None` until a governor projects one; the server then decides changes
@@ -413,7 +409,6 @@ impl WorkspaceRuntime {
             live_members: HashSet::new(),
             governor_tap: None,
             workspace_authority: None,
-            hosted_replica: None,
             device_access: None,
             access_changed: Arc::default(),
             last_seq: 0,

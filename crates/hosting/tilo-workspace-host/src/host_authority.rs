@@ -18,7 +18,7 @@
 //!
 //! Holding a workspace another host governs is asked of anyone too, and
 //! decided by the handler: a host takes one as its work setting says, or for
-//! an owner of it the host let in ([`crate::hosted`]). Which hosts hold a
+//! an owner of it the host let in ([`crate::workspaces`]). Which hosts hold a
 //! workspace governed here is its owners' choice, made through its governance
 //! (`host.add`, `host.remove`).
 //!
@@ -53,7 +53,7 @@ pub enum HostOperation {
     /// Drive the host's personal compute over its control stream.
     ComputeControl,
     /// Hold a workspace another host governs, as its governor asks
-    /// ([`crate::hosted`]): anyone's to ask, and the host's work setting
+    /// ([`crate::workspaces`]): anyone's to ask, and the host's work setting
     /// decides whose it takes.
     HostWorkspace,
     /// Stop holding a workspace for its governor: the host's person's, or the
@@ -125,7 +125,7 @@ impl HostOperation {
 
     /// Whether the operation is about where a workspace is held, which its own
     /// governance decides: its owner's or keeper's to name, or the host's work
-    /// setting to accept ([`crate::hosted`]). The entry lets anyone ask, since
+    /// setting to accept ([`crate::workspaces`]). The entry lets anyone ask, since
     /// a device of neither person may keep one of the workspaces it governs; a
     /// catalogue, which has no workspace to ask, offers it to the host's own
     /// person alone.

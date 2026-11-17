@@ -231,13 +231,13 @@ pub const ENTER_WORKSPACE: &str = "workspace.enter";
 /// handshakes read.
 pub const LIST_REVOCATIONS: &str = "identity.revocations";
 
-/// Serve a workspace a device of the host's own person governs, as that governor
-/// asks: arguments `workspace`, `workspace_id`, `governor_hint` (the governor's
+/// Hold a workspace another host holds, as that holder asks: arguments
+/// `workspace`, `workspace_id`, `holder_hint` (the handing holder's
 /// signed address) and `bootstrap` (the workspace as a joining member gets it,
 /// the host's device admitted), each signed value postcard in hex. Only a
 /// certified host serves workspaces this way. Answers a [`HostedWorkspace`].
 pub const HOST_WORKSPACE: &str = "workspace.host";
-/// Stop serving `workspace` for its governor. Answers `{"stopped": bool}`.
+/// Let `workspace` go, as its owners ask. Answers `{"stopped": bool}`.
 pub const UNHOST_WORKSPACE: &str = "workspace.unhost";
 /// The person's whole workspace list, as one of their own devices keeps it
 /// here: argument `list`, a [`PersonalList`] naming each workspace of theirs,

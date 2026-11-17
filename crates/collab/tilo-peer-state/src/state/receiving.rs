@@ -449,17 +449,31 @@ impl StatePeer {
         if received != self.core.workspace {
             return Err("workspace topic mismatch".into());
         }
-        let cert = self
-            .certificate(&source, now)
-            .map_err(|error| error.to_string())?;
-        let person = cert.user_public_key;
-        let foreign = backend::member::foreign(cert, &self.core.origin);
         // The owner's devices write governance on their certificate alone:
         // the device this replica was joined through supplies the first
         // governance before any roster exists.
-        if person != self.core.owner {
-            self.role(&source, now).map_err(|error| error.to_string())?;
-        }
+        let member = self
+            .certificate(&source, now)
+            .map_err(|error| error.to_string())
+            .and_then(|cert| {
+                let person = cert.user_public_key;
+                let foreign = backend::member::foreign(cert, &self.core.origin);
+                if person != self.core.owner {
+                    self.role(&source, now).map_err(|error| error.to_string())?;
+                }
+                Ok(workspace::SenderAccess::Member { person, foreign })
+            });
+        // A device that is no member writes here only as one of the
+        // workspace's holders, by the address it signed.
+        let access = match member {
+            Ok(access) => access,
+            Err(error) => self
+                .holder_certificate(&source)
+                .map(|cert| workspace::SenderAccess::Holder {
+                    person: cert.user_public_key,
+                })
+                .ok_or(error)?,
+        };
         let owner = self.core.owner;
         let from = hex::encode(source);
         // The one workspace admission the shell's workspace tree runs too.
@@ -471,10 +485,7 @@ impl StatePeer {
             workspace::WorkspaceAdmission {
                 before: self.core.workspace_doc.as_deref(),
                 workspace: &self.core.workspace,
-                source: workspace::Writer {
-                    key: &from,
-                    access: workspace::SenderAccess::Member { person, foreign },
-                },
+                source: workspace::Writer { key: &from, access },
                 owner: &owner,
                 now_ns: now_ns(now),
             },

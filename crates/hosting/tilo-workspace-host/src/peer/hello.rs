@@ -16,7 +16,6 @@ pub(super) async fn handle_host_hello(
     // among its holders. A device that is neither attaches nowhere.
     let own = peer.user_public_key == *session.own_user_public_key;
     let mut hosted_here: Vec<WorkspaceId> = Vec::new();
-    let mut governed = Vec::new();
     let held: Vec<_> = {
         let wsmap = session.workspaces.lock().await;
         hosted_workspaces
@@ -25,13 +24,7 @@ pub(super) async fn handle_host_hello(
             .collect()
     };
     for (id, ws) in held {
-        let (authority, replica) = {
-            let runtime = ws.lock().await;
-            (
-                runtime.workspace_authority.clone(),
-                runtime.hosted_replica.clone(),
-            )
-        };
+        let authority = ws.lock().await.workspace_authority.clone();
         if !own {
             let named = match authority.as_ref().and_then(|authority| {
                 Some((authority.workspaces()?, authority.workspace().to_owned()))
@@ -41,7 +34,7 @@ pub(super) async fn handle_host_hello(
                         .names_host(&workspace, peer.device_public_key)
                         .await
                 }
-                None => replica.is_some_and(|replica| replica.names_holder(peer.device_public_key)),
+                None => false,
             };
             if !named {
                 continue;
@@ -53,24 +46,10 @@ pub(super) async fn handle_host_hello(
             .attach_sessions
             .insert(peer.device_public_key, session.disconnect.clone());
         drop(runtime);
-        governed.extend(authority);
         hosted_here.push(id);
     }
     if !own && hosted_here.is_empty() {
         return Ok(None);
-    }
-    // A host serving a workspace governed here is answered with a session back
-    // to it, for what its members change there.
-    for authority in governed {
-        if let Some(workspaces) = authority.workspaces() {
-            workspaces
-                .answer_host(
-                    authority.workspace(),
-                    peer.device_public_key,
-                    session.disconnect.clone(),
-                )
-                .await;
-        }
     }
     Ok(Some(Envelope::PeerServerHello {
         hosted_workspaces: hosted_here,

@@ -89,7 +89,12 @@ everywhere the workspace is held: its device holds the workspace, and its
 person may reach the hosts that do. Another host of the governor's own person
 is also admitted as one of the owner's devices; a host of another person, a
 hosted server such as tilo.sh, is named and nothing more, so the workspace's
-members and roles stay as they were. Whom a workspace is held by is the
+members and roles stay as they were. Such a host writes one thing into the
+workspace: the redemption of an invitation it answers. Every receiver checks
+that its device was among the workspace's signed holders where it wrote the
+redemption, and checks the invitation itself; anything else it writes is
+refused. Adding people otherwise and changing roles stays with the owner's
+and administrators' devices. Whom a workspace is held by is the
 owner's decision and the keeper's: a device of the governor's person, or of
 the person the workspace is kept for, asks its governor to have another host
 hold it (`workspace.attach-host`, an operator's `hold`), and the governor
@@ -97,9 +102,13 @@ hands that host the workspace and names it. The other host takes it only when
 its own operator's work setting takes that work: by default only its own
 person's, and another person's only for the workspaces its operator names or
 for anyone when it says so, so a server never holds strangers' workspaces
-unasked. From then on both hold it: each carries what is written through it
-to the other, signed by the device that wrote it, so its history and
-authors are the same on both, and each picks up again after a restart. A
+unasked. From then on both hold it: each keeps a writable copy and carries what is
+written through it to every other holder, signed by the device that wrote
+it, so its history and authors are the same on all of them, and each picks up
+again after a restart. None of them is needed by the others: losing any one
+leaves the workspace writable and governed at the rest. The workspace's
+compacted base stays with the host it was made on; the others publish only
+their changes after it. A
 member's device dials the holders alike, starting with the one it last
 reached, and keeps its link with whichever answers. Every receiver reads a
 holder's address only with that host's own signature on it, whoever wrote it

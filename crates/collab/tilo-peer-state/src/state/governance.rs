@@ -665,7 +665,16 @@ impl PeerGovernanceMut<'_> {
         if redemption.join().grant().workspace_id.to_string() != self.peer.core.workspace {
             return Err("invitation is not for this workspace".into());
         }
-        self.peer.require_inviter(key, now)?;
+        // An inviter writes the redemption, or a holder of the workspace that
+        // is no member: every receiver checks the invitation itself.
+        if let Err(error) = self.peer.require_inviter(key, now) {
+            let device = key.device_public_key();
+            if self.peer.role(&device, now).is_ok()
+                || self.peer.holder_certificate(&device).is_none()
+            {
+                return Err(error);
+            }
+        }
         let cert = redemption.certificate();
         if self.peer.core.revocations.refuses(cert) {
             return Err("device revoked".into());

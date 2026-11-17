@@ -5,6 +5,7 @@ use ed25519_dalek::{Signer as _, SigningKey};
 use tilo_action_policy::Change;
 
 mod editor;
+mod holders;
 use crate::join::WorkspaceId;
 use editor::owner_signs;
 pub(crate) use editor::{other_owner, seeded_editor};

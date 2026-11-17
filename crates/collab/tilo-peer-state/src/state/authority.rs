@@ -723,6 +723,17 @@ impl StatePeer {
     ) -> Result<&DeviceCert, MembershipError> {
         self.core.certificate_typed(source, now).map_err(Into::into)
     }
+    /// The certificate of `source` as the workspace names it among its
+    /// holders, by the address it signed: a holder that is no member, which
+    /// writes the redemptions of invitations it answers and nothing else
+    /// ([`crate::workspace::SenderAccess::Holder`]).
+    pub(super) fn holder_certificate(&self, source: &[u8; 32]) -> Option<DeviceCert> {
+        let doc = self.core.workspace_doc.as_deref()?;
+        crate::state::workspace_hosts_of(doc)
+            .into_iter()
+            .find(|hint| hint.host.device_public_key == *source)
+            .map(|hint| hint.host)
+    }
     /// `source`'s role in the workspace now, capped for a delegate's device.
     ///
     /// # Errors

@@ -261,9 +261,9 @@ fn host_workspace_params() -> Vec<ActionParam> {
             "The workspace's transport shard.",
         ),
         ActionParam::required(
-            "governor_hint",
+            "holder_hint",
             ParamType::Text,
-            "The governor's signed address for the workspace, postcard in hex.",
+            "The handing holder's signed address for the workspace, postcard in hex.",
         ),
         ActionParam::required(
             "bootstrap",
@@ -723,27 +723,6 @@ impl Workspaces {
                     listed.push(one);
                 }
             }
-            // The workspaces another host governs that this one holds as well,
-            // which they are in: what they reach here too.
-            if labels.is_empty() {
-                for one in self
-                    .inner
-                    .hosting
-                    .listed_for(&person, crate::workspaces::system_time(now))
-                    .await
-                {
-                    let reaches = device
-                        .capabilities
-                        .agent
-                        .is_none_or(|scope| scope.reaches(&one.workspace));
-                    if reaches
-                        && only.names(&one.workspace)
-                        && !listed.iter().any(|known| known.workspace == one.workspace)
-                    {
-                        listed.push(one);
-                    }
-                }
-            }
             listed.sort_by(|a, b| {
                 a.name
                     .cmp(&b.name)
@@ -992,17 +971,17 @@ impl Workspaces {
     async fn kept_for(
         &self,
         caller: &DeviceCert,
-        request: &crate::hosted::HostWorkspaceRequest,
+        request: &super::super::HostWorkspaceRequest,
         now: u64,
     ) -> Result<Option<[u8; 32]>, String> {
         let host = &self.inner.host;
-        if crate::hosted::work_takes(&host.work, caller, &host.cert, request) {
+        if super::super::work_takes(&host.work, caller, &host.cert, request) {
             return Ok(None);
         }
         let mut refusal = None;
         // Its own person's workspace is the work setting's to take: for them,
         // this host is one of their devices, not a host that let them in.
-        let others = crate::hosted::owners(request)?
+        let others = super::super::owners(request)?
             .into_iter()
             .filter(|owner| *owner != host.cert.user_public_key);
         for owner in others {
@@ -1019,7 +998,7 @@ impl Workspaces {
     }
 
     /// The host operations that have one host of the person serve a workspace
-    /// another governs ([`crate::hosted`]), already permitted to `device`.
+    /// another governs ([`super::super::holding`]), already permitted to `device`.
     async fn serving_invoke(
         &self,
         device: &DeviceCert,
@@ -1031,23 +1010,20 @@ impl Workspaces {
             HostOperation::HostWorkspace => {
                 self.authorize(device, None, WorkspaceOp::Host(operation), now)
                     .map_err(|error| refused(&error))?;
-                let request = crate::hosted::HostWorkspaceRequest {
+                let request = super::super::HostWorkspaceRequest {
                     workspace: args.required_text("workspace")?.to_owned(),
                     workspace_id: WorkspaceId::parse(args.required_text("workspace_id")?)
                         .ok_or_else(|| invalid("`workspace_id` is a workspace id"))?,
-                    governor_hint: crate::hosted::decode_hex(args.required_text("governor_hint")?)
-                        .map_err(|error| invalid(format!("`governor_hint`: {error}")))?,
-                    bootstrap: crate::hosted::decode_hex(args.required_text("bootstrap")?)
+                    holder_hint: super::super::decode_hex(args.required_text("holder_hint")?)
+                        .map_err(|error| invalid(format!("`holder_hint`: {error}")))?,
+                    bootstrap: super::super::decode_hex(args.required_text("bootstrap")?)
                         .map_err(|error| invalid(format!("`bootstrap`: {error}")))?,
                 };
-                let kept_for = self
-                    .kept_for(device, &request, now)
+                self.kept_for(device, &request, now)
                     .await
                     .map_err(|error| refused(&error))?;
                 let hint = self
-                    .inner
-                    .hosting
-                    .host_workspace(device, &request, kept_for)
+                    .hold(device, &request)
                     .await
                     .map_err(|error| refused(&error))?;
                 answer(&HostedWorkspace {
@@ -1058,9 +1034,7 @@ impl Workspaces {
                 self.authorize(device, None, WorkspaceOp::Host(operation), now)
                     .map_err(|error| refused(&error))?;
                 let stopped = self
-                    .inner
-                    .hosting
-                    .unhost_workspace(device, args.required_text("workspace")?)
+                    .unhold(device, args.required_text("workspace")?)
                     .await
                     .map_err(|error| refused(&error))?;
                 Ok(serde_json::json!({ "stopped": stopped }))

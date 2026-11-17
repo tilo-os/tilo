@@ -1,5 +1,5 @@
 //! The hosts of a workspace this host governs: itself first, then each host it
-//! asked to hold the workspace as well ([`crate::hosted`]): another host of its
+//! asked to hold the workspace as well ([`super::holding`]): another host of its
 //! own person, or another person's host whose operator takes that work.
 //!
 //! Each host signs its own address. The workspace's governance names the hosts
@@ -34,25 +34,8 @@ use tilo_server_session::workspaces::{
 use tilo_user_identity::DeviceCert;
 
 use super::{CollaborationError, GovernedWorkspace, Workspaces};
-use crate::attach::{HostDialer, Upstream};
-use crate::handshake::LiveIdentity;
 use tilo_lock::RwLockRecover as _;
 use tilo_server_protocol::WorkspaceId;
-
-/// This host's answer to the session a host serving one of its workspaces opened
-/// here ([`Workspaces::answer_host`]).
-pub(super) struct Answer {
-    /// The session answered.
-    inbound: tokio::sync::mpsc::Sender<()>,
-    /// The session back to the host.
-    session: tokio::task::AbortHandle,
-}
-
-impl Drop for Answer {
-    fn drop(&mut self) {
-        self.session.abort();
-    }
-}
 
 /// The device a signed host address names.
 const fn host_device(hint: &TransportHint) -> [u8; 32] {
@@ -98,14 +81,20 @@ impl Workspaces {
             .any(|hint| host_device(hint) == device)
     }
 
-    /// Name this host's own signed address among the workspace's hosts, as its
-    /// governor, so every member reads where the workspace is served from the
-    /// replica it already holds. Naming it as it is named changes nothing.
+    /// Name this host's own signed address among the workspace's hosts, so
+    /// every member reads where the workspace is served from the replica it
+    /// already holds. Naming it as it is named changes nothing. A host
+    /// keeping another person's workspace names nothing: its holders are
+    /// that person's to name, and the address it signed is the one they
+    /// named.
     pub(super) async fn name_own_host(
         &self,
         governed: &mut GovernedWorkspace,
     ) -> Result<(), String> {
         let host = &self.inner.host;
+        if governed.peer().owner() != host.cert.user_public_key {
+            return Ok(());
+        }
         let hint = self
             .transport_hint(governed)
             .map_err(|error| error.to_string())?;
@@ -202,8 +191,8 @@ impl Workspaces {
         Ok(())
     }
 
-    /// Have the host `device`, at `addr`, hold `workspace` as well, `caller`'s
-    /// request: hand the workspace over with [`HOST_WORKSPACE`] and name the
+    /// Have the host `device`, at `addr`, hold `workspace` as well, as its
+    /// owners chose ([`Workspaces::chooses_hosts`]): hand the workspace over with [`HOST_WORKSPACE`] and name the
     /// address it answers among the workspace's hosts. A host of this host's
     /// own person is admitted to the workspace as one of the owner's devices
     /// first; another person's host takes the workspace only when its
@@ -212,29 +201,25 @@ impl Workspaces {
     ///
     /// # Errors
     ///
-    /// The caller may not choose the workspace's hosts, the workspace is not
-    /// governed here, the host cannot be reached or is not that device, or it
+    /// The workspace is not held here, the host cannot be reached or is not that device, or it
     /// refused or answered an address that is not its own for the workspace.
     pub async fn attach_host(
         &self,
         workspace: &str,
-        caller: &DeviceCert,
         device: [u8; 32],
         addr: EndpointAddr,
     ) -> Result<TransportHint, String> {
         let host = &self.inner.host;
-        self.authorize_hosts(workspace, caller).await?;
         if device == host.cert.device_public_key {
             return Err("a workspace's governor hosts it already".into());
         }
-        self.stop_answering(workspace, device).await;
         let reached = self.reach_host(device, addr).await?;
         let member = reached.certificate.clone();
         let (workspace_id, arguments) = self.hand_over(workspace, &member).await?;
         let answer = reached.ask(HOST_WORKSPACE, arguments).await?;
         let hosted: HostedWorkspace =
             serde_json::from_value(answer).map_err(|error| error.to_string())?;
-        let hint: TransportHint = crate::hosted::decode_hex(&hosted.host_hint)?;
+        let hint: TransportHint = super::decode_hex(&hosted.host_hint)?;
         let address =
             WorkspaceDeviceHintV1::from_transport_hint(&hint).map_err(|error| error.to_string())?;
         if hint.host != member || !address.holds_keys || address.workspace_id != workspace_id {
@@ -246,12 +231,6 @@ impl Workspaces {
             governance.author_workspace_host(&hint, key, now)
         })
         .await?;
-        // The host dials this device as it takes the workspace up, perhaps before
-        // its address was recorded above: a session it opened already is
-        // answered here, one it opens later when it says hello.
-        if let Some(inbound) = self.attach_session(workspace_id, device).await {
-            self.answer_host(workspace, device, inbound).await;
-        }
         tracing::info!(%workspace, host = %hex::encode(device), person = %hex::encode(member.user_public_key), "another host holds the workspace");
         let _ = self.inner.changes.send(workspace.to_owned());
         Ok(hint)
@@ -271,7 +250,7 @@ impl Workspaces {
                 .await
                 .map_err(|error| error.to_string())?;
         }
-        let (workspace_id, governor_hint, bootstrap) = {
+        let (workspace_id, holder_hint, bootstrap) = {
             let governed = self
                 .workspace(workspace)
                 .await
@@ -297,8 +276,8 @@ impl Workspaces {
             Value::String(workspace_id.to_string()),
         );
         arguments.insert(
-            "governor_hint".into(),
-            Value::String(hex_postcard(&governor_hint)?),
+            "holder_hint".into(),
+            Value::String(hex_postcard(&holder_hint)?),
         );
         arguments.insert("bootstrap".into(), Value::String(hex_postcard(&bootstrap)?));
         Ok((workspace_id, arguments))
@@ -326,7 +305,7 @@ impl Workspaces {
         reached.ask(HOST_WORKSPACE, arguments).await
     }
 
-    /// Stop having the host `device` serve `workspace`, `caller`'s request: its
+    /// Stop having the host `device` serve `workspace`, as its owners chose: its
     /// address leaves the workspace's hosts at once, and the host is asked to stop
     /// ([`UNHOST_WORKSPACE`]) at `addr` when given. Answers whether the host
     /// confirmed it stopped; one that could not be reached is still no
@@ -334,23 +313,20 @@ impl Workspaces {
     ///
     /// # Errors
     ///
-    /// The caller may not choose the workspace's hosts, the workspace is not
-    /// governed here, or its hosts could not be recorded.
+    /// The workspace is not held here, or its hosts could not be recorded.
     pub async fn detach_host(
         &self,
         workspace: &str,
-        caller: &DeviceCert,
         device: [u8; 32],
         addr: Option<EndpointAddr>,
     ) -> Result<bool, String> {
-        self.authorize_hosts(workspace, caller).await?;
         let known = {
             let governed = self
                 .workspace(workspace)
                 .await
                 .map_err(|error| error.to_string())?;
-            let mut governed = governed.lock().await;
-            let known = governed
+            let governed = governed.lock().await;
+            governed
                 .peer()
                 .governance()
                 .workspace_hosts()
@@ -360,9 +336,7 @@ impl Workspaces {
                     WorkspaceDeviceHintV1::from_transport_hint(known)
                         .map(|address| address.endpoint_addr)
                 })
-                .and_then(Result::ok);
-            governed.answered.remove(&device);
-            known
+                .and_then(Result::ok)
         };
         self.name_host(workspace, |governance, key, now| {
             governance.author_workspace_host_removed(&device, key, now)
@@ -388,127 +362,18 @@ impl Workspaces {
         }
     }
 
-    /// Answer the host `device` serving `workspace` as well, over the session
-    /// `inbound` it opened here, with a session back to it
-    /// ([`HostDialer::answer`]): once for each session it opens.
-    /// Nothing when `device` does not serve the workspace.
-    pub(crate) async fn answer_host(
-        &self,
-        workspace: &str,
-        device: [u8; 32],
-        inbound: tokio::sync::mpsc::Sender<()>,
-    ) {
-        let Ok(governed) = self.workspace(workspace).await else {
-            return;
-        };
-        let mut governed = governed.lock().await;
-        if inbound.is_closed()
-            || governed
-                .answered
-                .get(&device)
-                .is_some_and(|answered| answered.inbound.same_channel(&inbound))
-        {
-            return;
-        }
-        let Some((addr, person)) = governed
-            .peer()
-            .governance()
-            .workspace_hosts()
-            .iter()
-            .find(|known| host_device(known) == device)
-            .and_then(|known| WorkspaceDeviceHintV1::from_transport_hint(known).ok())
-            .map(|address| (address.endpoint_addr, address.user_public_key))
-        else {
-            return;
-        };
-        let workspace_id = governed.workspace_id();
-        let host = &self.inner.host;
-        let session = HostDialer {
-            endpoint: host.endpoint.clone(),
-            identity: LiveIdentity {
-                user_public_key: host.cert.user_public_key,
-                cert: host.cert.clone(),
-                signing_key: host.key.clone(),
-                revocations: host.revocations.clone(),
-            },
-            trust_policy: host.trust_policy.clone(),
-            workspaces: host.workspaces.clone(),
-            metrics: host.metrics.clone(),
-            scope: Some(vec![workspace_id]),
-        }
-        .answer(
-            Upstream {
-                addr,
-                device,
-                person,
-            },
-            inbound.clone(),
-            format!("host {} of {workspace_id}", hex::encode(&device[..4])),
-        )
-        .abort_handle();
-        governed
-            .answered
-            .insert(device, Answer { inbound, session });
-    }
-
-    /// Stop answering the host `device` for `workspace`: before this device opens
-    /// a session of its own to it, which would take the answer's place
-    /// there. The host's session here stays; the next one it opens is
-    /// answered again.
-    async fn stop_answering(&self, workspace: &str, device: [u8; 32]) {
-        if let Ok(governed) = self.workspace(workspace).await {
-            governed.lock().await.answered.remove(&device);
-        }
-    }
-
-    /// The session the attached host `device` last opened to `workspace_id`
-    /// here, while it lasts.
-    async fn attach_session(
-        &self,
-        workspace_id: WorkspaceId,
-        device: [u8; 32],
-    ) -> Option<tokio::sync::mpsc::Sender<()>> {
-        let workspace = self
-            .inner
-            .host
-            .workspaces
-            .lock()
-            .await
-            .get(&workspace_id)
-            .cloned()?;
-        workspace
-            .lock()
-            .await
-            .attach_sessions
-            .get(&device)
-            .filter(|session| !session.is_closed())
-            .cloned()
-    }
-
-    /// Whether `caller` may choose which hosts hold `workspace`: a device of
-    /// this host's own person, or of an owner of the workspace (a person it is
-    /// kept for), who decides where it lives; or that person's server key,
-    /// which acts for them from a script or a command. Never an agent's grant.
-    async fn authorize_hosts(&self, workspace: &str, caller: &DeviceCert) -> Result<(), String> {
-        let governed = self
-            .workspace(workspace)
-            .await
-            .map_err(|error| error.to_string())?;
-        let governed = governed.lock().await;
-        if self.chooses_hosts(&governed, caller) {
-            return Ok(());
-        }
-        Err("only an owner of the workspace chooses where it is held".into())
-    }
-
-    /// Whether `caller` chooses which hosts hold `governed`
-    /// ([`Self::authorize_hosts`]).
-    pub(super) fn chooses_hosts(&self, governed: &GovernedWorkspace, caller: &DeviceCert) -> bool {
+    /// Whether `caller` chooses which hosts hold `governed`: a device of an
+    /// owner of the workspace (the person who owns it, or one it is kept
+    /// for), who decides where it lives; or that person's server key, which
+    /// acts for them from a script or a command. Never an agent's grant, and
+    /// never a device for being of the person whose host this is: every
+    /// holder answers it alike.
+    pub(super) fn chooses_hosts(governed: &GovernedWorkspace, caller: &DeviceCert) -> bool {
         let person = caller.user_public_key;
         let speaks_for_person =
             caller.capabilities.agent.is_none() || caller.capabilities.server_key;
         speaks_for_person
-            && (person == self.inner.host.cert.user_public_key
+            && (person == governed.peer().owner()
                 || governed
                     .peer()
                     .governance()
@@ -521,14 +386,8 @@ impl Workspaces {
     ///
     /// # Errors
     ///
-    /// The caller does not choose the workspace's hosts, or it is not governed
-    /// here.
-    pub async fn host_list(
-        &self,
-        workspace: &str,
-        caller: &DeviceCert,
-    ) -> Result<Vec<WorkspaceHost>, String> {
-        self.authorize_hosts(workspace, caller).await?;
+    /// The workspace is not held here.
+    pub async fn host_list(&self, workspace: &str) -> Result<Vec<WorkspaceHost>, String> {
         let hosts = self
             .hosts(workspace)
             .await
@@ -545,7 +404,7 @@ impl Workspaces {
     }
 
     /// Have the holder whose site is at `origin` (`https://tilo.sh`) hold
-    /// `workspace` as well, `caller`'s request: the holder says who it is and
+    /// `workspace` as well: the holder says who it is and
     /// where it is dialed at its origin, and is then handed the workspace
     /// ([`Self::attach_host`]), which it takes as its own rules for whom it
     /// keeps workspaces say.
@@ -553,15 +412,9 @@ impl Workspaces {
     /// # Errors
     ///
     /// As [`Self::attach_host`], or the origin did not say who it is.
-    pub async fn add_host(
-        &self,
-        workspace: &str,
-        caller: &DeviceCert,
-        origin: &str,
-    ) -> Result<TransportHint, String> {
-        self.authorize_hosts(workspace, caller).await?;
+    pub async fn add_host(&self, workspace: &str, origin: &str) -> Result<TransportHint, String> {
         let (device, addr) = host_at(origin, self.site_reach()).await?;
-        self.attach_host(workspace, caller, device, addr).await
+        self.attach_host(workspace, device, addr).await
     }
 
     /// Which addresses this device asks when an owner names a holder by its
@@ -583,15 +436,9 @@ impl Workspaces {
     ///
     /// # Errors
     ///
-    /// The caller does not choose the workspace's holders, the holder is not one of
-    /// the workspace's, or the origin did not say who it is.
-    pub async fn remove_host(
-        &self,
-        workspace: &str,
-        caller: &DeviceCert,
-        named: &str,
-    ) -> Result<bool, String> {
-        self.authorize_hosts(workspace, caller).await?;
+    /// The holder is not one of the workspace's, or the origin did not say
+    /// who it is.
+    pub async fn remove_host(&self, workspace: &str, named: &str) -> Result<bool, String> {
         let named = named.trim();
         let (device, addr) = if let Some(device) = device_key(named) {
             (device, None)
@@ -602,7 +449,7 @@ impl Workspaces {
         if !self.names_host(workspace, device).await {
             return Err(format!("{named} does not hold the workspace"));
         }
-        self.detach_host(workspace, caller, device, addr).await
+        self.detach_host(workspace, device, addr).await
     }
 
     /// `device`, a host at `addr`, reached for its host operations: its
