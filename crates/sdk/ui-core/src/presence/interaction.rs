@@ -376,13 +376,17 @@ impl PresenceCtx {
         self.shown.borrow_mut().drain().collect()
     }
 
-    /// How strongly an interaction still shows, from when its current phase
-    /// arrived: what the text it wrote fades by. `None` when it is no longer
-    /// shown, or its mark has faded out.
+    /// How strongly an interaction still shows: what the text it wrote fades by. A step still
+    /// under way stands whole; once it landed, its mark fades over [`crate::motion::Trace`] from
+    /// the first frame that drew it landed. `None` when it
+    /// is no longer shown, or its mark has faded out.
     pub fn interaction_fade(&self, invocation: InvocationId, now: Instant) -> Option<f32> {
         let entry = self.interactions.get(&invocation)?;
         if !entry.visible_at(now) {
             return None;
+        }
+        if !entry.interaction.phase.is_terminal() {
+            return Some(1.0);
         }
         crate::motion::Trace::alpha(
             now.saturating_duration_since(entry.drawn_at.get().unwrap_or(now)),
@@ -556,6 +560,7 @@ impl PresenceCtx {
             } else {
                 visible_locus
             },
+            place,
             viewport,
         );
         let previous = self.interaction_markers.get(&actor);
@@ -626,10 +631,10 @@ impl PresenceCtx {
         // pointed. A caret standing anywhere else (an agent writing in one field while it presses
         // a control in another) is no mark on *this* place: the place it would press keeps its own
         // tag, or a bare outline is all a person sees of the step.
-        let worn = self
-            .presence_marks()
-            .iter()
-            .any(|mark| Some(&mark.user) == shown.as_ref() && intersects(mark.rect, visible_locus));
+        let worn = self.presence_marks().iter().any(|mark| {
+            Some(&mark.user) == shown.as_ref()
+                && super::caret_tag::overlaps(mark.rect, visible_locus)
+        });
         let bounds = if worn {
             Rect::from_origin_size(tip, (0.0, 0.0))
         } else {
@@ -639,7 +644,7 @@ impl PresenceCtx {
                 paint.text,
                 paint.theme,
                 (tip, viewport),
-                (visible_locus, &place.ink),
+                &place.ink,
                 &words,
                 actor_color,
             );
@@ -1039,12 +1044,17 @@ impl InteractionPresenceEntry {
     }
 
     /// When this entry's mark on the text it wrote steps down its fade: none
-    /// while it has not been drawn, when a later action of its agent took its
+    /// while it is under way or has not been drawn, when a later action of its agent took its
     /// place, or once the mark has gone.
     fn fade_step(&self, now: Instant) -> Option<Instant> {
         self.drawn_at
             .get()
-            .filter(|_| !self.superseded && self.visible_at(now) && writes_text(&self.interaction))
+            .filter(|_| {
+                !self.superseded
+                    && self.interaction.phase.is_terminal()
+                    && self.visible_at(now)
+                    && writes_text(&self.interaction)
+            })
             .and_then(|drawn| crate::motion::Trace::next_step(drawn, now))
     }
 
@@ -1105,21 +1115,38 @@ fn marker_entry_is_newer(
                 > current.interaction.invocation.0.as_bytes())
 }
 
-/// Where an agent's mark rests by `control`: level with it, just past its right edge, or its left
-/// one where the frame ends first, so the mark never covers the control's glyph. Only a control as
-/// wide as the frame takes the mark inside its right edge.
-fn beside(control: Rect, viewport: Rect) -> Point {
+/// Where an agent's mark rests by the `control` it would press in its place: level with it, just
+/// outside it on the side facing the nearer edge of its `place`, where a row's words never are (a
+/// leading checkbox's left, a trailing switch's right), else on the other side. A side whose mark
+/// would cover `ink` (a neighbouring button, a line of words), or that leaves the frame, is passed
+/// over. Only where neither side is clear does the mark take the first that fits the frame, or the
+/// control's inside right edge.
+fn beside(control: Rect, place: &MarkerPlace, viewport: Rect) -> Point {
     // The mark's ring and halo reach this far from its centre, and a gap keeps it off the outline.
     let radius = super::render::RING_R + 3.0;
     let reach = radius + 2.0;
-    let x = if control.x1 + reach + radius <= viewport.x1 {
-        control.x1 + reach
-    } else if control.x0 - reach - radius >= viewport.x0 {
-        control.x0 - reach
+    let (left, right) = (control.x0 - reach, control.x1 + reach);
+    let sides = if control.center().x < place.locus.center().x - f64::EPSILON {
+        [left, right]
     } else {
-        control.x1 - reach
+        [right, left]
     };
-    Point::new(x, control.center().y)
+    let y = control.center().y;
+    let framed = |x: f64| x - radius >= viewport.x0 && x + radius <= viewport.x1;
+    let clear = |x: f64| {
+        let ring = Rect::new(x - radius, y - radius, x + radius, y + radius);
+        // What holds the control (its row) is where it stands, not words beside it.
+        !place
+            .ink
+            .iter()
+            .any(|ink| !ink.contains_rect(control) && super::caret_tag::overlaps(*ink, ring))
+    };
+    let x = sides
+        .into_iter()
+        .find(|x| framed(*x) && clear(*x))
+        .or_else(|| sides.into_iter().find(|x| framed(*x)))
+        .unwrap_or(control.x1 - reach);
+    Point::new(x, y)
 }
 
 fn valid_marker_rect(rect: Rect) -> bool {
@@ -1132,11 +1159,6 @@ fn valid_marker_rect(rect: Rect) -> bool {
 
 fn point_in_rect(rect: Rect, point: Point) -> bool {
     point.x >= rect.x0 && point.x <= rect.x1 && point.y >= rect.y0 && point.y <= rect.y1
-}
-
-/// Whether two rects share any area: a caret standing on the place a marker rests.
-fn intersects(a: Rect, b: Rect) -> bool {
-    a.x0 < b.x1 && b.x0 < a.x1 && a.y0 < b.y1 && b.y0 < a.y1
 }
 
 fn viewport_diagonal(viewport: Rect) -> f64 {
@@ -1372,6 +1394,50 @@ mod tests {
         let mut action = interaction(invocation, 1, phase);
         action.resource.id = target.into();
         action
+    }
+
+    #[test]
+    fn an_agents_mark_rests_beside_what_it_would_press_never_on_words() {
+        let viewport = Rect::new(0.0, 0.0, 960.0, 600.0);
+        let ring = |tip: Point| {
+            let r = super::super::render::RING_R + 3.0;
+            Rect::new(tip.x - r, tip.y - r, tip.x + r, tip.y + r)
+        };
+        // A row: its checkbox leads, its words follow it.
+        let row = Rect::new(36.0, 80.0, 924.0, 116.0);
+        let checkbox = Rect::new(44.0, 90.0, 60.0, 106.0);
+        let words = Rect::new(72.0, 88.0, 240.0, 108.0);
+        let place = MarkerPlace {
+            locus: row,
+            control: checkbox,
+            ink: vec![row, checkbox],
+        };
+        let tip = beside(checkbox, &place, viewport);
+        assert!(
+            tip.x < checkbox.x0,
+            "it points at the checkbox from outside the row's words"
+        );
+        assert!(!super::super::caret_tag::overlaps(ring(tip), words));
+        // A field with a button beside it: the mark leaves the button's words alone.
+        let field = Rect::new(36.0, 24.0, 808.0, 56.0);
+        let button = Rect::new(817.0, 24.0, 924.0, 56.0);
+        let place = MarkerPlace {
+            locus: field,
+            control: field,
+            ink: vec![field, button],
+        };
+        let tip = beside(field, &place, viewport);
+        assert!(
+            !super::super::caret_tag::overlaps(ring(tip), button),
+            "{tip:?}"
+        );
+        // A lone button keeps its mark just past its right edge.
+        let place = MarkerPlace {
+            locus: button,
+            control: button,
+            ink: vec![button],
+        };
+        assert!(beside(button, &place, viewport).x > button.x1);
     }
 
     tilo_test_env::scenario! {
@@ -1980,7 +2046,7 @@ mod tests {
         {
             let at = crate::time::now();
             let mut presence = PresenceCtx::empty();
-            let mut written = interaction(90, 1, InteractionPhase::Applying);
+            let mut written = interaction(90, 1, InteractionPhase::Committed);
             written.anchor = tilo_actions::InteractionAnchor::Text {
                 region: "body".into(),
                 ranges: vec![tilo_actions::InteractionTextRange {
@@ -2021,6 +2087,43 @@ mod tests {
                 elsewhere.interaction_next_wake_deadline(later),
                 Some(at + ACTIVE_INTERACTION_EXPIRY + EXPIRY_EPSILON),
                 "nothing fades, so nothing wakes before the dwell ends"
+            );
+        }
+
+        phase a_write_under_way_stands_whole_and_fades_once_it_landed;
+        // A write that names its text as it starts (an append to a note) and one whose text is
+        // known only once it landed (a comment) fade alike: whole while under way, then over the
+        // one trace of a mark from the frame that drew it landed.
+        {
+            let at = crate::time::now();
+            let mut presence = PresenceCtx::empty();
+            let mut applying = interaction(92, 1, InteractionPhase::Applying);
+            applying.anchor = tilo_actions::InteractionAnchor::Text {
+                region: "body".into(),
+                ranges: vec![tilo_actions::InteractionTextRange {
+                    block: "b1".into(),
+                    start: 0,
+                    end: 12,
+                }],
+            };
+            presence.apply_interaction_at(applying.clone(), at).unwrap();
+            presence.note_drawn(applying.invocation, at);
+            let landed_at = at + crate::motion::Trace::LIFE;
+            assert_eq!(
+                presence.interaction_fade(applying.invocation, landed_at),
+                Some(1.0),
+                "under way, it stands whole"
+            );
+            let mut landed = applying.clone();
+            landed.sequence = 2;
+            landed.phase = InteractionPhase::Committed;
+            presence.apply_interaction_at(landed.clone(), landed_at).unwrap();
+            presence.note_drawn(landed.invocation, landed_at);
+            assert_eq!(presence.interaction_fade(landed.invocation, landed_at), Some(1.0));
+            assert_eq!(
+                presence.interaction_fade(landed.invocation, landed_at + crate::motion::Trace::LIFE),
+                None,
+                "landed, it is gone after one trace"
             );
         }
 

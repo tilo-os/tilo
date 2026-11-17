@@ -181,7 +181,7 @@ impl LabeledCaret {
 }
 
 /// Whether `a` and `b` share any area.
-fn overlaps(a: Rect, b: Rect) -> bool {
+pub(super) fn overlaps(a: Rect, b: Rect) -> bool {
     a.x0 < b.x1 && b.x0 < a.x1 && a.y0 < b.y1 && b.y0 < a.y1
 }
 

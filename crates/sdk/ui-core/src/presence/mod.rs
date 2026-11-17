@@ -80,14 +80,6 @@ pub fn local_surface_pointer() -> PresenceKey {
 /// message.
 pub const COMPOSING_LINGER: crate::time::Duration = crate::time::Duration::from_secs(6);
 
-/// How long a "just typed" highlight lingers, its fade included: the
-/// standard trace of a member's mark ([`crate::motion::Trace`]).
-pub const TYPING_FADE: crate::time::Duration = crate::motion::Trace::LIFE;
-
-/// The highlight fades in this many steps, each a wake deadline
-/// ([`crate::motion::Trace::STEPS`]).
-pub const TYPING_FADE_STEPS: u32 = crate::motion::Trace::STEPS;
-
 /// Longest forward caret jump still read as "this peer just wrote that" (the `Caret` arm of
 /// [`PresenceCtx::apply_remote_presence`]). Generous on purpose: a caret key is per *block*, so a
 /// stray mark is bounded to one paragraph, while too tight a cap would drop the marker on the edit
@@ -283,7 +275,7 @@ mod color_tests {
 
 /// One "just typed" highlight span: the run a peer inserted and when.
 /// [`PresenceCtx::active_typing`] turns its age into an alpha and prunes it
-/// once past [`TYPING_FADE`].
+/// once past [`crate::motion::Trace::LIFE`].
 #[derive(Debug, Clone, PartialEq)]
 struct TypingMark {
     range: SelectionRange,
@@ -456,7 +448,7 @@ pub struct PresenceCtx {
     /// naming the same activity a second time.
     shown: std::cell::RefCell<std::collections::HashSet<tilo_actions::InvocationId>>,
     /// Per-user "just typed" highlight spans, keyed by presence scope and
-    /// faded out by [`PresenceCtx::active_typing`] over [`TYPING_FADE`].
+    /// faded out by [`PresenceCtx::active_typing`] over [`crate::motion::Trace::LIFE`].
     /// Not serialised — purely a local render effect.
     typing: HashMap<(MemberId, PresenceKey), Vec<TypingMark>>,
     /// When a remote *document* change (not just a caret move) was last
@@ -1395,7 +1387,7 @@ impl PresenceCtx {
 
     /// The peer's still-visible typing spans under `key` at time `now`,
     /// each paired with a fade alpha in `0.0..=1.0` (1.0 = just typed,
-    /// tapering linearly to 0 at [`TYPING_FADE`]). This is a read only:
+    /// tapering linearly to 0 at [`crate::motion::Trace::LIFE`]). This is a read only:
     /// call [`Self::prune_typing`] separately to reclaim expired entries.
     pub fn active_typing(
         &self,
@@ -1403,15 +1395,10 @@ impl PresenceCtx {
         key: &PresenceKey,
         now: Instant,
     ) -> Vec<(SelectionRange, f32)> {
-        let Some(marks) = self.typing.get(&(user.clone(), key.clone())) else {
-            return Vec::new();
-        };
-        marks
-            .iter()
-            .filter_map(|m| {
-                crate::motion::Trace::alpha(now.saturating_duration_since(m.born))
-                    .map(|alpha| (m.range, alpha))
-            })
+        self.typing_marks_for_key(key, now)
+            .into_iter()
+            .filter(|(typist, _, _)| typist == user)
+            .map(|(_, range, alpha)| (range, alpha))
             .collect()
     }
 
@@ -1474,18 +1461,16 @@ impl PresenceCtx {
 
     /// Whether a typing highlight is still on screen at `now`.
     pub fn has_active_typing(&self, now: Instant) -> bool {
-        let fade = TYPING_FADE;
         self.typing
             .values()
             .flatten()
-            .any(|m| now.saturating_duration_since(m.born) < fade)
+            .any(|m| now.saturating_duration_since(m.born) < crate::motion::Trace::LIFE)
     }
 
     /// Call once a frame.
     pub fn prune_typing(&mut self, now: Instant) {
-        let fade = TYPING_FADE;
         self.typing.retain(|_, marks| {
-            marks.retain(|m| now.saturating_duration_since(m.born) < fade);
+            marks.retain(|m| now.saturating_duration_since(m.born) < crate::motion::Trace::LIFE);
             !marks.is_empty()
         });
     }
@@ -2645,7 +2630,7 @@ mod string_id_wrapper_tests {
                 assert!((fresh[0].1 - 1.0).abs() < 1e-3, "just-typed alpha is ~1.0");
 
                 // Half-way through the fade window: alpha ~0.5.
-                let mid = t0 + TYPING_FADE / 2;
+                let mid = t0 + crate::motion::Trace::LIFE / 2;
                 let half = ctx.active_typing(&bob, &key, mid);
                 assert_eq!(half.len(), 1);
                 assert!(
@@ -2656,7 +2641,7 @@ mod string_id_wrapper_tests {
                 assert!(ctx.has_active_typing(mid));
                 assert_eq!(
                     ctx.widgets_change_at(mid),
-                    Some(t0 + TYPING_FADE / 2 + TYPING_FADE / TYPING_FADE_STEPS),
+                    Some(t0 + crate::motion::Trace::LIFE / 2 + crate::motion::Trace::LIFE / crate::motion::Trace::STEPS),
                     "the fade wakes the host at its next step, not every frame"
                 );
                 assert_eq!(
@@ -2666,7 +2651,7 @@ mod string_id_wrapper_tests {
                 );
 
                 // Past the window: gone from the read, and prune reclaims it.
-                let after = t0 + TYPING_FADE + Duration::from_millis(1);
+                let after = t0 + crate::motion::Trace::LIFE + Duration::from_millis(1);
                 assert!(ctx.active_typing(&bob, &key, after).is_empty());
                 assert!(!ctx.has_active_typing(after));
                 assert!(!ctx.typing.is_empty(), "not yet pruned");
