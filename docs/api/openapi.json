@@ -12748,15 +12748,6 @@
                       "type": "string"
                     }
                   },
-                  "required": [
-                    "id",
-                    "label",
-                    "street",
-                    "city",
-                    "region",
-                    "postal",
-                    "country"
-                  ],
                   "type": "object"
                 },
                 "type": "array"
@@ -12852,8 +12843,6 @@
                     }
                   },
                   "required": [
-                    "id",
-                    "label",
                     "value"
                   ],
                   "type": "object"
@@ -12879,7 +12868,6 @@
                     }
                   },
                   "required": [
-                    "id",
                     "value"
                   ],
                   "type": "object"
@@ -12915,8 +12903,6 @@
                     }
                   },
                   "required": [
-                    "id",
-                    "label",
                     "value"
                   ],
                   "type": "object"
@@ -12933,20 +12919,6 @@
                 "type": "string"
               }
             },
-            "required": [
-              "id",
-              "first",
-              "last",
-              "org",
-              "title",
-              "website",
-              "notes",
-              "phones",
-              "emails",
-              "addresses",
-              "groups",
-              "favorite"
-            ],
             "type": [
               "object",
               "null"
@@ -19444,12 +19416,6 @@
         "required": [
           "conversation"
         ],
-        "description": ""
-      },
-      "model-providers.root.list-presets.Arguments": {
-        "type": "object",
-        "properties": {},
-        "required": [],
         "description": ""
       },
       "monitor.processes.refresh.Arguments": {
@@ -33169,12 +33135,6 @@
       "resource": "messages.drafts",
       "action": "drop-draft",
       "arguments": "#/components/schemas/messages.drafts.drop-draft.Arguments"
-    },
-    {
-      "app": "so.tilo.model-providers",
-      "resource": "model-providers.root",
-      "action": "list-presets",
-      "arguments": "#/components/schemas/model-providers.root.list-presets.Arguments"
     },
     {
       "app": "so.tilo.monitor",

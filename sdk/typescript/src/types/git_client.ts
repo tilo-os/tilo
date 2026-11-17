@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.git-client@4e7b6fc0ac4652f2";
+export const SURFACE = "so.tilo.git-client@6d8bc9cabb47c522";
 
 export interface Branch {
   name: string;

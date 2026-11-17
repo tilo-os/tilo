@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.browser@bc6bc9a8c42a95bc";
+export const SURFACE = "so.tilo.browser@fa66efeb75407ac8";
 
 export interface Bookmark {
   url: string;
@@ -81,7 +81,7 @@ export interface Answer {
 export interface PageAction {
   seq: number;
   time_ms: number;
-  actor: string;
+  actor: string | null;
   device: string;
   device_name: string;
   device_unknown: boolean;

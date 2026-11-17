@@ -9,7 +9,7 @@ version = 1
 fields = [
   { path = "name", type = { option = "text" }, readonly = true },
   { path = "opened", type = "int", readonly = true },
-  { path = "bytes", type = "any", ops = "sha256:8585a61a59997e5d" },
+  { path = "bytes", type = "any", ops = "sha256:f0a5ecce790f6c6d" },
 ]
 
 [[resources.verbs]]
