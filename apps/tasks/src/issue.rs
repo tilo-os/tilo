@@ -473,7 +473,7 @@ fn sub_issues(cx: &ViewCx<IssuePart>, id: &Id, nav: &Nav, window: &Window) -> El
             ))
             .push(list)
             .push(crate::new_issue(
-                cx,
+                &|| cx.local(String::new()),
                 window,
                 Some(id.clone()),
                 None,

@@ -112,10 +112,10 @@ pub enum ModelRefusal {
         /// The provider, as the person named it.
         provider: String,
     },
-    /// The agent the call is for has used what its keeper lets it spend in a
-    /// day.
+    /// The agent the call is for, or the piece of its work the call belongs
+    /// to, has used what its person lets it spend in a day.
     DayLimitReached {
-        /// The agent, as its keeper named it.
+        /// The agent, or the piece of its work, as its person named it.
         agent: String,
         /// The most it may spend in a day, in millionths of the currency.
         limit_micros: u64,
@@ -277,7 +277,8 @@ pub struct Answer {
     pub linked: Linked,
     /// What the agent the call was for has spent today, this answer
     /// included, in millionths of the currency; none for a call that
-    /// spends no agent's day ([`PersonModel::spending_as`]).
+    /// spends no agent's day ([`PersonModel::spending_as`]). Of a call that
+    /// spends more than one day, the first.
     pub spent_today_micros: Option<u64>,
 }
 
@@ -416,7 +417,7 @@ impl Workspaces {
             root: self.person_settings_root(&person),
             kind,
             workspace: None,
-            spender: None,
+            spenders: Vec::new(),
         }
     }
 
@@ -448,8 +449,9 @@ pub struct PersonModel {
     kind: Interaction,
     /// The workspace the work is in, when its caller said.
     workspace: Option<WorkspaceId>,
-    /// The agent whose day the calls spend, when they are an agent's.
-    spender: Option<Spender>,
+    /// Whose days the calls spend: an agent's, and that of any piece of its
+    /// work that keeps a day of its own.
+    spenders: Vec<Spender>,
 }
 
 impl std::fmt::Debug for PersonModel {
@@ -481,10 +483,24 @@ impl PersonModel {
     /// it may spend in a day. Every answer's cost is counted on that day,
     /// also when many calls run at once, and a call that starts once the
     /// limit is reached is refused before the provider is asked.
+    ///
+    /// Said more than once, a call spends every day it was given: the
+    /// agent's, and that of a piece of its work its person bounded on its
+    /// own (an event, a task). Each counts the answer, the first limit
+    /// reached refuses the call, and [`Answer::spent_today_micros`] stays
+    /// the first day's.
     #[must_use]
     pub fn spending_as(mut self, spender: Spender) -> Self {
-        self.spender = Some(spender);
+        self.spenders.push(spender);
         self
+    }
+
+    /// What `spender` has spent on its day so far, in millionths of the
+    /// currency, as this person's store counts it: nothing on a day not
+    /// counted yet.
+    #[must_use]
+    pub fn spent_by(&self, spender: &Spender) -> u64 {
+        self.models.spend.spent(&self.root, spender)
     }
 
     /// What would answer now, or why nothing can. It reads the person's
@@ -531,11 +547,15 @@ impl PersonModel {
         .await
         .map_err(|_| ModelRefusal::Provider(ModelError::new(ErrorKind::TimedOut)))?
         .map_err(ModelRefusal::Provider)?;
-        let spent_today_micros = self.spender.as_ref().map(|spender| {
-            self.models
+        // Counted on every day the call spends; the answer says the first.
+        let mut spent_today_micros = None;
+        for spender in &self.spenders {
+            let total = self
+                .models
                 .spend
-                .charge(&self.root, spender, response.cost_micros)
-        });
+                .charge(&self.root, spender, response.cost_micros);
+            spent_today_micros.get_or_insert(total);
+        }
         Ok(Answer {
             response,
             linked: resolved.linked(),
@@ -543,21 +563,22 @@ impl PersonModel {
         })
     }
 
-    /// Refuses a call for an agent that has used its day.
+    /// Refuses a call for an agent, or a piece of its work, that has used
+    /// its day: the first of the days the call spends whose limit is
+    /// reached.
     fn within_day(&self) -> Result<(), ModelRefusal> {
-        let Some(spender) = &self.spender else {
-            return Ok(());
-        };
-        let Some(limit_micros) = spender.limit_micros else {
-            return Ok(());
-        };
-        let spent_micros = self.models.spend.spent(&self.root, spender);
-        if spent_micros >= limit_micros {
-            return Err(ModelRefusal::DayLimitReached {
-                agent: spender.name.clone(),
-                limit_micros,
-                spent_micros,
-            });
+        for spender in &self.spenders {
+            let Some(limit_micros) = spender.limit_micros else {
+                continue;
+            };
+            let spent_micros = self.models.spend.spent(&self.root, spender);
+            if spent_micros >= limit_micros {
+                return Err(ModelRefusal::DayLimitReached {
+                    agent: spender.name.clone(),
+                    limit_micros,
+                    spent_micros,
+                });
+            }
         }
         Ok(())
     }

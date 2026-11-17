@@ -1,0 +1,5 @@
+reason = "Tasks keeps its issues in a chain of parts beside the tracker (f8c7a559126), so the issues are a second resource type, IssuePart, with its own actions, serde, schema, declarations and views. The chain's own code no longer compiles per part type: holding, opening, writing, publishing and reading parts moved into code the runtime holds once, which took Tasks from 2,761,728 to 2,595,840 bytes on x86_64 at 0b9e64975a4 (run r03a07b2d32). Symbols naming IssuePart still add up to about 180 KB of Tasks' named code, the second resource type's own instances. With the chain's group writes and places since, Tasks measures 2,656,256 bytes at 9f2b2a03409 (run r85f327c412), 100,352 over its budget of 2,555,904. The amount is that overage plus the ratchet's 1 % headroom, rounded up to 64 KiB; the aarch64 run prints its own number."
+run = "r85f327c412"
+
+[apps."so.tilo.tasks"]
+x86_64 = 131072

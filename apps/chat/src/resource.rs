@@ -286,7 +286,8 @@ impl ResourceApp for ChatShell {
                 cx.shared_workspace::<ui::tilo_workspace_agent::WorkspaceAgents>(
                     ui::tilo_workspace_agent::OWNER,
                 ),
-            );
+            )
+            .with_agents_opener(cx.record_opener(ui::tilo_workspace_agent::OWNER));
         // A search hit, or an agent's `open`, shows the item it names.
         cx.on_open(app.opener());
         // The shell keeps the workspace's channels as its sidebar, their width,

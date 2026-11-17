@@ -159,11 +159,21 @@ impl Rig {
     }
 
     pub fn with_options(prefix: Option<&str>, command: Vec<std::ffi::OsString>) -> Self {
+        Self::configured(prefix, command, |_| {})
+    }
+
+    /// A rig whose keeper's options `configure` changes last.
+    pub fn configured(
+        prefix: Option<&str>,
+        command: Vec<std::ffi::OsString>,
+        configure: impl FnOnce(&mut Options),
+    ) -> Self {
         let dir = tempfile::tempdir().expect("temporary directory");
         let mut options = Options::new(dir.path().join("keeper"), "test-launch");
         options.app_id_prefix = prefix.map(str::to_owned);
         options.command = command;
         options.grace = Duration::from_millis(300);
+        configure(&mut options);
         let keeper = Keeper::new(options).expect("keeper");
         let mut rig = Self {
             keeper,

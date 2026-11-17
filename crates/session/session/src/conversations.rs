@@ -379,7 +379,7 @@ impl Conversations {
                     tilo_actions::ApiError::InvalidArguments(format!("a summary names its {name}"))
                 })
         };
-        let channel = Id::from_raw(text("channel")?);
+        let channel = Id::from_raw(text("conversation")?);
         let through_ts = arguments
             .get("through_ts")
             .and_then(serde_json::Value::as_i64)
@@ -389,7 +389,7 @@ impl Conversations {
                 )
             })?;
         let invoke = chat::Chat::KEEP_SUMMARY.with(chat::record::chat::KeepSummary {
-            channel: channel.clone(),
+            conversation: channel.clone(),
             through: text("through")?,
             through_ts,
             text: text("text")?,

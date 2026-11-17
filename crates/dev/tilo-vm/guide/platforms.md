@@ -6,7 +6,7 @@ another architecture needs `--arch <arch> --emulated` and is many times slower.
 
 | Host | Adapter (default) | Humans watch it in | Builds | GPU in guest |
 |---|---|---|---|---|
-| Linux x86_64 / aarch64 | libvirt, `qemu:///session` (`virsh`, `qemu-img`, `passt`) | virt-manager, GNOME Boxes | VM or host | virgl, else llvmpipe |
+| Linux x86_64 / aarch64 | libvirt, `qemu:///session` (`virsh`, `qemu-img`, `passt`) | virt-manager, GNOME Boxes | VM or host | virgl with `--gl`, else llvmpipe |
 | macOS arm64 | UTM (`utmctl`, QEMU on Apple's hypervisor) | UTM | VM only | none (llvmpipe) |
 | Windows x86_64 / arm64 with Hyper-V | Hyper-V (PowerShell) | Hyper-V Manager | VM only | none (llvmpipe) |
 | Windows ARM64 Home | QEMU with WHPX | local VNC | VM only | none (llvmpipe) |
@@ -16,6 +16,49 @@ In-VM builds sync the worktree with rsync over SSH, so the host needs
 `rsync` (on Windows: MSYS2 in `%USERPROFILE%\msys64\usr\bin`, or a native
 rsync on `PATH`). Headless and vkms
 accounts need no GPU, so every row runs them.
+
+## Which targets give a guest a real GPU
+
+A VM's graphics are chosen when it is made, and the default is software:
+
+| VM | Switch | What the guest renders on |
+|---|---|---|
+| Linux, libvirt (the default adapter) | `--gl` (or `gl = true` in its `vms.toml` entry) | virgl: a virtio GPU whose GL calls the host's Mesa driver runs on a `/dev/dri/renderD*` node (libvirt's `egl-headless` display with `accel3d`) |
+| Linux, `--hypervisor qemu` | `--gl` | the same; the render node comes from `tilo-vm qemu`, which skips NVIDIA (its EGL stack works poorly with virglrenderer), so such a host gets llvmpipe there |
+| Linux, either adapter | the default, no `--gl` | no GPU device: Mesa's llvmpipe in the guest |
+| macOS (UTM), Windows (Hyper-V, WHPX) | not offered | llvmpipe |
+| a device (`vm add`, `--ssh`) | — | the device's own GPU |
+
+`tilo-vm doctor` says whether the host has a render node. libvirt picks the
+node itself (in practice the machine's first GPU, NVIDIA included); the qemu
+adapter prefers a Mesa iGPU and uses llvmpipe when NVIDIA is the only node.
+
+Tilo's own CI never exercises a real driver: `tools/ci/os-vm.sh` boots every
+acceptance VM with `--2d`, and the build machines have no `/dev/dri`. A check
+that passes there says the software path works, not that a GPU path does.
+
+What the guest gets, from inside an account's session on a `--gl` VM:
+
+```sh
+# eglinfo comes from egl-utils, wayland-info from wayland-utils. A bootc image
+# installs nothing on its read-only root: dnf install -y --transient egl-utils
+# wayland-utils, and pass --raw to vm ssh for that command.
+S='u=$(loginctl list-users --no-legend | awk "{print \$2; exit}");
+   uid=$(id -u "$u");
+   exec runuser -u "$u" -- env XDG_RUNTIME_DIR=/run/user/$uid WAYLAND_DISPLAY=wayland-0'
+tilo-vm vm ssh <vm> -- sh -c "$S eglinfo 2>&1 | grep -E 'EGL driver name|renderer' | head -6"
+```
+
+A guest with virgl prints `EGL driver name: virtio_gpu` and an
+`OpenGL ... renderer: virgl (<the host's GPU>)`; with the default it prints
+`llvmpipe`. Use `eglinfo`, not `glxinfo`: the latter needs an X server and a
+Wayland-only image may not run XWayland.
+
+Apps do not connect to the desktop compositor itself: each runs behind an app
+keeper (`crates/session/app-keeper`), which offers `zwp_linux_dmabuf_v1` at
+version 4 (the version that carries feedback) built from the desktop's own
+feedback. So `wayland-info` on the desktop's socket lists no dma-buf global,
+while a client inside an app gets one.
 
 ## Linux: libvirt's user session
 

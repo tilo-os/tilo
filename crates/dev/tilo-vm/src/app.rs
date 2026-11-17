@@ -45,6 +45,8 @@ use crate::sshguard;
 use crate::sshkey;
 use crate::vmbuild;
 
+use space::{host_space, measured, room};
+
 mod admin;
 mod artifact;
 mod branch;
@@ -57,6 +59,7 @@ mod kernel;
 mod local_layer;
 mod reach;
 mod scenario;
+mod space;
 mod userspace;
 
 #[derive(Debug, Clone, Copy)]
@@ -540,49 +543,6 @@ pub fn describe_apply(result: &ApplyResult) -> String {
 }
 
 pub const REGISTRY: &str = "registry.tilo.so";
-
-fn existing_ancestor(path: &Path) -> &Path {
-    path.ancestors()
-        .find(|p| p.exists())
-        .unwrap_or_else(|| Path::new("/"))
-}
-
-fn host_free(path: &Path) -> Option<u64> {
-    #[cfg(windows)]
-    {
-        let output = std::process::Command::new("powershell.exe")
-            .args([
-                "-NoProfile",
-                "-NonInteractive",
-                "-Command",
-                "[IO.DriveInfo]::new([IO.Path]::GetPathRoot($env:TILO_VM_DISK_DIR)).AvailableFreeSpace",
-            ])
-            .env("TILO_VM_DISK_DIR", existing_ancestor(path))
-            .output()
-            .ok()?;
-        if !output.status.success() {
-            return None;
-        }
-        String::from_utf8_lossy(&output.stdout).trim().parse().ok()
-    }
-    #[cfg(unix)]
-    {
-        let output = std::process::Command::new("df")
-            .arg("-Pk")
-            .arg(existing_ancestor(path))
-            .output()
-            .ok()?;
-        let text = String::from_utf8_lossy(&output.stdout).into_owned();
-        let kib: u64 = text
-            .lines()
-            .nth(1)?
-            .split_whitespace()
-            .nth(3)?
-            .parse()
-            .ok()?;
-        Some(kib.saturating_mul(1024))
-    }
-}
 
 fn vm_free_floor(configured: u64, hypervisor: &str) -> u64 {
     configured.max(if hypervisor == "whpx" { 15 << 30 } else { 0 })
@@ -1894,12 +1854,12 @@ impl App {
             let have = std::fs::metadata(&part).map_or(0, |m| m.len());
             let needed = published.disk.size.saturating_sub(have);
             let dir = published.dest.parent().unwrap_or_else(|| Path::new("."));
-            if let Some(free) = host_free(dir)
-                && free < needed.saturating_add(floor)
+            if let Some(space) = host_space(dir)
+                && space.free < needed.saturating_add(floor)
             {
                 return Err(CliError::NoSpace {
-                    place: existing_ancestor(dir).display().to_string(),
-                    free: human_bytes(free),
+                    place: measured(dir, &space),
+                    free: room(&space),
                     what: format!("the {} dev disk download", published.tag),
                     needed: human_bytes(needed.saturating_add(floor)),
                 });
@@ -1923,12 +1883,12 @@ impl App {
                 });
             }
             let dir = path.parent().unwrap_or_else(|| Path::new("."));
-            if let Some(free) = host_free(dir)
-                && free < floor
+            if let Some(space) = host_space(dir)
+                && space.free < floor
             {
                 return Err(CliError::LowDisk {
-                    place: existing_ancestor(dir).display().to_string(),
-                    free: human_bytes(free),
+                    place: measured(dir, &space),
+                    free: room(&space),
                     floor: human_bytes(floor),
                 });
             }
@@ -2571,12 +2531,12 @@ impl App {
             .as_deref()
             .map(Path::new)
             .and_then(Path::parent)
-            && let Some(free) = host_free(dir)
-            && free < floor
+            && let Some(space) = host_space(dir)
+            && space.free < floor
         {
             return Err(CliError::LowDisk {
-                place: dir.display().to_string(),
-                free: human_bytes(free),
+                place: measured(dir, &space),
+                free: room(&space),
                 floor: human_bytes(floor),
             });
         }

@@ -707,10 +707,10 @@ MarkReadArgs = TypedDict("MarkReadArgs", {
 """The arguments of `mark-read`."""
 
 KeepSummaryArgs = TypedDict("KeepSummaryArgs", {
-    "channel": "str",
     "through": "str",
     "through_ts": "int",
     "text": "str",
+    "conversation": "str",
 })
 """The arguments of `keep-summary`."""
 
@@ -977,7 +977,7 @@ RetireAgentArgs = TypedDict("RetireAgentArgs", {
 
 class Workspace(Resource):
     """Chat — `chat.workspace`."""
-    __surface__ = "so.tilo.chat@22a1d9a3cb0ac3f0"
+    __surface__ = "so.tilo.chat@8f97350030092d32"
     @property
     def categories(self) -> list[Entry[Category]]:
         """Read only."""
@@ -1264,13 +1264,13 @@ class Workspace(Resource):
 
     def keep_summary(self,
         *,
-        channel: str,
         through: str,
         through_ts: int,
         text: str,
+        conversation: str,
     ) -> None:
         """Runs the app's action."""
-        return self.action("keep-summary", channel=channel, through=through, through_ts=through_ts, text=text)
+        return self.action("keep-summary", through=through, through_ts=through_ts, text=text, conversation=conversation)
 
     def keep_summary_many(self, items: list[KeepSummaryArgs]) -> list[dict[str, Any]]:
         """Runs `keep-summary` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
@@ -1331,7 +1331,7 @@ class Workspace(Resource):
 
 class Messages(Resource):
     """Messages — `chat.messages`."""
-    __surface__ = "so.tilo.chat@22a1d9a3cb0ac3f0"
+    __surface__ = "so.tilo.chat@8f97350030092d32"
     @property
     def messages(self) -> list[Entry[Message]]:
         """Read only."""
@@ -1696,7 +1696,7 @@ class Messages(Resource):
 
 class Drafts(Resource):
     """Chat drafts — `chat.drafts`."""
-    __surface__ = "so.tilo.chat@22a1d9a3cb0ac3f0"
+    __surface__ = "so.tilo.chat@8f97350030092d32"
     drafts: dict[str, str]
 
     def start_draft(self, *, key: str) -> None:
@@ -1714,7 +1714,7 @@ class Drafts(Resource):
 
 class Learned(Resource):
     """What your agents learned — `chat.learned`."""
-    __surface__ = "so.tilo.chat@22a1d9a3cb0ac3f0"
+    __surface__ = "so.tilo.chat@8f97350030092d32"
     @property
     def facts(self) -> list[Entry[Fact]]:
         """Read only."""
@@ -1765,7 +1765,7 @@ class Learned(Resource):
 
 class WorkspaceEmoji(Resource):
     """Workspace emoji — `tilo.workspace.emoji`."""
-    __surface__ = "so.tilo.chat@22a1d9a3cb0ac3f0"
+    __surface__ = "so.tilo.chat@8f97350030092d32"
     emoji: dict[str, Emoji]
 
     def add_emoji(self,
@@ -1803,7 +1803,7 @@ class WorkspaceEmoji(Resource):
 
 class ChatAgent(Resource):
     """Agents — `chat.agent`."""
-    __surface__ = "so.tilo.chat@22a1d9a3cb0ac3f0"
+    __surface__ = "so.tilo.chat@8f97350030092d32"
     agents: list[Entry[Agent]]
 
     def create_agent(self,

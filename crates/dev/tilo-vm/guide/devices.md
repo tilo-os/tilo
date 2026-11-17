@@ -86,8 +86,9 @@ tilo-vm rollback --account device --to 0                 # the image's own sessi
 What the person at the machine sees on a swap or a rollback: the screen goes
 dark for a moment and the desktop comes back, still logged in. The
 compositor restarts in place (`tilo-session` restarts it on SIGUSR1); the
-login, its user manager and its services keep running, and open apps close
-and reopen through continuity, as after any compositor restart. A component
+login, its user manager and its services keep running. The machine's own apps
+(a `.desktop` entry) run behind app keepers and stay open with their windows;
+Tilo's apps close and reopen through continuity. A component
 with user services (`ush`, the model services) restarts those services too.
 Unsaved work in an app that does not keep its state is lost, so on a machine
 someone is using, say before you swap.

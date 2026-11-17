@@ -383,6 +383,9 @@ pub struct ChatApp {
     /// The agent identity record, followed every frame (see `follow_agents`).
     agents_document:
         Option<ui::framework::WorkspaceResource<ui::tilo_workspace_agent::WorkspaceAgents>>,
+    /// Opens the agent identity record once the workspace delivers it: a window whose agents
+    /// record was made after it opened reads it too, without being opened again.
+    agents_opener: Option<ui::framework::RecordOpener<ui::tilo_workspace_agent::WorkspaceAgents>>,
     /// Explicit shot fixture; never set on the live launch path.
     capture_agent_presence: Option<PresenceCtx>,
     /// The direct conversations that hold messages, by conversation id: the
@@ -775,6 +778,7 @@ impl ChatApp {
             workspace_agent_names: HashMap::new(),
             workspace_agent_colours: HashMap::new(),
             agents_document: None,
+            agents_opener: None,
             capture_agent_presence: None,
             direct_held: std::collections::HashSet::new(),
             recorded_channels: std::collections::HashSet::new(),

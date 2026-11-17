@@ -211,7 +211,8 @@ fn never_asked(asked: Arc<Mutex<Vec<ModelRequest>>>) -> Model {
 
 /// The keeper linked a model of their own: the agent the host runs for them works with it, asked
 /// with their own key, and the host's model is never asked. What it cost is counted on the agent's
-/// record as the provider charged it.
+/// record as the provider charged it, on a host that decides every change against its app's
+/// surface, as tilo.sh's relay does.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_agent_on_the_host_works_with_its_keepers_own_model() {
     use tilo_relay::workspaces::person_model::ProviderProtocol;
@@ -221,6 +222,10 @@ async fn an_agent_on_the_host_works_with_its_keepers_own_model() {
     let host = enrol(&root, "tilo-sh", DeviceCapabilities::member());
     let browser = enrol(&root, "browser", DeviceCapabilities::member());
     let state = crate::support::scratch_dir();
+    // The host's own count of what the agent spent is a change of Chat's, decided like any
+    // other: the native apps name their surfaces as the host first runs them.
+    let _ = crate::common::catalogue();
+    tilo_relay::surfaces::decide_receipt(&state.path().join("surfaces"));
     let (relay, actions) = crate::harness::hosted::serving_records_with_actions(
         &root,
         &host,

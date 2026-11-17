@@ -585,6 +585,10 @@ impl Server {
         )
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one match arm per account action, each a few lines of arguments and its answer"
+    )]
     async fn account_do(
         &self,
         grant: &Grant,
@@ -667,15 +671,14 @@ impl Server {
                 }
                 // Where the key is recorded: the workspace it reaches, or the
                 // workspace the calling key itself reaches.
-                let mine = self
+                let scope = self
                     .store
                     .grant(id)
-                    .map(|found| Some(found.scope))
-                    .unwrap_or_else(|| Some(grant.scope.clone()));
-                let workspace = mine.and_then(|scope| match scope {
+                    .map_or_else(|| grant.scope.clone(), |found| found.scope);
+                let workspace = match scope {
                     Scope::Workspace(workspace) => Some(workspace),
                     Scope::Account => None,
-                });
+                };
                 match self.revoke_grant(&grant.person, id).await {
                     Ok(_) => {
                         // The workspace records the revocation, so every

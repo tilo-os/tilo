@@ -10,6 +10,7 @@ use ui::framework::{Choice, Dispatcher, WindowBar};
 use ui::prelude::*;
 use ui::widget::{AppModel, ModelPath, NavShell, Stack};
 
+use crate::model::{Kind, tracker};
 use crate::{Filter, Nav, Place, Tasks, TasksEffect, Tracker, reference, tr};
 
 /// What shows `place`: the effect the place's own view runs, in the bar or
@@ -73,11 +74,35 @@ impl TasksWindow {
         let choices = Place::ALL
             .iter()
             .map(|each| Choice::new(each.title(), &show(*each)));
-        WindowBar::new(self.dispatcher.clone())
+        let bar = WindowBar::new(self.dispatcher.clone())
             .under(&self.link)
             .label(label)
             .section(section)
-            .views(tr("tasks-views"), chosen.unwrap_or_default(), choices)
+            .views(tr("tasks-views"), chosen.unwrap_or_default(), choices);
+        // A project's or an area's own page offers, in the bar's menu, what is
+        // done to it as a whole. Deleting it is the tracker's own verb: Undo
+        // takes it back, so nobody is asked first, as with a deleted note,
+        // and a member who may not change the tracker finds the entry
+        // disabled.
+        let shown = self.nav.area().filter(|_| open.is_none()).and_then(|area| {
+            let kind = self
+                .tasks
+                .with(|tasks| tasks.tracker.area(&area).map(|area| area.kind))?;
+            Some((area, kind))
+        });
+        match shown {
+            Some((area, kind)) => bar
+                .action(Tracker::DELETE_AREA.with(tracker::DeleteArea { area }))
+                .in_menu()
+                .named(
+                    "trash-2",
+                    tr(match kind {
+                        Kind::Project => "tasks-project-delete",
+                        Kind::Area => "tasks-area-delete",
+                    }),
+                ),
+            None => bar,
+        }
     }
 
     /// Where the window is: the open issue as it reads in a reference, the

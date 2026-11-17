@@ -101,6 +101,12 @@ use wire::{Description, End, FromKeeper, INTERFACE_VERSION, ToKeeper};
 /// for its first desktop before it gives up.
 pub const GRACE: Duration = Duration::from_secs(60);
 
+/// How long a running app waits for a desktop to come back. An in-place restart, even one that
+/// fails and rolls back to the build before, brings a desktop back within a few minutes; one
+/// that has not come back by then is not restarting: the login ended (a desktop crash ends it),
+/// and the app ends with it instead of running on with no window anyone can see.
+pub const DESKTOP_GONE: Duration = Duration::from_secs(5 * 60);
+
 /// What a keeper keeps.
 #[derive(Clone, Debug)]
 pub struct Options {
@@ -115,6 +121,8 @@ pub struct Options {
     pub command: Vec<OsString>,
     /// [`GRACE`], shorter in a test.
     pub grace: Duration,
+    /// [`DESKTOP_GONE`], shorter in a test.
+    pub desktop_gone: Duration,
 }
 
 impl Options {
@@ -126,6 +134,7 @@ impl Options {
             app_id_prefix: None,
             command: Vec::new(),
             grace: GRACE,
+            desktop_gone: DESKTOP_GONE,
         }
     }
 }
@@ -152,6 +161,8 @@ struct Data {
     app_token: Option<RegistrationToken>,
     ended: Option<End>,
     ended_at: Option<Instant>,
+    /// Since when the running app has had no desktop, and whether it was asked to end for it.
+    desktop_lost: Option<(Instant, Option<Instant>)>,
     delivered: bool,
     finished: bool,
 }
@@ -211,6 +222,7 @@ impl Keeper {
                 app_token: None,
                 ended: None,
                 ended_at: None,
+                desktop_lost: None,
                 delivered: false,
                 finished: false,
             },
@@ -555,6 +567,7 @@ impl Data {
         })?);
         self.state.up = Some(up);
         self.up_queue = Some(queue);
+        self.desktop_lost = None;
         self.flush_upstream();
         Ok(())
     }
@@ -643,6 +656,7 @@ impl Data {
         }
         self.up_queue = None;
         if self.state.up.take().is_some() {
+            self.desktop_lost = Some((Instant::now(), None));
             self.state.hold_all();
             self.state.hold_data_device();
             self.state.hold_primary_selection();
@@ -688,6 +702,7 @@ impl Data {
         if let Err(error) = self.display.flush_clients() {
             tracing::warn!(%error, "the app's connections could not be written");
         }
+        self.end_without_desktop();
         let grace = self.options.grace;
         match self.ended_at {
             Some(at) => self.finished = self.delivered || at.elapsed() >= grace,
@@ -703,14 +718,51 @@ impl Data {
         }
     }
 
+    /// A running app whose desktop stayed away for [`Options::desktop_gone`] is asked to end
+    /// (SIGTERM to its process group), and made to after [`Options::grace`] more.
+    fn end_without_desktop(&mut self) {
+        let (Some(app), None, Some((lost, asked))) =
+            (&self.app, self.ended, &mut self.desktop_lost)
+        else {
+            return;
+        };
+        match asked {
+            None if lost.elapsed() >= self.options.desktop_gone => {
+                tracing::warn!(
+                    "no desktop came back for the app; the login ended, so the app ends too"
+                );
+                app.signal(libc::SIGTERM);
+                *asked = Some(Instant::now());
+            }
+            Some(at) if at.elapsed() >= self.options.grace => {
+                app.signal(libc::SIGKILL);
+                *asked = Some(Instant::now());
+            }
+            _ => {}
+        }
+    }
+
     fn wake_in(&self) -> Option<Duration> {
+        let gone = match (&self.app, self.ended, self.desktop_lost) {
+            (Some(_), None, Some((lost, None))) => {
+                Some(self.options.desktop_gone.saturating_sub(lost.elapsed()))
+            }
+            (Some(_), None, Some((_, Some(at)))) => {
+                Some(self.options.grace.saturating_sub(at.elapsed()))
+            }
+            _ => None,
+        };
         let grace = self.options.grace;
-        match self.ended_at {
+        let ending = match self.ended_at {
             Some(at) => Some(grace.saturating_sub(at.elapsed())),
             None if self.app.is_none() && !self.options.command.is_empty() => {
                 Some(grace.saturating_sub(self.created.elapsed()))
             }
             None => None,
+        };
+        match (gone, ending) {
+            (Some(gone), Some(ending)) => Some(gone.min(ending)),
+            (gone, ending) => gone.or(ending),
         }
     }
 

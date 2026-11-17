@@ -48,7 +48,7 @@ tilo_test_env::scenario! {
             "    name: Text",
             "    kind: ChannelKind",
             "    archived: Bool",
-            "    members: List<Text>",
+            "    members: List<Actor>",
         ] {
             assert!(channel.contains(line), "`{line}` in:\n{channel}");
         }

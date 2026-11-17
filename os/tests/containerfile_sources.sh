@@ -34,8 +34,13 @@ note() { printf '[info]   %s\n' "$*"; }
 # podman, so they are legitimately absent from a checkout. They are exactly the paths
 # .containerignore names for that reason — os/tilo-installer and friends — so that
 # file is the declaration rather than a second list here that could disagree with it.
+# An entry ending in "/" declares the whole directory: tools/ci/publish/host-build.sh
+# assembles os/Containerfile.host's context from the server binaries it just built.
 staged_at_build_time() {
-  grep -qxF "$1" "$REPO/.containerignore" 2>/dev/null
+  local path="$1"
+  grep -qFx "$path" "$REPO/.containerignore" 2>/dev/null && return 0
+  awk -v path="$path" '!/^#/ && /\/$/ && index(path, $0) == 1 { found = 1 } END { exit !found }' \
+    "$REPO/.containerignore" 2>/dev/null
 }
 
 # Containerfile:context — the source paths are relative to the build context, which

@@ -46,6 +46,13 @@ FEATURES = [
     (re.compile(r"^crates/platform/tilo-secrets/"), "secrets"),
     (re.compile(r"^crates/session/session/src/(shell/mls_vault\.rs|portal/secret\.rs)$"), "secrets"),
     (re.compile(r"^crates/runtime/runtime-identity/src/secure_store\.rs$"), "secrets"),
+    # What keeps the machine's own apps open through an in-place desktop restart: the keeper,
+    # the session's launch and adoption of kept apps, the launcher starting them behind it, and
+    # the wrapper and the session telling a restart from a logout.
+    (re.compile(r"^crates/session/app-(keeper|launch)/"), "A18"),
+    (re.compile(r"^crates/packaging/launcher/src/host\.rs$"), "A18"),
+    (re.compile(r"^crates/session/session/src/(apps|restart|restore)\.rs$"), "A18"),
+    (re.compile(r"^os/usr/libexec/tilo-session$"), "A18"),
     # The guest-side MCP client belongs to the agent checks that run it.
     (re.compile(r"^scripts/vm-acceptance/guest/mcp_client\.py$"), "agent"),
     # The coding agents' client belongs to the end-to-end checks (e2e-agents), in no shard.

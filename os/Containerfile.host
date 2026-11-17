@@ -273,12 +273,17 @@ COPY os/etc/containers/registries.d/registry.tilo.so.yaml /etc/containers/regist
 # Same bootloader swap as the desktop image: install systemd-boot,
 # drop the GRUB stack, tell bootc to plant systemd-boot on the ESP at
 # install time (see os/usr/lib/bootc/install/40-tilo.toml for why).
+# dnf5 refuses to remove grub2-efi-x64, grub2-pc, grub2-tools-minimal and
+# shim-x64 (each marks itself protected in /etc/dnf/protected.d) and does not
+# take --allowerasing on `remove`, so the protected ones go through rpm -e
+# instead, as they do on the desktop image; bootupd only ever plants GRUB and
+# goes with them.
 RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setopt=reposdir=/repo \
     systemd-boot-unsigned \
-    && dnf remove -y --allowerasing \
-        grub2-common grub2-tools grub2-tools-minimal grub2-tools-extra \
-        grub2-pc grub2-pc-modules grub2-efi-x64 grub2-efi-x64-modules \
-        shim-x64 \
+    && rpm -qa | grep -E '^(shim-(x64|aa64)|grub2-|os-prober-)' | xargs -r rpm -e --nodeps \
+    && rpm -e --nodeps bootupd \
+    && rm -rf /usr/lib/bootupd /usr/lib/ostree-boot \
+    && rm -f /etc/systemd/system/multi-user.target.wants/bootloader-update.service \
     && dnf clean all
 COPY os/usr/lib/bootc/install/40-tilo.toml /usr/lib/bootc/install/40-tilo.toml
 

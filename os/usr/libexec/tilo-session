@@ -6,9 +6,9 @@
 # Restarting the desktop without logging out: SIGUSR1 asks this wrapper to
 # stop the compositor (SIGTERM, then it waits for it to exit) and to start
 # it again with the same arguments. The PAM session, the user manager
-# and tilo-graphical-session.target stay up across the restart; apps lose
-# their Wayland connection and reopen through continuity, as after any
-# compositor restart. Each compositor run gets its own flight record: the run
+# and tilo-graphical-session.target stay up across the restart. The machine's
+# own apps run behind app keepers and keep running with their windows; Tilo's
+# apps reopen through continuity. Each compositor run gets its own flight record: the run
 # that was restarted becomes previous.log. Only a requested restart starts
 # the compositor again. A compositor that exits on its own, a crash included,
 # ends the session as before, so a compositor that cannot start never loops.

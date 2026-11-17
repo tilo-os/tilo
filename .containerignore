@@ -29,6 +29,9 @@ os/browser
 # context; it is a declared staged input for Containerfile.installer, not a
 # directory that belongs in the repository build context.
 os/rootfs/
+# The server image's programs: tools/ci/publish/host-build.sh lays the built
+# binaries into its own build context's bin/, so no repository has one.
+bin/
 
 # Logs / scratch
 *.log

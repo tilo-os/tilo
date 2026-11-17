@@ -421,7 +421,9 @@ impl CliError {
             Self::ArchMismatch { .. } => {
                 "use a VM of the host's architecture, or opt into slow emulation with --emulated".into()
             }
-            Self::LowDisk { .. } => "tilo-vm gc --dry-run   then   tilo-vm gc".into(),
+            Self::LowDisk { .. } => {
+                "free space there (tilo-vm gc --dry-run, then tilo-vm gc)   |   or keep the VM's disk on a filesystem with room: tilo-vm vm create <name> --disk /path/on/another/filesystem.qcow2".into()
+            }
             Self::RawWrite { .. } => {
                 "change the VM through tilo-vm instead, so it can be rolled back and other agents see it: a component: tilo-vm swap <component>   |   the image (/etc, units, packages): tilo-vm vm upgrade --from local   |   to run it by hand anyway, --raw is the escape hatch: tilo-vm vm ssh --raw -- <command>"
                     .into()
@@ -472,7 +474,7 @@ impl CliError {
                 "pass another path with --disk, or delete that file if no registered VM uses it (tilo-vm vm list)".into()
             }
             Self::NoSpace { .. } => {
-                "free space there and rerun: what was already downloaded is reused, so a retry fetches only the rest (in a VM, tilo-vm gc --dry-run shows what it can delete)".into()
+                "free space there and rerun: what was already downloaded is reused, so a retry fetches only the rest   |   or keep the downloads on a filesystem with room: set XDG_CACHE_HOME (the cache lives in $XDG_CACHE_HOME/tilo-vm/disks, by default ~/.cache)".into()
             }
             Self::ForgeAuth { token: None, .. } => {
                 "export FORGEJO_TOKEN=<forge token with package read access>, or log in with fgj or tea, then rerun. Disk downloads read only these".into()

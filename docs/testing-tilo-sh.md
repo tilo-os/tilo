@@ -9,20 +9,35 @@ runs:
 os/containers/tilo-sh/stack.sh up
 ```
 
-By default the stack runs this checkout's programs and web bundle as plain
-processes, built on a build server by a cargo drop-in in one command
-(`os/containers/tilo-sh/build-on-builder.sh`), in this checkout's build
-directory there, which stays from one bring-up to the next: every program in
-one incremental build of the release's code without its whole-program link
-(Cargo's `lounge-local`), and beside it the desktop bundle's module
-(`build.sh --profile local`: the same for the bundle, bound and split as the
-shipped bundle is, without wasm-opt). A change recompiles the parts of the
-crates it touched; a module that did not change is neither bound nor split
-again; only the files that changed come back. Nothing but the fetch, the
-relay's and the site's layout and the site's precompression (at faster levels
-than the image's, each file compressed once per content) runs on your
-machine. Each service gets its own state and runtime directory under the
-stack's state. `stack.sh help` lists every command.
+By default the whole stack runs **on the build server**, in this checkout's
+build container, with the ports a person and their tools use served from there
+on this machine's loopback under the same numbers
+(`rcargo exec --forward`, see [Where it runs](#where-it-runs)). The site opens
+at the same `http://tilo.localhost:<base+20>`, the API server answers at the
+same `http://localhost:<base+10>`, and `tilo login`, the SDKs and an agent's
+MCP client reach it as they reach a stack here. Everything else — the
+programs, every service, the state, the build — stays on the build server,
+under a per-stack directory of this checkout's build directory there
+(`target/tilo-stack/<port base>`), and `stack.sh down --wipe` deletes it there.
+That is what lets many stacks run at once without loading the machine you are
+sitting at: SSH carries the forwarded ports and one long-running command, and
+the stack holds the build server's memory admission while it runs.
+
+The programs and the web bundle are this checkout's, built in the build
+container there: every program in one incremental build of the release's code
+without its whole-program link (Cargo's `lounge-local`), and the desktop
+bundle's module (`build.sh --profile local`: the same for the bundle, bound and
+split as the shipped bundle is, without wasm-opt). A change recompiles the
+parts of the crates it touched; a module that did not change is neither bound
+nor split again, and `stack.sh restart NAME` rebuilds and restarts one service
+while the others keep running. Each service gets its own state and runtime
+directory under the stack's state. `stack.sh help` lists every command.
+
+`TILO_SH_REMOTE=0` runs everything here instead, which is what the end-to-end
+check (`stack.sh check`), `up --images` and the VM host need. A checkout whose
+cargo drop-in cannot forward ports (`rcargo` from before `exec --forward`),
+a stack handed what a check built (`TILO_SH_PROGRAMS` and the like), and
+`TILO_SH_BUILD=t` all do the same, and `up` says why.
 
 `TILO_SH_BUILD=t` takes the programs and the bundle from t's checks instead:
 `tilo-sh-programs` (`lounge-gate`) and `web-desktop-gate-bundle` (compiled,
@@ -49,6 +64,34 @@ names change to loopback ports and the secrets become throwaway local ones.
 belongs there too. Natively each service also gets the `ENV` its image's
 Containerfile sets. Only paths that live in the image move under the stack's
 state; an image path the stack does not know how to move stops the start.
+
+## Where it runs
+
+Two machines: the one you are at, and the build server. The stack itself is
+whole on the build server; this machine carries only these ports, forwarded
+under their own numbers:
+
+| Port | What |
+| --- | --- |
+| `BASE+20` | the site, `http://tilo.localhost:BASE+20` |
+| `BASE+10` | the API server (MCP, `/v1`, keys, OAuth) |
+| `BASE` | the relay's public origin (which the page dials) |
+| `BASE+6` | the live plane's origin |
+| `BASE+1`, `BASE+3` | the relay's plain and route listeners |
+| `BASE+21`, `BASE+22`, `BASE+23` | the web entry, the releases, the mail sink |
+| `BASE+40`…`BASE+42` | the fake Discord (`up --discord`) |
+| `BASE+2`, `BASE+4`, `BASE+8` (UDP) | the page's QUIC: the packet relay, iroh, WebTransport |
+
+A page reaches its relay over QUIC, which SSH cannot carry, so the drop-in
+carries UDP through the build server's own helper: one channel per client that
+sends anything, each datagram framed. The forwards end with the stack's
+bring-up process; `stack.sh status` says whether they are up, and a port
+already used here stops the command with the port named instead of leaving a
+stack nobody can reach.
+
+The commands that act on the stack — `owner`, `invite`, `tilo`, `hold`,
+`mail`, `logs`, `restart` — run where the stack is, so the owner and the
+invites stay in one place. `browser` opens the page here, on a fresh profile.
 
 ## What runs
 

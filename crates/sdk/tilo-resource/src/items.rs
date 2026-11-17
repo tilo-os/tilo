@@ -337,7 +337,8 @@ pub fn item_of_resource<R: Resource>(resource_id: &str) -> Option<(&str, Id)> {
 }
 
 /// [`item_of_resource`] of a resource of the kind `kind`.
-fn item_of_resource_in<'a>(kind: &str, resource_id: &'a str) -> Option<(&'a str, Id)> {
+#[must_use]
+pub fn item_of_resource_in<'a>(kind: &str, resource_id: &'a str) -> Option<(&'a str, Id)> {
     let rest = resource_id.strip_prefix(kind)?.strip_prefix('/')?;
     let (field, item) = rest.split_once('/')?;
     Some((field, Id::from_raw(item)))
@@ -705,11 +706,16 @@ pub const fn item_target(collections: &[&str], param: &str, named: &str) -> bool
     contains(collections, param) || collections.len() == 1
 }
 
-/// The collection field an item parameter named `param` acts on, among
+/// The collection field whose item a verb's first parameter names, among
 /// `collections` (a record's [`ITEM_FIELDS`](crate::Fields::ITEM_FIELDS)):
 /// the field `#[action(item = field)]` names, else the one the parameter is
-/// named after, else the record's only collection — what
-/// [`item_target`] decides holds, named.
+/// named after, else the record's only collection where the parameter is
+/// called what one of its items is (`issue` for `issues`).
+///
+/// A parameter named after no collection names no item, also where the
+/// record keeps one collection only: a conversation's id on a record that
+/// keeps messages alone is not a message, so its verb is handed the id as
+/// written rather than refused for naming no message.
 #[doc(hidden)]
 #[must_use]
 pub fn target_field<'a>(collections: &[&'a str], param: &str, named: &str) -> Option<&'a str> {
@@ -720,9 +726,16 @@ pub fn target_field<'a>(collections: &[&'a str], param: &str, named: &str) -> Op
         return Some(field);
     }
     match collections {
-        [only] => Some(only),
+        [only] if one_of(only, param) => Some(only),
         _ => None,
     }
+}
+
+/// Whether a parameter called `param` is called what one item of the
+/// collection field `field` is: `issue` for `issues`, `shell-part` for
+/// `shell_parts`.
+fn one_of(field: &str, param: &str) -> bool {
+    tilo_actions::singular(&tilo_actions::in_words(field)) == tilo_actions::in_words(param)
 }
 
 /// Whether `#[action(item = field)]` names one of `outboxes`: the verb acts
@@ -1207,5 +1220,36 @@ mod item_kind_tests {
             None,
             "a nested item"
         );
+    }
+}
+
+#[cfg(test)]
+mod target_field_tests {
+    use super::target_field;
+
+    #[test]
+    fn a_parameter_names_an_item_only_of_the_collection_it_is_named_after() {
+        // The field the verb names, whatever its parameter is called.
+        assert_eq!(
+            target_field(&["cards", "archive"], "card", "archive"),
+            Some("archive")
+        );
+        assert_eq!(target_field(&["cards"], "card", "pages"), None);
+        // The collection the parameter is named after.
+        assert_eq!(
+            target_field(&["cards", "archive"], "archive", ""),
+            Some("archive")
+        );
+        // The record's only collection, where the parameter is called what
+        // one of its items is.
+        assert_eq!(target_field(&["issues"], "issue", ""), Some("issues"));
+        assert_eq!(
+            target_field(&["shell_parts"], "shell-part", ""),
+            Some("shell_parts")
+        );
+        // A parameter named after no collection names no item, also where
+        // the record keeps one collection only: a conversation is no message.
+        assert_eq!(target_field(&["messages"], "channel", ""), None);
+        assert_eq!(target_field(&["cards", "archive"], "place", ""), None);
     }
 }
