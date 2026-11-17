@@ -1,6 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {createViewPresenter} from './view-present.mjs';
+import {createViewPresenter, VIEW_CSS} from './view-present.mjs';
+
+// The page's host puts this sheet in the document before the first frame: a module that stops
+// exporting it fails to load, and the whole page with it.
+test('the presenter hands the page its stylesheet', () => {
+  assert.equal(typeof VIEW_CSS, 'string');
+  assert.match(VIEW_CSS, /\.tilo-view/);
+});
 
 // Just the DOM the presenter touches.
 class Text {

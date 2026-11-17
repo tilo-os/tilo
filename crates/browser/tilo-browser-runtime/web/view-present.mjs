@@ -890,13 +890,13 @@ export function createViewPresenter(layer, {onScroll, picture, semantic, onFrame
   };
 }
 
+// The lift a window or a panel stands at over the shell.
+const FLOATING_SHADOW = '0 1px 3px rgba(0,0,0,.08),0 10px 28px rgba(0,0,0,.12)';
+
 // How the rendered composition looks beyond what each widget declares: the
 // document's blocks, the caret, the page's own selection. Colours and sizes
 // come from the theme's variables the runtime publishes on the layer.
-export // The lift a window or a panel stands at over the shell.
-const FLOATING_SHADOW = '0 1px 3px rgba(0,0,0,.08),0 10px 28px rgba(0,0,0,.12)';
-
-const VIEW_CSS = `
+export const VIEW_CSS = `
 /* Every size the composition gives is the layout's, which counts padding in. */
 .tilo-view,.tilo-view *{box-sizing:border-box;}
 /* A row's or a place's controls show while the pointer is over it or focus is in it, as painted. */
