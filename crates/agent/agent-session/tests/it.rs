@@ -42,6 +42,8 @@ mod support;
 tilo_automerge_isolate::test_worker!();
 tilo_agent_session::app_worker!();
 
+#[path = "action_cost.rs"]
+mod action_cost;
 #[path = "app_coverage.rs"]
 mod app_coverage;
 #[path = "asking_first.rs"]
