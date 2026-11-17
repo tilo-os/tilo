@@ -72,6 +72,10 @@ use super::history::{PART_EDIT_TYPE, PartEdit};
 use super::live::Live;
 use super::record::ResourceApi;
 
+mod listing;
+
+use listing::{Listing, Page};
+
 /// The operation type a chain's published actions are carried out under:
 /// the host applies the action to the part of the chain it names.
 pub(crate) const CHAIN_ACTION_TYPE: &str = "tilo.app.chain-action";
@@ -179,6 +183,29 @@ pub trait Chained: Resource {
     /// of it (a tracker's issues), where a part is a bound on what one
     /// change costs, not on what a device holds.
     const HELD_WHOLE: bool = false;
+
+    /// The fields a row of the chain's listing carries of its item when its
+    /// caller names none (the read's `fields`): what a person scans a list
+    /// of them by, such as an issue's number, its status and who has it. By
+    /// default a row names its item and says nothing else of it.
+    const LISTED: &'static [&'static str] = &[];
+
+    /// Turn what a read's `where` says in the kind's own words into
+    /// equalities on its items' fields, where the read is answered: a
+    /// project as people name it into the resource an issue keeps. What
+    /// [`Self::prepare`] is to an action's arguments. `parts` are the parts
+    /// this device holds, oldest first.
+    ///
+    /// # Errors
+    /// Refuses what names nothing the app's record or the parts hold.
+    fn prepare_read(
+        filter: &mut serde_json::Map<String, serde_json::Value>,
+        base: &<Self::Base as Resource>::State,
+        parts: &[(u64, Rc<Self::State>)],
+    ) -> Result<(), String> {
+        let _ = (filter, base, parts);
+        Ok(())
+    }
 
     /// What a part started after part `previous` (whose state is `part`)
     /// carries of the parts before it, written into it as it starts, before
@@ -326,6 +353,8 @@ struct PartType {
     kind: &'static str,
     label: &'static str,
     held_whole: bool,
+    /// The fields a row of the listing carries when its caller names none.
+    listed: &'static [&'static str],
     initialize: fn(&mut ui_core::automerge::AutoCommit) -> Result<(), String>,
     /// Read the part a record holds, brought up to the resource's storage
     /// version first.
@@ -341,6 +370,7 @@ impl PartType {
             kind: P::KIND,
             label: P::LABEL,
             held_whole: P::HELD_WHOLE,
+            listed: P::LISTED,
             initialize: |doc| P::initialize(doc).map_err(|error| error.to_string()),
             read: read_part::<P>,
         }
@@ -645,15 +675,18 @@ impl ChainCore {
 
     /// Answer the read the chain publishes ([`read_spec`]) from the parts this
     /// device holds: the items of the newest part first, a page at a time,
-    /// each named by the id a read of it takes; or one item's content, from
-    /// the part keeping it. A page that reached the oldest part this device
-    /// holds asks for the part before it and says so (`earlier`), so a caller
-    /// reading on walks back through the chat a part at a time.
+    /// each named by the id a read of it takes, with the fields it was asked
+    /// for and only the items its `where` holds of ([`Listing`], `prepare`
+    /// putting the kind's own words into fields first); or one item's
+    /// content, from the part keeping it. A page that reached the oldest part
+    /// this device holds asks for the part before it and says so (`earlier`),
+    /// so a caller reading on walks back through the chat a part at a time.
     fn read(
         &self,
         table: Option<&'static tilo_resource::table::ModelTable>,
         parts: &[(u64, &dyn Any)],
         payload: &[u8],
+        prepare: &dyn Fn(&mut listing::Filter) -> Result<(), String>,
     ) -> Result<serde_json::Value, String> {
         let read = ChainRead::of(payload)?;
         let table = table.ok_or_else(|| format!("{} answer no reads", self.part.label))?;
@@ -678,9 +711,8 @@ impl ChainCore {
                 "nextCursor": read_cursor(at, skip),
             }));
         }
-        let mut lists: BTreeMap<String, Vec<serde_json::Value>> = BTreeMap::new();
-        let mut taken = 0usize;
-        let mut next: Option<String> = None;
+        let listing = Listing::of(&read, table, &self.part, parts, prepare)?;
+        let mut page = Page::new(read.page_size);
         // Where the page ran out of parts, rather than out of room.
         let mut ended = None;
         for (index, state) in parts.iter().rev() {
@@ -693,42 +725,16 @@ impl ChainCore {
                 at = *index;
                 skip = 0;
             }
-            let items = tilo_resource::table::resource_items(table, *state);
-            // What the part holds now, newest first: a cursor counted against
-            // the part as it was reads from its end where items went since.
-            let newest_first: Vec<(&str, tilo_resource::Id, String)> = items
-                .into_iter()
-                .flat_map(|(field, found)| {
-                    found
-                        .into_iter()
-                        .rev()
-                        .map(move |(id, label)| (field, id, label))
-                })
-                .collect();
-            let skip_here = skip.min(newest_first.len());
-            let mut room = true;
-            for (field, id, label) in newest_first.iter().skip(skip_here) {
-                if taken >= read.page_size {
-                    next = Some(read_cursor(*index, skip));
-                    room = false;
-                    break;
-                }
-                let item = tilo_resource::items::item_resource_id_in(self.part.kind, field, id);
-                lists
-                    .entry((*field).to_owned())
-                    .or_default()
-                    .push(serde_json::json!({ "item": item, "name": label }));
-                taken = taken.saturating_add(1);
-                skip = skip.saturating_add(1);
-            }
-            if !room {
+            let kind = self.part.kind;
+            let Some(passed) = page.take(*index, *state, table, kind, &listing, skip) else {
                 break;
-            }
-            ended = Some((*index, skip.min(newest_first.len())));
+            };
+            ended = Some((*index, passed));
         }
+        let mut next = page.next.take();
         let mut answer = serde_json::Map::new();
         answer.insert("kind".into(), serde_json::json!(self.part.kind));
-        for (field, list) in lists {
+        for (field, list) in std::mem::take(&mut page.lists) {
             answer.insert(field, serde_json::Value::Array(list));
         }
         // The part before the oldest this device holds holds more than this
@@ -744,7 +750,8 @@ impl ChainCore {
             .as_deref()
             .and_then(parse_read_cursor)
             .map(|(part, _)| part);
-        if let Some(next) = next.filter(|_| taken > 0) {
+        // A page whose `where` no item met still says where to read on.
+        if let Some(next) = next.filter(|_| page.taken > 0 || listing.filters()) {
             answer.insert("nextCursor".into(), serde_json::json!(next));
         }
         if stopped_in.is_some_and(|part| part > 0) {
@@ -1886,11 +1893,13 @@ impl<P: Chained> ChainState<P> {
     /// [`ChainCore::read`] of the parts held.
     pub(crate) fn read(&self, payload: &[u8]) -> Result<serde_json::Value, String> {
         let parts = self.parts();
-        let parts: Vec<(u64, &dyn Any)> = parts
+        let base = (self.base)();
+        let prepare = |filter: &mut listing::Filter| P::prepare_read(filter, &base, &parts);
+        let held: Vec<(u64, &dyn Any)> = parts
             .iter()
             .map(|(index, state)| (*index, &**state as &dyn Any))
             .collect();
-        self.core.read(P::RESOURCE_TABLE, &parts, payload)
+        self.core.read(P::RESOURCE_TABLE, &held, payload, &prepare)
     }
 }
 
@@ -1943,13 +1952,31 @@ fn read_spec(label: &str, chain: &str, item: Option<&str>) -> tilo_actions::Acti
                 "minimum": 1,
                 "maximum": READ_PAGE_MAX,
             })),
+            tilo_actions::ActionParam::optional(
+                "fields",
+                tilo_actions::ParamType::Array,
+                "The fields each row carries of its item, by name (default: what these list of themselves)",
+            )
+            .with_schema(serde_json::json!({
+                "type": "array",
+                "items": { "type": "string" },
+            })),
+            tilo_actions::ActionParam::optional(
+                "where",
+                tilo_actions::ParamType::Object,
+                "Answer only the items whose fields equal these: each a field's name (dotted to reach into a record) with its value, or a list of values for any one of them",
+            )
+            .with_schema(serde_json::json!({ "type": "object" })),
         ],
         move |args| {
+            let given = args.to_json();
             let payload = serde_json::json!({
                 "chain": chain,
                 "item": item,
                 "cursor": args.text("cursor"),
                 "pageSize": args.integer("pageSize"),
+                "fields": given.get("fields"),
+                "where": given.get("where"),
             });
             tilo_actions::EncodedAction::encode_operation(CHAIN_READ_TYPE, &payload)
                 .unwrap_or_else(|_| tilo_actions::EncodedAction {
@@ -1961,8 +1988,9 @@ fn read_spec(label: &str, chain: &str, item: Option<&str>) -> tilo_actions::Acti
     .of_kind(tilo_actions::ActionKind::Read)
     .with_description(
         "What this holds as typed data: the items of its parts, the newest part first, a page at \
-         a time with `cursor` passing on where a page ended; an item's own content when the read \
-         is of that item.",
+         a time with `cursor` passing on where a page ended, each row with its item's address, \
+         its name and the fields asked for (`fields`), only the items `where` holds of; an \
+         item's own content when the read is of that item.",
     )
     // Typed data for a program to reason about; a person reads what the
     // app shows.
@@ -1978,6 +2006,10 @@ struct ChainRead {
     item: Option<String>,
     cursor: Option<String>,
     page_size: usize,
+    /// The fields each row carries, when the caller names them.
+    fields: Option<Vec<String>>,
+    /// What an item's fields equal for its row to be answered.
+    filter: listing::Filter,
 }
 
 impl ChainRead {
@@ -1999,10 +2031,13 @@ impl ChainRead {
             .and_then(|size| usize::try_from(size).ok())
             .unwrap_or(READ_PAGE)
             .clamp(1, READ_PAGE_MAX);
+        let (fields, filter) = listing::asked(&args)?;
         Ok(Self {
             item: text("item"),
             cursor: text("cursor"),
             page_size,
+            fields,
+            filter,
         })
     }
 }

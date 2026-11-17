@@ -1455,6 +1455,7 @@ pub fn item_of(action: &IssuePartAction) -> Option<&Id> {
     }
 }
 
+mod listing;
 mod many;
 
 #[cfg(test)]
@@ -1494,4 +1495,14 @@ impl ui::framework::Chained for IssuePart {
     /// The list and the board show every issue, so a window holds every
     /// part; a part bounds what one change costs, not what is held.
     const HELD_WHOLE: bool = true;
+
+    const LISTED: &'static [&'static str] = listing::LISTED;
+
+    fn prepare_read(
+        filter: &mut serde_json::Map<String, serde_json::Value>,
+        tracker: &Tracker,
+        parts: &[(u64, Rc<Self>)],
+    ) -> Result<(), String> {
+        listing::prepare_read(filter, tracker, parts)
+    }
 }

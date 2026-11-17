@@ -16,8 +16,6 @@
 
 mod common;
 
-use std::collections::BTreeSet;
-
 use common::{chain, held};
 use serde_json::{Value, json};
 use tasks::App;
@@ -251,41 +249,34 @@ fn the_same_project_built_several_issues_a_call_takes_three_calls() {
     );
 }
 
-/// Reading back where the project stands: the tracker's listing names each
-/// issue and says nothing else of it, so its status, its parent, when it is
-/// wanted and who has it take a read of each issue.
+/// Reading back where the project stands is one read: each row of the
+/// tracker's listing says its issue's status, the issue it stands under,
+/// when it is wanted and the project it works towards.
 #[test]
-fn where_a_project_stands_takes_a_read_of_every_issue() {
+fn where_a_project_stands_is_one_read() {
     let mut caller = Caller::open();
     caller.tracker(
         "create-area",
         json!({ "name": "Launch", "kind": "project" }),
     );
+    let mut issues = Vec::new();
     for top in 0..TOP {
-        let parent = caller
-            .write(
-                &chain(),
-                "create",
-                json!({ "title": format!("Piece {top}"), "project": "Launch", "due_ms": due(top) }),
-            )
-            .into_iter()
-            .next()
-            .expect("the create answers its issue");
+        issues.push(json!({
+            "key": format!("piece-{top}"),
+            "title": format!("Piece {top}"),
+            "project": "Launch",
+            "due_ms": due(top),
+        }));
         for under in 0..UNDER_EACH {
-            let made = caller.write(
-                &chain(),
-                "create",
-                json!({
-                    "title": format!("Piece {top}, step {under}"),
-                    "project": "Launch",
-                    "parent": parent,
-                }),
-            );
-            if under == 0 {
-                caller.write(&made[0], "place", json!({ "status": "in-progress" }));
-            }
+            issues.push(json!({
+                "title": format!("Piece {top}, step {under}"),
+                "project": "Launch",
+                "under": format!("piece-{top}"),
+                "status": if under == 0 { "in-progress" } else { "backlog" },
+            }));
         }
     }
+    caller.write(&chain(), "create-many", json!({ "issues": issues }));
 
     let listing = caller.read(&chain(), json!({}));
     let rows = listing["issues"]
@@ -293,39 +284,19 @@ fn where_a_project_stands_takes_a_read_of_every_issue() {
         .expect("the listing names the issues")
         .clone();
     assert_eq!(rows.len(), ISSUES, "{listing}");
-    for row in &rows {
-        let said: Vec<&str> = row
-            .as_object()
-            .expect("a row")
-            .keys()
-            .map(String::as_str)
-            .collect();
-        assert_eq!(
-            said,
-            ["item", "name"],
-            "a row names its issue and says nothing else of it"
-        );
-    }
-    assert_eq!(caller.reads, 1);
+    let count = |holds: &dyn Fn(&Value) -> bool| rows.iter().filter(|row| holds(row)).count();
+    assert_eq!(count(&|row| row["status"] == "in-progress"), TOP);
+    assert_eq!(count(&|row| row["status"] == "backlog"), ISSUES - TOP);
+    assert_eq!(count(&|row| row.get("parent").is_some()), TOP * UNDER_EACH);
+    assert_eq!(count(&|row| row.get("due_ms").is_some()), TOP);
+    assert_eq!(count(&|row| row["area"]["label"] == "Launch"), ISSUES);
+    assert_eq!(caller.reads, 1, "the listing says it all");
 
-    // Where each stands is in the issue itself: one read each.
-    let mut statuses = BTreeSet::new();
-    let mut nested = 0_usize;
-    let mut dated = 0_usize;
-    for row in &rows {
-        let issue = caller.read(row["item"].as_str().expect("its address"), json!({}));
-        assert!(!issue["status"].is_null(), "{issue}");
-        statuses.insert(issue["status"].to_string());
-        nested = nested.saturating_add(usize::from(!issue["parent"].is_null()));
-        dated = dated.saturating_add(usize::from(!issue["due_ms"].is_null()));
-    }
-    assert_eq!(statuses.len(), 2, "moved and not moved: {statuses:?}");
-    assert_eq!(nested, TOP * UNDER_EACH);
-    assert_eq!(dated, TOP);
-    assert_eq!(
-        caller.reads,
-        1 + ISSUES,
-        "the listing, then one read for each issue"
+    // The issues of the project that are being worked on, asked for as such.
+    let moving = caller.read(
+        &chain(),
+        json!({ "where": { "project": "Launch", "status": "in-progress" } }),
     );
-    assert_eq!(caller.reads, 21);
+    assert_eq!(moving["issues"].as_array().map(Vec::len), Some(TOP));
+    assert_eq!(caller.reads, 2);
 }
