@@ -51,7 +51,7 @@ fn themselves(root: &SigningKey, browser: &Device, workspace: &str) -> Caller {
     .in_workspace(workspace)
 }
 
-/// Invoke Chat's `action` on `resource` of `record` as `caller`, through the host's action
+/// Invoke Chat's `action` on `resource` of `record` as `caller`, through the server's action
 /// service.
 async fn chat_action(
     actions: &tilo_agent_session::workspace_actions::WorkspaceActions,

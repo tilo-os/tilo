@@ -117,6 +117,9 @@ pub struct WorkspaceActionHost {
     own: Vec<Arc<dyn TurnProvider>>,
     /// How the calls those took ended; `None` while it answers none of them.
     ended: Option<turn_provider::Ended>,
+    /// The one conversation a sub-agent's turn writes in, while this serves such a turn
+    /// ([`sub_agents::admits`]).
+    kept_to: Option<sub_agents::Own>,
 }
 
 impl WorkspaceActionHost {
@@ -128,6 +131,7 @@ impl WorkspaceActionHost {
             events: None,
             own: Vec::new(),
             ended: None,
+            kept_to: None,
         }
     }
 
@@ -147,6 +151,14 @@ impl WorkspaceActionHost {
         if self.ended.is_none() {
             self.ended = Some(turn_provider::Ended::here());
         }
+        self
+    }
+
+    /// The same service, kept to `own` for a turn of the sub-agent that writes there: of Chat it
+    /// takes that turn's answer, its question and its words there, and nothing else.
+    #[must_use]
+    fn keeping_to(mut self, own: Option<sub_agents::Own>) -> Self {
+        self.kept_to = own;
         self
     }
 
@@ -229,6 +241,11 @@ impl ActionHost for WorkspaceActionHost {
         caller: &Caller,
         request: InvokeRequest,
     ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
+        if let Some(own) = &self.kept_to
+            && !sub_agents::admits(own, caller, &request)
+        {
+            return Pending::ready(Err(ActionHostError::NotPermitted));
+        }
         if let Some(events) = &self.events
             && request.target.provider == person_events::PROVIDER
         {
@@ -799,7 +816,8 @@ impl HostAgents {
             .ok_or("the person who asked is admitted here on no device")?;
         let mut scope = TurnScope {
             host: WorkspaceActionHost::new(self.actions.clone(), workspace_id)
-                .offering(self.events.clone()),
+                .offering(self.events.clone())
+                .keeping_to(self.own_of(workspace, turn).await),
             person: Caller::authenticated(person, device).in_workspace(workspace),
             workspace: workspace.to_owned(),
             workspace_id,

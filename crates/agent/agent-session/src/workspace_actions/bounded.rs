@@ -73,6 +73,10 @@ pub(super) type BoundedKey = (
 pub(super) struct BoundedReplica {
     pub(super) held: Mounted,
     access: policy::MemberAccess,
+    /// The grants its caller carried. An agent's turn and what is written for that agent outside
+    /// a turn are one person and one agent under different rules: each acts on a replica opened
+    /// under its own, never on the other's.
+    granted: Vec<policy::Grant>,
     sandbox: Vec<collab_types::caps::CapOverride>,
     unix_time: u64,
 }
@@ -604,10 +608,12 @@ impl Worker {
         }
         self.clock = self.clock.wrapping_add(1);
         let clock = self.clock;
-        let same = self
-            .bounded
-            .get(&key)
-            .is_some_and(|held| held.access == policy.access && held.sandbox == policy.sandbox);
+        let granted = who.caller.granted(&policy.workspace);
+        let same = self.bounded.get(&key).is_some_and(|held| {
+            held.access == policy.access
+                && held.sandbox == policy.sandbox
+                && held.granted == granted
+        });
         let mut current = same
             && self.bounded.get(&key).is_some_and(|held| {
                 policy.unix_time.saturating_sub(held.unix_time) < ACCESS_FRESHNESS_SECS
@@ -660,6 +666,7 @@ impl Worker {
                         used: clock,
                     },
                     access: policy.access,
+                    granted,
                     sandbox: policy.sandbox,
                     unix_time: policy.unix_time,
                 },

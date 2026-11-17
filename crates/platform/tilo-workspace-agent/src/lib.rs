@@ -648,6 +648,9 @@ impl WorkspaceAgents {
         #[param("The rules: node, kinds and answer; none for the default")] bound: Vec<Bound>,
     ) -> Result<(), Refusal> {
         self.not_by_sub_agent(cx)?;
+        // The keeper's alone, and theirs in person: an agent bounds none, itself included, or
+        // it could take off what narrows it.
+        let me = keeping(cx)?;
         if bound.len() > MAX_BOUND {
             return Err(Refusal::new(format!(
                 "a bound holds at most {MAX_BOUND} rules"
@@ -665,6 +668,11 @@ impl WorkspaceAgents {
             .agents
             .find_mut(&agent)
             .ok_or_else(|| no_such(&agent))?;
+        if found.keeper != me {
+            return Err(Refusal::new(
+                "only the agent's keeper bounds what it may do",
+            ));
+        }
         found.bound = bound;
         Ok(())
     }
@@ -678,10 +686,15 @@ impl WorkspaceAgents {
         #[param("The agent")] agent: Id,
     ) -> Result<(), Refusal> {
         self.not_by_sub_agent(cx)?;
+        // Its keeper's alone, and theirs in person: no agent retires one, itself included.
+        let me = keeping(cx)?;
         let found = self
             .agents
             .find_mut(&agent)
             .ok_or_else(|| no_such(&agent))?;
+        if found.keeper != me {
+            return Err(Refusal::new("only the agent's keeper retires it"));
+        }
         if found.state == AgentState::Retired {
             return Err(Refusal::new("that agent is retired already"));
         }
