@@ -311,6 +311,10 @@ impl Session {
         let after = Instant::now();
         let answering = self.serve_drawn_frame();
         self.follow_shell_over_frame()?;
+        // A send taken since this pass's settle — a tool's, answered over the frame just drawn, or
+        // the canvas's, asked as the shell was read over it — goes to Chat now: a message never
+        // waits for the next wake of the loop, nor for the frame that wake draws.
+        self.shared.deliver_sends();
         // What search and the session's steps read of what the session publishes is read once the
         // frame is out: a key's turn draws what it opens before anything is read, and the reading
         // never delays a frame. A session that keeps drawing is still read, every tenth of a second.

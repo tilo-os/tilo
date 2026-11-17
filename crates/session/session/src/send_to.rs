@@ -77,6 +77,8 @@ struct Sending {
     /// The caller's answer: the pass completes it once the message is in the record, or says why
     /// it never landed.
     answer: tilo_actions::remote::Completer<Result<tilo_actions::ActionOutput, ApiError>>,
+    /// When it was taken: how long it waited for the pass that carried it out is logged.
+    taken: tilo_clock::time::Instant,
 }
 
 /// A send as carried out: what it carried, whom it reached, and whether it landed.
@@ -207,6 +209,7 @@ impl Sends {
             workspace,
             asked,
             answer,
+            taken: tilo_clock::now(),
         });
         Ok(Started::Later(later))
     }
@@ -234,6 +237,9 @@ impl Service for SendToService {
             serde_json::json!({
                 "recipients": *self.sends.recipients.borrow(),
                 "sent": *self.sends.sent.borrow(),
+                // Sends taken and not carried out yet: none once a pass ends, since a send goes
+                // out in the pass that took it.
+                "waiting": self.sends.waiting.borrow().len(),
             })
         })
     }
@@ -313,6 +319,8 @@ impl Shared {
                     sending.asked,
                 ),
             };
+            // How long it waited for the pass that carried it out: none past that pass's end.
+            tracing::info!(%workspace, waited_ms = sending.taken.elapsed().as_millis(), "a send went to Chat");
             let mut sent = self.sends.sent.borrow_mut();
             sent.push(Sent {
                 number,

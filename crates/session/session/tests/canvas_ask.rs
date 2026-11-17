@@ -121,6 +121,63 @@ fn the_first_ask_on_the_canvas_makes_the_workspaces_agent_and_the_second_goes_to
     assert_eq!(sends[1], second, "the second is the last carried out");
 }
 
+/// A send goes to Chat in the pass that took it. The canvas's ask is taken as the shell is read
+/// over the frame just drawn, after the pass's own settle; it still goes out before that pass
+/// ends, never waiting for the loop's next wake and the frame that wake draws. After every step of
+/// the ask, from the Enter on, no send is waiting.
+#[test]
+fn an_ask_goes_out_in_the_pass_that_took_it() {
+    let _settled = ui::motion::testing::settled();
+    let root = private_home();
+    let mut session = session(root.path());
+    let at = crate::common::free_point(&mut session);
+    crate::common::click(&mut session, at);
+    until(
+        &mut session,
+        "the caret where the person pointed",
+        |session| on_screen(session, crate::common::CANVAS_CARET).is_some(),
+    );
+    crate::common::type_text(&mut session, "what is on my task list?");
+    let waiting = |session: &mut Session| {
+        session.settle_services();
+        let reading = session
+            .read("session:send-to")
+            .expect("the sends' own reading");
+        (
+            reading["waiting"].as_u64().expect("how many sends wait"),
+            reading["sent"].as_array().map_or(0, Vec::len),
+        )
+    };
+    for pressed in [true, false] {
+        session
+            .compositor()
+            .input(tilo_compositor::InputEvent::Key {
+                keycode: crate::common::KEY_ENTER,
+                pressed,
+            })
+            .unwrap();
+        session.step(Duration::from_millis(1)).unwrap();
+        assert_eq!(
+            waiting(&mut session).0,
+            0,
+            "a pass ends with no send waiting"
+        );
+    }
+    let deadline = std::time::Instant::now() + tilo_test_env::hang_bound();
+    loop {
+        let (waiting, sent) = waiting(&mut session);
+        assert_eq!(waiting, 0, "a pass ends with no send waiting");
+        if sent == 1 {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the ask was never sent"
+        );
+        session.step(Duration::from_millis(1)).unwrap();
+    }
+}
+
 /// The agent the steps below are attributed to, as an agent's turn names it.
 /// The published root of the seeded app `app` (`so.tilo.lang.mail`): what the agent's steps
 /// show, and what they stand beside.
