@@ -76,6 +76,8 @@ public final class TiloSource: AssistantSource {
     private static let personKey = "TiloLivePerson"
 
     private var person: Person?
+    /// The ask for the person's name that goes on beside the way in.
+    private var naming: Task<Void, Never>?
     /// The person's identity, as Chat names the author of what they write.
     private var me: String?
     /// The agent that is the person's assistant, by its id in Chat's record of agents.
@@ -233,6 +235,8 @@ public final class TiloSource: AssistantSource {
         forgetClosedKey()
         defaults.removeObject(forKey: TiloSource.routeKey)
         defaults.removeObject(forKey: TiloSource.personKey)
+        naming?.cancel()
+        naming = nil
         person = nil
         me = nil
         assistant = nil
@@ -322,13 +326,14 @@ public final class TiloSource: AssistantSource {
         let read = (asked as? String).flatMap(JSON.init(text:))
         if let root = root ?? read?["person"]?.string {
             me = root
-            // Chat's own row for the person, which a device that just got in publishes a moment later.
-            let row = try? await engine.whenPublished(within: .seconds(10)) { try await self.ownRow(of: root) }
-            namesKinds = row?["id"]?.string == nil
-            let known = Person(id: .init(root), name: row?["name"]?.string ?? person?.name ?? "",
-                               workspace: read?["workspace"]?.string ?? "")
-            person = known
-            defaults.set([root, known.name, known.workspace], forKey: TiloSource.personKey)
+            // Chat's own row for the person says their name, and how this page names a member. A
+            // device that just got in publishes it a moment later, and Chat keeps none for a
+            // person it was never told a name of: the way in does not wait for it. It is asked
+            // for once here, and beside everything else for ten seconds more.
+            let workspace = read?["workspace"]?.string ?? ""
+            let row = try? await ownRow(of: root)
+            take(row: row, of: root, in: workspace)
+            if row == nil { nameLater(root, in: workspace) }
         }
         tell()
         switch mainChat {
@@ -366,6 +371,39 @@ public final class TiloSource: AssistantSource {
     } catch { /* nothing kept */ }
     return JSON.stringify({person, workspace: globalThis.tiloMount?.state?.()?.workspaceName ?? ''});
     """#
+
+    /// What Chat's own row says of the person, or nothing where there is none yet: their name,
+    /// and whether this page names a member by its kind.
+    private func take(row: JSON?, of root: String, in workspace: String) {
+        namesKinds = row?["id"]?.string == nil
+        let known = Person(id: .init(root), name: row?["name"]?.string ?? person?.name ?? "", workspace: workspace)
+        person = known
+        defaults.set([root, known.name, known.workspace], forKey: TiloSource.personKey)
+    }
+
+    /// Ask for Chat's own row of the person beside everything else, for ten seconds. When it
+    /// comes the person has their name; and where it shows that this page names a member by a
+    /// bare id, their conversation with the assistant is spelled anew and read again.
+    private func nameLater(_ root: String, in workspace: String) {
+        naming?.cancel()
+        naming = Task { [weak self] in
+            guard let self,
+                  let row = try? await self.engine.whenPublished(within: .seconds(10), { try await self.ownRow(of: root) }),
+                  !Task.isCancelled, self.me == root
+            else { return }
+            let named = self.namesKinds
+            self.take(row: row, of: root, in: workspace)
+            self.tell()
+            guard named != self.namesKinds else { return }
+            switch self.mainChat {
+            case .agent(let id, _): self.feeds[.main]?.conversation = self.direct(root, id)
+            case .assistant: if let assistant = self.assistant { self.feeds[.main]?.conversation = self.direct(root, assistant) }
+            case .conversation: break
+            }
+            self.feeds[.main]?.told = false
+            await self.look()
+        }
+    }
 
     /// Chat's row for the person: under their identity where the page addresses it so, else
     /// the one of the rows it publishes whose id is theirs.
