@@ -1019,7 +1019,6 @@ pub(crate) async fn settle_strips(
     workspaces: &Workspaces,
     workspace: &str,
     cert: &DeviceCert,
-    shown: &str,
     strips: &[String],
 ) -> anyhow::Result<()> {
     if strips.is_empty() {
@@ -1027,7 +1026,7 @@ pub(crate) async fn settle_strips(
     }
     workspaces
         .author_workspace_document(workspace, cert, crate::workspace_strips::DESKTOP, |doc| {
-            crate::workspace_strips::settle_strips(doc, workspace, shown, strips)
+            crate::workspace_strips::settle_strips(doc, workspace, strips)
         })
         .await
         .map(drop)
@@ -1391,14 +1390,7 @@ pub(crate) async fn run(
             &persistent.discussions,
         )
         .await?;
-        settle_strips(
-            &workspaces,
-            &workspace,
-            &host_cert,
-            &shown,
-            &persistent.strips,
-        )
-        .await?;
+        settle_strips(&workspaces, &workspace, &host_cert, &persistent.strips).await?;
         ensure_guest_policy(&workspaces, &workspace, &host_cert).await?;
         // Members inviting, or not, never lets in anyone the entry does not.
         settled(
