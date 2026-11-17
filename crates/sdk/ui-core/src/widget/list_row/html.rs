@@ -55,12 +55,14 @@ impl ListRowFace<'_> {
                 part.tag = Some("label");
                 part.focusable = true;
                 part.semantics = check;
-                part.own = Some(crate::composition::Own::Control(vec![Control::Check {
-                    style: CheckStyle::Checkbox,
-                    checked,
-                    mixed: false,
-                    label: None,
-                }]));
+                part.own = Some(crate::composition::Own::Control {
+                    controls: vec![Control::Check {
+                        style: CheckStyle::Checkbox,
+                        checked,
+                        mixed: false,
+                        label: None,
+                    }],
+                });
                 if let Some(icon) = icon {
                     let at = slot.x0 + m.icon + m.column_gap;
                     let r = Rect::new(

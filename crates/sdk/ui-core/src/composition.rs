@@ -108,8 +108,10 @@ pub enum Own {
     /// the entry, the chooser, the strip of choices or the link, with what it
     /// holds (a widget paints several of its parts, a colour picker its swatches
     /// beside its hex field). What the person does on that element comes back
-    /// through the semantic action the widget already performs.
-    Control(Vec<Control>),
+    /// through the semantic action the widget already performs. A struct
+    /// variant: a page reads `{kind: "control", controls: [...]}`, and a
+    /// tagged newtype holding a list cannot be written at all.
+    Control { controls: Vec<Control> },
     /// The widget paint is it: a host shows it as one picture of the widget's box.
     Painted { version: u64 },
 }
@@ -927,8 +929,12 @@ impl<'a> HtmlCx<'a> {
     /// adds them.
     pub fn control(&mut self, control: Control) {
         match &mut self.composed.own {
-            Some(Own::Control(controls)) => controls.push(control),
-            _ => self.composed.own = Some(Own::Control(vec![control])),
+            Some(Own::Control { controls }) => controls.push(control),
+            _ => {
+                self.composed.own = Some(Own::Control {
+                    controls: vec![control],
+                });
+            }
         }
     }
 
@@ -1100,7 +1106,7 @@ mod tests {
 
     fn controls(node: &Composed) -> &[Control] {
         match node.own.as_ref() {
-            Some(Own::Control(controls)) => controls,
+            Some(Own::Control { controls }) => controls,
             other => panic!("{} composes {other:?}, not controls", node.widget),
         }
     }
@@ -1132,6 +1138,12 @@ mod tests {
         assert!(!checked);
         assert!(!mixed);
         assert_eq!(label.as_ref().unwrap().text, "Show hidden files");
+        // A page reads it as its kind and its list of controls.
+        let json = serde_json::to_value(&composition).expect("a composition with a box is written");
+        let own = &serde_json::to_value(checkbox).unwrap()["own"];
+        assert_eq!(own["kind"], "control");
+        assert_eq!(own["controls"][0]["kind"], "check");
+        assert!(json["root"].is_object());
 
         // What the page does on the box is the widget's own action: the next
         // frame shows it marked.

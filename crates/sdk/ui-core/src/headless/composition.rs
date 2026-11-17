@@ -387,7 +387,11 @@ fn shows_words(node: &Composed) -> bool {
     matches!(
         node.own,
         Some(
-            Own::Text(_) | Own::Field { .. } | Own::Blocks { .. } | Own::Face(_) | Own::Control(_)
+            Own::Text(_)
+                | Own::Field { .. }
+                | Own::Blocks { .. }
+                | Own::Face(_)
+                | Own::Control { .. }
         )
     ) || node.children.iter().any(shows_words)
 }
