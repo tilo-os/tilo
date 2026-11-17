@@ -118,21 +118,31 @@ impl Overview {
             }
         }
         let progress = inner.zoom.borrow().progress(now);
+        // Where each window stands on the display it is shown on, while it is shown: the window
+        // the overview flies from. A window of another strip or display is not there, so its
+        // picture fades in where it rests instead.
         let shown = shell.shown();
         let origin = shell.origin();
-        let windows: HashMap<u64, TabId> = handle
-            .read(crate::windows::window_surfaces)
-            .into_iter()
-            .map(|(tab, window)| (window, tab))
-            .collect();
+        let surfaces = handle.read(crate::windows::window_surfaces);
         let (ox, oy) = origin;
         let mut pictured = HashMap::new();
         let mut sources = HashMap::new();
+        // Every window the layout holds is pictured, not only the ones on the display in front:
+        // the overview is the workspace's whole hierarchy, and a window on another strip or
+        // another display shows its own pixels in its card as the windows in front do. Only a
+        // window the compositor keeps nothing of is left to its app's mark.
+        for (tab, window) in surfaces {
+            pictured.insert(tab, window);
+        }
+        // Where the shown windows stand, so their pictures fly from there.
+        let by_window: HashMap<u64, TabId> = pictured
+            .iter()
+            .map(|(tab, window)| (*window, *tab))
+            .collect();
         for &(window, rect) in &shown {
-            let Some(&tab) = windows.get(&window) else {
+            let Some(&tab) = by_window.get(&window) else {
                 continue;
             };
-            pictured.insert(tab, window);
             sources.insert(
                 tab,
                 Rect::new(

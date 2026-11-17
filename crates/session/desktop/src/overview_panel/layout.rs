@@ -24,6 +24,27 @@ pub(super) const SHARES_MAX_ROWS: usize = 4;
 /// Width to height of a window's tab that is not in front, beside it.
 const BEHIND_TAB_ASPECT: f64 = 0.75;
 
+/// The size a window of `permille` of its strip's width has on a display `display` wide and tall,
+/// for a window the shell does not lay out here (its strip is not the one on screen): its share of
+/// the strip's usable width, and the height the window's content has — the display less the bands
+/// the strip keeps above and below a tiled row. A picture laid out at this size keeps the shape the
+/// window has where it stands, so its card fills with it rather than at a share of the display's
+/// own proportions.
+fn fallback_window_size(display: Size, permille: u32) -> Size {
+    let share = if permille == 0 {
+        0.5
+    } else {
+        f64::from(permille) / 1000.0
+    };
+    // The strip's own box: the gutters beside a tiled row and the bands above and below it, as the
+    // shell lays a window out (`ui::widget::STRIP_EDGE_GUTTER_PX` and its siblings).
+    let usable = (display.width - 2.0 * ui::widget::STRIP_EDGE_GUTTER_PX).max(1.0);
+    let height =
+        (display.height - ui::widget::STRIP_TOP_GAP_PX - ui::widget::STRIP_BOTTOM_GUTTER_PX)
+            .max(1.0);
+    Size::new(usable * share, height)
+}
+
 /// How far the panel rises as it opens, matching the workspace-settings modal so the desktop's
 /// floating surfaces arrive the same way.
 pub const PANEL_RISE_PX: f64 = 20.0;
@@ -409,6 +430,14 @@ impl OverviewPanel {
             + m.section_gap
             + m.caption_h
             + self.content_height();
+        // A picture beside the panel taller than the panel's own content grows the panel to its
+        // height, so the two stand as one band on the display's line rather than a card floating
+        // beside a tray of cards.
+        let natural = if self.beside_picture() {
+            natural.max(self.picture_need_height())
+        } else {
+            natural
+        };
         let h = natural.min(area.height() - m.margin * 2.0).max(0.0);
         let cy = f64::midpoint(area.y0, area.y1);
         let cx = if self.beside_picture() {
@@ -667,11 +696,15 @@ impl OverviewPanel {
         if self.beside_picture() {
             let area = self.rect;
             let panel = self.panel_rect();
+            // The picture stands beside the panel on the same band as it, both centred on the
+            // display's line: the panel has already grown to the picture's height
+            // ([`Self::picture_need_height`]), so the two share one band rather than a tray of
+            // cards against a card floating mid-display.
             return Rect::new(
                 area.x0 + m.margin,
-                area.y0 + m.margin,
+                panel.y0,
                 (panel.x0 - m.margin).max(area.x0 + m.margin),
-                area.y1 - m.margin,
+                panel.y1,
             );
         }
         let content = self.here_content();
@@ -682,6 +715,16 @@ impl OverviewPanel {
             content.x1,
             top + band_height(strips, &self.grid, self.grid.band),
         )
+    }
+
+    /// The height the picture of this workspace's strips needs beside the panel: each strip's name,
+    /// its windows at the picture's own scale, and their titles. Zero when no picture is shown.
+    fn picture_need_height(&self) -> f64 {
+        if !self.shows_windows() {
+            return 0.0;
+        }
+        let strips = self.here_card().map_or(0, |card| card.strips.len());
+        band_height(strips, &self.grid, self.grid.band)
     }
 
     /// Each strip of the workspace you are in, as the picture shows it.
@@ -717,14 +760,7 @@ impl OverviewPanel {
                         .group_sizes
                         .get(&group.id)
                         .copied()
-                        .unwrap_or_else(|| {
-                            let share = if group.width_permille == 0 {
-                                0.5
-                            } else {
-                                f64::from(group.width_permille) / 1000.0
-                            };
-                            Size::new(display.width * share, display.height * 0.9)
-                        });
+                        .unwrap_or_else(|| fallback_window_size(display, group.width_permille));
                     // A window's other tabs stand beside it, narrower: they are the same window,
                     // not windows of their own.
                     let behind = Size::new(

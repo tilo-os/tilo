@@ -1480,6 +1480,25 @@ mod tests {
             notes.x1 <= wide.panel_rect().x0,
             "the picture stands beside"
         );
+        // The picture stands on the panel's own band, not off beside a card floating mid-display:
+        // the two are centred on the same line, and the picture is no taller than the panel, so
+        // they read as one band.
+        let panel = wide.panel_rect();
+        let band = picture
+            .places
+            .iter()
+            .fold(None::<vello::kurbo::Rect>, |all, place| {
+                Some(all.map_or(place.bounds(), |all| all.union(place.bounds())))
+            })
+            .expect("a pictured strip");
+        assert!(
+            (band.center().y - panel.center().y).abs() <= 1.0,
+            "the picture stands on the panel's line: band {band:?} against panel {panel:?}"
+        );
+        assert!(
+            band.y0 >= panel.y0 - 1.0 && band.y1 <= panel.y1 + 1.0,
+            "the picture is no taller than the panel beside it: band {band:?} panel {panel:?}"
+        );
         let narrow = opened_in(NARROW, shell());
         assert!(!narrow.beside_picture());
         let notes = narrow.picture().tile(0, 0).unwrap();

@@ -878,6 +878,164 @@ fn the_overview_pictures_the_shells_windows() {
     );
 }
 
+/// Every picture in the overview carries pixels: the card stands where the window's own buffer is
+/// drawn, so a window that showed text on its strip shows it there too. A card that stays the bare
+/// ground is a window the person cannot recognise.
+#[test]
+fn every_overview_card_shows_the_window_it_pictures() {
+    let _settled = ui::motion::testing::settled();
+    let _clock = held_clock();
+    let mut session = session();
+    // A client whose buffer differs from the card's ground: a dark terminal, drawn green.
+    let mut client = mapped(&mut session, "org.example.Terminal");
+    let (width, height) = client
+        .seen
+        .size
+        .filter(|(w, h)| *w > 0 && *h > 0)
+        .unwrap_or((300, 200));
+    client.show(width, height, [30, 200, 60, 255]);
+    // The compositor takes the frame the client just committed.
+    pump(&mut session, &mut [&mut client], |session, _| {
+        let shot = session
+            .compositor()
+            .screenshot("HEADLESS-1")
+            .expect("a frame");
+        green_pixels(
+            &shot.rgba,
+            (shot.width, shot.height),
+            (0.0, 0.0, f64::from(WIDTH), f64::from(HEIGHT)),
+        ) > 500
+    });
+    settle(&mut session, 6);
+
+    // The window stands on a strip of its own, and the person works in the first strip: the
+    // overview pictures every strip of the workspace, not only the one on screen, so the window on
+    // the strip off screen still shows its own pixels.
+    let tab = tab_of(&session, "org.example.Terminal");
+    add_strip(&session, "Second");
+    let second = strip_id(&session, "Second");
+    invoke_with(
+        &mut session,
+        CHROME_RESOURCE,
+        "move-tab",
+        &serde_json::json!({"tab": tab.to_string(), "to": {"strip": second}}),
+    );
+    // Back to the first strip: the window is now on a strip the person is not looking at.
+    invoke_with(
+        &mut session,
+        CHROME_RESOURCE,
+        "step-strip",
+        &serde_json::json!({"steps": -1}),
+    );
+    for _ in 0..20 {
+        client.exchange();
+        session.step(Duration::from_millis(4)).expect("step");
+    }
+    // The window is on the second strip, and the person is looking at the first: nothing of it is
+    // on screen, so a card that shows its pixels shows them because the overview pictures every
+    // strip, not because the window happens to be in front.
+    let shown = session
+        .handle()
+        .read(|tree| tree.active_strip_id())
+        .expect("a strip is shown");
+    let holding = session.handle().read(|tree| {
+        tree.active_workspace()
+            .and_then(|workspace| {
+                workspace.strips.iter().find(|strip| {
+                    strip
+                        .window_groups
+                        .iter()
+                        .any(|group| group.tabs.iter().any(|held| held.id == tab))
+                })
+            })
+            .map(|strip| strip.id)
+    });
+    assert!(
+        holding.is_some_and(|strip| strip != shown),
+        "the window stands on a strip the person is not looking at: {holding:?} against {shown:?}"
+    );
+
+    invoke(&mut session, CHROME_RESOURCE, "overview");
+    settle(&mut session, 6);
+    let pictures = session.overview_pictures();
+    let (_, rect) = pictures
+        .first()
+        .copied()
+        .unwrap_or_else(|| panic!("the window on its own strip is pictured: {pictures:?}"));
+    let shot = session
+        .compositor()
+        .screenshot("HEADLESS-1")
+        .expect("screenshot");
+    let green = green_pixels(&shot.rgba, (shot.width, shot.height), rect);
+    assert!(
+        green > 500,
+        "the card shows the window's pixels, not its ground: {green} green in {rect:?}"
+    );
+}
+
+/// A card fills with its window: the picture is drawn at the window's own aspect, filling the
+/// card's width, never shrunk into a corner of it with the ground showing round it.
+#[test]
+fn an_overview_card_fills_at_the_windows_aspect() {
+    let _settled = ui::motion::testing::settled();
+    let _clock = held_clock();
+    let mut session = session();
+    let mut client = mapped(&mut session, "org.example.Terminal");
+    // Draw the window in a colour no card's ground is, at the shape the desktop gave it.
+    let (width, height) = client
+        .seen
+        .size
+        .filter(|(w, h)| *w > 0 && *h > 0)
+        .unwrap_or((300, 200));
+    client.show(width, height, [30, 200, 60, 255]);
+    pump(&mut session, &mut [&mut client], |session, _| {
+        let shot = session
+            .compositor()
+            .screenshot("HEADLESS-1")
+            .expect("a frame");
+        green_pixels(
+            &shot.rgba,
+            (shot.width, shot.height),
+            (0.0, 0.0, f64::from(WIDTH), f64::from(HEIGHT)),
+        ) > 500
+    });
+    settle(&mut session, 6);
+
+    invoke(&mut session, CHROME_RESOURCE, "overview");
+    settle(&mut session, 6);
+    let pictures = session.overview_pictures();
+    let (_, rect) = pictures
+        .first()
+        .copied()
+        .unwrap_or_else(|| panic!("the window on the shell is pictured: {pictures:?}"));
+    let (x, y, w, h) = rect;
+    let shot = session
+        .compositor()
+        .screenshot("HEADLESS-1")
+        .expect("screenshot");
+    let (size, frame) = ((shot.width, shot.height), shot.rgba.as_slice());
+    // The picture's own bounds, where its pixels are, inside the card it rests in.
+    let bounds = green_bounds(frame, size, rect)
+        .unwrap_or_else(|| panic!("the card's picture has pixels: {rect:?}"));
+    let (dx, dy, dw, dh) = bounds;
+    // The window is the shape of its buffer, and the picture keeps that shape: a picture that
+    // shrank into a corner leaves bars of the card's ground at its right and its bottom.
+    let window = f64::from(width) / f64::from(height);
+    let drawn = dw / dh;
+    assert!(
+        (drawn - window).abs() < 0.02 * window,
+        "the picture keeps the window's shape: {drawn} against {window}"
+    );
+    assert!(
+        (dx - x).abs() <= 1.0
+            && (dy - y).abs() <= 1.0
+            && (dw - w).abs() <= 1.0
+            && (dh - h).abs() <= 1.0,
+        "the picture fills its card: {:?} in {rect:?}",
+        (dx, dy, dw, dh)
+    );
+}
+
 /// A window the session keeps private is pictured as the placeholder a capture draws of it: the
 /// shell the picture stands on is what a screenshot, a recording and a share of the overview show.
 #[test]
@@ -1025,6 +1183,75 @@ fn red_pixels(frame: &[u8], size: (u32, u32), rect: (f64, f64, f64, f64)) -> u64
         }
     }
     red
+}
+
+/// How many pixels of `frame` (`size` physical) inside `rect` (logical) are the green the test
+/// client paints itself: a window whose pixels are not the card's own ground.
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "a rect on a drawn frame, clamped to it"
+)]
+fn green_pixels(frame: &[u8], size: (u32, u32), rect: (f64, f64, f64, f64)) -> u64 {
+    let (width, height) = (size.0 as usize, size.1 as usize);
+    let scale = f64::from(size.0) / f64::from(u32::try_from(WIDTH).expect("width"));
+    let x0 = (rect.0 * scale).max(0.0) as usize;
+    let y0 = (rect.1 * scale).max(0.0) as usize;
+    let x1 = ((rect.0 + rect.2) * scale).min(f64::from(size.0)) as usize;
+    let y1 = ((rect.1 + rect.3) * scale).min(f64::from(size.1)) as usize;
+    let mut green = 0;
+    for y in y0..y1.min(height) {
+        for x in x0..x1.min(width) {
+            let at = (y * width + x) * 4;
+            let [r, g, b, _] = [frame[at], frame[at + 1], frame[at + 2], frame[at + 3]];
+            if g > 150 && r < 90 && b < 110 {
+                green += 1;
+            }
+        }
+    }
+    green
+}
+
+/// Where the test client's green pixels lie inside `rect` (logical), as `(x, y, width, height)`
+/// in the frame's logical coordinates: `None` when none is there.
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::cast_precision_loss,
+    reason = "a rect on a drawn frame, clamped to it"
+)]
+fn green_bounds(
+    frame: &[u8],
+    size: (u32, u32),
+    rect: (f64, f64, f64, f64),
+) -> Option<(f64, f64, f64, f64)> {
+    let (width, height) = (size.0 as usize, size.1 as usize);
+    let scale = f64::from(size.0) / f64::from(u32::try_from(WIDTH).expect("width"));
+    let x0 = (rect.0 * scale).max(0.0) as usize;
+    let y0 = (rect.1 * scale).max(0.0) as usize;
+    let x1 = ((rect.0 + rect.2) * scale).min(f64::from(size.0)) as usize;
+    let y1 = ((rect.1 + rect.3) * scale).min(f64::from(size.1)) as usize;
+    let (mut left, mut top, mut right, mut bottom) = (usize::MAX, usize::MAX, 0, 0);
+    for y in y0..y1.min(height) {
+        for x in x0..x1.min(width) {
+            let at = (y * width + x) * 4;
+            let [r, g, b, _] = [frame[at], frame[at + 1], frame[at + 2], frame[at + 3]];
+            if g > 150 && r < 90 && b < 110 {
+                left = left.min(x);
+                top = top.min(y);
+                right = right.max(x);
+                bottom = bottom.max(y);
+            }
+        }
+    }
+    (right > left).then(|| {
+        (
+            left as f64 / scale,
+            top as f64 / scale,
+            (right - left + 1) as f64 / scale,
+            (bottom - top + 1) as f64 / scale,
+        )
+    })
 }
 
 /// The mean luminance of `frame` 's pixels, 0 to 255.
