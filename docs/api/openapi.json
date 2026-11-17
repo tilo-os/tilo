@@ -27469,6 +27469,10 @@
                     {
                       "const": "people",
                       "type": "string"
+                    },
+                    {
+                      "const": "pieces",
+                      "type": "string"
                     }
                   ]
                 },
@@ -27532,6 +27536,25 @@
             ]
           },
           "time_ms": {
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "issue"
+        ],
+        "description": ""
+      },
+      "tasks.issues.set-pieces-at-once.Arguments": {
+        "type": "object",
+        "properties": {
+          "issue": {
+            "type": "string"
+          },
+          "at_once": {
             "minimum": 0,
             "type": [
               "integer",
@@ -34863,6 +34886,12 @@
       "resource": "tasks.issues",
       "action": "set-budget",
       "arguments": "#/components/schemas/tasks.issues.set-budget.Arguments"
+    },
+    {
+      "app": "so.tilo.tasks",
+      "resource": "tasks.issues",
+      "action": "set-pieces-at-once",
+      "arguments": "#/components/schemas/tasks.issues.set-pieces-at-once.Arguments"
     },
     {
       "app": "so.tilo.tasks",

@@ -10,7 +10,7 @@ use crate::common;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use app_host::install::InstallExpectation;
+use app_host::install::{InstallExpectation, install_tapp};
 use app_host::transport;
 use package_store::{Catalog, PackageStore, SystemStore};
 
@@ -118,7 +118,7 @@ fn list_reports_payload_bytes_without_walking() {
     let h = Harness::new();
     let store = PackageStore::at(&h.store_root);
     let (bytes, _) = common::build_tapp(2);
-    app_host::install::install_tapp(&store, &bytes, app_host::Pinning::Tried, None).unwrap();
+    install_tapp(&store, &bytes, app_host::Pinning::Tried, None).unwrap();
     let row = store.registry().unwrap().entries()[0].clone();
     let measured = package_store::tree_size(&row.payload_root);
     assert!(measured > 0);

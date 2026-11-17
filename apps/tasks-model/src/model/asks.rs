@@ -11,9 +11,11 @@
 //! until somebody says something new: what was asked before the wait began or before the stop is
 //! not asked a second time.
 
+use std::collections::{BTreeMap, BTreeSet};
+
 use tilo_resource::{Id, MemberId};
 
-use super::{Issue, MessageKind};
+use super::{Issue, MessageKind, Status, WaitKind, Work};
 
 /// What asked an agent to work on an issue.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -26,6 +28,8 @@ pub enum Asked {
     Resumed,
     /// The latest moment its wait ends has come.
     WaitEnded,
+    /// Every piece it waited for is through: [`IssueAsk::words`] says how they ended.
+    PiecesEnded,
 }
 
 /// A person's ask of the agent an issue is assigned to that the agent has not answered yet.
@@ -56,16 +60,132 @@ pub fn agent_asks<'a>(issues: impl IntoIterator<Item = (&'a Id, &'a Issue)>) -> 
     agent_asks_at(issues, i64::MIN)
 }
 
-/// [`agent_asks`] at `now_ms`: an issue whose wait was to end by then asks its agent again.
+/// [`agent_asks`] at `now_ms`: an issue whose wait was to end by then asks its agent again, and
+/// so does one that waits for its pieces once every one of them is through. Of the pieces of an
+/// issue that bounds how many are in work at once, only so many are begun: the others ask
+/// when those in work are through, in the tracker's order.
 #[must_use]
 pub fn agent_asks_at<'a>(
     issues: impl IntoIterator<Item = (&'a Id, &'a Issue)>,
     now_ms: i64,
 ) -> Vec<IssueAsk> {
-    issues
-        .into_iter()
-        .filter_map(|(id, issue)| ask_on(id, issue, now_ms))
-        .collect()
+    let issues: Vec<(&Id, &Issue)> = issues.into_iter().collect();
+    let pieces = Pieces::of(&issues);
+    let asks = issues
+        .iter()
+        .filter_map(|(id, issue)| ask_on(id, issue, now_ms, &pieces))
+        .collect();
+    pieces.in_turn(asks)
+}
+
+/// Whether work on a piece is over for now: it is closed, ready for review, or stopped.
+fn through(piece: &Issue) -> bool {
+    piece.status.closed()
+        || piece.status == Status::InReview
+        || piece
+            .work
+            .as_ref()
+            .is_some_and(|work| work.stopped.is_some())
+}
+
+/// Whether work on a piece began and is not through.
+fn in_work(piece: &Issue) -> bool {
+    !through(piece) && piece.work.as_ref().is_some_and(|work| work.sessions > 0)
+}
+
+/// The pieces of every issue, by the issue's id: the issues under it, in the tracker's order,
+/// and how many of them the issue lets be in work at once.
+struct Pieces<'a> {
+    under: BTreeMap<&'a str, Vec<(&'a Id, &'a Issue)>>,
+    at_once: BTreeMap<&'a str, u64>,
+}
+
+impl<'a> Pieces<'a> {
+    fn of(issues: &[(&'a Id, &'a Issue)]) -> Self {
+        let mut under: BTreeMap<&str, Vec<(&Id, &Issue)>> = BTreeMap::new();
+        let mut at_once = BTreeMap::new();
+        for &(id, issue) in issues {
+            if let Some(parent) = &issue.parent {
+                under.entry(parent.as_str()).or_default().push((id, issue));
+            }
+            if let Some(bound) = issue.work.as_ref().and_then(|work| work.pieces_at_once) {
+                at_once.insert(id.as_str(), bound);
+            }
+        }
+        for pieces in under.values_mut() {
+            pieces.sort_by(|(a_id, a), (b_id, b)| {
+                (&a.rank, a.number, a_id.as_str()).cmp(&(&b.rank, b.number, b_id.as_str()))
+            });
+        }
+        Self { under, at_once }
+    }
+
+    /// How the pieces under `issue` ended, in words, once every one of them is through; none
+    /// while one is still to be worked on.
+    fn ended(&self, issue: &Id) -> Option<String> {
+        let pieces = self
+            .under
+            .get(issue.as_str())
+            .map(Vec::as_slice)
+            .unwrap_or_default();
+        if !pieces.iter().all(|(_, piece)| through(piece)) {
+            return None;
+        }
+        let count =
+            |fits: fn(&Issue) -> bool| pieces.iter().filter(|(_, piece)| fits(piece)).count();
+        let cancelled = count(|piece| piece.status == Status::Cancelled);
+        let done = count(|piece| piece.status == Status::Done);
+        let ready = count(|piece| piece.status == Status::InReview);
+        let stopped = count(|piece| !piece.status.closed() && piece.status != Status::InReview);
+        Some(format!(
+            "{} pieces: {ready} ready for review, {done} done, {stopped} stopped, {cancelled} \
+             cancelled",
+            pieces.len()
+        ))
+    }
+
+    /// What asks an issue that waits for its pieces, once every one of them is through: the
+    /// ask's own id, and how they ended. None without a clock to read.
+    fn asks(&self, issue: &Id, work: Option<&Work>, now_ms: i64) -> Option<(String, String)> {
+        let work = work.filter(|work| work.waiting() && now_ms != i64::MIN)?;
+        if !work.waits.iter().any(|wait| wait.kind == WaitKind::Pieces) {
+            return None;
+        }
+        let ended = self.ended(issue)?;
+        Some((
+            format!("pieces-{}", work.since_ms.unwrap_or_default()),
+            ended,
+        ))
+    }
+
+    /// `asks` without those that would begin a piece beyond what its issue lets be in work at
+    /// once: a piece that began keeps its asks, and the others are begun in the tracker's order
+    /// as places come free.
+    fn in_turn(&self, asks: Vec<IssueAsk>) -> Vec<IssueAsk> {
+        let mut held: BTreeSet<&str> = BTreeSet::new();
+        for (issue, bound) in &self.at_once {
+            let Some(pieces) = self.under.get(issue) else {
+                continue;
+            };
+            let going = pieces.iter().filter(|(_, piece)| in_work(piece)).count();
+            let mut places = usize::try_from(*bound)
+                .unwrap_or(usize::MAX)
+                .saturating_sub(going);
+            for (id, piece) in pieces {
+                if in_work(piece) || through(piece) || !asks.iter().any(|ask| &ask.issue == *id) {
+                    continue;
+                }
+                if places == 0 {
+                    held.insert(id.as_str());
+                } else {
+                    places = places.saturating_sub(1);
+                }
+            }
+        }
+        asks.into_iter()
+            .filter(|ask| !held.contains(ask.issue.as_str()))
+            .collect()
+    }
 }
 
 fn is_person(member: Option<&MemberId>) -> bool {
@@ -73,7 +193,7 @@ fn is_person(member: Option<&MemberId>) -> bool {
 }
 
 /// The ask on `issue` its agent has not answered at `now_ms`, if any.
-fn ask_on(id: &Id, issue: &Issue, now_ms: i64) -> Option<IssueAsk> {
+fn ask_on(id: &Id, issue: &Issue, now_ms: i64, pieces: &Pieces<'_>) -> Option<IssueAsk> {
     if issue.status.closed() {
         return None;
     }
@@ -132,11 +252,15 @@ fn ask_on(id: &Id, issue: &Issue, now_ms: i64) -> Option<IssueAsk> {
     {
         ask = (
             until_ms,
-            given,
+            given.clone(),
             format!("waited-{until_ms}"),
             String::new(),
             Asked::WaitEnded,
         );
+    }
+    // An issue that waits for its pieces is asked again once every one of them is through.
+    if let Some((cause, ended)) = pieces.asks(id, work, now_ms) {
+        ask = (now_ms, given, cause, ended, Asked::PiecesEnded);
     }
     let (since, person, cause, words, asked) = ask;
     if let Some(work) = work {
@@ -168,4 +292,36 @@ fn ask_on(id: &Id, issue: &Issue, now_ms: i64) -> Option<IssueAsk> {
         words,
         asked,
     })
+}
+
+/// The open issues of `issues` that wait for `person`'s automation `automation`: each is with an
+/// agent, was given to it by `person`, waits, and names the automation in one of the things it
+/// waits for ([`WaitFor::event`](super::WaitFor)). That automation going on tells them to go on
+/// (`resume`), and tells no other: an automation of one person never ends the wait of an issue
+/// given for another, whatever id that wait names.
+#[must_use]
+pub fn waiting_for<'a>(
+    issues: impl IntoIterator<Item = (&'a Id, &'a Issue)>,
+    person: &str,
+    automation: &str,
+) -> Vec<Id> {
+    if automation.is_empty() {
+        return Vec::new();
+    }
+    issues
+        .into_iter()
+        .filter(|(_, issue)| {
+            !issue.status.closed()
+                && issue.assigned_agent().is_some()
+                && issue.assigned_by.as_ref().and_then(MemberId::person_id) == Some(person)
+                && issue.work.as_ref().is_some_and(|work| {
+                    work.waiting()
+                        && work
+                            .waits
+                            .iter()
+                            .any(|wait| wait.event.as_deref() == Some(automation))
+                })
+        })
+        .map(|(id, _)| id.clone())
+        .collect()
 }

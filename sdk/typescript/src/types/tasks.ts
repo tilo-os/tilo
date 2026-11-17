@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.tasks@4ab250169f786ba9";
+export const SURFACE = "so.tilo.tasks@08dd277334e91a39";
 
 /** One of "project", "area". */
 export type Kind = "project" | "area";
@@ -182,8 +182,8 @@ export interface WaitFor {
   event: string | null;
 }
 
-/** One of "time", "reply", "change", "answer", "people". */
-export type WaitKind = "time" | "reply" | "change" | "answer" | "people";
+/** One of "time", "reply", "change", "answer", "people", "pieces". */
+export type WaitKind = "time" | "reply" | "change" | "answer" | "people" | "pieces";
 
 export interface Work {
   folder: string;
@@ -201,6 +201,7 @@ export interface Work {
   lost: number;
   stopped: Stopped | null;
   resumed: Resumed | null;
+  pieces_at_once: number | null;
 }
 
 /** The arguments of `create-area`. */
@@ -382,6 +383,12 @@ export interface SetBudgetArgs {
   issue: string;
   money_micros?: number;
   time_ms?: number;
+}
+
+/** The arguments of `set-pieces-at-once`. */
+export interface SetPiecesAtOnceArgs {
+  issue: string;
+  at_once?: number;
 }
 
 /** The arguments of `session-began`. */
@@ -601,6 +608,12 @@ export interface Issues extends tilo.Resource {
   }): Promise<void>;
   /** Runs `set-budget` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   setBudgetMany(items: SetBudgetArgs[]): Promise<tilo.ActionAnswer[]>;
+  setPiecesAtOnce(args: {
+    issue: string;
+    at_once?: number;
+  }): Promise<void>;
+  /** Runs `set-pieces-at-once` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  setPiecesAtOnceMany(items: SetPiecesAtOnceArgs[]): Promise<tilo.ActionAnswer[]>;
   sessionBegan(args: {
     issue: string;
   }): Promise<void>;
@@ -624,7 +637,7 @@ export interface Issues extends tilo.Resource {
 
 /** The actions `Issues` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const ISSUES_ACTIONS = ["create", "createMany", "start", "startMany", "rename", "renameMany", "moveUnder", "moveUnderMany", "assign", "assignMany", "setProject", "setProjectMany", "attach", "attachMany", "detach", "detachMany", "addLabel", "addLabelMany", "place", "placeMany", "comment", "commentMany", "link", "linkMany", "linkNote", "linkNoteMany", "delete", "deleteMany", "plan", "planMany", "setPlace", "setPlaceMany", "wait", "waitMany", "resume", "resumeMany", "setBudget", "setBudgetMany", "sessionBegan", "sessionBeganMany", "sessionEnded", "sessionEndedMany", "stop", "stopMany"] as const;
+export const ISSUES_ACTIONS = ["create", "createMany", "start", "startMany", "rename", "renameMany", "moveUnder", "moveUnderMany", "assign", "assignMany", "setProject", "setProjectMany", "attach", "attachMany", "detach", "detachMany", "addLabel", "addLabelMany", "place", "placeMany", "comment", "commentMany", "link", "linkMany", "linkNote", "linkNoteMany", "delete", "deleteMany", "plan", "planMany", "setPlace", "setPlaceMany", "wait", "waitMany", "resume", "resumeMany", "setBudget", "setBudgetMany", "setPiecesAtOnce", "setPiecesAtOnceMany", "sessionBegan", "sessionBeganMany", "sessionEnded", "sessionEndedMany", "stop", "stopMany"] as const;
 
 /** The `tasks.issues` kind at `path`. */
 export function issues(ws: tilo.Workspace, path: string): Issues {

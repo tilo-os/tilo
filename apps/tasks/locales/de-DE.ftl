@@ -96,8 +96,9 @@ tasks-thread-empty-message = Schreibe eine Nachricht, um das Gespräch zu beginn
 tasks-thread-draft = Nachricht
 tasks-thread-placeholder = Nachricht schreiben
 tasks-thread-send = Senden
-# Dieselbe Schaltfläche, während ein Lauf der Aufgabe das Gespräch liest: die
-# Nachricht geht an diesen Lauf, der sie bei seinem nächsten Schritt aufnimmt.
+# Dieselbe Schaltfläche, während eine Sitzung des Agenten an der Aufgabe das
+# Gespräch liest: die Nachricht geht an diese Sitzung, die sie bei ihrem nächsten
+# Schritt aufnimmt.
 tasks-message-to-run = An den Agenten
 tasks-message-read-by-run = Vom Agenten gelesen
 tasks-message-from-run = Vom Agenten
@@ -127,6 +128,7 @@ tasks-set-place = Ablage für { $item } festgelegt
 tasks-wait = { $item } wartet
 tasks-resume = { $item } fortgesetzt
 tasks-set-budget = Budget für { $item } festgelegt
+tasks-set-pieces-at-once = Festgelegt, wie viele Teile von { $item } zugleich bearbeitet werden
 tasks-session-began = Arbeit an { $item } begonnen
 tasks-session-ended = Sitzung an { $item } beendet
 tasks-stop = { $item } angehalten
@@ -163,6 +165,7 @@ tasks-issues-set-place = Ablage festlegen
 tasks-issues-wait = Aufgabe warten lassen
 tasks-issues-resume = Aufgabe fortsetzen
 tasks-issues-set-budget = Budget festlegen
+tasks-issues-set-pieces-at-once = Teile zugleich bearbeiten
 tasks-issues-session-began = Sitzung beginnen
 tasks-issues-session-ended = Sitzung beenden
 tasks-issues-stop = Aufgabe anhalten

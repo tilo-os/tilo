@@ -193,6 +193,11 @@ pub(super) async fn file_issue(
     tasks::part::chain().part(0).as_str().to_owned()
 }
 
+/// An issue worked on over many agent sessions: its place, its waits, its budget and the
+/// sessions it lost.
+#[path = "server_issue_work.rs"]
+mod issue_work;
+
 /// The first part of the tracker's issues, as the workspace keeps it.
 pub(super) async fn tracker(
     workspaces: &tilo_server::workspaces::Workspaces,

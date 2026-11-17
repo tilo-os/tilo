@@ -3,7 +3,7 @@
 //! history through the hosted app.
 
 use super::*;
-use crate::record::uuid_of;
+use crate::record::{adding, uuid_of};
 use ui::framework::testing::TestApp;
 use ui::tilo_actions::ResourceSpec as Published;
 use ui::tilo_resource::{Edit, NonBlank, Replica, Resource as _};
@@ -103,7 +103,7 @@ tilo_test_env::scenario! {
         // reaches the record.
         let mut typed = ConnectionProfile::new("Shop", Engine::MySql);
         typed.password = "s3cret".into();
-        workspace.apply(crate::record::adding(&typed, 1)).unwrap();
+        workspace.apply(adding(&typed, 1)).unwrap();
         let saved = workspace.save();
         assert!(
             !saved.windows(6).any(|window| window == b"s3cret"),
@@ -290,7 +290,7 @@ fn the_workspace_publishes_its_items_with_their_actions_and_live_rows_beside_the
     let mut profile = ConnectionProfile::new("Analytics", Engine::Postgres);
     profile.host = "db.internal".into();
     profile.password = "s3cret".into();
-    app.invoke(crate::record::adding(&profile, 0)).unwrap();
+    app.invoke(adding(&profile, 0)).unwrap();
     app.invoke(Workspace::SAVE_QUERY.with(workspace::SaveQuery {
         name: "Daily totals".into(),
         sql: Some(NonBlank::parse("SELECT 1").unwrap()),

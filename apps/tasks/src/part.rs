@@ -36,9 +36,9 @@ use ui::tilo_resource::{
 };
 
 use crate::model::{
-    Area, Attachment, BudgetBy, Issue, Link, MAX_ESTIMATE, MAX_MESSAGE_CHARS, Message, NewIssue,
-    Priority, Resumed, Status, Stopped, StoppedWhy, Tracker, WaitFor, checked_address,
-    checked_assignee, checked_folder, checked_line, checked_waits,
+    Area, Attachment, BudgetBy, Issue, Link, MAX_ESTIMATE, MAX_MESSAGE_CHARS, MOST_PIECES_AT_ONCE,
+    Message, NewIssue, Priority, Resumed, Status, Stopped, StoppedWhy, Tracker, WaitFor,
+    checked_address, checked_assignee, checked_folder, checked_line, checked_waits,
 };
 
 /// Issues a part holds before the next one starts.
@@ -804,6 +804,40 @@ impl IssuePart {
         } else if !kept {
             work.budget_by = BudgetBy::Agent;
         }
+        Ok(())
+    }
+
+    /// Work pieces at once
+    ///
+    /// Say how many of an issue's pieces, the issues under it, are worked on
+    /// at once by the agents they are given to: the others are begun as those
+    /// in work are through. Left out, any number is. A person says it, or the
+    /// agent the issue is given to.
+    ///
+    /// # Errors
+    /// Refuses none at a time, more than the most there may be, and an agent
+    /// the issue is not given to.
+    #[action(item = issues, step = "edit", writes = issues)]
+    pub fn set_pieces_at_once(
+        &mut self,
+        cx: &mut ActionCx,
+        issue: &Id,
+        #[param("How many of its pieces are in work at once; left out for any number")]
+        at_once: Option<u64>,
+    ) -> Result<(), Refusal> {
+        if at_once.is_some_and(|at_once| at_once == 0 || at_once > MOST_PIECES_AT_ONCE) {
+            return Err(Refusal::new(format!(
+                "Between 1 and {MOST_PIECES_AT_ONCE} pieces are in work at once"
+            )));
+        }
+        let by = author(cx)?;
+        let target = self.issue_mut(issue)?;
+        if by.is_agent() && target.assigned_member().as_ref() != Some(&by) {
+            return Err(Refusal::new(
+                "Only a person or its own agent says how many of an issue's pieces are in work",
+            ));
+        }
+        target.work.get_or_insert_default().pieces_at_once = at_once;
         Ok(())
     }
 
@@ -1693,6 +1727,7 @@ fn item_of_mut(action: &mut IssuePartAction) -> Option<&mut Id> {
         | IssuePartAction::Wait(verb::Wait { issue, .. })
         | IssuePartAction::Resume(verb::Resume { issue, .. })
         | IssuePartAction::SetBudget(verb::SetBudget { issue, .. })
+        | IssuePartAction::SetPiecesAtOnce(verb::SetPiecesAtOnce { issue, .. })
         | IssuePartAction::SessionBegan(verb::SessionBegan { issue })
         | IssuePartAction::SessionEnded(verb::SessionEnded { issue, .. })
         | IssuePartAction::Stop(verb::Stop { issue, .. }) => Some(issue),
@@ -1720,6 +1755,7 @@ pub fn item_of(action: &IssuePartAction) -> Option<&Id> {
         | IssuePartAction::Wait(verb::Wait { issue, .. })
         | IssuePartAction::Resume(verb::Resume { issue, .. })
         | IssuePartAction::SetBudget(verb::SetBudget { issue, .. })
+        | IssuePartAction::SetPiecesAtOnce(verb::SetPiecesAtOnce { issue, .. })
         | IssuePartAction::SessionBegan(verb::SessionBegan { issue })
         | IssuePartAction::SessionEnded(verb::SessionEnded { issue, .. })
         | IssuePartAction::Stop(verb::Stop { issue, .. }) => Some(issue),
