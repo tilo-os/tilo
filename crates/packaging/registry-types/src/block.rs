@@ -225,12 +225,7 @@ impl BlockList {
                 .collect(),
         };
         let encoded = serde_json::to_vec_pretty(&file).map_err(std::io::Error::other)?;
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        let partial = path.with_extension("json.partial");
-        std::fs::write(&partial, encoded)?;
-        std::fs::rename(&partial, path)
+        tilo_files::native::atomic::write_creating_parent(path, &encoded)
     }
 }
 

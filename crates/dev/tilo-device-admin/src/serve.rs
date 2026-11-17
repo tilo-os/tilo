@@ -163,9 +163,7 @@ fn record_state(
         relay: relays.own().map(ToString::to_string),
     };
     let bytes = serde_json::to_vec_pretty(&state)?;
-    let partial = path.with_extension("json.partial");
-    std::fs::write(&partial, bytes)?;
-    std::fs::rename(&partial, path)?;
+    tilo_files::native::atomic::write_creating_parent(path, &bytes)?;
     Ok(())
 }
 

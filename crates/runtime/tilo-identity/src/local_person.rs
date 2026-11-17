@@ -183,14 +183,11 @@ pub fn ensure_proof(
     let signature = identity
         .sign(&proof_message(&user_public_key, &device_public_key, uid))
         .map_err(|error| io::Error::other(error.to_string()))?;
-    let staged = identity_dir.join(format!(".{PROOF_FILE}.new"));
-    std::fs::write(&staged, signature)?;
-    {
-        use std::os::unix::fs::PermissionsExt;
-        // Public: the system reads it from every account's directory.
-        std::fs::set_permissions(&staged, std::fs::Permissions::from_mode(0o644))?;
-    }
-    std::fs::rename(&staged, &path)?;
+    // Public: the system reads it from every account's directory.
+    #[cfg(unix)]
+    tilo_files::native::atomic::write_with_mode(&path, &signature, 0o644)?;
+    #[cfg(not(unix))]
+    tilo_files::native::atomic::write(&path, &signature)?;
     Ok(true)
 }
 
