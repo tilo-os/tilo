@@ -167,6 +167,10 @@ impl Drop for WebHandle {
 struct Web {
     context: WebContext,
     host_info: HostInfo,
+    /// The endpoint `host_info`'s address is of, whose current address `/host`
+    /// answers ([`Web::current_host_info`]). `None` where the listener serves
+    /// no endpoint of its own.
+    endpoint: Option<iroh::Endpoint>,
     allowed_origins: Vec<String>,
     /// The workspaces this relay governs, for their directory and entries.
     workspaces: Option<crate::workspaces::Workspaces>,
@@ -197,6 +201,33 @@ struct Web {
     /// The wait list the entry keeps for a workspace taking people by
     /// invitation, when whoever runs this host keeps one.
     wait_list: Option<Arc<crate::entry::WaitListPage>>,
+}
+
+impl Web {
+    /// What `/host` answers: who this host is, and where its endpoint is dialled now. A
+    /// device dials the host at this address, so it follows the endpoint: a relay the endpoint
+    /// reached only after the listener started (its first network report found none, as when
+    /// the host's own relay is not routable yet) is named as soon as it is.
+    fn current_host_info(&self) -> HostInfo {
+        let mut info = self.host_info.clone();
+        if let (Some(endpoint), Some(address)) = (&self.endpoint, info.address.as_mut()) {
+            follow_endpoint(address, endpoint.addr());
+        }
+        info
+    }
+}
+
+/// Move `address` to the endpoint's address `now`. An endpoint that has lost its relays keeps
+/// the relay `address` named, as a host keeps what it named elsewhere
+/// (`tilo_endpoint_reachability::own_address::follow`): it is reached there again once the
+/// relay is back, and an address with no relay reaches it from nowhere.
+fn follow_endpoint(address: &mut HostAddress, now: iroh_base::EndpointAddr) {
+    let relay = now.relay_urls().next().map(ToString::to_string);
+    if relay.is_none() && address.relay_url.is_some() {
+        return;
+    }
+    address.relay_url = relay;
+    address.endpoint_addr = now;
 }
 
 /// Where this host keeps the stand-ins it approves for people with.
@@ -411,6 +442,8 @@ impl Relay {
         // moment this host serves anything ([`Relay::start`] waits for it), as
         // a page has no UDP socket and its own endpoint carries no packet
         // without one.
+        // `/host` answers the endpoint's address as it is when asked
+        // ([`Web::current_host_info`]); this is where it starts.
         let endpoint_addr = self.node_addr();
         let relay_url = endpoint_addr.relay_urls().next().map(ToString::to_string);
         let (link_listener, web_link) =
@@ -425,6 +458,7 @@ impl Relay {
                     web: Some(web_link.clone()),
                 }),
             },
+            endpoint: Some(self.endpoint()),
             allowed_origins: config.allowed_origins,
             workspaces: self.workspaces().cloned(),
             envelopes: envelopes::Envelopes::new(self.state_root().join("envelopes")),
@@ -1182,7 +1216,7 @@ async fn route(
         return Ok(answer);
     }
     match route {
-        "/host" => Ok(encoded(&web.host_info)),
+        "/host" => Ok(encoded(&web.current_host_info())),
         tilo_relay_protocol::web::WORKSPACE_DELETED_PATH => {
             let workspace: String = decode(&bytes)?;
             let deleted = web.workspaces.as_ref().is_some_and(|workspaces| {

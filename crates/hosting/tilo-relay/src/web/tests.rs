@@ -96,6 +96,7 @@ fn web_of_at(relay: &Relay, host: &Host, site: Option<&str>) -> Web {
             host_cert: host.cert.clone(),
             address: None,
         },
+        endpoint: None,
         allowed_origins: vec![],
         workspaces: relay.workspaces().cloned(),
         envelopes: envelopes::Envelopes::new(relay.state_root().join("envelopes")),
@@ -2081,4 +2082,32 @@ async fn the_wait_list_is_bounded_by_the_workspace_and_by_the_visitors_network()
     assert_eq!(status, 404, "{head}");
 
     stop(relay, serving).await;
+}
+
+/// `/host` follows the endpoint: a relay reached after the listener started is named (the host
+/// whose first network report found none is dialled through it from then on), and an endpoint
+/// that lost its relays keeps naming the one it had.
+#[test]
+fn the_host_address_follows_the_endpoint_relay() {
+    let id = iroh::SecretKey::from_bytes(&[3; 32]).public();
+    let relay: iroh_base::RelayUrl = "https://live.example/".parse().unwrap();
+    let relayless = iroh_base::EndpointAddr::new(id);
+    let relayed = iroh_base::EndpointAddr::from_parts(id, [iroh_base::TransportAddr::Relay(relay)]);
+    let mut address = HostAddress {
+        endpoint_addr: relayless.clone(),
+        relay_url: None,
+        web: None,
+    };
+
+    follow_endpoint(&mut address, relayed.clone());
+    assert_eq!(address.relay_url.as_deref(), Some("https://live.example/"));
+    assert_eq!(address.endpoint_addr, relayed);
+
+    follow_endpoint(&mut address, relayless);
+    assert_eq!(
+        address.relay_url.as_deref(),
+        Some("https://live.example/"),
+        "a lost relay stays named"
+    );
+    assert_eq!(address.endpoint_addr, relayed);
 }

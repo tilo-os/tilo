@@ -307,12 +307,26 @@ impl FoundRecord {
     }
 }
 
-/// Every workspace record under `state`, and the workspace the release was
-/// told to serve, from its `room-id` file.
+/// Every workspace record the release kept under `state`, and the workspace it was told to
+/// serve, from the `room-id` file beside its state. The release kept its records in its own
+/// `relay/` directory (`--state <state>/relay`), and only those are read: a copy kept beside it
+/// (an older `relay.<when>-unreadable/`, say) holds records of the same workspace that are not
+/// the release's, and reading one of those would export what no longer reads, or what the
+/// release no longer held. A `state` with no `relay/` is read whole, as the release's relay
+/// directory itself.
 fn walk(state: &Path) -> (Vec<FoundRecord>, Option<String>) {
-    let mut pending = vec![(state.to_path_buf(), 0_u32)];
+    let served = std::fs::read_to_string(state.join("room-id"))
+        .ok()
+        .map(|id| id.trim().to_lowercase())
+        .filter(|id| !id.is_empty());
+    let own = state.join("relay");
+    let root = if own.is_dir() {
+        own
+    } else {
+        state.to_path_buf()
+    };
+    let mut pending = vec![(root, 0_u32)];
     let mut records = Vec::new();
-    let mut served = None;
     while let Some((directory, depth)) = pending.pop() {
         let Ok(entries) = std::fs::read_dir(&directory) else {
             continue;
@@ -324,15 +338,9 @@ fn walk(state: &Path) -> (Vec<FoundRecord>, Option<String>) {
             } else if path
                 .extension()
                 .is_some_and(|extension| extension == "room")
+                && let Some(served_as) = names(&path)
             {
-                if let Some(served_as) = names(&path) {
-                    records.push(FoundRecord { path, served_as });
-                }
-            } else if path.file_name().is_some_and(|name| name == "room-id") {
-                served = std::fs::read_to_string(&path)
-                    .ok()
-                    .map(|id| id.trim().to_lowercase())
-                    .filter(|id| !id.is_empty());
+                records.push(FoundRecord { path, served_as });
             }
         }
     }
@@ -923,6 +931,31 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let refused = export(dir.path()).unwrap_err();
         assert!(refused.contains("no workspace record"), "{refused}");
+    }
+
+    /// A copy of the same workspace kept beside the release's own `relay/` (an older state set
+    /// aside as unreadable) is not what the release held, so the export never reads it.
+    #[test]
+    fn a_copy_kept_beside_the_release_state_is_not_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = "74a479e4-757a-4efb-aa82-a9acf0c72d45";
+        let mut record = postcard::to_stdvec(&3u32).unwrap();
+        record.extend(postcard::to_stdvec(&workspace.to_owned()).unwrap());
+        let own = dir.path().join("relay").join("relay").join("rooms");
+        let aside = dir
+            .path()
+            .join("relay.oct27-unreadable")
+            .join("relay")
+            .join("rooms");
+        for rooms in [&own, &aside] {
+            std::fs::create_dir_all(rooms).unwrap();
+            std::fs::write(rooms.join(format!("{workspace}.room")), &record).unwrap();
+        }
+        std::fs::write(dir.path().join("room-id"), format!("{workspace}\n")).unwrap();
+        assert_eq!(
+            one_record(dir.path()).unwrap(),
+            own.join(format!("{workspace}.room"))
+        );
     }
 
     #[test]
