@@ -4,9 +4,12 @@
 # with production's entrypoints and the environment production's manifests
 # give them (tilo/infra apps/tilo-sh-relay, apps/tilo-api,
 # apps/tilo-web, apps/tilo-sh-vm-host), with only the public names turned
-# into this machine's loopback ports. By default its programs, built on the
-# build server, run as plain processes; `up --images` runs the release images
-# instead.
+# into this machine's loopback ports. By default the whole stack — every
+# program, the build, the state — runs on the build server, in this checkout's
+# build container, with only the ports a person and their tools use served
+# from there on this machine's loopback (see "Where it runs" below);
+# TILO_SH_REMOTE=0 runs it here instead, and `up --images` runs the release
+# images here.
 #
 # Run `stack.sh help` for what it does and how to use it.
 set -euo pipefail
@@ -48,7 +51,9 @@ stack.sh: tilo.sh, whole, on this machine, from this checkout.
       then tilo keys create "My backend", the Python SDK (Tilo()), the TS SDK
       (new Tilo()) and an agent's MCP client all reach the local API server.
   stack.sh status        what runs, at which address, and whether it answers
-  stack.sh logs NAME     a service's log (relay, tls, api, web, discord, releases, mail)
+  stack.sh logs NAME     a service's log (relay, tls, api, web, discord, releases,
+                         mail), or \`remote\` for the stack's own log when it runs on
+                         the build server
   stack.sh mail          the mail the entry sent (wait-list confirmations,
                          invitations), with the links in each
   stack.sh owner --here [--name NAME]
@@ -92,7 +97,21 @@ stack.sh: tilo.sh, whole, on this machine, from this checkout.
                          bring the stack up and run the end-to-end check on it
                          (check.sh: a startup's visa flow and a fresh visitor's
                          entry time)
-  stack.sh down [--wipe] stop it; --wipe also deletes its state
+  stack.sh down [--wipe] stop it; --wipe also deletes its state (wherever it
+                         runs: on the build server too, and here)
+
+Where it runs: on the build server, in this checkout's build container, by
+default when the cargo drop-in there runs a program for it and serves this
+machine's ports (\`\$cargo exec --forward\`). Then this machine carries only the
+ports a person and their tools use, under the same numbers: the site at
+http://tilo.localhost:BASE+20, the API server at http://localhost:BASE+10, the
+relay origin, the mail sink and the releases, plus the UDP the page reaches the
+relay on (WebTransport, iroh). Everything else (the programs, every service,
+the state, the build) stays there, and \`down --wipe\` deletes it there. The
+commands that act on the stack run there too (owner, invite, tilo, hold, mail,
+logs, restart); \`browser\` opens the page here, and \`check\` needs a stack here.
+TILO_SH_REMOTE=0 runs everything here instead (needed for --images and the VM
+host, and for \`check\`).
 
 What runs, all on 127.0.0.1 (ports from TILO_SH_PORT_BASE, default 24100):
   relay     tilo-relay workspace through the Lounge image's entrypoint, as tilo.sh's
@@ -163,10 +182,10 @@ TILO_SH_VM_HOST=0 leaves the VM host out where it could run (it runs as
 root through sudo).
 State: TILO_SH_STATE (default \${XDG_STATE_HOME:-~/.local/state}/tilo-sh-local).
 Needs a cargo drop-in that builds on a build server (TILO_SH_CARGO names it,
-else \$CARGO; with TILO_SH_BUILD=t,
-t), bwrap, curl and python3 (with a drop-in that runs no program on its
-build server, also wasm-bindgen for the bundle); with --images, t and podman
-(rootless is fine) instead of bwrap.
+else \$CARGO; with TILO_SH_BUILD=t, t) and curl, which is all a remote stack
+uses here. A stack here also needs bwrap and python3 (with a drop-in that runs
+no program on its build server, also wasm-bindgen for the bundle); with
+--images, t and podman (rootless is fine) instead of bwrap.
 Docs: docs/testing-tilo-sh.md.
 EOF
 }
@@ -217,7 +236,10 @@ state=${TILO_SH_STATE:-${XDG_STATE_HOME:-$HOME/.local/state}/tilo-sh-local}
 # (cargo web --check runs one) never stops or removes the first one's.
 prefix=tilo-sh-local
 [[ $base == 24100 ]] || prefix=tilo-sh-local-$base
-commit=$(git -C "$repo" rev-parse HEAD 2>/dev/null || echo unknown)
+# This checkout's commit. A copy that is not a git checkout (the build server's
+# mirror) is told it, so what the stack lays out and the relay reports is the
+# commit its sources are from.
+commit=$(git -C "$repo" rev-parse HEAD 2>/dev/null || echo "${TILO_SH_REMOTE_COMMIT:-unknown}")
 
 native=$state/native   # what the native stack builds and lays out
 runs=$state/run         # each native process's runtime directory and pid
@@ -232,6 +254,55 @@ esac
 # The cargo drop-in that builds: the one TILO_SH_CARGO names, else $CARGO's,
 # else this machine's cargo.
 cargo=${TILO_SH_CARGO:-${CARGO:-cargo}}
+# Whether the cargo drop-in runs a program on the build server and serves this
+# machine's ports from there (`$cargo exec --forward`), which is what a remote
+# stack needs. Asked once.
+remote_capable() {
+  if [[ -z ${remote_capable_said:-} ]]; then
+    local help
+    remote_capable_said=0
+    if help=$($cargo exec --help 2>/dev/null) && [[ $help == *--forward* ]]; then remote_capable_said=1; fi
+  fi
+  [[ $remote_capable_said == 1 ]]
+}
+
+# Where the services run: here, or on the build server in this checkout's
+# build container with the ports below served from there on this machine's
+# loopback under the same numbers (remote_mode). TILO_SH_REMOTE=1 sends them
+# there, =0 keeps them here; by default they go there when the cargo drop-in
+# can run a program on the build server and hold this machine's ports open
+# for it (`exec --forward`).
+remote=${TILO_SH_REMOTE:-auto}
+remote_why=
+case $remote in
+  auto)
+    # A stack handed what a check built (its programs, its site, its bundle) and
+    # the checks' own browsers and VM host are of this machine: those run here.
+    if [[ $build == t || -n ${TILO_SH_PROGRAMS:-} || -n ${TILO_SH_LOUNGE:-} \
+      || -n ${TILO_SH_SITE:-} || -n ${TILO_SH_BUNDLE:-} || -n ${TILO_SH_CLI_DIR:-} \
+      || -n ${TILO_SH_VM_HOST:-} ]]; then
+      remote=0
+      remote_why='its programs and its site were given here (TILO_SH_PROGRAMS, TILO_SH_SITE, TILO_SH_BUILD=t or the like)'
+    elif remote_capable; then
+      remote=1
+    else
+      remote=0
+      remote_why="the cargo drop-in ($cargo) does not run a program on a build server and serve this machine's ports from there (\`exec --forward\`)"
+    fi ;;
+  1|yes)
+    remote_capable || die "TILO_SH_REMOTE=1 needs a cargo drop-in that runs a program on a build server and serves this machine's ports from it (\`$cargo exec --forward\`); $cargo has none"
+    remote=1 ;;
+  0|no) remote=0 ;;
+  *) die "TILO_SH_REMOTE is 1 (on the build server), 0 (here) or unset, not $remote" ;;
+esac
+# A stack that already runs somewhere keeps running there: its mode saw to
+# that, and up/down/restart read it (see the dispatch below).
+[[ $(cat "$state/mode" 2>/dev/null) != remote ]] || remote=1
+# Where a remote stack's own state lives: the same path here and on the build
+# server (the worktree is built at its real path, and this is the one part of
+# it the build server keeps for the stack).
+remote_state=${TILO_SH_REMOTE_STATE:-$repo/target/tilo-stack/$base}
+
 # The programs: the release's code and opt-level without the whole-program
 # link, so a change relinks in seconds instead of LTO's minutes. Built here
 # incrementally (Cargo.toml's lounge-local) into ./target, or by t's
@@ -255,7 +326,7 @@ ca_path=/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem
 # (the volumes the deployment mounts), or under the state natively.
 use_mode() {
   mode=$1
-  if [[ $mode == native ]]; then
+  if [[ $mode == native || $mode == remote ]]; then
     secrets_path=$state/secrets
     bots_path=$native/lounge/bots
     api_state=$state/api
@@ -1152,7 +1223,8 @@ lay_out_lounge() {
       "$repo/tools/ci/publish/lounge-context.sh" "$container/Containerfile" "$container/Containerfile.dockerignore" \
       "$container/entrypoint.sh" "$repo/apps/discord/bridge/program.json")
     if [[ $(cat "$native/lounge.made-from" 2>/dev/null) != "$stamp" || ! -x $native/lounge/bin/tilo-relay ]]; then
-      bash "$repo/tools/ci/publish/lounge-context.sh" "$native/lounge" "$programs" "$fonts" >/dev/null \
+      TILO_LOUNGE_SURFACE_COMMIT=$commit \
+        bash "$repo/tools/ci/publish/lounge-context.sh" "$native/lounge" "$programs" "$fonts" >/dev/null \
         || die 'could not lay out the relay (lounge-context.sh)'
       printf '%s\n' "$stamp" > "$native/lounge.made-from"
     fi
@@ -1198,7 +1270,8 @@ build_bundle() {
     say "building the desktop bundle (build.sh --bundle desktop --profile local --update ${names[*]}, compiled by $cargo)"
   fi
   mkdir -p "$out"
-  CARGO=$here/cargo.sh TILO_SH_CARGO=$cargo "$repo/crates/browser/tilo-browser-runtime/scripts/build.sh" "$out" \
+  CARGO=$here/cargo.sh TILO_SH_CARGO=$cargo TILO_SOURCE_REVISION=$commit \
+    "$repo/crates/browser/tilo-browser-runtime/scripts/build.sh" "$out" \
     --bundle desktop --profile local --update "${names[@]}" "${from[@]}" >&2 \
     || die 'the desktop bundle did not build (above)'
   [[ -L $native/bundle ]] || rm -rf "${native:?}/bundle"
@@ -1698,30 +1771,47 @@ up() {
   done
   local began=$SECONDS
   vm_skipped=''
-  [[ -z $fresh ]] || down --wipe
+  if [[ $remote != 1 ]]; then
+    [[ -z $remote_why ]] || say "running the stack here: $remote_why"
+  fi
+  if [[ -n $images && $remote == 1 ]]; then
+    die '--images runs the release images under podman on this machine: run it with TILO_SH_REMOTE=0, or up without --images to run this checkout'"'"'s programs on the build server'
+  fi
+  [[ -z $fresh ]] || down_any --wipe
   # One stack at a time: what the other mode left running goes first.
-  if [[ -f $state/mode ]]; then down >/dev/null 2>&1 || true; fi
+  if [[ -f $state/mode ]]; then down_any >/dev/null 2>&1 || true; fi
   mkdir -p "$state/logs"
   if [[ -n $images ]]; then
     up_images "$discord"
+  elif [[ $remote == 1 ]]; then
+    up_remote "$seed" "$discord"
   else
     up_native "$discord"
   fi
-  vm_skipped=$(vm_skip_reason)
+  if [[ $remote == 1 ]]; then
+    vm_skipped='a remote stack runs the programs on the build server; the VM host runs from its images beside a stack here (TILO_SH_REMOTE=0)'
+  else
+    vm_skipped=$(vm_skip_reason)
+  fi
 
   [[ -z $vm_skipped ]] || say "vm-host skipped: $vm_skipped"
 
   printf '%s\n' "$((SECONDS - began))" > "$state/bring-up-seconds"
-  if [[ -n $seed ]]; then
+  if [[ -n $seed && $remote != 1 ]]; then
     seed "$(cat "$state/relay/lounge/workspace-id")"
   fi
   say "up in $((SECONDS - began))s ($mode)"
-  status
+  if [[ $remote == 1 ]]; then status_remote; else status; fi
   # The Lounge's owner is the stack's own person (stack.sh tilo acts as
   # them); a link from them makes whoever opens it, in any browser, an owner
   # too, who invites the others.
-  local link
-  if link=$(owner_tilo members invite --role owner -w "$(lounge_id)" | head -1) && [[ -n $link ]]; then
+  local link=''
+  if [[ $remote == 1 ]]; then
+    link=$(remote_cmd owner | head -1) || true
+  else
+    link=$(owner_tilo members invite --role owner -w "$(lounge_id)" | head -1) || true
+  fi
+  if [[ -n $link ]]; then
     say 'opening this link in any browser makes that person an owner of the Lounge'
     printf '%s\n' "$link"
   else
@@ -1952,6 +2042,213 @@ EOF
 EOF
 }
 
+# -- on the build server ----------------------------------------------------
+#
+# The same stack, run on the build server in this checkout's build container,
+# with the ports a person and their tools use served from there on this
+# machine's loopback under the same numbers: the page opens on
+# http://tilo.localhost:BASE+20 and an agent's key is approved at
+# http://localhost:BASE+10, exactly as for a stack here. Only those ports and a
+# long-running `exec` cross the wire; every process, the state and the build
+# stay on the build server, which is what keeps this machine free.
+
+remote_mode() { [[ $(cat "$state/mode" 2>/dev/null || true) == remote ]]; }
+
+# Whether the commands that act on the stack run on the build server: its mode
+# says so, or this call was told to (TILO_SH_REMOTE=1, a state that was lost).
+remote_here() { remote_mode || [[ $remote == 1 ]]; }
+
+# The bring-up process holding this stack's ports, while it still is that (a
+# pid file outlives a reboot, and the pid it names may be someone else's now).
+supervisor_pid() {
+  local pid
+  pid=$(cat "$state/supervisor.pid" 2>/dev/null || true)
+  [[ -n $pid ]] || return 1
+  kill -0 "$pid" 2>/dev/null || return 1
+  { tr '\0' '\n' < "/proc/$pid/environ"; } 2>/dev/null \
+    | grep -qxF -e "TILO_SH_STATE=$remote_state" -e "RCARGO_ENV_TILO_SH_STATE=$remote_state" \
+    && printf '%s' "$pid"
+}
+
+# The ports this machine keeps: the relay's public origin and the addresses a
+# page dials, the API server the SDKs and agents use, the web entry and the
+# releases, the mail sink, and the fake Discord when one runs.
+forward_tcp() {
+  printf '%s\n' "$relay_port,$live_port,$plain_port,$routes_port,$api_port,$site_port,$web_port,$releases_port,$mail_port,$discord_rest_port,$discord_gateway_port,$discord_control_port"
+}
+
+# The page reaches the relay over QUIC (WebTransport, then iroh), which ssh
+# cannot carry: the drop-in serves these through its own datagram channel.
+forward_udp() { printf '%s\n' "$packet_port,$iroh_port,$link_port"; }
+
+# The environment the stack on the build server runs with: the caller's
+# TILO_SH_* (they configure the stack), with this side's state and mode
+# replaced, and the container's own cargo, which needs no drop-in there. The
+# drop-in forwards variables as RCARGO_ENV_<name>, its only way into a build
+# container, so that is what each line is handed over as.
+remote_env() {
+  local line
+  while IFS= read -r line; do
+    case ${line%%=*} in
+      TILO_SH_STATE|TILO_SH_PORT_BASE|TILO_SH_REMOTE|TILO_SH_CARGO|TILO_SH_REMOTE_STATE) continue ;;
+      TILO_SH_*) printf 'RCARGO_ENV_%s\n' "$line" ;;
+    esac
+  done < <(env | grep '^TILO_SH_' || true)
+  printf 'RCARGO_ENV_TILO_SH_STATE=%s\n' "$remote_state"
+  printf 'RCARGO_ENV_TILO_SH_PORT_BASE=%s\n' "$base"
+  printf 'RCARGO_ENV_TILO_SH_REMOTE=0\n'
+  printf 'RCARGO_ENV_TILO_SH_CARGO=%s\n' "${TILO_SH_REMOTE_CARGO:-cargo}"
+  printf 'RCARGO_ENV_TILO_SH_REMOTE_COMMIT=%s\n' "$commit"
+}
+
+# remote_cmd ARGS…: this stack's own stack.sh command where the stack is, so
+# the owner, the invites, the log and the mail are read and made in one place.
+remote_cmd() {
+  local envs=()
+  mapfile -t envs < <(remote_env)
+  ( cd "$repo" && env "${envs[@]}" "$cargo" exec -- bash "$here/stack.sh" "$@" )
+}
+
+# remote_shell COMMAND: a command on the build server, for what stack.sh has
+# no subcommand for.
+remote_shell() {
+  local envs=()
+  mapfile -t envs < <(remote_env)
+  ( cd "$repo" && env "${envs[@]}" "$cargo" exec -- bash -c "$1" )
+}
+
+# start_supervisor ARGS…: the stack on the build server as one long-running
+# program, which is what keeps its ports served here and its memory admitted
+# there while it runs. The stack's own bring-up comes first, so the process is
+# only kept alive once its services answer; `down` ends it.
+start_supervisor() {
+  local envs=() inner
+  mapfile -t envs < <(remote_env)
+  inner=$(printf 'bash %q ' "$here/stack.sh"; printf '%q ' "$@")
+  ( cd "$repo" && setsid env "${envs[@]}" "$cargo" exec \
+      --forward "$(forward_tcp)" --forward "udp:$(forward_udp)" \
+      -- bash -c "$inner && exec sleep infinity" ) \
+    >> "$state/logs/remote.log" 2>&1 < /dev/null 9>&- &
+  printf '%s\n' "$!" > "$state/supervisor.pid"
+}
+
+# up_remote [--seed] [--discord]: the stack on the build server, its ports here.
+up_remote() {
+  local seed=$1 discord=$2 args=()
+  [[ -z $seed ]] || args+=(--seed)
+  [[ -z $discord ]] || args+=(--discord)
+  mkdir -p "$state/logs" "$(dirname -- "$remote_state")"
+  echo remote > "$state/mode"
+  mode=remote
+  printf '%s\n' "$remote_state" > "$state/remote-state"
+  : > "$state/logs/remote.log"
+  say "starting the stack on the build server ($cargo exec; its state is $remote_state there)"
+  start_supervisor up "${args[@]}"
+  if ! wait_remote_up; then
+    # Nothing is left holding the ports for a stack that did not come up.
+    stop_supervisor
+    return 1
+  fi
+}
+
+# Waits until the stack answers here, through the forward: the page's health
+# check, then the API server's. A bring-up that died says why, with its log.
+wait_remote_up() {
+  local pid deadline=$((SECONDS + ${TILO_SH_REMOTE_TIMEOUT:-1800})) said=$SECONDS
+  pid=$(supervisor_pid || true)
+  say "waiting for the stack through the forward (log: $state/logs/remote.log)"
+  until curl -fsS --max-time 2 -H "$site_host_header" "$site_health" >/dev/null 2>&1; do
+    if [[ -n $pid ]] && ! kill -0 "$pid" 2>/dev/null; then
+      printf -- '--- %s, its last lines:\n' "$state/logs/remote.log" >&2
+      tail -20 "$state/logs/remote.log" >&2
+      say 'the stack on the build server did not come up (above)'
+      return 1
+    fi
+    if ((SECONDS >= deadline)); then
+      tail -20 "$state/logs/remote.log" >&2
+      say "the stack did not answer on $site_origin within ${TILO_SH_REMOTE_TIMEOUT:-1800}s ($state/logs/remote.log)"
+      return 1
+    fi
+    if ((SECONDS - said >= 30)); then
+      said=$SECONDS
+      say "$((SECONDS))s: $(tail -1 "$state/logs/remote.log" 2>/dev/null)"
+    fi
+    sleep 0.5
+  done
+  wait_for 'API server (its health check)' "$api_origin/health" 30
+}
+
+# What runs, as this machine sees it through the forward: a stack whose forward
+# is down answers nowhere, which is what its line says.
+status_remote() {
+  local svc name probe shown answer args pid
+  printf '%-9s %-8s %s\n' service state address
+  for svc in "tls|$relay_origin/mode" "relay|http://127.0.0.1:$routes_port/mode" \
+    "api|$api_origin/health" "web|$site_health"; do
+    name=${svc%%|*} probe=${svc#*|} args=()
+    case $name in
+      tls) shown="$relay_origin (relay), $live_origin (live plane)" ;;
+      relay) shown="the Lounge, behind tls" ;;
+      api) shown="$api_origin (MCP: $api_origin/mcp)" ;;
+      web) shown="$site_origin"; args=(-H "$site_host_header") ;;
+    esac
+    if curl -fsS --max-time 2 "${args[@]}" "$probe" >/dev/null 2>&1; then answer=up; else answer=down; fi
+    printf '%-9s %-8s %s\n' "$name" "$answer" "$shown"
+  done
+  pid=$(supervisor_pid || true)
+  if [[ -n $pid ]]; then
+    printf '%-9s %-8s %s\n' forward up "the stack's ports on 127.0.0.1 from $base (page: $site_origin, API: $api_origin), with the page's UDP ($packet_port,$iroh_port,$link_port), from the build server"
+  else
+    printf '%-9s %-8s %s\n' forward down "nothing serves the stack's ports here: stack.sh up"
+  fi
+  printf '%-9s %-8s %s\n' vm-host skipped "it runs from its images, beside a stack here (TILO_SH_REMOTE=0)"
+  printf '\nThe programs and the state are on the build server (%s there); %s logs remote reads its log.\n' \
+    "$remote_state" "$0"
+  printf 'Next: eval "$(%s env)", then tilo keys create "My backend"; or %s browser.\n' "$0" "$0"
+}
+
+# stop_supervisor: the bring-up process holding this stack's ports, and with it the forward.
+stop_supervisor() {
+  local pid deadline
+  if pid=$(supervisor_pid); then
+    kill -TERM -- "-$pid" 2>/dev/null || kill -TERM "$pid" 2>/dev/null || true
+    deadline=$((SECONDS + 10))
+    while kill -0 "$pid" 2>/dev/null && ((SECONDS < deadline)); do sleep 0.1; done
+    kill -KILL -- "-$pid" 2>/dev/null || true
+  fi
+  rm -f "$state/supervisor.pid"
+}
+
+# down_any ARGS…: stops the stack wherever it runs.
+down_any() {
+  if remote_here; then down_remote "$@"; else down "$@"; fi
+}
+
+# down_remote [--wipe]: the services stop where they run, then the forward.
+down_remote() {
+  local wipe= stopped=1
+  [[ ${1:-} == --wipe ]] && wipe=1
+  if ! remote_cmd down ${wipe:+--wipe}; then
+    # A stack whose services are running there still writes to its state: say
+    # what is left instead of claiming it is gone.
+    stopped=0
+    say 'the stack on the build server did not answer (above): its services may still be running there'
+  fi
+  stop_supervisor
+  if [[ -n $wipe ]]; then
+    if ((stopped)) && remote_shell "rm -rf $(printf '%q' "$remote_state")" 2>/dev/null; then
+      # This machine keeps what it printed and its connection's log, and nothing else.
+      rm -rf "${state:?}" 2>/dev/null || true
+      say 'stopped; the build server and this machine keep nothing of it'
+    else
+      say "stopped here; $remote_state on the build server was not removed: stack.sh down --wipe again once it answers"
+      return 1
+    fi
+  else
+    say "stopped; its state stays on the build server ($remote_state); stack.sh down --wipe deletes it"
+  fi
+}
+
 browser() {
   local chrome=${CHROME:-}
   if [[ -z $chrome ]]; then
@@ -1971,6 +2268,30 @@ shift || true
 case $cmd in
   up|down|restart) lock_state ;;
 esac
+# A stack whose mode says it runs on the build server does everything that
+# touches it there; only what a person does here (opening the page, the log of
+# the connection) stays.
+if remote_here && [[ $cmd != up ]]; then
+  case $cmd in
+    down) down_any "$@" ;;
+    restart) remote_cmd restart "$@" ;;
+    status) status_remote ;;
+    env) remote_cmd env ;;
+    owner) remote_cmd owner "$@" ;;
+    invite) remote_cmd invite "$@" ;;
+    tilo) remote_cmd tilo "$@" ;;
+    hold | unhold) remote_cmd "$cmd" "$@" ;;
+    logs)
+      if [[ ${1:-} == remote ]]; then cat "$state/logs/remote.log"; else remote_cmd logs "$@"; fi ;;
+    mail) remote_cmd mail ;;
+    browser) browser "$@" ;;
+    check)
+      die 'the end-to-end check drives a browser on the machine and reads the state of the stack it checks: run it against a stack here with TILO_SH_REMOTE=0 stack.sh check' ;;
+    help|-h|--help) usage ;;
+    *) usage >&2; exit 2 ;;
+  esac
+  exit
+fi
 case $cmd in
   up) up "$@" ;;
   down) down "$@" ;;

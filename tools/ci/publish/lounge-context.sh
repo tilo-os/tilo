@@ -20,33 +20,53 @@ cp apps/discord/bridge/program.json "$out/bots/discord-bridge.json"
 # Every version of each built-in app's surface.toml the apps' history holds, one
 # file per version: the relay publishes them into its content plane at start, so
 # a change written by an older version than this build runs is decided without
-# asking anybody. Published from the apps' history, so the checkout needs it.
-if [[ $(git rev-parse --is-shallow-repository) == true ]]; then
-  die 'the Lounge publishes its app surfaces from the apps history: a shallow checkout has none of it'
-fi
+# asking anybody.
+#
+# A checkout without git (a build server's mirror) has no history: it gives the
+# current version of each surface and TILO_LOUNGE_SURFACE_COMMIT names the
+# commit it is from. The relay publishes those, and decides a change written by
+# an older version with a member's help instead of alone.
 mkdir -p "$out/surfaces"
-# Each app's history is walked on its own, all at once: one after the other
-# they took fourteen seconds of every local bring-up.
-surface_versions() {
-  local surface=$1 app commit
-  app=${surface#apps/}
-  app=${app%/surface.toml}
-  while read -r commit; do
-    git cat-file -p "$commit:$surface" > "$out/surfaces/$app.$commit.toml"
-  done < <(git log --format=%H -- "$surface")
+surfaces_from_history() {
+  # Each app's history is walked on its own, all at once: one after the other
+  # they took fourteen seconds of every local bring-up.
+  local -a pids=()
+  surface_versions() {
+    local surface=$1 app commit
+    app=${surface#apps/}
+    app=${app%/surface.toml}
+    while read -r commit; do
+      git cat-file -p "$commit:$surface" > "$out/surfaces/$app.$commit.toml"
+    done < <(git log --format=%H -- "$surface")
+  }
+  for surface in apps/*/surface.toml; do
+    surface_versions "$surface" &
+    pids+=("$!")
+  done
+  for pid in "${pids[@]}"; do wait "$pid" || die 'could not read the app surfaces from the apps history'; done
+  [[ $(ls "$out/surfaces" | wc -l) -gt 0 ]] \
+    || die 'the app surfaces are not in the checkout: the Lounge would read its history with the newest of them alone'
 }
-pids=()
-for surface in apps/*/surface.toml; do
-  surface_versions "$surface" &
-  pids+=("$!")
-done
-for pid in "${pids[@]}"; do wait "$pid" || die 'could not read the app surfaces from the apps history'; done
-[[ $(ls "$out/surfaces" | wc -l) -gt 0 ]] \
-  || die 'the app surfaces are not in the checkout: the Lounge would read its history with the newest of them alone'
+surfaces_from_checkout() {
+  local surface app
+  for surface in apps/*/surface.toml; do
+    app=${surface#apps/}
+    app=${app%/surface.toml}
+    cp "$surface" "$out/surfaces/$app.${TILO_LOUNGE_SURFACE_COMMIT:-current}.toml"
+  done
+}
+if git rev-parse --show-toplevel >/dev/null 2>&1; then
+  if [[ $(git rev-parse --is-shallow-repository) == true ]]; then
+    die 'the Lounge publishes its app surfaces from the apps history: a shallow checkout has none of it'
+  fi
+  surfaces_from_history
+else
+  surfaces_from_checkout
+fi
 echo "surfaces: $(ls "$out/surfaces" | wc -l) versions of the built-in apps' surface.toml"
 container=os/containers/tilo-lounge
 cp "$container/Containerfile" "$container/Containerfile.dockerignore" "$container/entrypoint.sh" \
   os/scripts/verify-no-cisco-openh264.sh "$out/"
 # The image's revision label and TILO_SOURCE_REVISION: the commit this context
 # was built from, which GET /mode reports.
-git rev-parse HEAD > "$out/source-revision"
+printf '%s\n' "${TILO_LOUNGE_SURFACE_COMMIT:-$(git rev-parse HEAD)}" > "$out/source-revision"
