@@ -556,7 +556,8 @@ impl HostAgents {
 
     /// Count `cost` against `agent`'s day on the workspace's record of its agents, for its keeper:
     /// the host's model charged it, and the keeper's limit is read from it. The host writes it as
-    /// the workspace's governor, the count its keeper's own device would write for an agent it runs.
+    /// the workspace's governor, the count its keeper's own device would write for an agent it runs,
+    /// and as a change of Chat's: a host decides it against Chat's surface like any other.
     async fn charge(&self, workspace: &str, agent: &Agent, day: &str, cost: u64) {
         let keeper = agent.keeper.clone();
         let record = collab_types::workspace_document_id(tilo_workspace_agent::KIND);
@@ -572,7 +573,8 @@ impl HostAgents {
                 |doc| {
                     let mut counting =
                         tilo_resource::Replica::<WorkspaceAgents>::from_doc(std::mem::take(doc))
-                            .as_author(&keeper);
+                            .as_author(&keeper)
+                            .in_app(CHAT, "Chat");
                     let applied = counting
                         .apply(WorkspaceAgents::RECORD_AGENT_SPEND.with(
                             tilo_workspace_agent::workspace_agents::RecordAgentSpend {
