@@ -16,10 +16,18 @@
 
 /** How long a pairing link works. */
 export const INVITE_TTL_MS = 10 * 60 * 1000;
-/** Said on the new device when the host no longer takes its link. */
-export const PAIRING_EXPIRED = 'This link expired or was used already. Make a new one on your other device.';
+/** Said on the new device when its link was answered before: a link works once. */
+export const PAIRING_USED = 'This link was used already. Make a new one on your other device.';
+/** Said on the new device when none of the person's devices answered while
+ * it waited: the link ran out, or nobody looked. */
+export const PAIRING_UNANSWERED = 'No device of yours approved this one in time. Make a new link on your other device, then approve this device there.';
 /** Said on the new device when the person declined it. */
 export const PAIRING_DECLINED = 'Your other device declined. Make a new link to try again.';
+/** Said on the new device when the host would not take a request dated by
+ * this device's clock. Hosts allow a minute between the two clocks
+ * (`CERTIFICATION_CLOCK_ALLOWANCE_NS`, tilo-user-identity). The link is not
+ * spent: it works once the clock is right. */
+export const PAIRING_CLOCK = 'The clock of this device and the clock of your workspace’s host differ by more than a minute. Check the date and time on this device, then open the link again.';
 
 const hex = bytes => Array.from(bytes, byte => byte.toString(16).padStart(2, '0')).join('');
 
@@ -125,10 +133,17 @@ export function whenRequested(requestedAtMs, {now = Date.now(), locale} = {}) {
 }
 
 /** What to tell the new device when pairing failed with `error`, or `null`
- * when it is not the host's answer to the pairing (a network failure). */
+ * when it is not the host's answer to the pairing (a network failure). Each
+ * of the host's refusals is said as what happened, never as another. */
 export function pairingFailure(error) {
   const text = String(error?.message ?? error ?? '');
   if (/declined/i.test(text)) return PAIRING_DECLINED;
-  if (/used already|no approv\w* (device )?answered|expired/i.test(text)) return PAIRING_EXPIRED;
+  if (/used already/i.test(text)) return PAIRING_USED;
+  // The new device dates its request and the host reads it a moment later.
+  // One the host calls dated ahead, or expired as it arrives, was dated by a
+  // clock that differs from the host's: the link itself has no date the host
+  // reads. Hosts before the allowance said "expired or not yet valid" of both.
+  if (/certification request (is|has) [^:]*(dated|expired|not yet valid)/i.test(text)) return PAIRING_CLOCK;
+  if (/no approv\w* (device )?answered/i.test(text)) return PAIRING_UNANSWERED;
   return null;
 }

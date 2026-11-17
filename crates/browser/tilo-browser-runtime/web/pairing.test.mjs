@@ -1,8 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  deviceLabel, forInvites, INVITE_TTL_MS, newInvite, openInvites, PAIRING_DECLINED, PAIRING_EXPIRED,
-  pairingFailure, pairSecret, parsePairSecret, whenRequested,
+  deviceLabel, forInvites, INVITE_TTL_MS, newInvite, openInvites, PAIRING_CLOCK, PAIRING_DECLINED, PAIRING_UNANSWERED,
+  PAIRING_USED, pairingFailure, pairSecret, parsePairSecret, whenRequested,
 } from './pairing.mjs';
 
 const USER = 'ab'.repeat(32);
@@ -84,9 +84,27 @@ test('when a device asked reads as words', () => {
 
 test('the host’s refusals of a pairing are said as what to do next', () => {
   assert.equal(pairingFailure(new Error('certification denied: declined by the approving device')), PAIRING_DECLINED);
-  assert.equal(pairingFailure(new Error('certification transport: this pairing link was used already; make a new one')), PAIRING_EXPIRED);
-  assert.equal(pairingFailure(new Error('no approver answered the certification request')), PAIRING_EXPIRED);
-  assert.equal(PAIRING_EXPIRED, 'This link expired or was used already. Make a new one on your other device.');
+  assert.equal(pairingFailure(new Error('certification transport: this pairing link was used already; make a new one')), PAIRING_USED);
+  assert.equal(pairingFailure(new Error('no approver answered the certification request')), PAIRING_UNANSWERED);
+  assert.equal(pairingFailure(new Error('no approving device answered in time')), PAIRING_UNANSWERED);
+  assert.equal(PAIRING_USED, 'This link was used already. Make a new one on your other device.');
+  assert.equal(PAIRING_UNANSWERED, 'No device of yours approved this one in time. Make a new link on your other device, then approve this device there.');
   assert.equal(PAIRING_DECLINED, 'Your other device declined. Make a new link to try again.');
   assert.equal(pairingFailure(new TypeError('Failed to fetch')), null);
+});
+
+test('a pairing the host refuses for the device’s clock says so, never that the link expired', () => {
+  // What a host says of a request its clock is behind (20 ms was enough), as
+  // hosts worded it before they allowed a difference, and as they word it now
+  // for a clock more than a minute ahead or a request that arrives expired.
+  for (const refusal of [
+    'certification request is expired or not yet valid',
+    'certification request is dated more than 60 seconds ahead: the clocks of the two devices differ',
+    'certification request has expired',
+  ]) {
+    const said = pairingFailure(new Error(refusal));
+    assert.equal(said, PAIRING_CLOCK, refusal);
+    assert.doesNotMatch(said, /expired|used already/i, 'nothing happened to the link');
+  }
+  assert.equal(PAIRING_CLOCK, 'The clock of this device and the clock of your workspace’s host differ by more than a minute. Check the date and time on this device, then open the link again.');
 });

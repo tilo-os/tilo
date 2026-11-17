@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
 import {chooseWorkspace, chosenWorkspace, enteredWorkspaces, joinViaHost} from './workspaces.mjs';
 import {AdmissionError} from './admission.mjs';
+import {PAIRING_CLOCK} from './pairing.mjs';
 import {runtimeFake} from './runtime-surface.mjs';
 
 const USER = 'aa'.repeat(32);
@@ -24,8 +25,11 @@ class Element {
 }
 
 // Run the real page wiring and workspace actions. Replace only the booted
-// WASM/GPU peer, arrival animation, and root custody with fixtures.
-async function fixture({boot, remembered = [], own = false, search = '', session = {}, local = {}, member = null, entry = null, scope = null} = {}) {
+// WASM/GPU peer, arrival animation, and root custody with fixtures. `pair`
+// stands for the runtime certifying this tab's device key through the host
+// (`pairDevice`, peer.mjs): what the host answers a new device.
+async function fixture({boot, remembered = [], own = false, search = '', session = {}, local = {}, member = null, entry = null, scope = null,
+  pair = async () => { throw new Error('this fixture pairs no device'); }} = {}) {
   const values = new Map(Object.entries(local));
   let assigned = null;
   const stored = new Map(Object.entries(session));
@@ -94,7 +98,7 @@ async function fixture({boot, remembered = [], own = false, search = '', session
     },
   });
   globalThis.__entryPageFixture = {page, runtime, mounted: [], prepared, identity: {userPublicKey: USER}, prepareGpu: () => prepared.push(document.documentElement.dataset.arrival),
-    joinViaHost,
+    joinViaHost, pair,
     boot: async options => {
       diagnostics = options.diagnostics;
       // The page loads its runtime as boot starts; the fixture's is the stub above.
@@ -118,8 +122,10 @@ async function fixture({boot, remembered = [], own = false, search = '', session
     .replace("import {browserIdentity, browserPerson, currentIdentity, fetchEnvelope, IdentityError, MAX_DISPLAY_NAME_BYTES, signInWithPasskey} from './identity.mjs';", 'const currentIdentity = () => globalThis.__entryPageFixture.identity;\nconst browserPerson = async () => globalThis.__entryPageFixture.identity;')
     .replace('hostToReconnect, joinGranted, joinViaHost,', 'hostToReconnect, joinGranted,')
     .replace('identityProfile, inspectInvitation, joinWorkspace, openInvitation,', 'identityProfile, inspectInvitation, openInvitation,')
+    .replace('return await pairViaHost({origin,', 'return await pairViaHost({pair: (...args) => globalThis.__entryPageFixture.pair(...args), origin,')
     .replace('const PAGE_BUILD', 'const joinViaHost = (...args) => globalThis.__entryPageFixture.joinViaHost(...args);\nconst joinWorkspace = (...args) => globalThis.__entryPageFixture.joinWorkspace(...args);\nconst PAGE_BUILD')
     .replace(/from '(\.\/[^']+)'/g, (_all, path) => `from '${new URL(path, import.meta.url).href}'`);
+  assert.ok(source.includes('pairViaHost({pair: (...args) => globalThis.__entryPageFixture.pair(...args), origin,'), 'the page pairs through the fixture’s host');
   // A fresh module per fixture; the nonce rides in the source since Bun refuses a fragment on a base64 data URL.
   const {startEntryPage} = await import(`data:text/javascript;base64,${Buffer.from(`${source}\n// ${Math.random()}`).toString('base64')}`);
   // A page that cannot get in throws its cause on, to the console.
@@ -609,4 +615,24 @@ test('a person already set up keeps the workspace a link into the site’s own h
   assert.equal(failure, null);
   assert.notEqual(at(), 'https://web.example/',
     'a person who has been set up is not sent to the first screen again');
+});
+
+/** A person whose root is on another device: whom a pairing link names. */
+const ELSEWHERE = 'bb'.repeat(32);
+/** A page that opened a pairing link for `ELSEWHERE` into the workspace `current`. */
+const pairingBoot = async ({deps}) => {
+  deps.onScope({scope: {kind: 'workspace', host: ORIGIN, workspace: 'current'}, entry: {base: 'https://web.example/', home: null}});
+  return deps.pairDevice({origin: ORIGIN, workspace: 'current', userPublicKey: ELSEWHERE, invite: '0f'.repeat(16), listed: null});
+};
+
+test('a new device the host turns away for its clock is told so, not that its link expired', async () => {
+  // What a host answered a device whose clock ran ahead of its own, by 20 ms
+  // or by an hour: the page read "expired" in it and blamed the link, which
+  // nothing had happened to.
+  const {failure, screen} = await fixture({boot: pairingBoot,
+    pair: async () => { throw new Error('certification request is expired or not yet valid'); }});
+  assert.equal(failure?.code, 'pairing');
+  assert.equal(document.documentElement.dataset.entry, 'refused');
+  assert.equal(screen['arrival-failure-body'].textContent, PAIRING_CLOCK);
+  assert.doesNotMatch(screen['arrival-failure-body'].textContent, /expired|used already/);
 });
