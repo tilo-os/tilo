@@ -442,7 +442,6 @@ export class RunList {
   }
 }
 
-/** One search hit: a path the other calls take, and what it offers. */
 /**
  * What an app's window shows for a resource: the view's semantic lines —
  * every label, value and control in reading order — the same tree, and a
@@ -467,6 +466,7 @@ export interface View {
   picture?: string;
 }
 
+/** One search hit: a path the other calls take, and what it offers. */
 export interface Hit {
   path: string;
   kind: string;

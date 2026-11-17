@@ -42,7 +42,7 @@ const GROUPS: [string, string[]][] = [
   ["Workspaces", ["Workspace", "WorkspaceInfo", "WorkspaceList", "WorkspaceExport"]],
   ["Account", ["Usage", "WorkspaceUsage", "ApiInfo"]],
   ["Resources", [
-    "Resource", "Step", "Surface", "resourceProxy", "kebab", "segments",
+    "Resource", "Step", "Surface", "Entry", "resourceProxy", "kebab", "segments",
     "Listing", "Row", "Action", "Param", "Hit",
   ]],
   ["Runs", ["Run", "RunGroup", "withinRun", "ActionAnswer", "RunList", "RunInfo", "Event", "ProgramAnswer"]],
