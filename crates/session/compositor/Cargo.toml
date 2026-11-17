@@ -16,9 +16,10 @@ path = "tests/it.rs"
 
 [features]
 # Lets a test read a window's dma-buf on the CPU and have the headless backend
-# advertise dma-bufs with feedback where the machine has no GPU. Production
-# builds never enable it.
-test-support = []
+# advertise dma-bufs with feedback where the machine has no GPU, and hold an
+# image description's `ready` until the test lets it go. Production builds
+# never enable it.
+test-support = ["tilo-wayland-ext/test-support"]
 
 [target.'cfg(target_os = "linux")'.dependencies]
 # The protocol server, the desktop element model and the renderers: pixman

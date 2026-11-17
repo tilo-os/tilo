@@ -24,6 +24,8 @@
 //! [`ColorManagementSurfaceData`], flipped by the commit hook in
 //! the compositor state.
 
+#[cfg(all(target_os = "linux", feature = "test-support"))]
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 #[cfg(target_os = "linux")]
@@ -95,6 +97,50 @@ pub struct ColorManagerState {
     feedbacks: Arc<Mutex<Vec<WpColorManagementSurfaceFeedbackV1>>>,
     /// The description surfaces are asked to render in.
     preferred: Arc<Mutex<OutputDescription>>,
+    /// Whether a description a client makes has its `ready` held for a test to let go.
+    #[cfg(all(target_os = "linux", feature = "test-support"))]
+    holding: Arc<AtomicBool>,
+    /// The descriptions held back, with the identity each will be told.
+    #[cfg(all(target_os = "linux", feature = "test-support"))]
+    held: Arc<Mutex<Vec<(WpImageDescriptionV1, u32)>>>,
+}
+
+#[cfg(all(target_os = "linux", feature = "test-support"))]
+impl ColorManagerState {
+    /// Hold back the `ready` of every image description a client makes from now on.
+    pub fn hold_descriptions(&self) {
+        self.holding.store(true, Ordering::Relaxed);
+    }
+
+    /// Tell every held description it is ready, and stop holding new ones.
+    pub fn release_descriptions(&self) {
+        self.holding.store(false, Ordering::Relaxed);
+        let held = self
+            .held
+            .lock()
+            .map(|mut held| std::mem::take(&mut *held))
+            .unwrap_or_default();
+        for (obj, identity_lo) in held {
+            if obj.is_alive() {
+                let () = obj.ready(identity_lo);
+            }
+        }
+    }
+
+    /// Tell every held description it failed, and stop holding new ones.
+    pub fn fail_descriptions(&self, message: &str) {
+        self.holding.store(false, Ordering::Relaxed);
+        let held = self
+            .held
+            .lock()
+            .map(|mut held| std::mem::take(&mut *held))
+            .unwrap_or_default();
+        for (obj, _) in held {
+            if obj.is_alive() {
+                let () = obj.failed(ImageCause::Unsupported, message.to_owned());
+            }
+        }
+    }
 }
 
 impl Default for ColorManagerState {
@@ -142,6 +188,10 @@ impl Default for ColorManagerState {
             #[cfg(target_os = "linux")]
             feedbacks: Arc::default(),
             preferred: Arc::new(Mutex::new(OutputDescription::sdr())),
+            #[cfg(all(target_os = "linux", feature = "test-support"))]
+            holding: Arc::new(AtomicBool::new(false)),
+            #[cfg(all(target_os = "linux", feature = "test-support"))]
+            held: Arc::new(Mutex::new(Vec::new())),
         }
     }
 }
@@ -879,7 +929,7 @@ where
                 }
                 // Version 1: `ready` is the only success event (see
                 // `create_image_description`).
-                let () = obj.ready((identity & 0xFFFF_FFFF) as u32);
+                tell_ready(state.as_ref(), obj, (identity & 0xFFFF_FFFF) as u32);
             }
             wp_color_manager_v1::Request::GetOutput { id, output } => {
                 let data = ColorManagementOutputData::new(output);
@@ -999,7 +1049,13 @@ where
         let set = match tilo_color_params::server::set_of(request) {
             Ok(set) => set,
             Err(wp_image_description_creator_params_v1::Request::Create { image_description }) => {
-                create_image_description(creator, builder, image_description, data_init);
+                create_image_description(
+                    state.as_ref(),
+                    creator,
+                    builder,
+                    image_description,
+                    data_init,
+                );
                 return;
             }
             Err(_) => return,
@@ -1015,10 +1071,26 @@ where
     }
 }
 
+/// Tell a client its description is ready, or hold it back while a test says so.
+#[cfg(target_os = "linux")]
+fn tell_ready(manager: &ColorManagerState, obj: WpImageDescriptionV1, identity_lo: u32) {
+    #[cfg(feature = "test-support")]
+    {
+        if manager.holding.load(Ordering::Relaxed) {
+            if let Ok(mut held) = manager.held.lock() {
+                held.push((obj, identity_lo));
+            }
+            return;
+        }
+    }
+    let () = obj.ready(identity_lo);
+}
+
 /// `Create` request: the settled description, announced with the v1 `ready` event, or the
 /// protocol error the parameters raise.
 #[cfg(target_os = "linux")]
 fn create_image_description<D>(
+    manager: &ColorManagerState,
     creator: &WpImageDescriptionCreatorParamsV1,
     builder: &Arc<ParametricBuilder>,
     image_description: New<WpImageDescriptionV1>,
@@ -1042,7 +1114,7 @@ fn create_image_description<D>(
             // The global is deliberately version 1, so `ready` is the only
             // valid success event. `ready2` has opcode 2 and exists only from
             // version 2 onward; emitting it disconnects v1 clients.
-            let () = obj.ready((identity & 0xFFFF_FFFF) as u32);
+            tell_ready(manager, obj, (identity & 0xFFFF_FFFF) as u32);
         }
         Err(error) => {
             // The request carried a `new_id`; initialise it before the fatal

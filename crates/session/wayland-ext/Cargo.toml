@@ -25,6 +25,11 @@ tilo-color-params = { path = "../color-params" }
 # The workspace-hack's native feature set does not build for wasm32.
 workspace-hack = { version = "0.1" }
 
+[features]
+# Holds an image description's `ready` until a test lets it go, so what a client does while a
+# description is not ready is observable. Never enabled by a build that ships.
+test-support = []
+
 [target.'cfg(target_os = "linux")'.dependencies]
 smithay = { version = "0.7", default-features = false, features = ["wayland_frontend"] }
 wayland-protocols = { version = "0.32.12", features = ["server", "staging"] }
