@@ -59,6 +59,10 @@ IDLE_SECONDS = 120
 DEFAULT_WAIT = 540
 # How much of a failed lint is handed back; the lander's log keeps all of it.
 SHOWN_LINES = 120
+# A lint that failed because the machine that compiles was not there says nothing about the
+# changes: the round is tried again rather than answered. rcargo says so in these words.
+NO_BUILDER = ("remote builder unavailable",)
+NO_BUILDER_RETRY_SECONDS = 30
 EXIT = {"landed": 0, "lint": 1, "conflict": 2, "error": 3}
 STILL_QUEUED = 75
 
@@ -378,6 +382,10 @@ class Lander:
         print(output, flush=True)
         self.place.event(kind="lint", ok=lint.returncode == 0, seconds=seconds, batch=len(batch),
                          onto=upstream)
+        if lint.returncode != 0 and any(words in output for words in NO_BUILDER):
+            self.doing(f"the builder was unavailable; linting again in {NO_BUILDER_RETRY_SECONDS}s")
+            time.sleep(NO_BUILDER_RETRY_SECONDS)
+            return True
         if lint.returncode != 0:
             self.failed(batch, upstream, output)
             return True

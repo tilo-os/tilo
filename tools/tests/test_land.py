@@ -16,6 +16,11 @@ root = pathlib.Path(subprocess.run(["git", "rev-parse", "--show-toplevel"], capt
                                    text=True).stdout.strip())
 with open(root.parent / "lint-runs", "a") as runs:
     runs.write(sys.argv[-1] + "\\n")
+flaky = root.parent / "builder-away-once"
+if flaky.exists():
+    flaky.unlink()
+    print("rcargo: remote builder unavailable (builder helper failed)")
+    sys.exit(1)
 bad = [p.name for p in root.iterdir() if p.is_file() and "BAD" in p.read_text(errors="replace")]
 if bad:
     print("error: lint failed in " + ", ".join(bad))
@@ -131,6 +136,14 @@ class LandTest(unittest.TestCase):
         [(code, result)] = self.answers([self.land(mine)])
         self.assertEqual((code, result["status"]), (0, "landed"), result)
         self.assertLessEqual({"mine.txt", "other.txt"}, self.main_files())
+
+    def test_a_builder_that_is_away_is_waited_for_not_blamed_on_the_change(self):
+        tree = self.worktree("patient", {"patient.txt": "fine\n"})
+        lander_worktrees = self.clone / ".claude" / "worktrees"
+        lander_worktrees.mkdir(parents=True, exist_ok=True)
+        (lander_worktrees / "builder-away-once").write_text("")
+        [(code, result)] = self.answers([self.land(tree)])
+        self.assertEqual((code, result["status"]), (0, "landed"), result)
 
     def test_a_merge_commit_is_refused(self):
         tree = self.worktree("merger", {"a.txt": "a\n"})
