@@ -10,6 +10,13 @@
 //! Every request must sign in with the account's name and password, as
 //! Basic credentials.
 //!
+//! It schedules by itself, as the servers people rent do (RFC 6638): an
+//! account whose name is an address is the person written to there, and an
+//! entry a client stores in which that person invites others has the server
+//! write to them, unless the entry's own lines or the request tell it not
+//! to. Nothing is sent anywhere: the server keeps whom it would have written
+//! to ([`Server::mailed`]).
+//!
 //! A test changes a calendar as another client would ([`Server::put`],
 //! [`Server::remove`]), and reads what a client left on it
 //! ([`Server::held`]) and everything it was asked ([`Server::requests`]).
@@ -46,6 +53,9 @@ struct State {
     token: u64,
     /// Whether `sync-collection` is answered: a server without it says 501.
     syncs: bool,
+    /// Everyone the server wrote to by itself, in order: what it sent and
+    /// the address it went to.
+    mailed: Vec<String>,
 }
 
 fn lock(state: &Mutex<State>) -> MutexGuard<'_, State> {
@@ -115,13 +125,96 @@ fn gone(href: &str) -> String {
     )
 }
 
+/// One line of an entry that names somebody: their address, and whether the
+/// text leaves writing to them to the server (the line says neither
+/// `SCHEDULE-AGENT=CLIENT` nor `SCHEDULE-AGENT=NONE`).
+type Named = (String, bool);
+
+/// Whom the entry `ics` names: who organises it, and everyone it invites.
+fn named(ics: &str) -> (Option<Named>, Vec<Named>) {
+    let mut organizer = None;
+    let mut invited = Vec::new();
+    for line in ics.replace("\r\n ", "").lines() {
+        let upper = line.to_ascii_uppercase();
+        let Some(at) = upper.rfind("MAILTO:") else {
+            continue;
+        };
+        let address = line
+            .get(at.saturating_add("MAILTO:".len())..)
+            .unwrap_or_default()
+            .trim()
+            .to_ascii_lowercase();
+        let left_to_server =
+            !upper.contains("SCHEDULE-AGENT=CLIENT") && !upper.contains("SCHEDULE-AGENT=NONE");
+        match upper.split([';', ':']).next() {
+            Some("ORGANIZER") => organizer = Some((address, left_to_server)),
+            Some("ATTENDEE") => invited.push((address, left_to_server)),
+            _ => {}
+        }
+    }
+    (organizer, invited)
+}
+
+/// What a calendar server that schedules by itself sends, and to whom, when
+/// the entry `old` becomes `new` in the calendar of the person it writes to
+/// at `account`. Where that person organises, everyone the text leaves to
+/// the server is invited, and whoever was invited and is named no longer is
+/// told it is off. Where somebody else organises and the entry goes, the
+/// organiser is told that the person declines, unless the request said not
+/// to answer (`reply`).
+fn sent(account: Option<&str>, old: Option<&str>, new: Option<&str>, reply: bool) -> Vec<String> {
+    let Some(account) = account else {
+        return Vec::new();
+    };
+    let (was_by, was) = old.map(named).unwrap_or_default();
+    let (now_by, now) = new.map(named).unwrap_or_default();
+    let theirs = |by: Option<&Named>| by.is_some_and(|(address, _)| address == account);
+    let mut sent = Vec::new();
+    if theirs(now_by.as_ref()) {
+        for (address, left) in &now {
+            if *left && address != account {
+                sent.push(format!("REQUEST to {address}"));
+            }
+        }
+    }
+    if theirs(was_by.as_ref()) {
+        for (address, left) in &was {
+            let still = now.iter().any(|(other, _)| other == address);
+            if *left && address != account && !still {
+                sent.push(format!("CANCEL to {address}"));
+            }
+        }
+    } else if let Some((organizer, true)) = &was_by
+        && new.is_none()
+        && reply
+        && was.iter().any(|(address, _)| address == account)
+    {
+        sent.push(format!("REPLY to {organizer}"));
+    }
+    sent
+}
+
 impl State {
+    /// The account's name in an address of this server: what stands before
+    /// the `@` where the account signs in with an address.
+    fn slug(&self) -> &str {
+        self.user.split('@').next().unwrap_or(&self.user)
+    }
+
+    /// The address the account's person is written to at: the account's
+    /// name, where that is an address.
+    fn address(&self) -> Option<String> {
+        self.user
+            .contains('@')
+            .then(|| self.user.to_ascii_lowercase())
+    }
+
     fn principal(&self) -> String {
-        format!("/dav/principals/{}/", self.user)
+        format!("/dav/principals/{}/", self.slug())
     }
 
     fn home(&self) -> String {
-        format!("/dav/calendars/{}/", self.user)
+        format!("/dav/calendars/{}/", self.slug())
     }
 
     /// The calendar and the entry a path under the home names; the entry is
@@ -283,6 +376,7 @@ impl State {
             return Reply::status(404);
         };
         let next = self.token.saturating_add(1);
+        let account = self.address();
         let Some(calendar) = self.calendars.get_mut(&slug) else {
             return Reply::status(404);
         };
@@ -292,19 +386,20 @@ impl State {
         if !Self::allowed(request, calendar.entries.get(&name)) {
             return Reply::status(412);
         }
-        let created = calendar
-            .entries
-            .insert(
-                name.clone(),
-                Kept {
-                    etag: next,
-                    ics: request.body_text(),
-                },
-            )
-            .is_none();
+        let text = request.body_text();
+        let was = calendar.entries.insert(
+            name.clone(),
+            Kept {
+                etag: next,
+                ics: text.clone(),
+            },
+        );
         calendar.changes.push((next, name));
         self.token = next;
-        Reply::status(if created { 201 } else { 204 }).header("ETag", &etag(next))
+        let old = was.as_ref().map(|kept| kept.ics.as_str());
+        self.mailed
+            .extend(sent(account.as_deref(), old, Some(&text), true));
+        Reply::status(if was.is_none() { 201 } else { 204 }).header("ETag", &etag(next))
     }
 
     fn delete(&mut self, path: &str, request: &Request) -> Reply {
@@ -312,6 +407,7 @@ impl State {
             return Reply::status(404);
         };
         let next = self.token.saturating_add(1);
+        let account = self.address();
         let Some(calendar) = self.calendars.get_mut(&slug) else {
             return Reply::status(404);
         };
@@ -324,9 +420,13 @@ impl State {
         if !Self::allowed(request, calendar.entries.get(&name)) {
             return Reply::status(412);
         }
-        calendar.entries.remove(&name);
+        let was = calendar.entries.remove(&name);
         calendar.changes.push((next, name));
         self.token = next;
+        let old = was.as_ref().map(|kept| kept.ics.as_str());
+        let reply = request.header("Schedule-Reply").map(str::trim) != Some("F");
+        self.mailed
+            .extend(sent(account.as_deref(), old, None, reply));
         Reply::status(204)
     }
 
@@ -386,6 +486,7 @@ impl Server {
             calendars: BTreeMap::new(),
             token: 1,
             syncs: true,
+            mailed: Vec::new(),
         }));
         let served = Arc::clone(&state);
         Self {
@@ -481,6 +582,13 @@ impl Server {
                     .collect()
             })
             .unwrap_or_default()
+    }
+
+    /// Everyone the server wrote to by itself so far, in order: what it sent
+    /// and the address it went to, such as `REQUEST to eve@elsewhere.test`.
+    #[must_use]
+    pub fn mailed(&self) -> Vec<String> {
+        lock(&self.state).mailed.clone()
     }
 
     /// Every request the server was sent since this was last asked.
