@@ -322,9 +322,23 @@ async fn admit_subscription(
     };
     let mut wr = crate::workspace_io::fresh_membership(&ws).await?;
     if !session_peer_authorized(peer, session) {
-        return Err(PeerError::Protocol(
-            "subscriber authorization changed".into(),
-        ));
+        // A server that never had this person says so in the word a page acts
+        // on, as it does for a workspace it does not hold; one it knows but
+        // does not trust here is a member's question, which the workspace's
+        // own permissions answer.
+        let known = session
+            .admin
+            .is_some_and(|workspaces| workspaces.knows(&peer.user_public_key));
+        return Ok(SubscribeAdmission::Refused(Envelope::NotAuthorised {
+            workspace_id,
+            refusal: if known {
+                tilo_server_protocol::refusal::Refusal::NotAMember(
+                    "the device may not subscribe to this workspace".into(),
+                )
+            } else {
+                tilo_server_protocol::refusal::Refusal::NotAdmitted
+            },
+        }));
     }
     if subscribed.contains(&workspace_id) && !current_session(&wr, peer, session.outbound) {
         return Err(lost_session(
