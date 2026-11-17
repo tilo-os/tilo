@@ -567,7 +567,7 @@ pub fn original_pipeline_with_receiver(
         );
     }
     drop(signed_source);
-    let participant_partition = mounted_source.as_ref().map(|subject| subject.partition());
+    let volume_partition = mounted_source.as_ref().map(|subject| subject.partition());
     if let Some(subject) = &mounted_source {
         subject.verify_original();
     }
@@ -578,10 +578,10 @@ pub fn original_pipeline_with_receiver(
             b"underlying original file must not replace selected mount"
         );
     }
-    if let Some(partition) = &participant_partition {
+    if let Some(partition) = &volume_partition {
         daemon
             .unmount(partition)
-            .expect("retire exact marked participant GPT source");
+            .expect("retire exact marked volume GPT source");
         assert!(
             daemon
                 .filesystem(partition)
@@ -626,7 +626,7 @@ pub fn original_pipeline_with_receiver(
         );
         assert!(
             daemon
-                .filesystem(participant_partition.as_ref().unwrap())
+                .filesystem(volume_partition.as_ref().unwrap())
                 .and_then(|proxy| proxy.get_property::<Vec<Vec<u8>>>("MountPoints"))
                 .unwrap()
                 .is_empty()
@@ -776,14 +776,14 @@ pub fn original_pipeline_with_receiver(
     if let Some(committed) = committed {
         paired::reopen_and_receive(&target, &disk, &committed, scratch.path(), receiver);
     }
-    if let Some(partition) = &participant_partition {
+    if let Some(partition) = &volume_partition {
         assert!(
             daemon
                 .filesystem(partition)
                 .and_then(|proxy| proxy.get_property::<Vec<Vec<u8>>>("MountPoints"))
                 .unwrap()
                 .is_empty(),
-            "mounted participant readonly epoch must retire"
+            "mounted volume readonly epoch must retire"
         );
     }
     assert!(

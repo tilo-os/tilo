@@ -1,18 +1,18 @@
 //! Actual owned readonly foreign-volume custody, never a synthetic Home.
 use super::*;
-pub(super) struct OwnedParticipantMount(Option<Arc<MountedVolume>>);
-impl Drop for OwnedParticipantMount {
+pub(super) struct OwnedVolumeMount(Option<Arc<MountedVolume>>);
+impl Drop for OwnedVolumeMount {
     fn drop(&mut self) {
         if let Some(owned) = self.0.take() {
             retain_failed_mount(owned);
         }
     }
 }
-impl OwnedParticipantMount {
+impl OwnedVolumeMount {
     pub(super) fn bind_facts(&self, facts: &mut Facts) -> io::Result<()> {
         self.0
             .as_ref()
-            .ok_or_else(|| refusal("Participant mount custody retired"))?
+            .ok_or_else(|| refusal("Volume mount custody retired"))?
             .service
             .bind_facts(facts)
     }
@@ -21,12 +21,12 @@ impl OwnedParticipantMount {
         retire_owned_mount(
             self.0
                 .take()
-                .ok_or_else(|| refusal("Participant mount custody retired"))?,
+                .ok_or_else(|| refusal("Volume mount custody retired"))?,
         )
     }
 }
-impl ParticipantNamespace {
-    /// Boot-only export preparation on an exact protected participant binding.
+impl VolumeNamespace {
+    /// Boot-only export preparation on an exact protected volume binding.
     /// Existing readonly full-root mounts remain borrowed. Newly mounted volumes
     /// use the same held-device kernel no-replay backend as authenticated Home.
     pub fn mount_for_export(entry: &EntryBinding) -> io::Result<Self> {
@@ -53,7 +53,7 @@ impl ParticipantNamespace {
         // evidence quarantines its actual service custody through retirement.
         let result = current.and_then(|facts| {
             let mut resolved = Self::reopen_read_only_with(entry, &facts)?;
-            resolved.owned = Some(OwnedParticipantMount(Some(owned.clone())));
+            resolved.owned = Some(OwnedVolumeMount(Some(owned.clone())));
             resolved.validate()?;
             Ok(resolved)
         });

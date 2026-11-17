@@ -243,7 +243,7 @@ pub(in crate::setup::home_capture) fn qualify_applications_owned(
         pending.validate()?;
         Ok(Arc::new(read))
     })?;
-    // Every participant source root carries the same protected disposable marker as the existing
+    // Every volume's source root carries the same protected disposable marker as the existing
     // Home factory, which supplies no source authority.
     let sources = read.qualification_owned_sources(cancel)?;
     let claim = read.output_read_claim_digest(cancel)?;

@@ -7,10 +7,10 @@ use std::{ffi::OsString, fs, os::unix::ffi::OsStringExt};
 mod installed_scratch;
 pub use installed_scratch::{InstalledScratchFacts, InstalledScratchIdentity};
 mod mounted_entry;
-mod participant_namespace;
 mod root_readonly;
+mod volume_namespace;
 pub use mounted_entry::{capture_mounted_entry, mounted_record_namespace};
-pub use participant_namespace::ParticipantNamespace;
+pub use volume_namespace::VolumeNamespace;
 
 mod mounts;
 use mounts::{Mount, parse as parse_mounts};

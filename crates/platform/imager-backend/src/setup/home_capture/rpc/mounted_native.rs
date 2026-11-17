@@ -262,7 +262,7 @@ fn actual_original_user_cancel_retires_rpc_without_mounted_record_or_receipt() {
     run_original_user_case(true, false, false, Acknowledgement::Normal, 0);
 }
 #[test]
-fn actual_foreign_rpc_ack_holds_primary_and_participant_leases_until_final_write() {
+fn actual_foreign_rpc_ack_holds_primary_and_volume_leases_until_final_write() {
     run_original_user_case(false, true, false, Acknowledgement::Normal, 0);
 }
 #[test]
@@ -341,7 +341,7 @@ fn run_original_user_case(
     owner(&request_dir, 1000, 1001, 0o700);
     let foreign_mount = foreign.then(|| {
         PathBuf::from(
-            std::env::var_os("TILO_MOUNTED_PARTICIPANT_GPT_STORE")
+            std::env::var_os("TILO_MOUNTED_VOLUME_GPT_STORE")
                 .expect("second actual unique disposable GPT filesystem required"),
         )
     });
@@ -477,13 +477,13 @@ fn run_original_user_case(
         return;
     }
     let mut incoming = event.unwrap();
-    let participant_root = foreign_mount
+    let volume_root = foreign_mount
         .as_ref()
         .map(|mount| mount.join("var/lib/tilo-imager/home-capture"));
     // This is the genuine RPC queue window: registration returned already,
     // but the helper has not begun or written any final acknowledgment.
     assert_operation_busy(super::super::Store::system(&operation));
-    if let Some(root) = &participant_root {
+    if let Some(root) = &volume_root {
         assert_operation_busy(super::super::Store::open(
             PinnedDirectory::open_absolute(root).unwrap(),
             &operation,
@@ -515,9 +515,9 @@ fn run_original_user_case(
     drop(incoming);
     if tamper != 1 {
         // After Incoming is consumed, the private RootSession guard still owns
-        // primary AND foreign participant operation locks through the ACK write.
+        // primary AND foreign volume operation locks through the ACK write.
         assert_operation_busy(super::super::Store::system(&operation));
-        if let Some(root) = &participant_root {
+        if let Some(root) = &volume_root {
             assert_operation_busy(super::super::Store::open(
                 PinnedDirectory::open_absolute(root).unwrap(),
                 &operation,
@@ -595,10 +595,10 @@ fn run_original_user_case(
         super::super::Store::system(&operation)
             .expect("Primary lock must retire after actual reply attempt"),
     );
-    if let Some(root) = &participant_root {
+    if let Some(root) = &volume_root {
         drop(
             super::super::Store::open(PinnedDirectory::open_absolute(root).unwrap(), &operation)
-                .expect("Participant lock must retire after actual reply attempt"),
+                .expect("Volume lock must retire after actual reply attempt"),
         );
     }
     let expected: &[u8] = if failed_ack || cancelled_ack || tamper != 0 {
@@ -614,12 +614,12 @@ fn run_original_user_case(
     drop(binds);
     assert_eq!(std::fs::read(&file).unwrap(), b"group-only original bytes");
     assert_eq!(std::fs::read(&leaf).unwrap(), b"underlying original bytes");
-    if let Some(root) = participant_root {
+    if let Some(root) = volume_root {
         // All actual guards and source descriptors are gone. Retire only our
         // exact immutable operation files, not any other protected namespace.
         std::fs::remove_file(
             root.join("records")
-                .join(format!("{operation}.mounted-participant.json")),
+                .join(format!("{operation}.mounted-volume.json")),
         )
         .unwrap();
         std::fs::remove_file(root.join("records").join(format!("{operation}.lock"))).unwrap();
@@ -642,7 +642,7 @@ fn assert_operation_busy(result: io::Result<super::super::Store>) {
 }
 
 /// Runs the actual original-owner chooser and authenticated mounted registration
-/// for a caller-owned complete plan. Caller owns the source/participant mounts
+/// for a caller-owned complete plan. Caller owns the source/volume mounts
 /// and canonical protected Store bind throughout the returned witnesses' use.
 pub(in crate::setup::home_capture) fn register_for_paired(
     home: &Path,

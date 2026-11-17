@@ -296,7 +296,7 @@ fn actual_mounted_root_registration_binds_kernel_caller_independently_of_source_
 }
 
 #[test]
-fn actual_foreign_mounted_participant_record_binds_its_own_filesystem_and_kernel_caller() {
+fn actual_foreign_mounted_volume_record_binds_its_own_filesystem_and_kernel_caller() {
     assert_eq!(
         rustix::process::geteuid().as_raw(),
         0,
@@ -325,7 +325,7 @@ fn actual_foreign_mounted_participant_record_binds_its_own_filesystem_and_kernel
     owner(&home, 1000, 1001, 0o700);
     std::fs::write(home.join(".hidden"), b"primary unchanged").unwrap();
     let foreign_mount = PathBuf::from(
-        std::env::var_os("TILO_MOUNTED_PARTICIPANT_GPT_STORE")
+        std::env::var_os("TILO_MOUNTED_VOLUME_GPT_STORE")
             .expect("second actual disposable GPT filesystem required"),
     );
     let foreign_marker = foreign_mount.join(".tilo-original-source-qualification");
@@ -425,15 +425,15 @@ fn actual_foreign_mounted_participant_record_binds_its_own_filesystem_and_kernel
         .register_mounted_roots(&home, &plan, &roots, &channel, &cancel)
         .unwrap();
 
-    let participant = foreign_mount
+    let volume_record = foreign_mount
         .join("var/lib/tilo-imager/home-capture/records")
-        .join(format!("{operation}.mounted-participant.json"));
-    let participant_bytes = std::fs::read(&participant).unwrap();
-    let participant_before = std::fs::metadata(&participant).unwrap();
-    assert_eq!(participant_before.uid(), 0);
-    assert_eq!(participant_before.mode() & 0o777, 0o600);
+        .join(format!("{operation}.mounted-volume.json"));
+    let volume_record_bytes = std::fs::read(&volume_record).unwrap();
+    let volume_record_before = std::fs::metadata(&volume_record).unwrap();
+    assert_eq!(volume_record_before.uid(), 0);
+    assert_eq!(volume_record_before.mode() & 0o777, 0o600);
     assert_eq!(
-        participant_before.dev(),
+        volume_record_before.dev(),
         std::fs::metadata(&child).unwrap().dev()
     );
     let bytes = std::fs::read(&path).unwrap();
@@ -444,20 +444,20 @@ fn actual_foreign_mounted_participant_record_binds_its_own_filesystem_and_kernel
             .unwrap(),
         witness
     );
-    let participant_after = std::fs::metadata(&participant).unwrap();
+    let volume_record_after = std::fs::metadata(&volume_record).unwrap();
     assert_eq!(
         (
-            participant_before.ino(),
-            participant_before.mtime(),
-            participant_before.ctime()
+            volume_record_before.ino(),
+            volume_record_before.mtime(),
+            volume_record_before.ctime()
         ),
         (
-            participant_after.ino(),
-            participant_after.mtime(),
-            participant_after.ctime()
+            volume_record_after.ino(),
+            volume_record_after.mtime(),
+            volume_record_after.ctime()
         )
     );
-    assert_eq!(std::fs::read(&participant).unwrap(), participant_bytes);
+    assert_eq!(std::fs::read(&volume_record).unwrap(), volume_record_bytes);
     let after = std::fs::metadata(&path).unwrap();
     assert_eq!(
         (before.ino(), before.mtime(), before.ctime()),
@@ -492,22 +492,22 @@ fn actual_foreign_mounted_participant_record_binds_its_own_filesystem_and_kernel
     assert_eq!(std::fs::read(&path).unwrap(), bytes);
     changed.stream().write_all(&[7]).unwrap();
     assert!(other.0.wait().unwrap().success());
-    std::fs::write(&participant, b"tampered actual participant").unwrap();
+    std::fs::write(&volume_record, b"tampered actual volume").unwrap();
     assert!(
         store
             .register_mounted_roots(&home, &plan, &roots, &channel, &cancel)
             .is_err()
     );
     assert_eq!(std::fs::read(&path).unwrap(), bytes);
-    std::fs::write(&participant, &participant_bytes).unwrap();
-    owner(&participant, 1000, 1001, 0o600);
+    std::fs::write(&volume_record, &volume_record_record_bytes).unwrap();
+    owner(&volume_record, 1000, 1001, 0o600);
     assert!(
         store
             .register_mounted_roots(&home, &plan, &roots, &channel, &cancel)
             .is_err()
     );
     assert_eq!(std::fs::read(&path).unwrap(), bytes);
-    owner(&participant, 0, 0, 0o600);
+    owner(&volume_record, 0, 0, 0o600);
     channel.stream().write_all(&[7]).unwrap();
     assert!(admitted.0.wait().unwrap().success());
     drop((roots, report, refusal, binds, store));
@@ -523,10 +523,10 @@ fn actual_foreign_mounted_participant_record_binds_its_own_filesystem_and_kernel
             .verify_mounted_witness(&witness)
             .unwrap_err()
             .to_string(),
-        "Participant source also has a writable mount"
+        "Volume source also has a writable mount"
     );
     // The rejected context owns no alias mount. Retire that exact fixture bind
-    // normally before accepting the genuinely readonly participant epoch.
+    // normally before accepting the genuinely readonly volume epoch.
     drop(writable_alias);
     context.verify_mounted_witness(&witness).unwrap();
     context
@@ -661,7 +661,7 @@ fn actual_foreign_mounted_participant_record_binds_its_own_filesystem_and_kernel
     drop((readonly_foreign, readonly_primary));
     assert_eq!(std::fs::read(&file).unwrap(), b"group-readable unchanged");
     assert_eq!(std::fs::read(&leaf).unwrap(), b"hidden underlying file");
-    std::fs::remove_file(&participant).unwrap();
+    std::fs::remove_file(&volume_record).unwrap();
     std::fs::remove_file(
         foreign_mount
             .join("var/lib/tilo-imager/home-capture/records")

@@ -1,18 +1,18 @@
-//! Actual full-filesystem scope for a protected per-volume participant Store.
+//! Actual full-filesystem scope for a protected per-volume Store.
 //! No payload-authored record locator or synthetic Home/owner Plan is accepted.
 use super::super::EntryBinding;
 use super::*;
 mod owned;
 
-pub struct ParticipantNamespace {
+pub struct VolumeNamespace {
     root: Arc<PinnedDirectory>,
     point: PathBuf,
     mount: u64,
     volume: SourceVolume,
     read_only: bool,
-    owned: Option<owned::OwnedParticipantMount>,
+    owned: Option<owned::OwnedVolumeMount>,
 }
-impl ParticipantNamespace {
+impl VolumeNamespace {
     fn facts(&self) -> io::Result<Facts> {
         let mut facts = Facts::read()?;
         if let Some(owned) = &self.owned {
@@ -24,7 +24,7 @@ impl ParticipantNamespace {
     pub fn qualification_owned_root(&self) -> io::Result<()> {
         self.validate()?;
         if !self.read_only || self.owned.is_none() {
-            return Err(refusal("Qualification participant is writable"));
+            return Err(refusal("Qualification volume is writable"));
         }
         kernel_read_only(&self.root)?;
         super::super::super::home_capture::consumer_qualification::check_source_root_marker(
@@ -38,9 +38,7 @@ impl ParticipantNamespace {
             return Err(io::ErrorKind::PermissionDenied.into());
         }
         if capture_mounted_entry(path, selected, entry.kind())? != *entry {
-            return Err(refusal(
-                "Participant entry differs from actual platform grant",
-            ));
+            return Err(refusal("Volume entry differs from actual platform grant"));
         }
         let facts = Facts::read()?;
         // Resolving the partition separately rejects duplicate PARTUUIDs even
@@ -58,7 +56,7 @@ impl ParticipantNamespace {
             .collect();
         let [mount] = candidates.as_slice() else {
             return Err(unsupported_source(
-                "Mounted participant requires one actual full-filesystem mount",
+                "Mounted volume requires one actual full-filesystem mount",
             ));
         };
         let root = PinnedDirectory::open_absolute(&mount.point)?;
@@ -69,9 +67,7 @@ impl ParticipantNamespace {
         if root.file.metadata()?.uid() != 0
             || fs_native::snapshot_lease::mount_id(&root.file)? != mount.id
         {
-            return Err(refusal(
-                "Participant filesystem root lacks protected custody",
-            ));
+            return Err(refusal("Volume filesystem root lacks protected custody"));
         }
         let result = Self {
             root,
@@ -83,7 +79,7 @@ impl ParticipantNamespace {
         };
         result.validate()?;
         if capture_mounted_entry(path, selected, entry.kind())? != *entry {
-            return Err(refusal("Participant source changed during root admission"));
+            return Err(refusal("Volume source changed during root admission"));
         }
         Ok(result)
     }
@@ -105,7 +101,7 @@ impl ParticipantNamespace {
         ) || fs_native::snapshot_lease::mount_id(&current.file)? != self.mount
             || fs_native::snapshot_lease::mount_id(&self.root.file)? != self.mount
         {
-            return Err(refusal("Participant full-filesystem mount changed"));
+            return Err(refusal("Volume full-filesystem mount changed"));
         }
         facts.matching_volume(&self.volume)?;
         let mount = facts.covering(&self.point)?;
@@ -114,7 +110,7 @@ impl ParticipantNamespace {
             || mount.id != self.mount
             || facts.volume(mount)?.0 != self.volume
         {
-            return Err(refusal("Participant disk or filesystem geometry changed"));
+            return Err(refusal("Volume disk or filesystem geometry changed"));
         }
         if self.read_only {
             kernel_read_only(&self.root)?;
@@ -124,7 +120,7 @@ impl ParticipantNamespace {
                         && !alias.read_only
                 })
             {
-                return Err(refusal("Participant source also has a writable mount"));
+                return Err(refusal("Volume source also has a writable mount"));
             }
         }
         let held = tilo_files::native::atomic::StorageDirectory::from_file(
@@ -134,7 +130,7 @@ impl ParticipantNamespace {
     }
 }
 
-impl ParticipantNamespace {
+impl VolumeNamespace {
     /// Existing readonly full-root mount only. No payload path, implicit mount,
     /// synthetic directory Home or cleanup authority is introduced.
     pub fn reopen_read_only(entry: &EntryBinding) -> io::Result<Self> {
@@ -160,11 +156,11 @@ impl ParticipantNamespace {
             .collect();
         let [mount] = candidates.as_slice() else {
             return Err(unsupported_source(
-                "Participant requires its unique existing readonly full-filesystem mount",
+                "Volume requires its unique existing readonly full-filesystem mount",
             ));
         };
         if !mount.read_only {
-            return Err(refusal("Participant source is not readonly"));
+            return Err(refusal("Volume source is not readonly"));
         }
         let root = PinnedDirectory::open_absolute(&mount.point)?;
         kernel_read_only(&root)?;
@@ -181,7 +177,7 @@ impl ParticipantNamespace {
     }
     pub fn open_record(&self, operation: &str) -> io::Result<fs::File> {
         if !super::super::operation_id(operation) {
-            return Err(refusal("Participant operation is not canonical"));
+            return Err(refusal("Volume operation is not canonical"));
         }
         self.validate()?;
         kernel_read_only(&self.root)?;
@@ -192,7 +188,7 @@ impl ParticipantNamespace {
             directory = directory.open_child(std::ffi::OsStr::new(name), &metadata)?;
             if fs_native::snapshot_lease::mount_id(&directory.file)? != self.mount {
                 return Err(refusal(
-                    "Participant record namespace crosses an undeclared mount",
+                    "Volume record namespace crosses an undeclared mount",
                 ));
             }
             let held = tilo_files::native::atomic::StorageDirectory::from_file(
@@ -207,7 +203,7 @@ impl ParticipantNamespace {
             super::super::super::migration_durability::readable_directory(&directory.file)?,
         )?;
         let file = held.open_read(
-            std::ffi::OsStr::new(&format!("{operation}.mounted-participant.json")),
+            std::ffi::OsStr::new(&format!("{operation}.mounted-volume.json")),
             tilo_files::native::atomic::Privacy::OwnerOnly,
         )?;
         directory.validate()?;
@@ -224,7 +220,7 @@ impl ParticipantNamespace {
         self.validate()?;
         kernel_read_only(&self.root)?;
         if entry.volume() != &self.volume {
-            return Err(refusal("Participant entry belongs to another volume"));
+            return Err(refusal("Volume entry belongs to another volume"));
         }
         let path = entry.home.relative.decode().map_err(refusal)?;
         let mut directory = self.root.clone();
@@ -238,7 +234,7 @@ impl ParticipantNamespace {
             if names.peek().is_some() {
                 directory = directory.open_child(name, &metadata)?;
                 if fs_native::snapshot_lease::mount_id(&directory.file)? != self.mount {
-                    return Err(refusal("Participant locator crosses ungranted mount"));
+                    return Err(refusal("Volume locator crosses ungranted mount"));
                 }
                 continue;
             }
@@ -265,12 +261,12 @@ impl ParticipantNamespace {
             || metadata.file_type().is_symlink()
             || fs_native::snapshot_lease::mount_id(&file)? != self.mount
         {
-            return Err(refusal("Protected participant source replaced"));
+            return Err(refusal("Protected volume source replaced"));
         }
         if let Some(expected) = &entry.home.subvolume {
             let query = fs::File::open(format!("/proc/self/fd/{}", file.as_raw_fd()))?;
             if super::super::super::migration_durability::identity(&query)? != *expected {
-                return Err(refusal("Participant Btrfs inode identity changed"));
+                return Err(refusal("Volume Btrfs inode identity changed"));
             }
         }
         directory.validate()?;
@@ -284,7 +280,7 @@ impl ParticipantNamespace {
 mod tests {
     use super::*;
     #[test]
-    fn participant_namespace_never_promotes_a_different_actual_descriptor_to_source_authority() {
+    fn volume_namespace_never_promotes_a_different_actual_descriptor_to_source_authority() {
         let temp = tempfile::tempdir().unwrap();
         let first = temp.path().join("first");
         let second = temp.path().join("second");
@@ -298,7 +294,7 @@ mod tests {
             mode: libc::S_IFREG | 0o640,
         };
         let selected = fs::File::open(&second).unwrap();
-        let error = ParticipantNamespace::admit(&first, &selected, &binding)
+        let error = VolumeNamespace::admit(&first, &selected, &binding)
             .err()
             .expect("mismatched actual descriptor must refuse before creating any namespace");
         if rustix::process::geteuid().as_raw() == 0 {

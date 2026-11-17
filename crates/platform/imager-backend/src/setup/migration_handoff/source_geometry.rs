@@ -111,7 +111,7 @@ mod tests {
                 assert_eq!(observed, entry);
             }
             SourceGeometry::Home(_) => {
-                panic!("A filesystem-root participant must not become a synthetic Home")
+                panic!("A filesystem-root volume must not become a synthetic Home")
             }
         }
         assert!(Plan::parse(&plans[1]).is_err());
