@@ -260,6 +260,16 @@ class PrePushLintTests(unittest.TestCase):
         self.assertIn("is not the commit checked out here", result.stderr)
         self.assertEqual(self.calls(), [])
 
+    def test_a_push_main_has_moved_past_is_refused_before_anything_is_compiled(self):
+        # The remote reports main's head when the push begins; a push that does not contain it
+        # is refused after the lint whatever the lint says, so the lint would only load the builder.
+        self.write("native/src/lib.rs", LIB.format(answer=61))
+        self.commit("feat: answer 61")
+        result = self.push(remote_oid="1" * 40)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("tools/land.py", result.stderr)
+        self.assertEqual(self.calls(), [])
+
     def test_a_lock_change_lints_the_members_it_reaches(self):
         # A resolved dependency that moved reaches the members that link it,
         # which the changed paths alone do not name.

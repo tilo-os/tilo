@@ -89,6 +89,9 @@ CARGO_REMARKS = (
 REF_TIPS = ("refs/remotes/{remote}/main", "refs/remotes/origin/main",
             "refs/remotes/origin/HEAD", "refs/heads/main")
 ZERO_OID = {"0"}
+# The branch everyone lands on. A push to it that is not a fast-forward is a race already lost:
+# nobody force-pushes main, so the remote refuses it after any lint.
+MAIN_REF = "refs/heads/main"
 # How many passing lint keys a clone keeps.
 KEPT_PASSES = 256
 # Identifiers of the language itself, and words every crate uses, say nothing
@@ -160,6 +163,9 @@ class Push(NamedTuple):
     comparisons: list[tuple[str, str]]
     tips: list[str]
     unnamed: list[str]
+    # Pushes to main that main's own head, as the remote reported it when the push began, is not
+    # part of: the remote refuses them whatever the lint says.
+    behind: list[str] = []
 
 
 def git(root: Path, *args: str) -> subprocess.CompletedProcess:
@@ -222,19 +228,28 @@ def comparison(root: Path, remote: str, remote_oid: str, head: str) -> tuple[str
     return None
 
 
+def contains(root: Path, head: str, commit: str) -> bool:
+    """Whether `commit` is `head` or one of its ancestors (False when it is not even here)."""
+    return known(root, commit) and git(root, "merge-base", "--is-ancestor", commit, head).returncode == 0
+
+
 def pushed(root: Path, remote: str, lines: Iterable[str]) -> Push:
     """Every file the pushed refs change, and each ref's comparison."""
     files: set[str] = set()
     comparisons: list[tuple[str, str]] = []
     tips: list[str] = []
     unnamed: list[str] = []
+    behind: list[str] = []
     for line in lines:
         parts = line.split()
         if len(parts) != 4:
             continue
-        ref, head, _remote_ref, remote_oid = parts
+        ref, head, remote_ref, remote_oid = parts
         if set(head) == ZERO_OID:
             continue  # a deleted ref changes nothing that is built
+        if remote_ref == MAIN_REF and set(remote_oid) != ZERO_OID and not contains(root, head, remote_oid):
+            behind.append(remote_oid)
+            continue
         result = comparison(root, remote, remote_oid, head)
         if result is None:
             unnamed.append(ref)
@@ -246,7 +261,7 @@ def pushed(root: Path, remote: str, lines: Iterable[str]) -> Push:
             comparisons.append((start, head))
         tips.append(head)
         files |= changed
-    return Push(files, comparisons, tips, unnamed)
+    return Push(files, comparisons, tips, unnamed, behind)
 
 
 def rust_changes(files: set[str]) -> set[str]:
@@ -695,6 +710,12 @@ def main(argv: list[str]) -> int:
         push = Push(diff(root, base, head), [(base, head)], [head], [])
     else:
         push = pushed(root, options.remote, options.stdin)
+    if push.behind:
+        say(f"pre-push: main is at {push.behind[0][:12]} now, which this push does not contain, so "
+            "the remote refuses it whatever a lint says; nothing was linted. Land with "
+            "`python3 tools/land.py`: it puts your commits on main's newest head, lints them there "
+            "once and pushes them, with no race to lose")
+        return 1
     files = rust_changes(push.files)
     if not files:
         say("pre-push: no Rust or Cargo file changed; nothing to lint")
