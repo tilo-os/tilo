@@ -74,6 +74,10 @@ use tilo_lock::MutexRecover as _;
 
 use super::{WorkspaceId, Workspaces};
 
+/// A person's mail as such a turn reaches it: after [`Workspaces::keepers_turn`], their own
+/// word on which agent of theirs may use which account ([`Workspaces::mail_for_turn`]).
+pub use super::person_settings::turn_mail::{AskedSend, SEND_CARRIER, TurnMail};
+
 /// Where a person's asks are kept, under their own root.
 const ASKS_DIR: &str = "vault-asks";
 /// The most asks that wait for one person at a time: an agent that goes on

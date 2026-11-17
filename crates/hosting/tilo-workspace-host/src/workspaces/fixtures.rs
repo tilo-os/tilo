@@ -1,4 +1,4 @@
-//! A governing host and the devices around it, for the tests of workspaces and of
+//! A governing holder and the devices around it, for the tests of workspaces and of
 //! the app action servers embedders build on them.
 #![allow(
     clippy::expect_used,
@@ -19,14 +19,26 @@ use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_de
 use super::{DeviceKeyGroups, GroupKeys, GroupKeysAnswerFuture, PreAdmitRequest, Workspaces};
 use crate::host::{HostConfig, HostIdentity, WorkspaceHost};
 
-/// A host certified only to host workspaces: it governs them without taking part in
+/// What a test that stands in for the mail servers of the accounts people keep here is made
+/// of ([`Workspaces::carry_mail_through`]): the session's trait with what its calls carry, a
+/// message as an inbox holds one, and a message as a send begins one.
+#[cfg(not(target_arch = "wasm32"))]
+pub mod mail {
+    pub use tilo_mail_session::{
+        Attachment, InboxHeard, InboxSeen, Leaving, MailSession, Recipient, Watching,
+    };
+
+    pub use super::super::mail_watch::{begun_message, held_message};
+}
+
+/// A holder certified only to keep workspaces: it governs them without taking part in
 /// their channels.
 #[must_use]
 pub fn governor() -> (SigningKey, DeviceCert) {
     governor_with(DeviceCapabilities::member())
 }
 
-/// A host device of the person whose root is `[1; 32]`, certified with
+/// A holder's device of the person whose root is `[1; 32]`, certified with
 /// `capabilities`.
 ///
 /// # Panics

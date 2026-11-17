@@ -123,7 +123,7 @@ impl Setup {
 }
 
 /// What `caller` is answered when it asks `action` of `page`, or why not.
-async fn asked_of(
+pub(super) async fn asked_of(
     page: &(impl ActionProvider + Sync),
     caller: &Caller,
     action: &str,
@@ -170,7 +170,7 @@ async fn offered(page: &(impl ActionProvider + Sync), caller: &Caller) -> Vec<St
 }
 
 /// A message from Ada to Bo, as a send begins one.
-fn lunch() -> Value {
+pub(super) fn lunch() -> Value {
     json!({"message": {
         "account": ACCOUNT,
         "fromAddress": ACCOUNT,
@@ -598,7 +598,7 @@ async fn the_question_names_every_address_the_message_goes_to() {
 }
 
 /// The lunch to Bo with `fields` of its message set anew.
-fn lunch_with(fields: &Value) -> Value {
+pub(super) fn lunch_with(fields: &Value) -> Value {
     let mut begun = lunch();
     for (name, value) in fields.as_object().into_iter().flatten() {
         begun["message"][name.as_str()] = value.clone();

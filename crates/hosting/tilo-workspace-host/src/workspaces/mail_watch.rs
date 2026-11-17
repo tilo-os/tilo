@@ -431,6 +431,51 @@ fn arrival_of(
 }
 
 /// Mail servers a test stands in for.
+/// A message as an inbox holds one, for a test that stands in for the mail
+/// servers: `uid` in its folder, from the person `from` names by their name
+/// and their address.
+#[cfg(any(test, feature = "test-support"))]
+#[must_use]
+pub fn held_message(
+    uid: u32,
+    from: (&str, &str),
+    subject: &str,
+    body: &str,
+) -> tilo_actions::remote::person_accounts::FetchedMessage {
+    tilo_actions::remote::person_accounts::FetchedMessage {
+        uid,
+        message_id: Some(format!("{uid}@example.test")),
+        from: tilo_actions::remote::person_accounts::MailAddress {
+            name: Some(from.0.to_owned()),
+            email: from.1.to_owned(),
+        },
+        subject: subject.to_owned(),
+        body: body.to_owned(),
+        minutes: 100,
+        ..Default::default()
+    }
+}
+
+/// A message as a send begins one, for the same tests: from `account`, to
+/// `to` with `cc` in copy.
+#[cfg(any(test, feature = "test-support"))]
+#[must_use]
+pub fn begun_message(
+    account: &str,
+    (to, cc): (&str, &str),
+    subject: &str,
+    body: &str,
+) -> serde_json::Value {
+    serde_json::json!({"message": {
+        "account": account,
+        "fromAddress": account,
+        "to": to,
+        "cc": cc,
+        "subject": subject,
+        "body": body,
+    }})
+}
+
 #[cfg(test)]
 pub(crate) mod testing {
     #![allow(
