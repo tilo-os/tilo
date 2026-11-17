@@ -18,7 +18,7 @@ use wayland_client::protocol as c;
 use wayland_client::{Connection, Proxy as _, QueueHandle, WEnum};
 
 use crate::state::State;
-use crate::surfaces::{Role, UpSurface};
+use crate::surfaces::Role;
 use crate::upstream::SurfaceRef;
 
 /// The `wl_seat` version the app is offered and the desktop's is bound at.
@@ -284,28 +284,35 @@ impl Dispatch<WlTouch, ()> for State {
 
 impl State {
     /// The app's surface a desktop surface mirrors.
-    fn app_surface(&self, up: &c::wl_surface::WlSurface) -> Option<WlSurface> {
+    pub(crate) fn app_surface(&self, up: &c::wl_surface::WlSurface) -> Option<WlSurface> {
         let id = &up.data::<SurfaceRef>()?.0;
         Some(self.surfaces.get(id)?.surface.clone())
     }
 
+    /// A cursor surface of the app, shown on the desktop: its twin, once the desktop has it.
+    pub(crate) fn mirror_cursor(
+        &mut self,
+        surface: Option<&WlSurface>,
+    ) -> Option<c::wl_surface::WlSurface> {
+        let surface = surface?;
+        let id = surface.id();
+        if let Some(kept) = self.surfaces.get_mut(&id)
+            && matches!(kept.role, Role::None)
+        {
+            kept.role = Role::Cursor;
+        }
+        self.push(&id);
+        self.surfaces
+            .get(&id)
+            .and_then(|kept| kept.up.as_ref())
+            .map(|up| up.surface.clone())
+    }
+
     fn set_cursor(&mut self, serial: u32, surface: Option<&WlSurface>, x: i32, y: i32) {
-        let up_surface = match surface {
-            Some(surface) => {
-                let id = surface.id();
-                if let Some(kept) = self.surfaces.get_mut(&id)
-                    && matches!(kept.role, Role::None)
-                {
-                    kept.role = Role::Cursor;
-                }
-                self.push(&id);
-                match self.surfaces.get(&id).and_then(|kept| kept.up.as_ref()) {
-                    Some(UpSurface { surface, .. }) => Some(surface.clone()),
-                    None => return,
-                }
-            }
-            None => None,
-        };
+        let up_surface = self.mirror_cursor(surface);
+        if surface.is_some() && up_surface.is_none() {
+            return;
+        }
         if let Some(pointer) = self.up.as_ref().and_then(|up| up.pointer.as_ref()) {
             pointer.set_cursor(serial, up_surface.as_ref(), x, y);
         }

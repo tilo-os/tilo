@@ -10,6 +10,7 @@ use std::time::Duration;
 use tilo_app_keeper::wire::{self, FromKeeper, ToKeeper};
 use tilo_app_keeper::{Keeper, Options};
 use tilo_compositor::{Compositor, OutputConfig, StackPolicy};
+use wayland_client::backend::ObjectId;
 use wayland_client::protocol::{
     wl_buffer::WlBuffer,
     wl_callback::WlCallback,
@@ -36,7 +37,8 @@ use wayland_client::protocol::{
     wl_surface::WlSurface,
 };
 use wayland_client::{
-    Connection, Dispatch, EventQueue, QueueHandle, WEnum, delegate_noop, event_created_child,
+    Connection, Dispatch, EventQueue, Proxy as _, QueueHandle, WEnum, delegate_noop,
+    event_created_child,
 };
 use wayland_protocols::wp::content_type::v1::client::{
     wp_content_type_manager_v1::WpContentTypeManagerV1,
@@ -83,6 +85,16 @@ use wayland_protocols::wp::primary_selection::zv1::client::{
 use wayland_protocols::wp::relative_pointer::zv1::client::{
     zwp_relative_pointer_manager_v1::ZwpRelativePointerManagerV1,
     zwp_relative_pointer_v1::{self as relative_pointer, ZwpRelativePointerV1},
+};
+use wayland_protocols::wp::tablet::zv2::client::{
+    zwp_tablet_manager_v2::ZwpTabletManagerV2,
+    zwp_tablet_pad_group_v2::{self, ZwpTabletPadGroupV2},
+    zwp_tablet_pad_ring_v2::{self, ZwpTabletPadRingV2},
+    zwp_tablet_pad_strip_v2::{self, ZwpTabletPadStripV2},
+    zwp_tablet_pad_v2::{self, ZwpTabletPadV2},
+    zwp_tablet_seat_v2::{self, ZwpTabletSeatV2},
+    zwp_tablet_tool_v2::{self, ZwpTabletToolV2},
+    zwp_tablet_v2::{self, ZwpTabletV2},
 };
 use wayland_protocols::wp::text_input::zv3::client::{
     zwp_text_input_manager_v3::{self as text_manager, ZwpTextInputManagerV3},
@@ -436,6 +448,29 @@ pub struct Heard {
     pub relative: Option<ZwpRelativePointerManagerV1>,
     pub relative_pointer: Option<ZwpRelativePointerV1>,
     pub relative_motion: Vec<(f64, f64)>,
+    pub tablet_manager: Option<ZwpTabletManagerV2>,
+    pub tablet_manager_version: u32,
+    pub tablet_seat: Option<ZwpTabletSeatV2>,
+    pub tablets: Vec<TabletSeen>,
+    pub tools: Vec<ToolSeen>,
+    pub pads: Vec<PadSeen>,
+    pub tool: Option<ZwpTabletToolV2>,
+    pub pad: Option<ZwpTabletPadV2>,
+    pub ring: Option<ZwpTabletPadRingV2>,
+    pub strip: Option<ZwpTabletPadStripV2>,
+    pub pad_group_buttons: Vec<Vec<u8>>,
+    pub pad_modes: Vec<(u32, u32)>,
+    pub pad_group_done: usize,
+    pub pad_group_modes: u32,
+    pub ring_angles: Vec<f64>,
+    pub ring_stops: usize,
+    pub ring_frames: usize,
+    pub strip_positions: Vec<u32>,
+    pub strip_stops: usize,
+    pub strip_frames: usize,
+    tablet_ids: Vec<ObjectId>,
+    tool_ids: Vec<ObjectId>,
+    pad_ids: Vec<ObjectId>,
     pub last_serial: u32,
     pub enter_serial: u32,
     pub keyboard_entered: bool,
@@ -446,6 +481,55 @@ pub struct Heard {
     /// The serials of the pings it read.
     pub pings: Vec<u32>,
     pending_size: Option<(i32, i32, Vec<u32>)>,
+}
+
+/// What a tablet, a tool and a pad told the app.
+#[derive(Clone, Debug, Default)]
+pub struct TabletSeen {
+    pub name: Option<String>,
+    pub id: Option<(u32, u32)>,
+    pub path: Option<String>,
+    pub done: bool,
+    pub removed: bool,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct ToolSeen {
+    pub tool_type: Option<u32>,
+    pub hardware_serial: Option<(u32, u32)>,
+    pub hardware_id: Option<(u32, u32)>,
+    pub capabilities: Vec<u32>,
+    pub done: bool,
+    pub removed: bool,
+    pub proximity_in: Vec<(u32, WlSurface)>,
+    pub proximity_out: usize,
+    pub down: Vec<u32>,
+    pub up: usize,
+    pub motion: Vec<(f64, f64)>,
+    pub pressure: Vec<u32>,
+    pub distance: Vec<u32>,
+    pub tilt: Vec<(f64, f64)>,
+    pub rotation: Vec<f64>,
+    pub slider: Vec<i32>,
+    pub wheel: Vec<(f64, i32)>,
+    pub buttons: Vec<(u32, u32, bool)>,
+    pub frames: Vec<u32>,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct PadSeen {
+    pub groups: usize,
+    pub path: Option<String>,
+    pub buttons: Option<u32>,
+    pub done: bool,
+    pub removed: bool,
+    pub entered: Option<(u32, WlSurface)>,
+    pub left: Option<(u32, WlSurface)>,
+    pub buttons_pressed: Vec<(u32, u32, bool)>,
+}
+
+fn index_of(ids: &[ObjectId], id: &ObjectId) -> Option<usize> {
+    ids.iter().position(|known| known == id)
 }
 
 /// A Wayland app on the keeper's socket.
@@ -481,7 +565,10 @@ impl App {
         };
         rig.pump(&mut [&mut app], |_, apps| {
             let heard = &apps[0].heard;
-            heard.wm_base.is_some() && heard.seat.is_some() && !heard.outputs.is_empty()
+            heard.wm_base.is_some()
+                && heard.seat.is_some()
+                && heard.tablet_seat.is_some()
+                && !heard.outputs.is_empty()
         });
         app
     }
@@ -704,6 +791,18 @@ impl App {
             .feedback(self.surface.as_ref().unwrap(), &qh, FeedbackSeen)
     }
 
+    /// Name the cursor shape the desktop should draw for this app's tablet tool.
+    pub fn set_tool_cursor_shape(&self, tool: &ZwpTabletToolV2, serial: u32, shape: Shape) {
+        let qh = self.qh();
+        let device = self
+            .heard
+            .cursor_shape
+            .as_ref()
+            .expect("a cursor shape manager")
+            .get_tablet_tool_v2(tool, &qh, ());
+        device.set_shape(serial, shape);
+    }
+
     /// Name the cursor shape the desktop should draw for this app's pointer.
     pub fn set_cursor_shape(&self, shape: Shape) {
         let qh = self.qh();
@@ -916,6 +1015,12 @@ impl Dispatch<WlRegistry, ()> for Heard {
                         heard.text_input =
                             Some(manager.get_text_input(&heard.seat.clone().unwrap(), qh, ()));
                     }
+                    heard.take_tablet_seat(qh);
+                }
+                "zwp_tablet_manager_v2" if heard.tablet_manager.is_none() => {
+                    heard.tablet_manager_version = version;
+                    heard.tablet_manager = Some(registry.bind(name, version.min(1), qh, ()));
+                    heard.take_tablet_seat(qh);
                 }
                 "wl_data_device_manager" => {
                     let manager: WlDataDeviceManager = registry.bind(name, version.min(3), qh, ());
@@ -2005,3 +2110,250 @@ impl App {
         }
     }
 }
+
+impl Heard {
+    /// Take the tablet seat once both the manager and the seat are known.
+    fn take_tablet_seat(&mut self, qh: &QueueHandle<Self>) {
+        if self.tablet_seat.is_some() {
+            return;
+        }
+        let (Some(manager), Some(seat)) = (&self.tablet_manager, &self.seat) else {
+            return;
+        };
+        self.tablet_seat = Some(manager.get_tablet_seat(seat, qh, ()));
+    }
+}
+
+impl Dispatch<ZwpTabletSeatV2, ()> for Heard {
+    fn event(
+        heard: &mut Self,
+        _: &ZwpTabletSeatV2,
+        event: zwp_tablet_seat_v2::Event,
+        (): &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        match event {
+            zwp_tablet_seat_v2::Event::TabletAdded { id } => {
+                heard.tablet_ids.push(id.id());
+                heard.tablets.push(TabletSeen::default());
+            }
+            zwp_tablet_seat_v2::Event::ToolAdded { id, .. } => {
+                heard.tool_ids.push(id.id());
+                heard.tools.push(ToolSeen::default());
+                heard.tool = Some(id);
+            }
+            zwp_tablet_seat_v2::Event::PadAdded { id, .. } => {
+                heard.pad_ids.push(id.id());
+                heard.pads.push(PadSeen::default());
+                heard.pad = Some(id);
+            }
+            _ => {}
+        }
+    }
+
+    wayland_client::event_created_child!(Heard, ZwpTabletSeatV2, [
+        zwp_tablet_seat_v2::EVT_TABLET_ADDED_OPCODE => (ZwpTabletV2, ()),
+        zwp_tablet_seat_v2::EVT_TOOL_ADDED_OPCODE => (ZwpTabletToolV2, ()),
+        zwp_tablet_seat_v2::EVT_PAD_ADDED_OPCODE => (ZwpTabletPadV2, ()),
+    ]);
+}
+
+impl Dispatch<ZwpTabletV2, ()> for Heard {
+    fn event(
+        heard: &mut Self,
+        tablet: &ZwpTabletV2,
+        event: zwp_tablet_v2::Event,
+        (): &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        let Some(index) = index_of(&heard.tablet_ids, &tablet.id()) else {
+            return;
+        };
+        let seen = &mut heard.tablets[index];
+        match event {
+            zwp_tablet_v2::Event::Name { name } => seen.name = Some(name),
+            zwp_tablet_v2::Event::Id { vid, pid } => seen.id = Some((vid, pid)),
+            zwp_tablet_v2::Event::Path { path } => seen.path = Some(path),
+            zwp_tablet_v2::Event::Done => seen.done = true,
+            zwp_tablet_v2::Event::Removed => seen.removed = true,
+            _ => {}
+        }
+    }
+}
+
+impl Dispatch<ZwpTabletToolV2, ()> for Heard {
+    fn event(
+        heard: &mut Self,
+        tool: &ZwpTabletToolV2,
+        event: zwp_tablet_tool_v2::Event,
+        (): &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        let Some(index) = index_of(&heard.tool_ids, &tool.id()) else {
+            return;
+        };
+        let seen = &mut heard.tools[index];
+        match event {
+            zwp_tablet_tool_v2::Event::Type {
+                tool_type: WEnum::Value(tool_type),
+            } => seen.tool_type = Some(u32::from(tool_type)),
+            zwp_tablet_tool_v2::Event::HardwareSerial {
+                hardware_serial_hi,
+                hardware_serial_lo,
+            } => seen.hardware_serial = Some((hardware_serial_hi, hardware_serial_lo)),
+            zwp_tablet_tool_v2::Event::HardwareIdWacom {
+                hardware_id_hi,
+                hardware_id_lo,
+            } => seen.hardware_id = Some((hardware_id_hi, hardware_id_lo)),
+            zwp_tablet_tool_v2::Event::Capability {
+                capability: WEnum::Value(capability),
+            } => seen.capabilities.push(u32::from(capability)),
+            zwp_tablet_tool_v2::Event::Done => seen.done = true,
+            zwp_tablet_tool_v2::Event::Removed => seen.removed = true,
+            zwp_tablet_tool_v2::Event::ProximityIn {
+                serial, surface, ..
+            } => seen.proximity_in.push((serial, surface)),
+            zwp_tablet_tool_v2::Event::ProximityOut => seen.proximity_out += 1,
+            zwp_tablet_tool_v2::Event::Down { serial } => seen.down.push(serial),
+            zwp_tablet_tool_v2::Event::Up => seen.up += 1,
+            zwp_tablet_tool_v2::Event::Motion { x, y } => seen.motion.push((x, y)),
+            zwp_tablet_tool_v2::Event::Pressure { pressure } => seen.pressure.push(pressure),
+            zwp_tablet_tool_v2::Event::Distance { distance } => seen.distance.push(distance),
+            zwp_tablet_tool_v2::Event::Tilt { tilt_x, tilt_y } => seen.tilt.push((tilt_x, tilt_y)),
+            zwp_tablet_tool_v2::Event::Rotation { degrees } => seen.rotation.push(degrees),
+            zwp_tablet_tool_v2::Event::Slider { position } => seen.slider.push(position),
+            zwp_tablet_tool_v2::Event::Wheel { degrees, clicks } => {
+                seen.wheel.push((degrees, clicks));
+            }
+            zwp_tablet_tool_v2::Event::Button {
+                serial,
+                button,
+                state: WEnum::Value(button_state),
+            } => seen.buttons.push((
+                serial,
+                button,
+                button_state == zwp_tablet_tool_v2::ButtonState::Pressed,
+            )),
+            zwp_tablet_tool_v2::Event::Frame { time } => seen.frames.push(time),
+            _ => {}
+        }
+    }
+}
+
+impl Dispatch<ZwpTabletPadV2, ()> for Heard {
+    fn event(
+        heard: &mut Self,
+        pad: &ZwpTabletPadV2,
+        event: zwp_tablet_pad_v2::Event,
+        (): &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        let Some(index) = index_of(&heard.pad_ids, &pad.id()) else {
+            return;
+        };
+        let seen = &mut heard.pads[index];
+        match event {
+            zwp_tablet_pad_v2::Event::Group { .. } => seen.groups += 1,
+            zwp_tablet_pad_v2::Event::Path { path } => seen.path = Some(path),
+            zwp_tablet_pad_v2::Event::Buttons { buttons } => seen.buttons = Some(buttons),
+            zwp_tablet_pad_v2::Event::Done => seen.done = true,
+            zwp_tablet_pad_v2::Event::Removed => seen.removed = true,
+            zwp_tablet_pad_v2::Event::Enter {
+                serial, surface, ..
+            } => {
+                seen.entered = Some((serial, surface));
+            }
+            zwp_tablet_pad_v2::Event::Leave { serial, surface } => {
+                seen.left = Some((serial, surface));
+            }
+            zwp_tablet_pad_v2::Event::Button {
+                time,
+                button,
+                state: WEnum::Value(button_state),
+            } => seen.buttons_pressed.push((
+                time,
+                button,
+                button_state == zwp_tablet_pad_v2::ButtonState::Pressed,
+            )),
+            _ => {}
+        }
+    }
+
+    wayland_client::event_created_child!(Heard, ZwpTabletPadV2, [
+        zwp_tablet_pad_v2::EVT_GROUP_OPCODE => (ZwpTabletPadGroupV2, ()),
+    ]);
+}
+
+impl Dispatch<ZwpTabletPadGroupV2, ()> for Heard {
+    fn event(
+        heard: &mut Self,
+        _: &ZwpTabletPadGroupV2,
+        event: zwp_tablet_pad_group_v2::Event,
+        (): &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        match event {
+            zwp_tablet_pad_group_v2::Event::Buttons { buttons } => {
+                heard.pad_group_buttons.push(buttons);
+            }
+            zwp_tablet_pad_group_v2::Event::Ring { ring } => heard.ring = Some(ring),
+            zwp_tablet_pad_group_v2::Event::Strip { strip } => heard.strip = Some(strip),
+            zwp_tablet_pad_group_v2::Event::Modes { modes } => heard.pad_group_modes = modes,
+            zwp_tablet_pad_group_v2::Event::Done => heard.pad_group_done += 1,
+            zwp_tablet_pad_group_v2::Event::ModeSwitch { serial, mode, .. } => {
+                heard.pad_modes.push((serial, mode));
+            }
+            _ => {}
+        }
+    }
+
+    wayland_client::event_created_child!(Heard, ZwpTabletPadGroupV2, [
+        zwp_tablet_pad_group_v2::EVT_RING_OPCODE => (ZwpTabletPadRingV2, ()),
+        zwp_tablet_pad_group_v2::EVT_STRIP_OPCODE => (ZwpTabletPadStripV2, ()),
+    ]);
+}
+
+impl Dispatch<ZwpTabletPadRingV2, ()> for Heard {
+    fn event(
+        heard: &mut Self,
+        _: &ZwpTabletPadRingV2,
+        event: zwp_tablet_pad_ring_v2::Event,
+        (): &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        match event {
+            zwp_tablet_pad_ring_v2::Event::Angle { degrees } => heard.ring_angles.push(degrees),
+            zwp_tablet_pad_ring_v2::Event::Stop => heard.ring_stops += 1,
+            zwp_tablet_pad_ring_v2::Event::Frame { .. } => heard.ring_frames += 1,
+            _ => {}
+        }
+    }
+}
+
+impl Dispatch<ZwpTabletPadStripV2, ()> for Heard {
+    fn event(
+        heard: &mut Self,
+        _: &ZwpTabletPadStripV2,
+        event: zwp_tablet_pad_strip_v2::Event,
+        (): &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        match event {
+            zwp_tablet_pad_strip_v2::Event::Position { position } => {
+                heard.strip_positions.push(position);
+            }
+            zwp_tablet_pad_strip_v2::Event::Stop => heard.strip_stops += 1,
+            zwp_tablet_pad_strip_v2::Event::Frame { .. } => heard.strip_frames += 1,
+            _ => {}
+        }
+    }
+}
+
+delegate_noop!(Heard: ignore ZwpTabletManagerV2);
