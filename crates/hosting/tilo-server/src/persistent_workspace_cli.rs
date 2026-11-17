@@ -35,9 +35,7 @@ use tilo_server::entry;
 
 mod bots;
 mod discord_sign_in;
-mod host_invite;
 mod http;
-mod import_people;
 use bots::{offer_sign_in, start_bots};
 
 /// The secret store this host keeps workspace roots in.
@@ -307,10 +305,7 @@ pub struct PersistentArgs {
 pub(crate) struct PersistentWorkspace {
     pub workspaces: Workspaces,
     pub workspace: String,
-    pub host_cert: DeviceCert,
     pub web: WebHandle,
-    /// Where the invitations the host makes for its operator open.
-    links: host_invite::Links,
 }
 
 impl PersistentWorkspace {
@@ -657,11 +652,7 @@ async fn answer_wait_list(context: &PersistentWorkspace, ask: WaitListAsk) -> Op
             );
         }
     };
-    let secrets = tilo_server::workspaces::WaitListSecrets {
-        removal,
-        confirm,
-        earlier: Vec::new(),
-    };
+    let secrets = tilo_server::workspaces::WaitListSecrets { removal, confirm };
     match context
         .workspaces
         .wait(
@@ -1557,12 +1548,7 @@ pub(crate) async fn run(
         let context = PersistentWorkspace {
             workspaces,
             workspace,
-            host_cert,
             web,
-            links: host_invite::Links {
-                web_entry: args.web.web_entry.clone(),
-                server_origin: args.web.public_origin.clone(),
-            },
         };
         // The deployment's own routes serve once the workspace does, so a
         // health check that answers `up` means people can get in, and the
@@ -1764,8 +1750,6 @@ async fn accept_operator(
 struct OperatorContext {
     workspaces: Workspaces,
     workspace: String,
-    host_cert: DeviceCert,
-    links: host_invite::Links,
 }
 
 impl OperatorContext {
@@ -1773,25 +1757,7 @@ impl OperatorContext {
         Self {
             workspaces: context.workspaces.clone(),
             workspace: context.workspace.clone(),
-            host_cert: context.host_cert.clone(),
-            links: context.links.clone(),
         }
-    }
-
-    /// Answer an [`OperatorCommand::ImportPeople`].
-    async fn import_people(&self, command: OperatorCommand) -> String {
-        let OperatorCommand::ImportPeople { people } = command else {
-            return String::new();
-        };
-        let imported = import_people::import(
-            &self.workspaces,
-            &self.workspace,
-            &self.host_cert,
-            &self.links,
-            people,
-        )
-        .await;
-        OperatorEvent::PeopleImported { imported }.to_line()
     }
 }
 
@@ -1806,9 +1772,6 @@ async fn answer_operator_socket(context: OperatorContext, stream: tokio::net::Un
     let answer = match reading.read_line(&mut line).await {
         Ok(0) => return,
         Ok(_) => match OperatorCommand::from_line(&line) {
-            Ok(command @ OperatorCommand::ImportPeople { .. }) => {
-                context.import_people(command).await
-            }
             // A question about an address, and nothing about the address in
             // its answer: the operator may ask it of a running workspace.
             Ok(OperatorCommand::Status {
@@ -1824,9 +1787,9 @@ async fn answer_operator_socket(context: OperatorContext, stream: tokio::net::Un
             .to_line(),
             Ok(other) => OperatorEvent::Unanswered {
                 reason: format!(
-                    "the operator socket takes import_people and state, not {}; owners and \
-                     administrators let people in with `tilo members add` and `tilo members \
-                     invite`, and owners choose a workspace's hosts with `tilo workspace hosts`",
+                    "the operator socket takes state, not {}; owners and administrators let \
+                     people in with `tilo members add` and `tilo members invite`, and owners \
+                     choose a workspace's hosts with `tilo workspace hosts`",
                     other.to_line().trim()
                 ),
             }
@@ -1909,15 +1872,6 @@ async fn serve_operator(
                 // An invitation the entry mailed itself is acknowledged here:
                 // nothing else in the workspace hears of it.
                 Some(Ok(OperatorCommand::InviteMailQueued { .. })) => {}
-                Some(Ok(command @ OperatorCommand::ImportPeople { .. })) => {
-                    // The import asks the entry to mail its invitations, which
-                    // this loop does: it runs on a task of its own so it does
-                    // not wait on the loop that answers it.
-                    let context = OperatorContext::of(context);
-                    tokio::spawn(async move {
-                        println!("{}", context.import_people(command).await);
-                    });
-                }
                 Some(Ok(OperatorCommand::Admit { .. })) => bail!("a persistent workspace admits guests through its entry"),
                 Some(Ok(OperatorCommand::Shutdown {})) => return Ok(()),
                 Some(Err(error)) => bail!("unreadable workspace operator line: {error}"),

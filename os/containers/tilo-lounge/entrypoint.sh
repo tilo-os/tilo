@@ -23,7 +23,7 @@
 #   TILO_WORKSPACES_OWNERS     the owners' keys
 #
 # The operator socket takes what only the host's operator does: having
-# another host hold a workspace, taking in the people an earlier release kept:
+# another host hold a workspace:
 #   TILO_WORKSPACES_OPERATOR_SOCKET  that socket (default: the workspace's state
 #                               directory, operator.sock)
 #

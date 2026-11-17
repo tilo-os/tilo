@@ -46,8 +46,6 @@ tilo_agent_session::app_worker!();
 mod persistent_moderation;
 #[cfg(feature = "agents")]
 mod persistent_workspace_cli;
-#[cfg(feature = "agents")]
-mod release_people_cli;
 #[cfg(feature = "web")]
 mod web_cli;
 #[cfg(feature = "agents")]
@@ -94,13 +92,6 @@ enum Cmd {
     /// at an origin: the web entry's `TILO_WEB_HOME_HOST_INFO`.
     #[cfg(feature = "web")]
     PageHost(web_cli::PageHostArgs),
-    /// The people a released server kept: read them out of that release's state
-    /// directory (read-only), and take them into this server's workspace.
-    #[cfg(feature = "agents")]
-    ReleasePeople {
-        #[command(subcommand)]
-        cmd: release_people_cli::Cmd,
-    },
 }
 
 /// Logs go to stderr: a persistent workspace's stdout is the line protocol its
@@ -164,8 +155,6 @@ fn run() -> anyhow::Result<()> {
         }
         #[cfg(feature = "web")]
         Cmd::PageHost(args) => tilo_rt::daemon("tilo-server").run(web_cli::page_host(args))?,
-        #[cfg(feature = "agents")]
-        Cmd::ReleasePeople { cmd } => release_people_cli::run(cmd),
     }
 }
 

@@ -226,7 +226,6 @@ async fn bo_confirmed_beside_cy(
     let mailed = WaitListSecrets {
         removal: [0x0b; 32],
         confirm: Some([0x1b; 32]),
-        earlier: Vec::new(),
     };
     assert_eq!(
         workspaces
@@ -632,7 +631,6 @@ async fn assert_pending_removal_contact_digest(workspaces: &Workspaces) {
                 WaitListSecrets {
                     removal,
                     confirm: Some([3; 32]),
-                    earlier: Vec::new(),
                 },
                 "de",
                 10,
@@ -701,7 +699,6 @@ const fn listed_at_once(removal: u8) -> WaitListSecrets {
     WaitListSecrets {
         removal: [removal; 32],
         confirm: None,
-        earlier: Vec::new(),
     }
 }
 

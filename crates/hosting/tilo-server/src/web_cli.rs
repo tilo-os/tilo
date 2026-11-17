@@ -1235,9 +1235,8 @@ async fn approve_admitted(
                     | OperatorCommand::Unlist { .. }
                     | OperatorCommand::Confirm { .. }
                     | OperatorCommand::Status { .. }
-                    | OperatorCommand::InviteMailQueued { .. }
-                    | OperatorCommand::ImportPeople { .. },
-                )) => {
+                    | OperatorCommand::InviteMailQueued { .. }),
+                ) => {
                     // Not the command itself: a wait-list command carries an
                     // email address, which no log keeps.
                     anyhow::bail!("a short-lived workspace takes no command but admit and shutdown");
