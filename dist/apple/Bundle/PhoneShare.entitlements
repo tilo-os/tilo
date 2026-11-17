@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- The iPhone app's share extension. build.sh writes the signing team for __TEAM__ and adds what a development build
+     carries (get-task-allow). The first keychain group is its own, where WebKit keeps the key
+     that wraps the page's keys; the second is the one place shared between app and extension. -->
+<plist version="1.0"><dict>
+  <key>application-identifier</key><string>__TEAM__.so.tilo.assistant.shell.share</string>
+  <key>com.apple.developer.team-identifier</key><string>__TEAM__</string>
+  <key>keychain-access-groups</key><array>
+    <string>__TEAM__.so.tilo.assistant.shell.share</string>
+    <string>__TEAM__.so.tilo.assistant.shell.shared</string>
+  </array>
+</dict></plist>

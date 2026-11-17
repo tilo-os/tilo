@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- The iPhone app. build.sh writes the version, the site, the app, the signing team and
+     what the toolchain says of itself. -->
+<plist version="1.0"><dict>
+  <key>CFBundleDevelopmentRegion</key><string>en</string>
+  <key>CFBundleDisplayName</key><string>Tilo</string>
+  <key>CFBundleExecutable</key><string>TiloAssistant</string>
+  <key>CFBundleIcons</key><dict>
+    <key>CFBundlePrimaryIcon</key><dict>
+      <key>CFBundleIconFiles</key><array><string>AppIcon60x60</string></array>
+    </dict>
+  </dict>
+  <key>CFBundleIdentifier</key><string>so.tilo.assistant.shell</string>
+  <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
+  <key>CFBundleName</key><string>Tilo Assistant</string>
+  <key>CFBundlePackageType</key><string>APPL</string>
+  <key>CFBundleShortVersionString</key><string>0.0.0</string>
+  <key>CFBundleSupportedPlatforms</key><array><string>iPhoneOS</string></array>
+  <key>CFBundleVersion</key><string>0.0.0</string>
+  <!-- What the page hands the person to keep lands in the app's documents, which Files shows. -->
+  <key>LSSupportsOpeningDocumentsInPlace</key><true/>
+  <key>UIFileSharingEnabled</key><true/>
+  <key>LSRequiresIPhoneOS</key><true/>
+  <key>MinimumOSVersion</key><string>26.4</string>
+  <key>NSAppTransportSecurity</key><dict>
+    <!-- A Tilo stack on this computer is plain http on loopback addresses and on names under
+         localhost. Everything else is https. -->
+    <key>NSAllowsLocalNetworking</key><true/>
+    <key>NSExceptionDomains</key><dict>
+      <key>localhost</key><dict>
+        <key>NSExceptionAllowsInsecureHTTPLoads</key><true/>
+        <key>NSIncludesSubdomains</key><true/>
+      </dict>
+    </dict>
+  </dict>
+  <key>NSCameraUsageDescription</key><string>Tilo uses the camera to scan a pairing code, and shows it to the people in a call you join.</string>
+  <key>NSMicrophoneUsageDescription</key><string>Tilo listens when you dictate a message or join a call.</string>
+  <key>NSSpeechRecognitionUsageDescription</key><string>Tilo turns what you dictate into words on this iPhone.</string>
+  <key>TiloApp</key><string>so.tilo.chat</string>
+  <key>TiloSite</key><string>https://tilo.sh</string>
+  <key>TiloTeam</key><string></string>
+  <key>UIApplicationSceneManifest</key><dict>
+    <key>UIApplicationSupportsMultipleScenes</key><false/>
+  </dict>
+  <key>UIDeviceFamily</key><array><integer>1</integer></array>
+  <key>UILaunchScreen</key><dict/>
+  <key>UIRequiredDeviceCapabilities</key><array><string>arm64</string></array>
+  <key>UISupportedInterfaceOrientations</key><array>
+    <string>UIInterfaceOrientationPortrait</string>
+    <string>UIInterfaceOrientationLandscapeLeft</string>
+    <string>UIInterfaceOrientationLandscapeRight</string>
+  </array>
+</dict></plist>

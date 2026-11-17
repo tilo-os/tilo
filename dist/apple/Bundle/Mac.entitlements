@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- The Mac app, in the App Sandbox from the start: the Mac App Store takes nothing else.
+     build.sh writes the signing team for __TEAM__, and leaves the group out of a build
+     signed by nobody. -->
+<plist version="1.0"><dict>
+  <key>com.apple.security.app-sandbox</key><true/>
+  <!-- The page: its site, its host, the live connection. The app listens on nothing. -->
+  <key>com.apple.security.network.client</key><true/>
+  <!-- Dictation and calls. The first key is the sandbox's, the second the hardened runtime's. -->
+  <key>com.apple.security.device.microphone</key><true/>
+  <key>com.apple.security.device.audio-input</key><true/>
+  <key>com.apple.security.device.camera</key><true/>
+  <!-- A file the person picks to attach, and what the page hands them to keep. -->
+  <key>com.apple.security.files.user-selected.read-only</key><true/>
+  <key>com.apple.security.files.downloads.read-write</key><true/>
+  <!-- Where the share extension leaves what it was given. -->
+  <key>com.apple.security.application-groups</key><array>
+    <string>__TEAM__.so.tilo.assistant.shell.shared</string>
+  </array>
+</dict></plist>

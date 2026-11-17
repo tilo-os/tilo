@@ -1,0 +1,149 @@
+import Foundation
+import ShellCore
+import UserNotifications
+
+/// What the person did with a notification.
+public enum NoticeAnswer: Equatable, Sendable {
+    /// Pressed it: the app comes forward.
+    case opened
+    /// Pressed one of the answers the page named, or typed one.
+    case action(String, reply: String?)
+    /// Typed a reply under a notice that named no answers of its own.
+    case reply(String)
+    case dismissed
+}
+
+private enum Names {
+    static let plain = "tilo.plain"
+    static let reply = "tilo.reply"
+    static let page = "tilo.page."
+    static let notice = "tilo-notice"
+    static func request(_ id: String) -> String { "tilo-\(id)" }
+}
+
+/// The page's notices as the system's notifications, and the person's answers back.
+///
+/// A notice shows while the app runs: the page asks for it. Telling a person while no Tilo of
+/// theirs runs is a push from their host, which this class does not do.
+@MainActor
+public final class NoticeCenter: NSObject {
+    /// Called with the page's name for the notice and what the person did.
+    public var answered: ((_ id: String, _ answer: NoticeAnswer) -> Void)?
+
+    private let center = UNUserNotificationCenter.current()
+    private var categories: [String: UNNotificationCategory] = [:]
+    private var byTag: [String: String] = [:]
+
+    public override init() {
+        super.init()
+        center.delegate = self
+        // A notice with no answers of its own still takes a reply: it lands in the message field.
+        let reply = UNTextInputNotificationAction(
+            identifier: Names.reply, title: Words.writeReply.said, options: [.foreground],
+            textInputButtonTitle: Words.replyButton.said, textInputPlaceholder: Words.replyPlaceholder.said)
+        register(UNNotificationCategory(identifier: Names.plain, actions: [reply], intentIdentifiers: [],
+                                        options: [.customDismissAction]))
+    }
+
+    public func permission() async -> NoticePermission {
+        let status = await center.notificationSettings().authorizationStatus
+        if status == .notDetermined { return .notAsked }
+        return status == .denied ? .denied : .granted
+    }
+
+    /// Ask the person, with the system's own question.
+    public func ask() async -> NoticePermission {
+        let granted = (try? await center.requestAuthorization(options: [.alert, .sound, .badge])) ?? false
+        return granted ? .granted : .denied
+    }
+
+    public func show(_ notice: PageNotice) {
+        let content = UNMutableNotificationContent()
+        content.title = notice.title
+        content.body = notice.body
+        content.sound = .default
+        content.userInfo = [Names.notice: notice.id]
+        content.categoryIdentifier = category(for: notice.actions)
+        let identifier = Names.request(notice.id)
+        if let tag = notice.tag {
+            content.threadIdentifier = tag
+            // A newer notice under a tag takes the older one's place.
+            if let before = byTag[tag] { center.removeDeliveredNotifications(withIdentifiers: [before]) }
+            byTag[tag] = identifier
+        }
+        center.add(UNNotificationRequest(identifier: identifier, content: content, trigger: nil),
+                   withCompletionHandler: nil)
+    }
+
+    public func withdraw(id: String) {
+        let identifier = Names.request(id)
+        byTag = byTag.filter { $0.value != identifier }
+        center.removeDeliveredNotifications(withIdentifiers: [identifier])
+    }
+
+    /// The count on the app's icon.
+    public func setBadge(_ count: Int) {
+        center.setBadgeCount(max(0, count), withCompletionHandler: nil)
+    }
+
+    private func category(for actions: [NoticeAction]) -> String {
+        guard !actions.isEmpty else { return Names.plain }
+        let identifier = "tilo.answers." + actions.map { "\($0.kind.rawValue):\($0.id):\($0.title)" }.joined(separator: "|")
+        guard categories[identifier] == nil else { return identifier }
+        // On a Mac the app runs behind its menu-bar item, so the page answers without coming
+        // forward. A phone has to bring the app up for the page to run at all.
+        #if os(macOS)
+        let options: UNNotificationActionOptions = []
+        #else
+        let options: UNNotificationActionOptions = [.foreground]
+        #endif
+        let buttons = actions.map { action -> UNNotificationAction in
+            switch action.kind {
+            case .button:
+                UNNotificationAction(identifier: Names.page + action.id, title: action.title, options: options)
+            case .text:
+                UNTextInputNotificationAction(
+                    identifier: Names.page + action.id, title: action.title, options: options,
+                    textInputButtonTitle: action.title, textInputPlaceholder: action.placeholder ?? "")
+            }
+        }
+        register(UNNotificationCategory(identifier: identifier, actions: buttons, intentIdentifiers: [],
+                                        options: [.customDismissAction]))
+        return identifier
+    }
+
+    private func register(_ category: UNNotificationCategory) {
+        categories[category.identifier] = category
+        center.setNotificationCategories(Set(categories.values))
+    }
+}
+
+extension NoticeCenter: UNUserNotificationCenterDelegate {
+    public nonisolated func userNotificationCenter(
+        _ center: UNUserNotificationCenter, willPresent notification: UNNotification
+    ) async -> UNNotificationPresentationOptions {
+        // The page asks only while it is out of view, so what arrives is shown.
+        [.banner, .list, .sound]
+    }
+
+    public nonisolated func userNotificationCenter(
+        _ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse
+    ) async {
+        guard let id = response.notification.request.content.userInfo[Names.notice] as? String else { return }
+        let typed = (response as? UNTextInputNotificationResponse)?.userText
+        let answer: NoticeAnswer
+        switch response.actionIdentifier {
+        case UNNotificationDefaultActionIdentifier:
+            answer = .opened
+        case UNNotificationDismissActionIdentifier:
+            answer = .dismissed
+        case Names.reply:
+            answer = .reply(typed ?? "")
+        case let chosen where chosen.hasPrefix(Names.page):
+            answer = .action(String(chosen.dropFirst(Names.page.count)), reply: typed)
+        default:
+            return
+        }
+        await MainActor.run { self.answered?(id, answer) }
+    }
+}

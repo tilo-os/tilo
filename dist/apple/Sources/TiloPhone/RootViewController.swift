@@ -1,0 +1,488 @@
+#if os(iOS)
+import AVFoundation
+import ShellCore
+import ShellWeb
+import UIKit
+import VisionKit
+import WebKit
+
+/// The iPhone app's one screen: Tilo's page to every edge, and what only the system can do
+/// around it. The page lays itself out for a phone; nothing native is drawn over it but a
+/// screen for when there is no page, and a line while words wait for a place to go.
+@MainActor
+final class RootViewController: UIViewController {
+    private var host: PageHost?
+    private var arrived = false
+    private var notices: NoticeCenter?
+    private var permission = NoticePermission.notAsked
+    private var problem: UIView?
+    private var hint: UIView?
+    private var wayIn: UIView?
+    private var pageBottom: NSLayoutConstraint?
+    /// Asked for from the app's icon before the page was there.
+    private var asked: QuickAction?
+
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        view.backgroundColor = .systemBackground
+        if CommandLine.arguments.contains("--check") { return check() }
+        ShellSettings.keepArguments()
+        let notices = NoticeCenter()
+        notices.answered = { [weak self] id, answer in self?.answered(id, answer) }
+        self.notices = notices
+        Task {
+            permission = await notices.permission()
+            openSite()
+        }
+    }
+
+    /// The app is in front again: the person may have changed the site or the notifications
+    /// in the system's settings, or shared something meanwhile.
+    func cameForward() {
+        guard let notices, host != nil || problem != nil else { return }
+        Task {
+            permission = await notices.permission()
+            if case .success(let chosen) = ShellSettings.load(), chosen == host?.settings {
+                host?.setPermission(permission)
+                await takeShared()
+            } else {
+                openSite()
+            }
+        }
+    }
+
+    func perform(_ action: QuickAction?) {
+        guard let action else { return }
+        switch action {
+        case .dictate:
+            guard arrived else { asked = action; return }
+            present(DictationSheet { [weak self] words in
+                guard let words else { return }
+                Task { await self?.compose(words) }
+            }, animated: true)
+        case .openLink:
+            guard host != nil else { asked = action; return }
+            follow(UIPasteboard.general.string, else: .noLink)
+        }
+    }
+
+    /// Open `text` when it is a link into the site, and say `refusal` when it is not.
+    private func follow(_ text: String?, else refusal: Words) {
+        guard let host, let link = text.flatMap(host.policy.link(in:)) else { return say(refusal.said) }
+        show(nil)
+        host.open(link)
+    }
+
+    // MARK: The page
+
+    private func openSite() {
+        host?.view.removeFromSuperview()
+        wayIn?.removeFromSuperview()
+        wayIn = nil
+        host = nil
+        arrived = false
+        switch ShellSettings.load() {
+        case .success(let settings):
+            let host = PageHost(settings: settings, permission: permission, frame: view.bounds,
+                                inspectable: UserDefaults.standard.bool(forKey: "TiloInspect"))
+            host.delegate = self
+            self.host = host
+            host.view.translatesAutoresizingMaskIntoConstraints = false
+            view.insertSubview(host.view, at: 0)
+            // To the screen's edges: the page keeps clear of the notch and the home bar itself.
+            let bottom = host.view.bottomAnchor.constraint(equalTo: view.bottomAnchor)
+            NSLayoutConstraint.activate([
+                host.view.topAnchor.constraint(equalTo: view.topAnchor),
+                host.view.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+                host.view.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+                bottom,
+            ])
+            pageBottom = bottom
+            show(nil)
+            host.open()
+            if asked == .openLink { perform(asked); asked = nil }
+        case .failure(let why):
+            show(problemView(title: Words.addressRefused.said,
+                             body: (why == .notSecure ? Words.addressNotSecure : Words.addressNotAnAddress).said,
+                             button: Words.settings.said) {
+                guard let settings = URL(string: UIApplication.openSettingsURLString) else { return }
+                UIApplication.shared.open(settings)
+            })
+        }
+    }
+
+    /// Show `screen` over the page, in place of an earlier one; `nil` shows the page.
+    private func show(_ screen: UIView?) {
+        problem?.removeFromSuperview()
+        problem = screen
+        guard let screen else { return }
+        screen.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(screen)
+        NSLayoutConstraint.activate([
+            screen.topAnchor.constraint(equalTo: view.topAnchor),
+            screen.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            screen.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            screen.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+        ])
+        UIAccessibility.post(notification: .screenChanged, argument: screen)
+    }
+
+    /// What is wrong and the one thing to do, for when there is no page to show.
+    private func problemView(title: String, body: String, button: String, act: @escaping () -> Void) -> UIView {
+        let screen = UIView()
+        screen.backgroundColor = .systemBackground
+        let heading = UILabel()
+        heading.text = title
+        heading.font = .preferredFont(forTextStyle: .title2)
+        let words = UILabel()
+        words.text = body
+        words.font = .preferredFont(forTextStyle: .body)
+        words.textColor = .secondaryLabel
+        for label in [heading, words] {
+            label.numberOfLines = 0
+            label.textAlignment = .center
+            label.adjustsFontForContentSizeCategory = true
+        }
+        let press = UIButton(configuration: .borderedProminent(), primaryAction: UIAction(title: button) { _ in act() })
+        let stack = UIStackView(arrangedSubviews: [heading, words, press])
+        stack.axis = .vertical
+        stack.alignment = .center
+        stack.spacing = 14
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        screen.addSubview(stack)
+        NSLayoutConstraint.activate([
+            stack.centerYAnchor.constraint(equalTo: screen.centerYAnchor),
+            stack.leadingAnchor.constraint(equalTo: screen.layoutMarginsGuide.leadingAnchor),
+            stack.trailingAnchor.constraint(equalTo: screen.layoutMarginsGuide.trailingAnchor),
+        ])
+        return screen
+    }
+
+    // MARK: The way in
+
+    /// While the site keeps this iPhone out, a bar under the page offers the way in: the code
+    /// or the link from a device where the person is signed in.
+    private func offerWayIn(_ wanted: Bool) {
+        guard wanted != (wayIn != nil), let page = host?.view else { return }
+        wayIn?.removeFromSuperview()
+        wayIn = nil
+        pageBottom?.isActive = false
+        var foot = view.bottomAnchor
+        if wanted {
+            let bar = wayInBar()
+            view.insertSubview(bar, aboveSubview: page)
+            NSLayoutConstraint.activate([
+                bar.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+                bar.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+                bar.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            ])
+            wayIn = bar
+            foot = bar.topAnchor
+        }
+        pageBottom = page.bottomAnchor.constraint(equalTo: foot)
+        pageBottom?.isActive = true
+    }
+
+    private func wayInBar() -> UIView {
+        let bar = UIView()
+        bar.backgroundColor = .secondarySystemBackground
+        bar.translatesAutoresizingMaskIntoConstraints = false
+        let said = UILabel()
+        said.text = Words.wayInPhone.said
+        said.font = .preferredFont(forTextStyle: .subheadline)
+        said.adjustsFontForContentSizeCategory = true
+        said.numberOfLines = 0
+        var buttons: [UIView] = []
+        // A phone with a camera the system can read codes with: every iPhone, no simulator.
+        if DataScannerViewController.isSupported {
+            buttons.append(UIButton(configuration: .borderedProminent(),
+                                    primaryAction: UIAction(title: Words.scanCode.said) { [weak self] _ in self?.scanCode() }))
+        }
+        buttons.append(UIButton(configuration: buttons.isEmpty ? .borderedProminent() : .bordered(),
+                                primaryAction: UIAction(title: Words.pasteLink.said) { [weak self] _ in
+            self?.follow(UIPasteboard.general.string, else: .noLink)
+        }))
+        let row = UIStackView(arrangedSubviews: buttons)
+        row.spacing = 12
+        row.distribution = .fillEqually
+        let stack = UIStackView(arrangedSubviews: [said, row])
+        stack.axis = .vertical
+        stack.spacing = 10
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        bar.addSubview(stack)
+        NSLayoutConstraint.activate([
+            stack.topAnchor.constraint(equalTo: bar.topAnchor, constant: 12),
+            stack.bottomAnchor.constraint(equalTo: bar.safeAreaLayoutGuide.bottomAnchor, constant: -12),
+            stack.leadingAnchor.constraint(equalTo: bar.layoutMarginsGuide.leadingAnchor),
+            stack.trailingAnchor.constraint(equalTo: bar.layoutMarginsGuide.trailingAnchor),
+        ])
+        return bar
+    }
+
+    /// Read the pairing code another device shows, with the camera.
+    private func scanCode() {
+        Task { [weak self] in
+            // The system asks the person once; after that this only reads their answer.
+            let allowed = await AVCaptureDevice.requestAccess(for: .video)
+            self?.showScanner(allowed: allowed)
+        }
+    }
+
+    private func showScanner(allowed: Bool) {
+        guard allowed, DataScannerViewController.isAvailable else { return say(Words.cameraNotAllowed.said) }
+        let scanner = DataScannerViewController(recognizedDataTypes: [.barcode(symbologies: [.qr])],
+                                                isHighlightingEnabled: true)
+        scanner.delegate = self
+        scanner.navigationItem.title = Words.scanCode.said
+        scanner.navigationItem.leftBarButtonItem = UIBarButtonItem(systemItem: .cancel, primaryAction: UIAction { [weak self] _ in
+            self?.dismiss(animated: true)
+        })
+        present(UINavigationController(rootViewController: scanner), animated: true) {
+            try? scanner.startScanning()
+        }
+    }
+
+    private func say(_ words: String) {
+        let alert = UIAlertController(title: words, message: nil, preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: Words.done.said, style: .default))
+        present(alert, animated: true)
+    }
+
+    // MARK: Words into the message field
+
+    private func compose(_ words: String) async {
+        guard let host, arrived, !words.isEmpty else { return }
+        guard await host.compose(words) == .waiting else { return }
+        hint?.removeFromSuperview()
+        var said = UIButton.Configuration.gray()
+        said.title = Words.wordsWaiting.said
+        said.cornerStyle = .capsule
+        let line = UIButton(configuration: said)
+        // It says something and does nothing: a press goes to the page under it.
+        line.isUserInteractionEnabled = false
+        line.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(line)
+        NSLayoutConstraint.activate([
+            line.centerXAnchor.constraint(equalTo: view.centerXAnchor),
+            line.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -72),
+        ])
+        hint = line
+        UIAccessibility.post(notification: .announcement, argument: Words.wordsWaiting.said)
+        Task { [weak line] in
+            try? await Task.sleep(for: .seconds(12))
+            line?.removeFromSuperview()
+        }
+    }
+
+    /// What the share sheet left since the app was last in front.
+    private func takeShared() async {
+        guard let host, arrived, let place = SharedPlace.handOver(), let items = try? place.take() else { return }
+        for item in items {
+            // A link into this site is something to open. Anything else is something to say.
+            if item.text == nil, let link = item.link.flatMap(host.policy.link(in:)) {
+                host.open(link)
+            } else if let words = item.words {
+                await compose(words)
+            }
+        }
+    }
+
+    private func answered(_ id: String, _ answer: NoticeAnswer) {
+        guard let host else { return }
+        switch answer {
+        case .opened:
+            host.chose(notice: id)
+        case .action(let action, let reply):
+            host.chose(notice: id, action: action, reply: reply)
+        case .reply(let words):
+            host.chose(notice: id)
+            Task { await compose(words) }
+        case .dismissed:
+            host.closed(notice: id)
+        }
+    }
+
+    // MARK: Asked from a Mac, with `--check`
+
+    /// What this iPhone's web view offers Tilo's page, on standard output and on the screen.
+    private func check() {
+        let shown = UITextView(frame: view.bounds)
+        shown.isEditable = false
+        shown.font = .monospacedSystemFont(ofSize: 13, weight: .regular)
+        shown.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        view.addSubview(shown)
+        let screen: UIView = view
+        Task {
+            var lines = [PageCheck.Line(name: "site", value: "its address cannot be used", passed: false)]
+            if case .success(let settings) = ShellSettings.load() {
+                let check = PageCheck(settings: settings, live: CommandLine.arguments.contains("--live"))
+                check.place = { web in
+                    // On screen, and out of the way of the words.
+                    web.frame = CGRect(x: 0, y: 0, width: 320, height: 240)
+                    web.alpha = 0.02
+                    screen.insertSubview(web, at: 0)
+                }
+                lines = await check.run()
+            }
+            let text = lines.map { line in
+                "\(line.passed == true ? "ok  " : line.passed == false ? "FAIL" : "    ") \(line.name): \(line.value)"
+            }
+            for line in text { print("CHECK \(line)") }
+            print("CHECK end")
+            shown.text = text.joined(separator: "\n\n")
+            // Asked by a script, which waits for the program to end. A person reads the screen.
+            if CommandLine.arguments.contains("--quit") { exit(lines.contains { $0.passed == false } ? 1 : 0) }
+        }
+    }
+}
+
+extension RootViewController: PageHostDelegate {
+    func page(_ host: PageHost, said message: PageMessage) {
+        switch message {
+        case .notify(let notice):
+            notices?.show(notice)
+        case .withdraw(let id):
+            notices?.withdraw(id: id)
+        case .askPermission:
+            Task {
+                guard let notices else { return }
+                permission = await notices.ask()
+                host.setPermission(permission)
+            }
+        case .wordsInserted:
+            hint?.removeFromSuperview()
+            hint = nil
+        case .entry(let entry):
+            offerWayIn(entry.wantsWayIn)
+        }
+    }
+
+    func page(_ host: PageHost, attention: Attention) {
+        notices?.setBadge(attention.unread)
+    }
+
+    func pageArrived(_ host: PageHost) {
+        arrived = true
+        show(nil)
+        if let asked {
+            self.asked = nil
+            perform(asked)
+        }
+        Task { await takeShared() }
+    }
+
+    func page(_ host: PageHost, failed error: any Error) {
+        arrived = false
+        show(problemView(title: Words.unreachableTitle.said,
+                         body: "\(Words.unreachableBody.said)\n\(error.localizedDescription)",
+                         button: Words.tryAgain.said) { [weak self] in
+            self?.show(nil)
+            self?.host?.open()
+        })
+    }
+
+    func page(_ host: PageHost, leavesFor url: URL) {
+        UIApplication.shared.open(url)
+    }
+}
+
+extension RootViewController: DataScannerViewControllerDelegate {
+    func dataScanner(_ dataScanner: DataScannerViewController, didAdd addedItems: [RecognizedItem],
+                     allItems: [RecognizedItem]) {
+        for case .barcode(let code) in addedItems {
+            guard let text = code.payloadStringValue else { continue }
+            dataScanner.stopScanning()
+            dismiss(animated: true) { [weak self] in self?.follow(text, else: .codeNoLink) }
+            return
+        }
+    }
+}
+
+/// A sheet that shows what is heard while the person dictates, with Insert and Cancel. The
+/// system's own indicator shows that the microphone is on.
+@MainActor
+final class DictationSheet: UIViewController {
+    private let heard = UILabel()
+    private let dictation = Dictation()
+    private let done: (String?) -> Void
+    private var finished = false
+    private lazy var insert = UIButton(configuration: .borderedProminent(),
+                                       primaryAction: UIAction(title: Words.insertWords.said) { [weak self] _ in
+        self?.finish(inserting: true)
+    })
+
+    /// - Parameter done: called once, with the words to insert or `nil` when there are none.
+    init(done: @escaping (String?) -> Void) {
+        self.done = done
+        super.init(nibName: nil, bundle: nil)
+        modalPresentationStyle = .pageSheet
+        sheetPresentationController?.detents = [.medium()]
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError("made in code") }
+
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        view.backgroundColor = .systemBackground
+        let title = UILabel()
+        title.text = Words.dictate.said
+        title.font = .preferredFont(forTextStyle: .headline)
+        heard.text = Words.listening.said
+        heard.font = .preferredFont(forTextStyle: .body)
+        heard.textColor = .secondaryLabel
+        heard.numberOfLines = 0
+        for label in [title, heard] { label.adjustsFontForContentSizeCategory = true }
+        insert.isEnabled = false
+        let cancel = UIButton(configuration: .bordered(), primaryAction: UIAction(title: Words.cancel.said) { [weak self] _ in
+            self?.finish(inserting: false)
+        })
+        let buttons = UIStackView(arrangedSubviews: [cancel, insert])
+        buttons.spacing = 12
+        buttons.distribution = .fillEqually
+        let stack = UIStackView(arrangedSubviews: [title, heard, UIView(), buttons])
+        stack.axis = .vertical
+        stack.spacing = 16
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(stack)
+        let margins = view.layoutMarginsGuide
+        NSLayoutConstraint.activate([
+            stack.topAnchor.constraint(equalTo: margins.topAnchor, constant: 20),
+            stack.bottomAnchor.constraint(equalTo: margins.bottomAnchor, constant: -12),
+            stack.leadingAnchor.constraint(equalTo: margins.leadingAnchor),
+            stack.trailingAnchor.constraint(equalTo: margins.trailingAnchor),
+        ])
+    }
+
+    override func viewDidAppear(_ animated: Bool) {
+        super.viewDidAppear(animated)
+        dictation.heard = { [weak self] words in
+            self?.heard.text = words
+            self?.heard.textColor = .label
+            self?.insert.isEnabled = true
+        }
+        Task {
+            do throws(Dictation.Problem) {
+                try await dictation.start()
+            } catch {
+                heard.text = (error == .notAllowed ? Words.dictationNotAllowed : Words.dictationUnavailable).said
+            }
+        }
+    }
+
+    override func viewDidDisappear(_ animated: Bool) {
+        super.viewDidDisappear(animated)
+        // Pulled down: the same as Cancel.
+        finish(inserting: false)
+    }
+
+    private func finish(inserting: Bool) {
+        guard !finished else { return }
+        finished = true
+        dictation.stop()
+        let words = inserting && !dictation.words.isEmpty ? dictation.words : nil
+        if presentingViewController != nil { dismiss(animated: true) }
+        done(words)
+    }
+}
+#endif

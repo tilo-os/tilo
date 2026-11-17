@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- The iPhone app's page in the system's Settings: the site it opens. Empty means the site
+     the build names. -->
+<plist version="1.0"><dict>
+  <key>PreferenceSpecifiers</key><array>
+    <dict>
+      <key>Type</key><string>PSGroupSpecifier</string>
+      <key>Title</key><string>Tilo site</string>
+      <key>FooterText</key><string>The address of the Tilo site this app opens.</string>
+    </dict>
+    <dict>
+      <key>Type</key><string>PSTextFieldSpecifier</string>
+      <key>Title</key><string>Address</string>
+      <key>Key</key><string>TiloSite</string>
+      <key>DefaultValue</key><string></string>
+      <key>KeyboardType</key><string>URL</string>
+      <key>AutocapitalizationType</key><string>None</string>
+      <key>AutocorrectionType</key><string>No</string>
+    </dict>
+  </array>
+  <key>StringsTable</key><string>Root</string>
+</dict></plist>
