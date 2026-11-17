@@ -318,6 +318,8 @@ tilo_test_env::scenario! {
             false,
         )
         .unwrap();
+        let remark = Memo::REMARK.with("an agent's remark").build(0).unwrap();
+        let line = Memo::ADD_LINE.with("an agent's line").build(0).unwrap();
         view.invoke_typed(&Invoke::<Memo>::apply(&remark).unwrap(), false)
             .expect("the agent remarks");
         assert!(
