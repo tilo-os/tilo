@@ -531,6 +531,23 @@ final class EngineTests: XCTestCase {
         XCTAssertEqual(changes, settled)
     }
 
+    func testAnAskThatAPageNeverAnswersEndsWhenThatPageStartsOver() async throws {
+        try await inPage("location.hash = '#/w/ws-1/so.tilo.chat'; enter()")
+        try await until("the engine is in") { if case .open = self.engine.state { true } else { false } }
+        try await inPage("tiloMount.invokeAction = () => new Promise(() => {})")
+        let engine = engine!
+        let asking = Task { @MainActor in try await engine.invoke("rename", on: "notes.book") }
+        try await Task.sleep(for: .milliseconds(200))
+        // The page starts over under the ask, as it does once more after a device got in.
+        try await inPage("document.documentElement.dataset.entry = ''; document.documentElement.dataset.arrival = 'load'")
+        do {
+            _ = try await asking.value
+            XCTFail("an ask of a page that started over was answered")
+        } catch let problem as TiloEngine.Problem {
+            XCTAssertEqual(problem, .noAnswer)
+        }
+    }
+
     func testTheAppNamesItsDeviceAndNothingInThePageRenamesIt() async throws {
         // A name is one of the places the script fills; nothing it holds is read as another.
         let named = TiloEngine(settings: try ShellSettings(site: Self.site), store: .keepsNothing,

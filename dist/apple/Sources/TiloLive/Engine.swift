@@ -69,7 +69,10 @@ public final class TiloEngine: NSObject {
     public private(set) var state: State = .away {
         didSet {
             guard state != oldValue else { return }
-            if case .open = state {} else { found.removeAll() }
+            if case .open = state {} else {
+                found.removeAll()
+                endAsks()
+            }
             for listener in stateListeners.values { listener.yield(state) }
         }
     }
@@ -78,6 +81,9 @@ public final class TiloEngine: NSObject {
     /// providers with. It stands in the script's own scope and here, and nowhere a page's
     /// script, or the app, can read it.
     let pass: String
+    /// What was asked of the page and is not answered yet. A page that is loaded again under
+    /// an ask never answers it, so these end when the page they were asked of is put away.
+    private var asked: [UUID: CheckedContinuation<String?, Never>] = [:]
     /// How many frames inside the page were refused their content, for a check.
     private(set) var refusedFrames = 0
 
@@ -308,13 +314,15 @@ public final class TiloEngine: NSObject {
     ///   this ask. An answer that holds it is handed to nobody.
     func ask(_ script: String, _ arguments: [String: Any], hiding: String? = nil) async throws -> JSON {
         guard case .open = state else { throw Problem.notOpen }
-        let answer: Any?
-        do {
-            answer = try await view.callAsyncJavaScript(script, arguments: arguments, in: nil, contentWorld: .page)
-        } catch {
-            throw Problem.noAnswer
+        let id = UUID()
+        let answer: String? = await withCheckedContinuation { waiting in
+            asked[id] = waiting
+            view.callAsyncJavaScript(script, arguments: arguments, in: nil, in: .page) { [weak self] result in
+                let text = (try? result.get()) as? String
+                Task { @MainActor in self?.asked.removeValue(forKey: id)?.resume(returning: text) }
+            }
         }
-        guard let text = answer as? String else { throw Problem.noAnswer }
+        guard let text = answer else { throw Problem.noAnswer }
         // The script takes a protected value out of what it answers. Should one come back all
         // the same, as typed or as JSON writes it, the answer goes no further.
         if let hiding, !hiding.isEmpty,
@@ -328,6 +336,13 @@ public final class TiloEngine: NSObject {
             throw Problem.refused(code: code, reason: refusal["reason"]?.string ?? "")
         }
         return read["ok"] ?? .null
+    }
+
+    /// The page that was asked is put away: whoever waits for its answer is told there is none.
+    private func endAsks() {
+        let waiting = asked
+        asked.removeAll()
+        for one in waiting.values { one.resume(returning: nil) }
     }
 
     // MARK: The page
