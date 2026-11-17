@@ -567,6 +567,9 @@ export async function launch({args = [], media = false} = {}) {
     // or it loaded further: never on a clock. A navigation ends the document
     // the wait ran in, and it carries on in the next one.
     const waitFor = async (expression, {timeout = 120000} = {}) => {
+      // A timeout that is no number never runs out (its deadline is NaN), so
+      // a call that passed something else in its place fails here at once.
+      if (!Number.isFinite(timeout)) throw new TypeError(`waitFor ${expression}: timeout ${JSON.stringify(timeout)} is not a number of ms`);
       const deadline = Date.now() + timeout;
       for (;;) {
         const left = deadline - Date.now();
