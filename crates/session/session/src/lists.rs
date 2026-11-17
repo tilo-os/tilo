@@ -569,6 +569,10 @@ impl crate::platform::apps::Reading for Listed {
         usize::try_from(self.generation).unwrap_or(usize::MAX)
     }
 
+    fn applications(&self) -> Vec<AppEntry> {
+        self.lists.applications.clone()
+    }
+
     fn host_apps(
         &self,
         preferences: &tilo_desktop_search::SearchPreferences,

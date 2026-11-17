@@ -31,6 +31,8 @@ pub trait Apps: Send + Sync {
 pub trait Reading: Send + Sync {
     /// What tells this reading from another one: when it changes, the host read its lists again.
     fn generation(&self) -> usize;
+    /// The apps installed here, as this reading lists them.
+    fn applications(&self) -> Vec<AppEntry>;
     /// The machine's own apps as a source, less the sources the person switched off; `None` where
     /// this host has none of its own.
     fn host_apps(&self, preferences: &SearchPreferences) -> Option<Held>;

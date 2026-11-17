@@ -1382,12 +1382,13 @@ impl SessionSearch {
 }
 
 impl SessionSearch {
-    /// The apps installed here, which the palette offers as an app's row of its own: the machine's
-    /// own apps are one of the session's sources instead.
-    fn installed_applications(&self) -> Vec<tilo_desktop_search::providers::AppEntry> {
-        self.apps_lists
-            .as_ref()
-            .map(|lists| lists.applications())
+    /// The apps installed here as `reading` lists them, which the palette offers as an app's row
+    /// of its own: the machine's own apps are one of the session's sources instead.
+    fn installed_applications(
+        reading: Option<&Arc<dyn Reading>>,
+    ) -> Vec<tilo_desktop_search::providers::AppEntry> {
+        reading
+            .map(|reading| reading.applications())
             .unwrap_or_default()
     }
 }
@@ -1403,7 +1404,7 @@ impl SearchHost for SessionSearch {
             // The sources load with the desktop's search engine, which a search waits for: until
             // then the host lists its apps and what the person chose before.
             None => SearchHostFeed {
-                applications: self.installed_applications(),
+                applications: Self::installed_applications(self.current_reading().as_ref()),
                 preferences: self.preferences.borrow().clone(),
                 now: ui::time::unix_now(),
                 usage: self.usage.borrow().clone(),
@@ -1490,8 +1491,10 @@ fn feed(search: &SessionSearch, workspace: &str, scope: &Scope) -> SearchHostFee
             crate::agents::agent_recipient(kept),
         )));
     }
+    // The apps of the reading the sources were just built from, so one search never mixes two.
+    let applications = SessionSearch::installed_applications(search.kept.borrow().reading.as_ref());
     SearchHostFeed {
-        applications: search.installed_applications(),
+        applications,
         published,
         sources,
         preferences: search.preferences.borrow().clone(),
