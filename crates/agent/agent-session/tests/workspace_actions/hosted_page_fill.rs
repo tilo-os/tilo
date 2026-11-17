@@ -143,6 +143,12 @@ async fn window_shows(hosted: &Hosted, material: &Material, origin: &'static str
     )
     .await
     .expect("the window's device dials the server");
+    // The session in a workspace's machine asks its server to enter its device before it
+    // joins, and so does its stand-in: the workspace's governance then names the device as one
+    // of its person's.
+    tilo_server::workspaces::enter_invitation(&client, &material.workspace, 600)
+        .await
+        .expect("the server enters the device it placed into its workspace");
     client.send(Envelope::Subscribe { workspace_id }).unwrap();
     // A governed workspace hands a device what it holds before it is ready.
     loop {
@@ -322,10 +328,12 @@ impl SignIn {
             .turn(words, vec![fill, Reply::text("I did what I could.")])
             .await;
         format!(
-            "{}\n-- the server warned:\n{}\n-- the window saw:\n{}",
+            "{}\n-- the server warned:\n{}\n-- the window saw:\n{}\n-- before the window was \
+             let go:\n{}",
             self.hosted.last_tool_result(),
             self.warned(),
-            self.shown.seen.lock().unwrap().join(" | ")
+            self.shown.seen.lock().unwrap().join(" | "),
+            self.before_the_window_was_let_go()
         )
     }
 
@@ -337,6 +345,27 @@ impl SignIn {
             .filter(|line| line.contains(" WARN ") || line.contains("ERROR"))
             .collect();
         said[said.len().saturating_sub(12)..].join("\n")
+    }
+
+    /// What the server's own crates logged up to the line that says it let the window's
+    /// device go, each line cut short; nothing where it never did.
+    fn before_the_window_was_let_go(&self) -> String {
+        let logged = String::from_utf8_lossy(&self.lines.0.lock().unwrap()).into_owned();
+        let lines: Vec<&str> = logged
+            .lines()
+            .filter(|line| line.contains(" tilo_"))
+            .collect();
+        let Some(at) = lines
+            .iter()
+            .position(|line| line.contains("subscriber authorization changed"))
+        else {
+            return String::new();
+        };
+        lines[at.saturating_sub(40)..=at]
+            .iter()
+            .map(|line| line.chars().take(240).collect::<String>())
+            .collect::<Vec<_>>()
+            .join("\n")
     }
 
     /// What the page holds: each field written, the kind of field and the text.
