@@ -468,9 +468,12 @@ fn chat_holds(session: &Session, conversation: &str, question: &str) {
             conversation.trim_start_matches("chat.workspace/channels/")
         ),
     };
-    // The turn as the session publishes it once Chat holds it: Chat's `turn` view of it.
-    let mut published = tilo_actions::ResourceSpec::new(turn, "chat.workspace.turns", "Asked")
-        .with_view(tilo_actions::ResourceViewSpec::new("turn", "Asked", "open"));
+    // The turn as the session publishes it once Chat holds it: Chat's `turn` view of it, named
+    // for its question, so two turns on the canvas are told apart on screen.
+    let mut published = tilo_actions::ResourceSpec::new(turn, "chat.workspace.turns", question)
+        .with_view(tilo_actions::ResourceViewSpec::new(
+            "turn", question, "open",
+        ));
     published.app_id = Some("chat".to_owned());
     // And the conversation it is in, through Chat's page.
     let mut whole = tilo_actions::ResourceSpec::new(
@@ -1500,6 +1503,83 @@ fn placing_mails_root_without_a_view_stands_the_message_list() {
     assert!(
         !session.shell_says(MAIL_SIDEBAR),
         "the inbox's list stands with no sidebar of the mail window around it"
+    );
+}
+
+/// What the agent opens in its turn stands as the thing, never its app (canvas.md §7, "The thing,
+/// never the app"): the layout's `open` of Tasks' root, naming no view, as the broker runs the
+/// agent's step, stands Tasks' place view, the list of what is to do, as content: no sidebar of
+/// the app's lists, no window frame.
+#[test]
+fn the_agents_open_of_an_apps_root_stands_its_place_view() {
+    let _settled = ui::motion::testing::settled();
+    let root = private_home();
+    let mut session = seeded_session(root.path());
+    let (x, y, w, h) = on_screen(&session, CANVAS).expect("the canvas");
+    point_and_say(
+        &mut session,
+        (x + w * 0.1, y + h * 0.2),
+        "remind me to call mum tomorrow at 6pm",
+    );
+    until(&mut session, "the ask sent", |session| {
+        session.settle_services();
+        session
+            .read("session:send-to")
+            .and_then(|read| read["sent"].as_array().map(|sent| !sent.is_empty()))
+            .unwrap_or(false)
+    });
+    chat_holds(&session, CONVERSATION, "q1");
+    wait_for(&mut session, "the turn placed", |session| {
+        canvas_box(session, "chat.workspace.turns:")
+    });
+    let tasks = root_of(&session, "so.tilo.lang.tasks");
+    session
+        .invoke_in_turn(
+            "agent:assistant",
+            (CONVERSATION, "q1"),
+            "shell:layout",
+            "open",
+            &serde_json::json!({"resource": tasks}),
+        )
+        .unwrap_or_else(|error| panic!("the agent's open runs: {error}"));
+    let placed = wait_for(&mut session, "the tasks placed", |session| {
+        places(session)
+            .into_iter()
+            .find(|place| place.record.contains("so.tilo.lang.tasks"))
+    });
+    // The views Tasks publishes for its root: the one marked for a place (`place view`), and its
+    // default view, the whole app.
+    let views = session
+        .resources()
+        .into_iter()
+        .find(|spec| spec.id.as_str() == tasks)
+        .map(|spec| spec.views)
+        .expect("Tasks' root is published");
+    let place_view = views
+        .iter()
+        .find(|view| view.place)
+        .map(|view| view.id.clone())
+        .expect("Tasks publishes a place view of its root");
+    let app_view = views
+        .iter()
+        .find(|view| view.primary)
+        .map(|view| view.id.clone())
+        .expect("Tasks' root has a default view");
+    assert_ne!(place_view, app_view, "the place view is not the app's own");
+    assert_eq!(
+        placed.shown_as, place_view,
+        "Tasks' root stands through its place view: {placed:?}"
+    );
+    assert_ne!(
+        placed.shown_as, app_view,
+        "never through the app's default view: {placed:?}"
+    );
+    for _ in 0..30 {
+        session.step(Duration::from_millis(16)).unwrap();
+    }
+    assert!(
+        !session.shell_says("Projects"),
+        "no sidebar of the app's lists stands on the canvas"
     );
 }
 
