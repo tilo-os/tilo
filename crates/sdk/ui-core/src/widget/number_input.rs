@@ -747,8 +747,10 @@ impl Widget for NumberInput {
             input: InputKind::Number,
             text: self.format_value(),
             placeholder: String::new(),
-            min: Some(self.min),
-            max: Some(self.max),
+            // A page's field holds no infinity: the open ends of a number
+            // line are no bounds at all.
+            min: self.min.is_finite().then_some(self.min),
+            max: self.max.is_finite().then_some(self.max),
             step: Some(self.step),
             steppers: true,
             increase: Some(widget_text("widget-number-increase")),

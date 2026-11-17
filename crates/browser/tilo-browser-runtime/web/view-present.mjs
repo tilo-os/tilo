@@ -616,7 +616,10 @@ export function createViewPresenter(layer, {onScroll, picture, semantic, onFrame
       if (control.kind === 'choices') {
         const box = elementFor(key, 'div', next);
         write(box, '@role', control.list);
-        write(box, 'css', `display:flex;align-items:center;gap:2px;flex-wrap:wrap;min-width:0;${control.list === 'group' || control.list === 'tablist' ? '' : 'flex-direction:column;align-items:stretch;'}`);
+        // A menu and a list of options stand in a column; a toolbar, a tab
+        // strip, a group of swatches or radios, a row.
+        const column = control.list === 'menu' || control.list === 'listbox';
+        write(box, 'css', `display:flex;gap:2px;min-width:0;flex-wrap:wrap;${column ? 'flex-direction:column;align-items:stretch;' : 'align-items:center;'}`);
         const rows = control.options.map((option, row) => optionRow(`${key}:choice:${row}`, option, target, next, control.item));
         if (control.label) rows.unshift(wordsFor(`${key}:label`, control.label, next));
         place(box, rows);
