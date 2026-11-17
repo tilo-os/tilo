@@ -131,8 +131,8 @@ def stage(root, output, pins, cohort, qualification=False):
     for bundle, version, publisher in bundles:
         run([tools / 'tilo-runtime-bundle', 'verify', bundle, '--require-signature',
              '--require-arch', os.uname().machine, '--require-publisher', publisher])
-        manifest = tomllib.loads((bundle / 'bundle.toml').read_text())
-        if manifest['version'] != version:
+        bundle_manifest = tomllib.loads((bundle / 'bundle.toml').read_text())
+        if bundle_manifest['version'] != version:
             raise ValueError('signed receiving runtime version differs')
         if bundle == bundles[0][0]:
             destination = root / 'usr/lib/tilo-runtime' / version
