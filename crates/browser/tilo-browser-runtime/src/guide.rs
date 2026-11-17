@@ -164,6 +164,12 @@ impl OverSheet for PageGuide {
             .is_some_and(|code| (code.guide)(self, show, missing))
     }
 
+    fn put_away(&self) {
+        if !self.presentation.is_open() {
+            self.presentation.gone();
+        }
+    }
+
     fn drawn(&self) -> bool {
         self.presentation.is_drawn()
     }

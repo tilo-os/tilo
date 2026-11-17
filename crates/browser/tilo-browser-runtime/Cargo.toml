@@ -214,6 +214,8 @@ workspace-hack = { version = "0.1" }
 # tests (src/person_records.rs, src/content_open.rs).
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 ui = { version = "0.1.0", package = "tilo-ui", path = "../../sdk/ui-core", default-features = false }
+# A sheet's own life, which the page's sheets answer and its tests read (src/over_page.rs).
+tilo-sheets = { version = "0.1.0", path = "../../session/sheets" }
 tilo-content = { version = "0.1.0", path = "../../system/content", default-features = false }
 durable-store = { version = "0.1.0", path = "../../system/durable-store" }
 # Merging a record the host sent into the page's copy (src/landing.rs).
