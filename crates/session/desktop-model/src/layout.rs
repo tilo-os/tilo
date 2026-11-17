@@ -1068,7 +1068,8 @@ impl WorkspaceLayout {
     /// turn's own line first: the camera pans to show both. Failing that, the largest part of the
     /// window that is free beside the turn, never under a window's least size, the spot most
     /// inside what the person sees first: `seen` (the part of the canvas they saw when they
-    /// asked), panned the least that shows the turn whole, since the camera keeps the turn. Nothing
+    /// asked), panned the least that shows the turn whole, since the camera keeps the turn. Before
+    /// all of these, a spot on any side that stands whole in that view, so nothing pans. Nothing
     /// placed moves, and every spot is clear of everything but `except`
     /// ([`CanvasPlace::crowds_on_canvas`]). `None` when no spot adjacent to the turn is free: the
     /// caller stands it further along ([`Self::free_place_next_to`]).
@@ -1088,7 +1089,24 @@ impl WorkspaceLayout {
             .collect();
         let free = |place: &CanvasPlace| !others.iter().any(|o| place.crowds_on_canvas(o));
         let beside = Beside::new(subject, seen);
-        // On the screen with the turn first, shrunk to fit; then as large as is free beside it.
+        // In what the person sees first, on any side, shrunk to fit: nothing pans, and what they
+        // were looking at stays in view.
+        for side in [Side::Trailing, Side::Below, Side::Leading, Side::Above] {
+            let Some(asked) = beside.size(side, (width, height), true) else {
+                continue;
+            };
+            for size in shrinking(asked) {
+                let best = beside
+                    .spots(side, size, &others)
+                    .filter(|place| free(place) && beside.in_view(place))
+                    .max_by_key(|place| beside.rank(side, place, true));
+                if best.is_some() {
+                    return best;
+                }
+            }
+        }
+        // Then on the screen with the turn, shrunk to fit, the camera panning to show both; then
+        // as large as is free beside it.
         for on_screen in [true, false] {
             for side in [Side::Trailing, Side::Below, Side::Leading, Side::Above] {
                 let Some(asked) = beside.size(side, (width, height), on_screen) else {
@@ -1392,6 +1410,18 @@ impl Beside {
             })
     }
 
+    /// Whether `place` stands whole in the view the turn is seen in, clear of its edges: shown
+    /// there, nothing pans.
+    fn in_view(&self, place: &CanvasPlace) -> bool {
+        let gap = i64::from(CANVAS_GAP);
+        let (x0, y0, x1, y1) = on_screen(place);
+        let (vx0, vy0, vx1, vy1) = self.view;
+        x0 >= vx0.saturating_add(gap)
+            && y0 >= vy0.saturating_add(gap)
+            && x1 <= vx1.saturating_sub(gap)
+            && y1 <= vy1.saturating_sub(gap)
+    }
+
     /// Whether `place` and the turn stand on the screen together.
     fn fits(&self, place: &CanvasPlace) -> bool {
         let (ax0, ay0, ax1, ay1) = on_screen(&self.turn);
@@ -1612,33 +1642,45 @@ mod workspace_layout_tests {
     }
 
     /// Beside a turn, an answer's view stands in the free spot adjacent to it, trailing side
-    /// first, at the turn's line: in view when the turn is, and past the edge of what the person
-    /// sees when that is where the free spot beside the turn is (the camera pans to both), made
-    /// smaller so the turn and it stand on the screen together. Nothing adjacent free: nothing.
+    /// first, at the turn's line, in what the person sees when a side has a free spot there: a turn near
+    /// the trailing edge has it stand on another side in view rather than past the edge. Only
+    /// when no side has a free spot in view does it stand past the edge, made smaller so the turn and it
+    /// stand on the screen together (the camera pans to both). Nothing adjacent free: nothing.
     #[test]
     fn an_answer_stands_adjacent_to_its_turn() {
         let seen = CanvasPlace::new(0, 0, 1280, 740);
         let turn = CanvasPlace::new(100, 100, 520, 480);
         let place = canvas(&[(1, turn)])
             .free_place_within(turn, (600, 400), seen, None)
-            .expect("room beside the turn");
+            .expect("a spot beside the turn");
         assert_eq!(
             (place.x, place.y, place.width, place.height),
             (644, 100, 600, 400),
             "the trailing side, at its line, at its size"
         );
         assert!(place.inside(&seen) && !place.crowds_on_canvas(&turn));
-        // The turn near the trailing edge: the answer still stands on its trailing side, past
-        // what the person saw, and the two fit on one screen for the camera to show.
+        // The turn near the trailing edge, with a free spot on its leading side: the answer stands
+        // there, in view, rather than past the edge with the camera panning away from what the
+        // person was looking at.
         let right = CanvasPlace::new(700, 100, 520, 480);
         let place = canvas(&[(1, right)])
             .free_place_within(right, (600, 400), seen, None)
-            .expect("room on the trailing side");
-        assert_eq!((place.x, place.y), (1244, 100), "trailing, at its line");
+            .expect("room beside the turn");
+        assert!(place.inside(&seen), "in view: {place:?}");
         assert!(
-            on_one_screen(right, place, seen),
-            "{place:?} with {right:?}"
+            place.right() <= i64::from(right.x),
+            "on the leading side: {place:?}"
         );
+        assert!(!place.crowds_on_canvas(&right));
+        // No side with a free spot in view (the turn fills the view's height and the leading side is
+        // taken): the trailing side past the edge, the two on one screen for the camera to show.
+        let tall = CanvasPlace::new(700, 30, 520, 680);
+        let taken = CanvasPlace::new(0, 0, 676, 740);
+        let place = canvas(&[(1, tall), (2, taken)])
+            .free_place_within(tall, (600, 400), seen, None)
+            .expect("room on the trailing side");
+        assert_eq!((place.x, place.y), (1244, 30), "trailing, at its line");
+        assert!(on_one_screen(tall, place, seen), "{place:?} with {tall:?}");
         // A turn too wide for the whole size beside it on one screen: a smaller part of it.
         let wide = CanvasPlace::new(0, 60, 700, 480);
         let place = canvas(&[(1, wide)])
@@ -1660,9 +1702,8 @@ mod workspace_layout_tests {
     }
 
     /// A turn asked by a click near the bottom of what the person sees, after another turn and
-    /// its answer took the top of the view: the answer stands on the turn's trailing side at
-    /// its line, never in the far corner of the view by the first turn, and the turn and it fit
-    /// on one screen for the camera to pan to.
+    /// its answer took the top of the view: the answer stands beside the turn at its line, never
+    /// in the far corner of the view by the first turn, and the turn and it fit on one screen.
     #[test]
     fn an_answer_to_a_turn_near_the_bottom_of_the_view_stands_beside_it() {
         let seen = CanvasPlace::new(0, 0, 1280, 760);
@@ -1672,13 +1713,39 @@ mod workspace_layout_tests {
         let place = canvas(&[(1, first), (2, notes), (3, turn)])
             .free_place_within(turn, (720, 520), seen, None)
             .expect("room beside the turn");
-        assert_eq!(
-            (i64::from(place.x), place.y),
-            (turn.right().saturating_add(i64::from(CANVAS_GAP)), turn.y),
-            "the trailing side, at its line: {place:?}"
+        let gap = i64::from(CANVAS_GAP);
+        let trailing = i64::from(place.x) == turn.right().saturating_add(gap);
+        let leading = place.right().saturating_add(gap) == i64::from(turn.x);
+        assert!(
+            (trailing || leading) && place.y == turn.y,
+            "beside the turn, at its line: {place:?}"
         );
         assert!(on_one_screen(turn, place, seen), "{place:?} with {turn:?}");
         for other in [first, notes, turn] {
+            assert!(
+                !place.crowds_on_canvas(&other),
+                "{place:?} clear of {other:?}"
+            );
+        }
+    }
+
+    /// "Show me my mails" asked at the top right of the view, with the screen below empty: the
+    /// inbox stands below the turn, in view, never past the trailing edge with the camera
+    /// panning the earlier turns off the screen.
+    #[test]
+    fn an_answer_takes_a_spot_in_view_before_one_past_the_edge() {
+        let seen = CanvasPlace::new(0, 0, 1440, 860);
+        let earlier = CanvasPlace::new(208, 173, 362, 100);
+        let turn = CanvasPlace::new(625, 60, 520, 140);
+        let place = canvas(&[(1, earlier), (2, turn)])
+            .free_place_within(turn, (720, 520), seen, None)
+            .expect("a spot beside the turn");
+        assert!(place.inside(&seen), "in view: {place:?}");
+        assert!(
+            i64::from(place.y) >= turn.bottom(),
+            "below the turn: {place:?}"
+        );
+        for other in [earlier, turn] {
             assert!(
                 !place.crowds_on_canvas(&other),
                 "{place:?} clear of {other:?}"
