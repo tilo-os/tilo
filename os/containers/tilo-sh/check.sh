@@ -124,10 +124,15 @@ step() {
 # -- the steps ---------------------------------------------------------------
 
 # 1: a person who has never been here, on the site, approves the server key
-# `tilo keys create` asks for, and one that may not operate web pages.
+# `tilo keys create` asks for, and one that may not operate web pages. The
+# site lets people in by invitation, as production's does: they arrive through
+# one the Lounge's host made for them, as a newcomer does.
 startup_identity() {
   step '1. a fresh startup identity approves a server key on the local site'
-  local args=(--key 'Visa backend' --tilo "$tilo" --api "$api" --no-pages --root "$work/startup/person.json")
+  local invitation
+  invitation=$(host_invite --for 'Startup') || fail 'the Lounge made no invitation for the startup'
+  local args=(--invite "$invitation" --key 'Visa backend' --tilo "$tilo" --api "$api" --no-pages
+    --root "$work/startup/person.json")
   if [[ ${TILO_SH_VM_HOST:-0} == 1 ]] && runs_step 12; then
     # The person stays on the site in their browser, whose page holds their
     # root: step 12 has them answer the submissions their agent's page holds
@@ -195,13 +200,17 @@ visa_run() {
   fi
 }
 
-# 7: fresh visitors enter the Lounge, each timed.
+# 7: fresh visitors enter the Lounge, each timed, each through an invitation
+# of their own, as the site lets newcomers in.
 entry_visits() {
   step '7. a fresh visitor enters the Lounge, timed'
   local visits=${TILO_SH_ENTRY_VISITS:-3} visit median
   entries=()
   for visit in $(seq "$visits"); do
-    node "$here/integration/person.mjs" "$site" "$relay" "$work/visitor-$visit" > "$work/visitor-$visit.json" \
+    local invitation
+    invitation=$(host_invite --for "Visitor $visit") || fail "the Lounge made no invitation for visitor $visit"
+    node "$here/integration/person.mjs" "$site" "$relay" "$work/visitor-$visit" --invite "$invitation" \
+      > "$work/visitor-$visit.json" \
       || fail "visitor $visit did not get in (see $work/visitor-$visit)"
     entries+=("$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["joinedMs"])' "$work/visitor-$visit.json")")
   done
@@ -215,7 +224,10 @@ entry_visits() {
 # was once.
 passkey_round() {
   step '7b. a visitor keeps themselves with a passkey and signs in with it again'
-  node "$here/integration/person.mjs" "$site" "$relay" "$work/passkey" --passkey > "$work/passkey.json" \
+  local invitation
+  invitation=$(host_invite --for 'Passkey visitor') || fail 'the Lounge made no invitation for the passkey visitor'
+  node "$here/integration/person.mjs" "$site" "$relay" "$work/passkey" --invite "$invitation" --passkey \
+    > "$work/passkey.json" \
     || fail "the passkey did not register or sign in (see $work/passkey)"
   echo 'ok: a passkey registered, and signed the same visitor in again'
 }
