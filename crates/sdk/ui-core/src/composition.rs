@@ -248,6 +248,16 @@ pub struct ControlOption {
     pub selected: bool,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub disabled: bool,
+    /// Where it starts from its set's leading edge, logical pixels, where the widget places its
+    /// choices itself (a toolbar's tools around its spacers).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub at: Option<f64>,
+    /// Where a separator before it stands, from the set's leading edge.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rule: Option<f64>,
+    /// It carries a dot saying something new is behind it.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub dot: bool,
 }
 
 impl ControlOption {
@@ -263,7 +273,24 @@ impl ControlOption {
             colour: None,
             selected: false,
             disabled: false,
+            at: None,
+            rule: None,
+            dot: false,
         }
+    }
+
+    /// It stands `at` from its set's leading edge, with a separator at `rule` before it.
+    #[must_use]
+    pub fn placed(mut self, at: f64, rule: Option<f64>) -> Self {
+        self.at = Some(at);
+        self.rule = rule;
+        self
+    }
+
+    #[must_use]
+    pub fn with_dot(mut self, dot: bool) -> Self {
+        self.dot = dot;
+        self
     }
 
     #[must_use]

@@ -274,6 +274,27 @@ impl Decorator for ChromeBody {
         self.inner_mut().build_layout(taffy, theme, node_map)
     }
 
+    /// What it holds on the bar's ground; a rounded body floats with its edge, as painted.
+    fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
+        self.container.html(cx);
+        let theme = cx.theme();
+        let rect = self.container.get_rect();
+        let rounded = self.shape == ChromeShape::Rounded;
+        let node = cx.node();
+        node.ground = Some(crate::composition::Ground {
+            fill: Some(crate::composition::rgba8(crate::chrome::panel_ground(
+                theme,
+            ))),
+            edge: rounded.then(|| crate::composition::rgba8(crate::chrome::chrome_hairline(theme))),
+            radius: if rounded {
+                f64::from(theme.tokens.radii.panel).min(rect.height() / 2.0)
+            } else {
+                0.0
+            },
+        });
+        node.floats = rounded;
+    }
+
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         self.container.apply_layout(taffy, node, origin);
         self.rect = self.container.get_rect();

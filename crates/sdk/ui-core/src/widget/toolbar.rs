@@ -1348,16 +1348,26 @@ impl Widget for Toolbar {
         use crate::composition::{Control, ControlOption};
         let theme = cx.theme();
         let ink = theme.tokens.colors.text_primary;
+        // Its tools stand where it lays them out, around its spacers, each separator between.
+        let origin = self.rect.x0;
+        let mut rule = None;
         let options = self
             .items
             .iter()
             .enumerate()
             .filter_map(|(index, item)| {
                 let ToolbarItem::Button(command) = item else {
+                    if matches!(item, ToolbarItem::Separator) {
+                        rule = self.item_rect(index).map(|r| r.center().x - origin);
+                    }
                     return None;
                 };
                 let mut option = ControlOption::new(command.name().to_owned())
-                    .with_target(format!("toolbar.item.{index}"));
+                    .with_target(format!("toolbar.item.{index}"))
+                    .with_dot(command.dot);
+                if let Some(at) = self.item_rect(index) {
+                    option = option.placed(at.x0 - origin, rule.take());
+                }
                 option = match command.active {
                     Some(active) => option.selected(active),
                     None => option,

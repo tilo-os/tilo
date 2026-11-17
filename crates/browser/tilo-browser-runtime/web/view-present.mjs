@@ -238,7 +238,7 @@ export function createViewPresenter(layer, {onScroll, picture, semantic, onFrame
       // One line of words in a slot taller than the line (a count on its ground, a table's
       // cell, a part a widget lays out itself) stands in the slot's middle, as painted.
       const line = node.own.size * node.own.line_height;
-      if ((node.ground || node.path.includes('#')) && !node.children?.length && h > line + 0.5 && h < 2 * line) css += `line-height:${h}px;`;
+      if ((node.ground || node.path.includes('#')) && !node.children?.length && h > line + 0.5 && Math.floor((h + 0.5) / line) <= 1) css += `line-height:${h}px;`;
     }
     else if (node.own?.kind === 'face') {
       css += faceCss(node.own);
@@ -710,8 +710,24 @@ export function createViewPresenter(layer, {onScroll, picture, semantic, onFrame
         // A menu and a list of options stand in a column; a toolbar, a tab
         // strip, a group of swatches or radios, a row.
         const column = control.list === 'menu' || control.list === 'listbox';
-        write(box, 'css', `display:flex;gap:2px;min-width:0;flex-wrap:wrap;${column ? 'flex-direction:column;align-items:stretch;' : 'align-items:center;'}`);
-        const rows = control.options.map((option, row) => optionRow(`${key}:choice:${row}`, option, target, next, control.item));
+        // Choices the widget places itself (a toolbar's tools around its spacers) stand there,
+        // a separator where it draws one.
+        const placed = control.options.length > 0 && control.options.every((option) => typeof option.at === 'number');
+        write(box, 'css', placed
+          ? 'position:relative;width:100%;height:100%;min-width:0;'
+          : `display:flex;gap:2px;min-width:0;flex-wrap:wrap;${column ? 'flex-direction:column;align-items:stretch;' : 'align-items:center;'}`);
+        const rows = [];
+        control.options.forEach((option, row) => {
+          const path = `${key}:choice:${row}`;
+          if (placed && typeof option.rule === 'number') {
+            const rule = elementFor(`${path}:rule`, 'span', next);
+            write(rule, '@aria-hidden', 'true');
+            write(rule, 'css', `position:absolute;left:${option.rule - 0.5}px;top:25%;width:1px;height:50%;background:var(--tilo-border,rgba(127,127,127,.3));`);
+            rows.push(rule);
+          }
+          rows.push(optionRow(path, option, target, next, control.item,
+            placed ? `position:absolute;left:${option.at}px;top:50%;transform:translateY(-50%);` : ''));
+        });
         if (control.label) rows.unshift(wordsFor(`${key}:label`, control.label, next));
         place(box, rows);
         out.push(box);
@@ -722,7 +738,7 @@ export function createViewPresenter(layer, {onScroll, picture, semantic, onFrame
   }
 
   // One choice of a control: an option of a chooser's list, a tab, a menu row.
-  function optionRow(path, option, fallback, next, role) {
+  function optionRow(path, option, fallback, next, role, at = '') {
     const item = elementFor(path, role === 'option' ? 'li' : 'button', next);
     write(item, '@role', role);
     write(item, '@aria-selected', role === 'radio' ? null : String(Boolean(option.selected)));
@@ -732,30 +748,38 @@ export function createViewPresenter(layer, {onScroll, picture, semantic, onFrame
     const iconOnly = role === 'button' && Boolean(option.icon);
     write(item, '@aria-label', iconOnly ? option.label : null);
     write(item, '@title', iconOnly ? option.label : null);
-    write(item, 'css', iconOnly
+    write(item, 'css', (iconOnly
       ? 'display:flex;align-items:center;justify-content:center;width:32px;height:32px;padding:0;border-radius:6px;cursor:pointer;' + (option.selected ? 'background:color-mix(in srgb,var(--tilo-accent,#2f6fed) 14%,transparent);' : '')
-      : 'display:flex;align-items:center;gap:6px;padding:5px 9px;border-radius:6px;white-space:nowrap;cursor:pointer;' + (option.selected ? 'background:var(--tilo-raised,rgba(127,127,127,.16));' : ''));
+      : 'display:flex;align-items:center;gap:6px;padding:5px 9px;border-radius:6px;white-space:nowrap;cursor:pointer;' + (option.selected ? 'background:var(--tilo-raised,rgba(127,127,127,.16));' : ''))
+      + (option.dot ? 'position:relative;' : '') + at);
     item.disabled = Boolean(option.disabled);
-    const runs = [];
+    const shown = [];
     if (option.colour) {
       const dot = elementFor(`${path}:colour`, 'span', next);
       write(dot, 'css', `flex:none;width:16px;height:16px;border-radius:50%;box-shadow:inset 0 0 0 1px var(--tilo-border,rgba(127,127,127,.35));background:${rgba(option.colour)};`);
-      runs.push(dot);
+      shown.push(dot);
     }
-    if (option.icon) runs.push(glyph(`${path}:icon`, option.icon, next));
+    if (option.icon) shown.push(glyph(`${path}:icon`, option.icon, next));
     if (!iconOnly) {
       const label = elementFor(`${path}:label`, 'span', next);
       write(label, 'css', 'flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:pre;');
       write(label, 'text', option.label);
-      runs.push(label);
+      shown.push(label);
     }
     if (option.detail) {
       const detail = elementFor(`${path}:detail`, 'span', next);
       write(detail, 'css', 'flex:none;color:var(--tilo-text-dim,#6e6e73);white-space:pre;');
       write(detail, 'text', option.detail);
-      runs.push(detail);
+      shown.push(detail);
     }
-    place(item, runs);
+    if (option.dot) {
+      // Something new behind it: the accent dot at its corner, as painted.
+      const dot = elementFor(`${path}:dot`, 'span', next);
+      write(dot, '@aria-hidden', 'true');
+      write(dot, 'css', 'position:absolute;right:5px;top:5px;width:6px;height:6px;border-radius:50%;background:var(--tilo-accent,#2f6fed);');
+      shown.push(dot);
+    }
+    place(item, shown);
     if (option.value !== undefined && option.value !== null) mark(item, 'value', fallback, option.value);
     else mark(item, 'activate', option.target ?? fallback);
     return item;
@@ -911,7 +935,7 @@ export const VIEW_CSS = `
 .tilo-view [aria-disabled=true]{opacity:.45;}
 .tilo-view [data-widget=WindowNoticeStrip]>[aria-hidden]{border-radius:var(--tilo-radius,8px);box-shadow:0 0 0 1px var(--tilo-border,rgba(127,127,127,.25)),0 6px 20px rgba(0,0,0,.12);}
 .tilo-view button:focus-visible{outline:2px solid var(--tilo-accent,#2f6fed);outline-offset:-2px;}
-.tilo-view ul{margin:0;padding:0;list-style:none;}
+.tilo-view ul,.tilo-view ol{margin:0;padding:0;list-style:none;}
 /* A page's own boxes, switches, radios and ranges, set in the toolkit's look: a box that
    fills with the accent and its tick, a switch whose knob slides, a range in the accent. */
 .tilo-view input[type=checkbox],.tilo-view input[type=radio]{appearance:none;-webkit-appearance:none;margin:0;flex:none;width:18px;height:18px;border-radius:5px;background:var(--tilo-raised,#f1f2f4);box-shadow:inset 0 0 0 1.5px color-mix(in srgb,var(--tilo-text-dim,#6e6e73) 55%,transparent);display:grid;place-content:center;cursor:pointer;transition:background .15s ease,box-shadow .15s ease;}

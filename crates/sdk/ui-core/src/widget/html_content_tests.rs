@@ -310,3 +310,31 @@ fn a_surface_composes_as_its_ground_and_a_window_floats() {
     assert!(raised.ground.is_some());
     assert!(!raised.floats, "a raised surface casts no shadow");
 }
+
+/// A banner's buttons are on its page, inside it, as it places them.
+#[test]
+fn a_banner_composes_its_buttons_inside_it() {
+    let banner = crate::widget::Banner::warning("Sync paused")
+        .with_message("Files sync again when you are online.")
+        .with_action(crate::widget::Button::new("retry", "Retry"))
+        .arrives_in_place();
+    let composition = composed(Box::new(banner), (560, 200));
+    let all = nodes(&composition.root);
+    let banner = all
+        .iter()
+        .find(|node| node.widget == "Banner")
+        .unwrap_or_else(|| panic!("the banner's element: {:#?}", composition.root));
+    let button = nodes(banner)
+        .into_iter()
+        .find(|node| node.widget == "Button")
+        .unwrap_or_else(|| panic!("its button: {banner:#?}"));
+    let [bx, by, bw, bh] = banner.rect;
+    let [x, y, w, h] = button.rect;
+    assert!(w > 0.0 && h > 0.0, "the button has its size: {button:?}");
+    assert!(
+        x >= bx && y >= by && x + w <= bx + bw && y + h <= by + bh,
+        "the button is inside the banner: {:?} in {:?}",
+        button.rect,
+        banner.rect
+    );
+}

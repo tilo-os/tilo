@@ -404,3 +404,19 @@ test('a window floats over the shell on its ground, edge and shadow; a ground al
   assert.match(card, /box-shadow:inset 0 0 0 1px/);
   assert.doesNotMatch(card, /28px/);
 });
+
+test('a toolbar its widget lays out keeps its tools where they stand, a separator between and a dot on the new', () => {
+  const layer = new Node('div');
+  const presenter = createViewPresenter(layer);
+  const glyph = {name: 'pencil', paths: ['M0 0'], size: 16, stroke: 1.5, color: [0, 0, 0, 255], filled: false};
+  show(presenter, widget('Toolbar[0]', [0, 0, 400, 32], {own: {kind: 'control', controls: [{kind: 'choices', list: 'toolbar', item: 'button', options: [
+    {label: 'Edit', icon: glyph, at: 0},
+    {label: 'Flag', icon: glyph, at: 34, dot: true},
+    {label: 'Pin', icon: glyph, at: 80, rule: 72},
+    {label: 'Share', icon: glyph, at: 368},
+  ]}]}}));
+  const share = byPath(layer, 'Toolbar[0]#control:0:choice:3');
+  assert.match(share.style.cssText, /position:absolute;.*left:368px;/);
+  assert.match(byPath(layer, 'Toolbar[0]#control:0:choice:2:rule').style.cssText, /left:71.5px;/);
+  assert.ok(byPath(layer, 'Toolbar[0]#control:0:choice:1:dot'), 'the new one carries its dot');
+});

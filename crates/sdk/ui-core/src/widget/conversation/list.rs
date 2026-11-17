@@ -879,7 +879,7 @@ impl Widget for ConversationList {
         cx.element("ul");
         let body = theme.text(TextRole::Body);
         let caption = theme.text(TextRole::Caption);
-        let author_style = theme.text(TextRole::Caption).strong();
+        let author_style = theme.text(TextRole::Caption);
         let rows = &self.cache.layout.rows;
         if rows.is_empty() {
             // A page never paints the list, so it lays its lines out itself when no paint has.
