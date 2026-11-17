@@ -48,6 +48,11 @@ impl Reading for Shipped {
         0
     }
 
+    /// None, as [`Apps::applications`]: the page's tile source lists what it can start.
+    fn applications(&self) -> Vec<AppEntry> {
+        Vec::new()
+    }
+
     /// The machine's own apps: a page runs none, so its search offers none beyond the bundle's own
     /// list ([`Apps::applications`]).
     fn host_apps(&self, _preferences: &SearchPreferences) -> Option<Held> {
