@@ -86,9 +86,12 @@ impl ChatApp {
     ) {
         match self.messages_chain() {
             Ok(chain) => {
-                chain.invoke_then(&post(id, text, None, None, Vec::new()), move |posted| {
-                    then(posted.map(drop).map_err(|error| error.to_string()));
-                });
+                chain.invoke_then(
+                    &post(id, text, None, None, Vec::new(), self.agent_mentions(text)),
+                    move |posted| {
+                        then(posted.map(drop).map_err(|error| error.to_string()));
+                    },
+                );
             }
             Err(unavailable) => then(Err(unavailable)),
         }
@@ -131,7 +134,14 @@ impl ChatApp {
         // asked can stand the turn it opened (canvas.md §3) by the message, not by its words.
         drop(ui::tilo_resource::take_minted());
         self.messages_chain()?
-            .invoke(&post(&id, text, parent.map(Id::from_raw), body, attached))
+            .invoke(&post(
+                &id,
+                text,
+                parent.map(Id::from_raw),
+                body,
+                attached,
+                self.agent_mentions(text),
+            ))
             .map_err(|error| error.to_string())?;
         let message = ui::tilo_resource::take_minted().into_iter().next();
         // The conversation stands where the box stood: a window of the shell,
@@ -307,14 +317,16 @@ pub(crate) struct SendMessage<'a> {
     pub opens: bool,
 }
 
-/// The record's `post` of `text`, with what it carries and the paragraphs it
-/// was written in, to the conversation `id`.
+/// The record's `post` of `text`, with what it carries, the paragraphs it
+/// was written in, and the mentions the window resolved, to the conversation
+/// `id`.
 fn post(
     id: &Id,
     text: &str,
     parent: Option<Id>,
     body: Option<Vec<tilo_document::ClipBlock>>,
     attachments: Vec<tilo_reference::Attached>,
+    mentions: Vec<crate::mention::Mention>,
 ) -> Invoke<ChatPart> {
     ChatPart::POST.with(chat_part::Post {
         message: crate::messages::NewMessage {
@@ -324,7 +336,7 @@ fn post(
             quoted: None,
             body,
             attachments,
-            mentions: None,
+            mentions: Some(mentions),
             written: None,
             origin: None,
         },

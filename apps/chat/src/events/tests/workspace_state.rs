@@ -277,6 +277,71 @@ tilo_test_env::scenario! {
 }
 
 tilo_test_env::scenario! {
+    /// Who a message can ask: the workspace's own agents are offered at `@` and asked when their
+    /// name is typed, whether or not a device of theirs is present.
+    fn the_workspaces_agents_are_offered_and_asked;
+
+    phase the_at_list_offers_the_workspaces_agents;
+    {
+        let (mut app, mut doc) = app_with_doc();
+        app.workspace_agent_names
+            .insert("planner".to_owned(), "Planner".to_owned());
+        app.focus = Focus::Main;
+        app.set_composer_focus();
+        // The editor learns who is offered at `@` as it is drawn.
+        render_frame(&mut app, 1280.0, 720.0);
+        assert!(
+            app.mention_people()
+                .iter()
+                .any(|person| person.id == MemberId::agent("planner")
+                    && person.name == "Planner"),
+            "the workspace's agent record names it for the @ list"
+        );
+        // Typing the name opens the list, and a pick writes the agent's name: what the page's
+        // composer draws is this same list.
+        type_str(&mut app, &mut doc, "@Pl");
+        feed(&mut app, &mut doc, &named_key(NamedKey::Tab));
+        assert_eq!(app.composer_main.value(), "@Planner ");
+    }
+
+    phase a_name_typed_without_the_picker_asks_the_agent;
+    {
+        let (mut app, mut doc) = app_with_doc();
+        app.workspace_agent_names
+            .insert("planner".to_owned(), "Planner".to_owned());
+        app.active_channel = "c_general".into();
+        app.focus = Focus::Main;
+        app.thread_open = None;
+        crate::testing::write_draft(&mut app, &mut doc, "@Planner draft the agenda");
+        app.on_hit(Hit::Send, &mut ui::widget::Edits::lend(&mut doc));
+        app.reload(&doc);
+        let sent = crate::testing::messages(&doc, &app.active_channel)
+            .into_iter()
+            .last()
+            .expect("the message was sent");
+        assert_eq!(sent.text, "@Planner draft the agenda");
+        assert_eq!(sent.mentions.len(), 1, "{:?}", sent.mentions);
+        assert_eq!(sent.mentions[0].user, MemberId::agent("planner"));
+        assert_eq!(sent.mentions[0].slice(&sent.text), "@Planner");
+        let chat = doc.read();
+        let parts = doc.messages();
+        let part = parts
+            .parts()
+            .last()
+            .expect("the messages are held here")
+            .1
+            .clone();
+        let asked = crate::summons::summonses(&chat, &part);
+        assert!(
+            asked.iter().any(|summons| summons.agent == "planner"
+                && summons.message.as_str() == sent.id
+                && summons.mentioned),
+            "naming the agent asks it: {asked:?}"
+        );
+    }
+}
+
+tilo_test_env::scenario! {
     fn reactions_toggle_through_the_picker_and_chips_on_the_shared_route;
 
     phase reaction_via_the_emoji_picker_round_trips_through_the_ui;

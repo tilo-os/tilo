@@ -165,7 +165,7 @@ impl ChatApp {
         // Every message a frame lays out asks for this, so the fingerprint is
         // taken from the values themselves: a colour hashes as its components
         // and a member as their id, never as formatted text.
-        for (user, _) in &members {
+        for user in &members {
             let painted = colors(user);
             user.hash(&mut hasher);
             painted.ink.components.map(f32::to_bits).hash(&mut hasher);
@@ -193,9 +193,9 @@ impl ChatApp {
         };
         let map: std::collections::HashMap<String, ui::widget::marks::MentionColors> = members
             .into_iter()
-            .map(|(user, _)| {
+            .map(|user| {
                 let reference = ui::tilo_reference::Embed::Member(user.clone()).mark_value();
-                (reference, colors(user))
+                (reference, colors(&user))
             })
             .collect();
         let paint: ui::widget::marks::MentionPaint =

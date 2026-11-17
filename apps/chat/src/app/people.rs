@@ -209,9 +209,11 @@ impl ChatApp {
 
     /// The chat's people as the composers' `@` lists offer them beside the
     /// workspace's roster: someone who wrote here stays mentionable after they
-    /// left the workspace.
+    /// left the workspace, and the workspace's own record of its agents is offered
+    /// too, so an agent is there to name whether or not a device of theirs is here.
     pub(crate) fn mention_people(&self) -> Vec<ui::widget::MentionCandidate> {
-        self.users
+        let mut people: Vec<ui::widget::MentionCandidate> = self
+            .users
             .iter()
             .map(|user| ui::widget::MentionCandidate {
                 id: user.id.clone(),
@@ -219,34 +221,76 @@ impl ChatApp {
                 hue: self.member_hue(&user.id),
                 is_self: self.is_me(&user.id),
             })
-            .collect()
+            .collect();
+        for (id, name) in &self.workspace_agent_names {
+            let id = MemberId::agent(id.clone());
+            if name.trim().is_empty() || people.iter().any(|listed| listed.id == id) {
+                continue;
+            }
+            people.push(ui::widget::MentionCandidate {
+                hue: self.member_hue(&id),
+                name: self.display_name(&id),
+                is_self: false,
+                id,
+            });
+        }
+        people
     }
 
     /// Everyone a message's `@name`s bind to when it is sent: the
     /// document's own users, plus anyone the workspace is talking about who has
-    /// not yet written themselves into it.
+    /// not yet written themselves into it, and the agents the workspace's record says it
+    /// has.
     pub fn members(&self) -> Vec<crate::record::Person> {
         let mut out: Vec<crate::record::Person> = self
             .member_ids()
             .into_iter()
-            .map(|(id, _)| crate::record::Person {
-                name: self.display_name(id),
-                ..crate::record::Person::unnamed(id.clone())
+            .map(|id| crate::record::Person {
+                name: self.display_name(&id),
+                ..crate::record::Person::unnamed(id)
             })
             .collect();
         out.sort_by(|a, b| a.name.cmp(&b.name));
         out
     }
 
+    /// The workspace's agents as the `@` list offers them and a message binds their names by:
+    /// the ones its agents record keeps, under the names that record gives them.
+    pub(crate) fn agent_members(&self) -> Vec<crate::record::Person> {
+        self.workspace_agent_names
+            .keys()
+            .map(|id| {
+                let id = MemberId::agent(id.clone());
+                crate::record::Person {
+                    name: self.display_name(&id),
+                    ..crate::record::Person::unnamed(id)
+                }
+            })
+            .collect()
+    }
+
+    /// The mentions `text` writes of the workspace's agents, by the one rule a name binds by
+    /// ([`crate::mention::resolve`]): a `@Name` typed by hand asks the agent it names, as it asks
+    /// a person. The chat's own record does not list the workspace's agents, so the window, which
+    /// reads their record, binds theirs where the message is written.
+    pub(crate) fn agent_mentions(&self, text: &str) -> Vec<crate::mention::Mention> {
+        crate::mention::resolve(text, &self.agent_members())
+    }
+
     /// [`Self::members`] without their names: who can be mentioned, each
-    /// once. A frame that only needs their colours reads this, so it neither
-    /// names every member nor allocates one string each.
-    pub(crate) fn member_ids(&self) -> Vec<(&MemberId, bool)> {
-        let mut out: Vec<(&MemberId, bool)> =
-            self.users.iter().map(|u| (&u.id, u.is_agent)).collect();
+    /// once. A frame that only needs their colours reads this, so it never
+    /// works out a name or builds a row.
+    pub(crate) fn member_ids(&self) -> Vec<MemberId> {
+        let mut out: Vec<MemberId> = self.users.iter().map(|user| user.id.clone()).collect();
         for id in self.workspace_names.keys() {
-            if !out.iter().any(|(listed, _)| *listed == id) {
-                out.push((id, false));
+            if !out.contains(id) {
+                out.push(id.clone());
+            }
+        }
+        for id in self.workspace_agent_names.keys() {
+            let id = MemberId::agent(id.clone());
+            if !out.contains(&id) {
+                out.push(id);
             }
         }
         out
