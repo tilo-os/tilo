@@ -2898,3 +2898,83 @@ async fn a_bot_program_pushed_into_a_running_workspace_replaces_the_one_it_runs(
         "the first program answers nothing once replaced"
     );
 }
+
+/// A host governs more than the workspace its operator started: a person's
+/// own workspace here asks for a bot, and the bot runs in that one — beside
+/// the workspace, answering the person who asks it — without the operator's
+/// workspace ever running it.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_bot_a_governed_workspace_asks_for_runs_beside_that_workspace() {
+    use tilo_peer_state::workspace_membership::{BotRequest, WorkspaceMembershipCommand};
+    const ENTRY: &str = "dev.ada.greeter";
+    let scratch = tempfile::tempdir().unwrap();
+    let (key, cert) = governor();
+    let relay = bot_host(scratch.path(), &key, &cert).await;
+    let workspaces = relay.workspaces().clone();
+    // The workspace the operator started, and one of a person's own.
+    let (started, _) = chat_workspace(&workspaces, &cert).await;
+    let (annex, annex_general) = chat_workspace(&workspaces, &cert).await;
+    assert_ne!(started, annex);
+
+    let program = greeter(annex_general.as_str()).program;
+    let request_id = *blake3::hash(program.as_bytes()).as_bytes();
+    workspaces
+        .ask_for_bot(
+            &annex,
+            &cert,
+            request_id,
+            WorkspaceMembershipCommand::RequestBot(BotRequest {
+                entry: ENTRY.into(),
+                version: "0.1.0-dev.1".into(),
+                inputs: std::collections::BTreeMap::new(),
+                program: Some(program),
+            }),
+        )
+        .await
+        .unwrap();
+
+    // Every governed workspace is followed, and only the one that asked runs
+    // the bot.
+    let following = requested::Following {
+        workspaces: workspaces.clone(),
+        host: cert.clone(),
+        root: owner_root(),
+        state: scratch.path().join("host"),
+        operator: std::collections::BTreeMap::from([(
+            started.clone(),
+            std::collections::BTreeSet::new(),
+        )]),
+        connectors: None,
+    };
+    let mut running = std::collections::BTreeMap::new();
+    following.refresh(&mut running).await;
+    assert_eq!(running.len(), 2, "each governed workspace has a follower");
+
+    answered(
+        &workspaces,
+        &annex,
+        &cert,
+        annex_general.as_str(),
+        "welcome!",
+    )
+    .await;
+    assert!(
+        posts(&workspaces, &started)
+            .await
+            .iter()
+            .all(|post| post.text != "welcome!"),
+        "the operator's workspace runs no bot it never asked for"
+    );
+    assert!(
+        posts(&workspaces, &annex)
+            .await
+            .iter()
+            .any(|post| post.author.is_bot()),
+        "the answer is the requested bot's"
+    );
+
+    // A workspace released is followed no more.
+    workspaces.release(&annex).await.unwrap();
+    following.refresh(&mut running).await;
+    assert_eq!(running.len(), 1, "the released workspace is let go");
+}

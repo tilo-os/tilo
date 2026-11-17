@@ -1584,17 +1584,23 @@ pub(crate) async fn run(
                 .run(),
             )
         });
-        // Bots the workspace's members ask for, beside the operator's.
-        let requested =
-            tilo_relay::workspace_bots::requested::spawn(tilo_relay::workspace_bots::requested::Follower {
+        // Bots the workspaces' members ask for, beside the operator's: one
+        // follower for every workspace this host governs, the Lounge and the
+        // workspaces its people keep of their own, as each of them is made.
+        let requested = tokio::spawn(
+            tilo_relay::workspace_bots::requested::Following {
                 workspaces: workspaces.clone(),
-                workspace: workspace.clone(),
                 host: host_cert.clone(),
                 root: root.clone(),
                 state: state.clone(),
-                operator: bots.iter().map(|spec| spec.entry.clone()).collect(),
+                operator: BTreeMap::from([(
+                    workspace.clone(),
+                    bots.iter().map(|spec| spec.entry.clone()).collect(),
+                )]),
                 connectors: Some(connector_host),
-            });
+            }
+            .run(),
+        );
         let context = PersistentWorkspace {
             workspaces,
             workspace,
@@ -1714,7 +1720,7 @@ struct Serving {
     runners: Vec<tokio::task::JoinHandle<()>>,
     /// The task posting the files members keep in the workspace's Chat.
     attachments: Option<tokio::task::JoinHandle<()>>,
-    /// The task serving the bots members ask for.
+    /// The task following the bots the governed workspaces' members ask for.
     requested: tokio::task::JoinHandle<()>,
     /// The workspace the operator's loop serves.
     context: PersistentWorkspace,
