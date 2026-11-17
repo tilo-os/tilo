@@ -12,9 +12,12 @@
 //! device handing its session to the agent on that turn: everything it does is held to what the
 //! person may do here now, capped as every agent is and narrowed by the bound its record keeps, and
 //! an action that asks first is put to the person on their own devices. Its changes are its own in
-//! history, for the person. Its model is the host's ([`ModelChoice`]); what each turn costs is
-//! counted on the agent's record, and an agent whose keeper's daily limit is reached stops and
-//! says so.
+//! history, for the person. Its model is its keeper's own: the one they linked for the work an
+//! agent does for them, asked with their own key ([`Workspaces::person_model`]), and never
+//! another once they linked any. A keeper who linked none is answered by the host's model where
+//! its operator runs one ([`ModelChoice`]), and told what to link where it runs none. What each
+//! turn costs is counted on the agent's record, and an agent whose keeper's daily limit is
+//! reached stops and says so.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
@@ -33,7 +36,8 @@ use tilo_agent_session::{ModelChoice, record_provider};
 use tilo_lock::MutexRecover as _;
 use tilo_mcp::McpServer;
 use tilo_model_gateway::host_backend::protocol::{
-    Content, Message, ModelRequest, Role, ToolChoice, ToolDefinition, ToolResult,
+    Content, Message, ModelError, ModelRequest, ModelResponse, Role, ToolChoice, ToolDefinition,
+    ToolResult,
 };
 use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_relay_protocol::WorkspaceId;
@@ -41,6 +45,7 @@ use tilo_resource::Resource as _;
 use tilo_workspace_agent::{Agent, WorkspaceAgents};
 
 use crate::workspaces::Workspaces;
+use crate::workspaces::person_model::{Interaction, ModelRefusal, PersonModel, Spender};
 
 /// The app that keeps the conversations and the workspace's record of its agents.
 const CHAT: &str = "so.tilo.chat";
@@ -449,7 +454,8 @@ impl HostAgents {
         let day = today();
         let limit = turn.agent.spend_limit_micros;
         let spent_before = turn.agent.spent_on(&day);
-        let (outcome, cost) = match (&self.model, limit) {
+        let asked = self.model_for((workspace, workspace_id), turn, &day).await;
+        let (outcome, cost) = match (asked, limit) {
             (_, Some(limit)) if spent_before >= limit => (
                 Outcome::Stopped(format!(
                     "I stopped before starting: today's limit of {} is reached.",
@@ -457,30 +463,71 @@ impl HostAgents {
                 )),
                 0,
             ),
-            (None, _) => (
-                Outcome::Failed(
-                    "This workspace's server runs no model for its agents yet, so I cannot work on this."
-                        .to_owned(),
-                ),
-                0,
-            ),
-            (Some(model), _) => {
+            (Err(why), _) => (Outcome::Failed(why), 0),
+            (Ok(model), _) => {
                 let budget = limit.map(|limit| limit.saturating_sub(spent_before));
-                work(
-                    Arc::clone(model),
-                    host,
-                    caller.clone(),
-                    turn,
-                    budget,
-                    &reply,
-                )
-                .await
+                work(model, host, caller.clone(), turn, budget, &reply).await
             }
         };
         if cost > 0 {
             self.charge(workspace, &turn.agent, &day, cost).await;
         }
         reply.finished(&outcome).await
+    }
+
+    /// The model `turn` is worked with, or why none works on it, in words its person reads.
+    ///
+    /// The agent's keeper pays, so their own model answers: the one they linked for work an agent
+    /// does for them. Once they linked a provider their settings decide alone, and a choice that
+    /// cannot be used is said, never replaced by a model somebody else pays for. Only a keeper who
+    /// linked nothing is answered by the host's own model, where its operator runs one.
+    async fn model_for(
+        &self,
+        (workspace, workspace_id): (&str, WorkspaceId),
+        turn: &Turn,
+        day: &str,
+    ) -> Result<Model, String> {
+        let theirs = tilo_action_policy::PersonId::parse(&turn.agent.keeper)
+            .ok()
+            .and_then(|keeper| keeper.root())
+            .map(|keeper| {
+                // Every call is counted on the agent's day as it is answered, so turns of
+                // one agent going at once cannot each spend the day's whole limit.
+                self.workspaces
+                    .person_model(keeper, Interaction::Task)
+                    .working_in(workspace_id)
+                    .spending_as(Spender {
+                        workspace: workspace.to_owned(),
+                        agent: turn.agent.id.0.clone(),
+                        name: turn.agent.name.clone(),
+                        day: day.to_owned(),
+                        limit_micros: turn.agent.spend_limit_micros,
+                    })
+            });
+        let linked = match theirs {
+            Some(theirs) => {
+                let asked = theirs.clone();
+                tokio::task::spawn_blocking(move || asked.linked())
+                    .await
+                    .map_err(|error| error.to_string())?
+                    .map(|linked| (theirs, linked.model.id))
+            }
+            None => Err(ModelRefusal::NoModelLinked {
+                kind: Interaction::Task,
+            }),
+        };
+        match linked {
+            Ok((theirs, name)) => Ok(Arc::new(move || {
+                Some(Box::new(KeeperTurns {
+                    model: theirs.clone(),
+                    name: name.clone(),
+                }) as Box<dyn PlanTurns>)
+            })),
+            Err(refused @ ModelRefusal::NoModelLinked { .. }) => {
+                self.model.clone().ok_or_else(|| refused.words(None))
+            }
+            Err(refused) => Err(refused.words(None)),
+        }
     }
 
     /// Count `cost` against `agent`'s day on the workspace's record of its agents, for its keeper:
@@ -520,6 +567,32 @@ impl HostAgents {
         if let Err(error) = counted {
             tracing::warn!(%workspace, agent = %agent.id.0, %error, "an agent's spend is not counted");
         }
+    }
+}
+
+/// A turn's model calls, asked of the model its agent's keeper linked, with their own key.
+struct KeeperTurns {
+    model: PersonModel,
+    /// The model's name, for the usage log.
+    name: String,
+}
+
+impl PlanTurns for KeeperTurns {
+    fn turn(
+        &mut self,
+        request: &ModelRequest,
+        _: &str,
+        deadline: Instant,
+        _: bool,
+    ) -> Result<ModelResponse, ModelError> {
+        self.model
+            .answer_blocking(request, deadline, &|| false, &mut |_| {})
+            .map(|answer| answer.response)
+            .map_err(|refused| refused.model_error())
+    }
+
+    fn model(&self) -> &str {
+        &self.name
     }
 }
 
