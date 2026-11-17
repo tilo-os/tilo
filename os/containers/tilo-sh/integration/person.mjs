@@ -170,7 +170,11 @@ let membership = null;
 if (pairLink) {
   await tab.navigate(pairLink);
   await until(`document.documentElement.dataset.entry === 'open'`, 'the page pairing this browser');
+  // The page says whose device this becomes before it asks to be let in; the
+  // person paired it to themselves, and goes on.
   membership = JSON.parse(await until(`(() => {
+    const go = document.querySelector('[data-card="pair-whose"] .tilo-entry-primary');
+    if (go && !go.dataset.pressed) { go.dataset.pressed = '1'; go.click(); }
     const now = ${memberships};
     const found = (Array.isArray(now) ? now : Object.values(now)).find(entry => entry?.paired && entry?.workspace);
     return found ? JSON.stringify(found) : '';

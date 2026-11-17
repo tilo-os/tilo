@@ -42,15 +42,25 @@ async def role_in(key: str, workspace: str) -> str | None:
 
 def review(link: str) -> dict:
     out = Path(OUT) / f"reviewer-{next(counter)}"
-    ran = subprocess.run(
+    # What the reviewer's browser says goes to this helper's log as it says
+    # it, so a reviewer still on their way when the visa run stops waiting
+    # has said how far they got.
+    with subprocess.Popen(
         ["node", str(PERSON), SITE, RELAY, str(out), "--follow", link,
          "--key", "Rosa's review", "--tilo", TILO_BIN, "--api", API_URL],
-        capture_output=True, text=True, timeout=600,
-    )
-    sys.stderr.write(ran.stderr)
-    if ran.returncode != 0:
-        return {"error": f"the reviewer did not get in: {ran.stderr[-1500:]}"}
-    person = json.loads(ran.stdout.strip().splitlines()[-1])
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+    ) as browser:
+        said: list[str] = []
+        assert browser.stderr is not None and browser.stdout is not None
+        for line in browser.stderr:
+            sys.stderr.write(line)
+            sys.stderr.flush()
+            said = (said + [line])[-40:]
+        printed = browser.stdout.read()
+        code = browser.wait(timeout=600)
+    if code != 0:
+        return {"error": f"the reviewer did not get in: {''.join(said)[-1500:]}"}
+    person = json.loads(printed.strip().splitlines()[-1])
     followed = person.get("followed") or {}
     workspace = followed.get("workspace") or followed.get("scope")
     role = asyncio.run(role_in(person["key"], workspace))

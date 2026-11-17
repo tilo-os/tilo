@@ -558,8 +558,13 @@ if (!signIn) await fail(`the sign-in prompt names no tilo login code: ${again}`)
 const approved = await tilo(['login', signIn.code, '--site', signIn.site ?? site]);
 report.approve = approved;
 if (approved.code !== 0) await fail(`tilo login did not approve the tab (${approved.code}): ${approved.stderr}${approved.stdout}`);
-await until(second, `document.documentElement.dataset.firstRun === undefined && !!globalThis.tiloMount`,
-  'the returning tab signed in', stepLimit(4));
+// The tab says whose device it becomes before it asks to be let in, and the
+// person, who asked their agent to sign them in here, goes on.
+await until(second, `(() => {
+    const go = document.querySelector('[data-card="pair-whose"] .tilo-entry-primary');
+    if (go && !go.dataset.pressed) { go.dataset.pressed = '1'; go.click(); }
+    return document.documentElement.dataset.firstRun === undefined && !!globalThis.tiloMount;
+  })()`, 'the returning tab signed in', stepLimit(4));
 const back = await person(second);
 report.returned = back;
 if (!signedUp.user || back.user !== signedUp.user) {
