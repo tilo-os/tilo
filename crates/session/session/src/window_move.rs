@@ -288,7 +288,10 @@ impl Moves {
             ..
         } = asked;
         // The tab takes the first window the app opens in the destination, and waits there.
-        if !shared.desktop.with_policy(|policy| policy.adopt(&app, tab)) {
+        if !shared
+            .desktop
+            .with_policy(|policy| policy.adopt(&app, tab, None))
+        {
             return;
         }
         if let Err(error) = shared.desktop.with_policy(|policy| policy.carry(tab, to)) {

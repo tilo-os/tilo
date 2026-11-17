@@ -20,6 +20,12 @@ impl Shared {
         self.activity.keep_shown(Some(self.handle.revision()), || {
             self.handle.read(Clone::clone)
         });
+        // What the layout keeps of the kept apps' windows, their keepers keep too: the windows
+        // take the same tabs after an in-place restart.
+        #[cfg(target_os = "linux")]
+        self.restore
+            .borrow_mut()
+            .tell_placements(&self.desktop, self.launch.as_deref());
     }
 
     /// [`Self::keep_layout`], and wait for what was written: what ends the session.

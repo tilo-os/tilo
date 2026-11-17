@@ -50,6 +50,10 @@ pub struct WindowInfo {
     /// The icon the window set for itself, when it set one: what its tab paints instead of its app
     /// kind's glyph.
     pub icon: Option<std::sync::Arc<crate::toplevel_icon::WindowIcon>>,
+    /// The tag the window was given (`xdg_toplevel_tag_v1`), only from a connection the session
+    /// handed to [`Self::pid`] itself (an app keeper's): a tag is the client's own text, so one
+    /// from any other client could claim another window's place.
+    pub tag: Option<String>,
 }
 
 /// Where a window goes and the size it is asked to take.

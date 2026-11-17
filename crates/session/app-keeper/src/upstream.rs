@@ -89,6 +89,11 @@ pub(crate) struct Upstream {
     pub icon_sizes: Vec<i32>,
     /// The version the desktop's presentation global was bound at.
     pub presentation_version: u32,
+    /// What names each window to the desktop by its tag, so the session can tell the keeper's
+    /// windows apart across a restart of the desktop.
+    pub toplevel_tag: Option<
+        wayland_protocols::xdg::toplevel_tag::v1::client::xdg_toplevel_tag_manager_v1::XdgToplevelTagManagerV1,
+    >,
     pub feedback: FeedbackParts,
     pub xdg_outputs: Option<zxdg_output_manager_v1::ZxdgOutputManagerV1>,
     pub seat: Option<c::wl_seat::WlSeat>,
@@ -171,6 +176,7 @@ impl Upstream {
                 toplevel_icon: None,
                 icon_sizes: Vec::new(),
                 presentation_version: 0,
+                toplevel_tag: None,
                 feedback: FeedbackParts::default(),
                 xdg_outputs: None,
                 seat: None,
@@ -295,6 +301,9 @@ fn bind_global(
         }
         "wp_content_type_manager_v1" => {
             up.content_type = Some(registry.bind(name, 1, qh, ()));
+        }
+        "xdg_toplevel_tag_manager_v1" => {
+            up.toplevel_tag = Some(registry.bind(name, 1, qh, ()));
         }
         "wl_data_device_manager" => {
             up.data_device_manager = Some(registry.bind(name, version.min(3), qh, ()));
@@ -724,6 +733,7 @@ wayland_client::delegate_noop!(State: ignore wayland_protocols::wp::viewporter::
 wayland_client::delegate_noop!(State: ignore wayland_protocols::wp::viewporter::client::wp_viewport::WpViewport);
 wayland_client::delegate_noop!(State: ignore wayland_protocols::wp::fractional_scale::v1::client::wp_fractional_scale_manager_v1::WpFractionalScaleManagerV1);
 wayland_client::delegate_noop!(State: ignore wayland_protocols::wp::content_type::v1::client::wp_content_type_manager_v1::WpContentTypeManagerV1);
+wayland_client::delegate_noop!(State: ignore wayland_protocols::xdg::toplevel_tag::v1::client::xdg_toplevel_tag_manager_v1::XdgToplevelTagManagerV1);
 wayland_client::delegate_noop!(State: ignore wayland_protocols::wp::content_type::v1::client::wp_content_type_v1::WpContentTypeV1);
 
 impl Dispatch<c::wl_subsurface::WlSubsurface, SurfaceRef> for State {

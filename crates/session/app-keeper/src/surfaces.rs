@@ -1632,12 +1632,16 @@ fn make_role(
             pushed.sync = Some(true);
             UpRole::Sub(sub)
         }
-        Role::Toplevel(_) => {
+        Role::Toplevel(top) => {
             let xdg = up
                 .wm_base
                 .as_ref()?
                 .get_xdg_surface(surface, &up.qh, data());
             let toplevel = xdg.get_toplevel(&up.qh, data());
+            // Before its first commit, so the desktop knows the window by its tag when it maps.
+            if let Some(tags) = &up.toplevel_tag {
+                tags.set_toplevel_tag(&toplevel, top.tag.clone());
+            }
             pushed.maximized = Some(false);
             pushed.fullscreen = Some((false, None));
             pushed.min = Some((0, 0));

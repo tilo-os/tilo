@@ -41,6 +41,7 @@ use smithay::wayland::shell::xdg::decoration::{XdgDecorationHandler, XdgDecorati
 use smithay::wayland::shell::xdg::dialog::{XdgDialogHandler, XdgDialogState};
 use smithay::wayland::tablet_manager::{TabletManagerState, TabletSeatHandler};
 use smithay::wayland::viewporter::ViewporterState;
+use smithay::wayland::xdg_toplevel_tag::{XdgToplevelTagHandler, XdgToplevelTagManager};
 use smithay::wayland::xdg_activation::{
     XdgActivationHandler, XdgActivationState, XdgActivationToken, XdgActivationTokenData,
 };
@@ -76,6 +77,9 @@ pub(crate) struct Protocols {
     _idle_inhibit: IdleInhibitManagerState,
     _content_type: ContentTypeState,
     _dialog: XdgDialogState,
+    /// `xdg_toplevel_tag_manager_v1` : what an app keeper names each of its windows by, read only
+    /// from a connection the session handed over itself ([`crate::policy::WindowInfo::tag`]).
+    _toplevel_tag: XdgToplevelTagManager,
     /// `wp_color_manager_v1` : what the outputs display and what a client's content is in (see
     /// [`crate::color_management`]).
     pub(crate) color_manager: ColorManagerState,
@@ -106,6 +110,7 @@ impl Protocols {
             _idle_inhibit: IdleInhibitManagerState::new::<State>(display),
             _content_type: ContentTypeState::new::<State>(display),
             _dialog: XdgDialogState::new::<State>(display),
+            _toplevel_tag: XdgToplevelTagManager::new::<State>(display),
             color_manager: ColorManagerState::new::<State>(display),
         }
     }
@@ -367,6 +372,10 @@ impl XdgDialogHandler for State {
 }
 
 smithay::delegate_xdg_dialog!(State);
+smithay::delegate_xdg_toplevel_tag!(State);
+
+/// A tag is read where the window is described, from the surface's state.
+impl XdgToplevelTagHandler for State {}
 smithay::delegate_xdg_activation!(State);
 smithay::delegate_primary_selection!(State);
 smithay::delegate_cursor_shape!(State);

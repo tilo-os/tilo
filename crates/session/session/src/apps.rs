@@ -157,9 +157,10 @@ struct State {
     /// The files apps are handed, while the session serves them where a launcher binds each app's
     /// view of them: what a document a package opens reaches its sandbox through.
     documents: Option<tilo_documents::Documents>,
-    /// The app ids of the windows of the kept apps this run took back, until the restore claims
-    /// their saved tabs ([`Apps::take_kept_windows`]).
-    kept_windows: Vec<String>,
+    /// The kept apps this run took back, until the restore claims their saved tabs
+    /// ([`Apps::take_kept`]).
+    #[cfg(target_os = "linux")]
+    kept: Vec<tilo_app_launch::Adopted>,
 }
 
 /// A window whose tab the session asked the shell for: the launch that starts it once the shell asks
@@ -295,7 +296,8 @@ impl Apps {
                 hosts: None,
                 connectors: None,
                 documents: None,
-                kept_windows: Vec::new(),
+                #[cfg(target_os = "linux")]
+                kept: Vec::new(),
             }),
         }
     }
@@ -747,15 +749,28 @@ impl Apps {
                     got: Got::Landed,
                 },
             );
-            state.kept_windows.extend(kept.windows);
+            state.kept.push(kept);
         }
     }
 
-    /// The app ids of the windows the kept apps this run took back show: each claims a saved tab of
-    /// its app, which waits for that window rather than starting the app again. Taken once.
+    /// The kept apps this run took back: each of their windows claims the saved tab its keeper
+    /// was last told it stood in, which waits for that window rather than starting the app again.
+    /// Taken once.
     #[cfg(target_os = "linux")]
-    pub(crate) fn take_kept_windows(&self) -> Vec<String> {
-        std::mem::take(&mut self.state.borrow_mut().kept_windows)
+    pub(crate) fn take_kept(&self) -> Vec<tilo_app_launch::Adopted> {
+        std::mem::take(&mut self.state.borrow_mut().kept)
+    }
+
+    /// Tell each kept window's keeper the tab it stands in now (`placements`), where that changed:
+    /// what the run after an in-place restart puts it back in.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn place_kept(&self, placements: &[(tilo_desktop_policy::KeptWindow, u64)]) {
+        let state = self.state.borrow();
+        for (window, tab) in placements {
+            state
+                .spawner
+                .place_kept(window.keeper, &window.tag, &tab.to_string());
+        }
     }
 
     /// Show the windows of the kept apps this run took back: once their saved tabs wait for them.
