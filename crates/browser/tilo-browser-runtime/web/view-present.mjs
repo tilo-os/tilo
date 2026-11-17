@@ -652,8 +652,9 @@ export function createViewPresenter(layer, {onScroll, picture, semantic, onFrame
           const plus = elementFor(`${key}:up`, 'button', next);
           for (const [button, sign, name] of [[minus, -1, control.decrease], [plus, 1, control.increase]]) {
             write(button, '@aria-label', name ?? null);
-            write(button, 'css', 'all:unset;box-sizing:border-box;flex:none;width:22px;height:22px;display:flex;align-items:center;justify-content:center;border-radius:6px;color:var(--tilo-text-dim,#6e6e73);font-size:13px;line-height:1;cursor:pointer;');
-            write(button, 'text', sign < 0 ? '−' : '+');
+            write(button, 'css', 'all:unset;box-sizing:border-box;position:relative;flex:none;width:22px;height:22px;display:flex;align-items:center;justify-content:center;border-radius:6px;color:var(--tilo-text-dim,#6e6e73);font-size:13px;line-height:1;cursor:pointer;');
+            // Its minus or plus is drawn as the toolkit's stroke, not a character.
+            write(button, 'text', '');
             button.disabled = disabled;
             button.dataset.tiloStepBy = String(sign * (control.step ?? 1));
             button.dataset.tiloText = control.text;
@@ -934,7 +935,8 @@ export const VIEW_CSS = `
 .tilo-view button{all:unset;box-sizing:border-box;display:block;cursor:default;}
 .tilo-link{color:var(--tilo-accent,#2f6fed);text-decoration:underline;text-underline-offset:2px;cursor:pointer;}
 .tilo-link:hover{color:var(--tilo-accent-hover,var(--tilo-accent,#2f6fed));}
-.tilo-view [aria-disabled=true]{opacity:.45;}
+/* A control the person cannot use is dimmed; a box or a switch says so by its own inks. */
+.tilo-view [aria-disabled=true]:not(label){opacity:.45;}
 .tilo-view [data-widget=WindowNoticeStrip]>[aria-hidden]{border-radius:var(--tilo-radius,8px);box-shadow:0 0 0 1px var(--tilo-border,rgba(127,127,127,.25)),0 6px 20px rgba(0,0,0,.12);}
 .tilo-view button:focus-visible{outline:2px solid var(--tilo-accent,#2f6fed);outline-offset:-2px;}
 .tilo-view ul,.tilo-view ol{margin:0;padding:0;list-style:none;}
@@ -957,6 +959,8 @@ export const VIEW_CSS = `
 .tilo-view input[type=range]{flex:1;min-width:0;margin:0;accent-color:var(--tilo-accent,#2f6fed);cursor:pointer;}
 /* Entries, choosers and strips of choices on the raised well the canvas paints them on. */
 .tilo-view [data-tilo-act=step]{width:28px!important;height:28px!important;background:var(--tilo-raised,#f1f2f4)!important;color:var(--tilo-text,#1d1d1f)!important;font-size:15px!important;}
+.tilo-view [data-tilo-act=step]::before,.tilo-view [data-tilo-act=step]:not([data-tilo-step-by^="-"])::after{content:"";position:absolute;left:50%;top:50%;width:10px;height:1.75px;border-radius:1px;background:currentColor;transform:translate(-50%,-50%);}
+.tilo-view [data-tilo-act=step]:not([data-tilo-step-by^="-"])::after{width:1.75px;height:10px;}
 .tilo-view [data-tilo-act=step]:hover{background:color-mix(in srgb,var(--tilo-raised,#f1f2f4) 85%,var(--tilo-text,#1d1d1f) 8%)!important;}
 .tilo-view [data-tilo-act=step]:disabled{opacity:.45;}
 .tilo-view [data-tilo-act=value][role=spinbutton],.tilo-view input[type=date],.tilo-view input[type=time],.tilo-view input[type=search]{height:28px;border-radius:6px!important;background:var(--tilo-raised,#f1f2f4)!important;padding:0 8px!important;text-align:center;}
@@ -992,6 +996,7 @@ export const VIEW_CSS = `
 /* A table's head stands over a rule, and its chosen row on the selection's tint, as painted. */
 .tilo-view thead{box-shadow:inset 0 -1px 0 var(--tilo-border,rgba(127,127,127,.25));}
 .tilo-view tr[aria-selected=true]{background:color-mix(in srgb,var(--tilo-accent,#2f6fed) 10%,transparent);border-radius:var(--tilo-radius,8px);}
+.tilo-view tbody tr:hover:not([aria-selected=true]){background:color-mix(in srgb,var(--tilo-raised) 70%,transparent);border-radius:var(--tilo-radius,8px);}
 .tilo-view img{object-fit:cover;overflow:clip;}
 .tilo-view img[data-fit=contain]{object-fit:contain;}
 .tilo-view img[data-fit=fill]{object-fit:fill;}

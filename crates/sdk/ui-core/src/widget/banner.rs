@@ -698,10 +698,12 @@ impl Widget for BannerBody {
                 &caption_style(theme),
                 Some(on_well.text_dim),
             );
+            // Set a small step under the title, as painted.
+            let top = y + f64::from(theme.tokens.spacing.s1);
             cx.words(
                 "message",
                 "p",
-                Rect::new(x, y, x + text_width, self.rect.y1 - dy),
+                Rect::new(x, top, x + text_width, (self.rect.y1 - dy).max(top)),
                 look,
             );
         }
