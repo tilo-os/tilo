@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.pdf-viewer@9bf89e040983260a";
+export const SURFACE = "so.tilo.pdf-viewer@07f8831c6e812fb6";
 
 export interface AdoptedAnnotation {
   id: string;
@@ -246,6 +246,7 @@ export interface PdfText {
   page_count: number;
   pages: PdfPageText[];
   next: number | null;
+  without_text: number[];
 }
 
 export interface Stroke {

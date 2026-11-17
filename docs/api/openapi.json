@@ -19721,12 +19721,20 @@
               "type": "object"
             },
             "type": "array"
+          },
+          "without_text": {
+            "items": {
+              "minimum": 0,
+              "type": "integer"
+            },
+            "type": "array"
           }
         },
         "required": [
           "file",
           "page_count",
-          "pages"
+          "pages",
+          "without_text"
         ],
         "type": "object"
       },

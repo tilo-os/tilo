@@ -275,6 +275,7 @@ class PdfText(TypedDict):
     page_count: int
     pages: list[PdfPageText]
     next: int | None
+    without_text: list[int]
 
 class Stroke(TypedDict):
     xy: list[float]
@@ -398,7 +399,7 @@ SetStrokesArgs = TypedDict("SetStrokesArgs", {
 
 class Document(Resource):
     """PDF — `pdf.document`."""
-    __surface__ = "so.tilo.pdf-viewer@9bf89e040983260a"
+    __surface__ = "so.tilo.pdf-viewer@07f8831c6e812fb6"
     @property
     def source(self) -> Any:
         """Read only."""
@@ -678,7 +679,7 @@ class Document(Resource):
 
 class SignatureProfile(Resource):
     """Signature — `pdf.signature-profile`."""
-    __surface__ = "so.tilo.pdf-viewer@9bf89e040983260a"
+    __surface__ = "so.tilo.pdf-viewer@07f8831c6e812fb6"
     signer: str
     strokes: list[Stroke]
 

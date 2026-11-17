@@ -213,7 +213,7 @@ params = [
 [[resources.verbs]]
 id = "read-text"
 kind = "read"
-returns = { type = { named = "PdfText" }, schema = { type = "object", additionalProperties = false, properties = { file = { type = "string" }, next = { type = ["integer", "null"], minimum = 0 }, page_count = { type = "integer", minimum = 0 }, pages = { type = "array", items = { type = "object", additionalProperties = false, properties = { page = { type = "integer", minimum = 0 }, text = { type = "string" } }, required = ["page", "text"] } } }, required = ["file", "page_count", "pages"] } }
+returns = { type = { named = "PdfText" }, schema = { type = "object", additionalProperties = false, properties = { file = { type = "string" }, next = { type = ["integer", "null"], minimum = 0 }, page_count = { type = "integer", minimum = 0 }, pages = { type = "array", items = { type = "object", additionalProperties = false, properties = { page = { type = "integer", minimum = 0 }, text = { type = "string" } }, required = ["page", "text"] } }, without_text = { type = "array", items = { type = "integer", minimum = 0 } } }, required = ["file", "page_count", "pages", "without_text"] } }
 params = [
   { name = "from_page", type = { option = "int" }, required = false },
   { name = "to_page", type = { option = "int" }, required = false },
@@ -547,6 +547,7 @@ fields = [
   { name = "page_count", type = "int" },
   { name = "pages", type = { list = { named = "PdfPageText" } } },
   { name = "next", type = { option = "int" } },
+  { name = "without_text", type = { list = "int" } },
 ]
 
 [[resources]]
