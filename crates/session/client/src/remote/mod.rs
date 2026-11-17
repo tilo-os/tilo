@@ -409,14 +409,6 @@ impl Waiting {
     /// The requests `message` answers.
     fn answer(&mut self, message: RemoteActionMessage, give: &mut Vec<Give>) {
         match message {
-            RemoteActionMessage::CatalogueResponse {
-                correlation,
-                result,
-            } => {
-                if let Some(asked) = self.catalogues.remove(&correlation) {
-                    give.push(giving(asked, result));
-                }
-            }
             RemoteActionMessage::Receipt(receipt) => self.receipt(&receipt, give),
             RemoteActionMessage::Update { invocation, state } => {
                 self.update(invocation, state.as_ref(), give);
@@ -424,6 +416,21 @@ impl Waiting {
             RemoteActionMessage::CancelResponse { invocation, result } => {
                 for asked in self.cancels.remove(&invocation).unwrap_or_default() {
                     give.push(giving(asked, result.clone()));
+                }
+            }
+            other => self.answer_correlated(other, give),
+        }
+    }
+
+    /// The request a response carrying its correlation answers.
+    fn answer_correlated(&mut self, message: RemoteActionMessage, give: &mut Vec<Give>) {
+        match message {
+            RemoteActionMessage::CatalogueResponse {
+                correlation,
+                result,
+            } => {
+                if let Some(asked) = self.catalogues.remove(&correlation) {
+                    give.push(giving(asked, result));
                 }
             }
             RemoteActionMessage::ContentPutResponse {
