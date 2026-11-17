@@ -20,6 +20,7 @@ final class TiloSourceTests: XCTestCase {
     private var changes: [ConversationChange] = []
     private var setups: [Setup] = []
     private var sinces: [SinceLeft?] = []
+    private var supervisions: [Supervision] = []
     private var listening: [Task<Void, Never>] = []
 
     private func start(_ mainChat: TiloSource.MainChat = .conversation(id: "c_chat", name: "chat"), livesInOwn: Bool = false) async throws {
@@ -819,6 +820,22 @@ final class TiloSourceTests: XCTestCase {
         XCTAssertEqual(held.first?.keptQuiet, "This did not notify you: you have not said what is important to you.")
         let asked = try await page("return String(window.asks.filter(what => what === 'tilo.telling since-you-left').length)")
         XCTAssertEqual(asked, "1", "her server counts that stretch once, at her first look after it")
+    }
+
+    func testTheAssistantViewNamesTheWorkspaceTheAssistantWorksInAndNoOther() async throws {
+        try await start(.assistant)
+        listening.append(Task { for await facts in self.source.supervision() { self.supervisions.append(facts) } })
+        try await enter(device: true, "window.byKind = true; window.agents = [kept('reed', {name: 'Reed'})]")
+        try await until("the workspace the assistant works in is named") { self.supervisions.last?.workspaces == ["Ada's workspace"] }
+        XCTAssertEqual(Wording().workspaces(try XCTUnwrap(supervisions.last)).second, "Your assistant works in this workspace.")
+    }
+
+    func testWhereTheAppFoundNoAssistantTheAssistantViewNamesNoWorkspace() async throws {
+        try await start()
+        listening.append(Task { for await facts in self.source.supervision() { self.supervisions.append(facts) } })
+        try await enter(device: true)
+        try await until("what her server keeps was read") { self.supervisions.last?.importance.isEmpty == false }
+        XCTAssertEqual(supervisions.last?.workspaces, [])
     }
 
     // MARK: The first run

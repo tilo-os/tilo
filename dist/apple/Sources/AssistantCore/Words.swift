@@ -54,7 +54,7 @@ public enum AssistantWords: String, CaseIterable, Sendable {
     case connections, connectionLine = "connection-line", logins, loginLine = "login-line", loginUsed = "login-used"
     case usedToday = "used-today", usedYesterday = "used-yesterday", usedOn = "used-on"
     case managerLine = "manager-line", moreCount = "more-count", open
-    case hasLearned = "has-learned", whereItWorks = "where-it-works", workspaces, yoursInEach = "yours-in-each"
+    case hasLearned = "has-learned", whereItWorks = "where-it-works", workspaces, worksInThis = "works-in-this", ownWorkspace = "own-workspace"
     case none, forget, signOut = "sign-out", addConnectionDraft = "add-connection-draft"
     // The way in.
     case wayInTitle = "way-in-title", wayInLead = "way-in-lead", scanCode = "scan-code", pasteLink = "paste-link"
@@ -216,7 +216,8 @@ public enum AssistantWords: String, CaseIterable, Sendable {
         case .hasLearned: "It has learned"
         case .whereItWorks: "Where it works"
         case .workspaces: "Workspaces"
-        case .yoursInEach: "It is yours in each. Nobody else can instruct it."
+        case .worksInThis: "Your assistant works in this workspace."
+        case .ownWorkspace: "Your own workspace"
         case .none: "Nothing yet"
         case .forget: "Forget"
         case .signOut: "Sign out of this device"

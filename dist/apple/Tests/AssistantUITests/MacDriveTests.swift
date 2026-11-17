@@ -314,7 +314,7 @@ final class MacDriveTests: XCTestCase {
         await drive.until("the assistant view") { run.model.place == .assistantView }
         await drive.until("its first line") { drive.shows(AssistantWords.assistantOn.said) }
         for words in ["Claude Opus 5.5", AssistantWords.messagesToday.said, Wording().tokens(1_800_000), AssistantWords.connections.said,
-                      AssistantWords.hasLearned.said, AssistantWords.whereItWorks.said, AssistantWords.yoursInEach.said] {
+                      AssistantWords.hasLearned.said, AssistantWords.whereItWorks.said, AssistantWords.workspaces.said] {
             XCTAssertTrue(drive.shows(words), "the assistant view says nothing of “\(words)”")
         }
         XCTAssertFalse(drive.has(AssistantWords.tasks.said, role: "AXHeading"))
