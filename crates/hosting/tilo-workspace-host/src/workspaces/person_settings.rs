@@ -267,7 +267,7 @@ async fn add_mail(root: &Path, adding: AddMailAccount) -> Result<MailAccount, St
 
 /// [`add_mail`] through `tester`, so a test proves the store's side without
 /// a server.
-async fn add_mail_with(
+pub(super) async fn add_mail_with(
     tester: Arc<dyn AccountTester>,
     root: &Path,
     adding: AddMailAccount,

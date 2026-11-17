@@ -29,6 +29,12 @@ pub const ADD_PROVIDER: &str = "add-provider";
 /// Keep a provider's API key in the person's vault ([`SetKey`]), answering
 /// the provider as a [`ProviderView`].
 pub const SET_KEY: &str = "set-key";
+/// Keep the key a vault item holds as a provider's API key
+/// ([`SetKeyFromItem`]), answering the provider as a [`ProviderView`]. The key
+/// is named by reference and the host resolves it, only when the item belongs
+/// to the provider's endpoint. It carries no secret, so unlike [`SET_KEY`] an
+/// agent acting for the person may ask it.
+pub const SET_KEY_FROM_ITEM: &str = "set-key-from-item";
 /// Remove a provider's key from the person's vault (`provider`),
 /// answering the provider as a [`ProviderView`].
 pub const REMOVE_KEY: &str = "remove-key";
@@ -148,6 +154,16 @@ impl std::fmt::Debug for SetKey {
             .field("provider", &self.provider)
             .finish_non_exhaustive()
     }
+}
+
+/// A provider's API key to keep from the person's vault. Nothing here is a
+/// secret: `key` names the vault item, which must be a key that belongs to
+/// the provider's endpoint.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SetKeyFromItem {
+    pub provider: String,
+    pub key: super::person_vault::ItemRef,
 }
 
 /// The model one kind of work runs on, or with neither provider nor model,

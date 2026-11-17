@@ -356,3 +356,41 @@ tilo_test_env::scenario! {
         );
     }
 }
+
+/// A secret named by reference is reviewed as a secret is: withheld, not
+/// editable, and its address appears nowhere in what the reviewer is sent.
+#[test]
+fn a_secret_named_by_reference_is_withheld_like_a_secret() {
+    let adding = descriptor(
+        "Add mail account",
+        vec![
+            ActionParam::required("address", ParamType::Text, "Address"),
+            crate::remote::person_vault::item_param(
+                "password",
+                "The account's password, by reference",
+            ),
+        ],
+    );
+    let draft = Draft::render(
+        &adding,
+        &args(json!({
+            "address": "ada@example.test",
+            "password": "vault.item:0123456789abcdef0123456789abcdef",
+        })),
+    );
+    assert_eq!(draft.fields.len(), 2);
+    assert_eq!(draft.fields[0].value.line(), "ada@example.test");
+    assert_eq!(draft.fields[1].label, "Password");
+    assert_eq!(draft.fields[1].value, DraftValue::Withheld);
+    assert!(!draft.fields[1].editable);
+    let sent = serde_json::to_string(&draft).expect("a draft is sent as JSON");
+    assert!(!sent.contains("0123456789abcdef"), "{sent}");
+    assert!(
+        draft
+            .summary()
+            .iter()
+            .all(|(_, value)| !value.contains("vault.item")),
+        "{:?}",
+        draft.summary()
+    );
+}

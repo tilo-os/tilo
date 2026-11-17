@@ -92,6 +92,7 @@ pub use service_credentials::{
 #[cfg(feature = "person")]
 pub mod person;
 pub mod status;
+pub mod vault_items;
 pub use status::{
     AccountSyncHealth, AccountSyncReporter, AccountSyncStatus, AccountSyncStatusStore,
 };

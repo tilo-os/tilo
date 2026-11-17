@@ -35,6 +35,12 @@ pub const WATCH: &str = "watch";
 /// Add a mail account, once its server accepted its sign-in
 /// ([`AddMailAccount`]), and answer it as a [`MailAccount`].
 pub const ADD_MAIL: &str = "add-mail";
+/// Add a mail account whose sign-in the person's vault already keeps
+/// ([`AddMailWithItem`]), and answer it as a [`MailAccount`]. The password is
+/// named by reference and the host resolves it, only for the two servers the
+/// item belongs to. It carries no secret, so unlike [`ADD_MAIL`] an agent
+/// acting for the person may ask it.
+pub const ADD_MAIL_WITH_ITEM: &str = "add-mail-with-item";
 /// Remove a mail account and its secret (`account`), answering the accounts
 /// that remain as a [`MailAccounts`].
 pub const REMOVE: &str = "remove";
@@ -137,6 +143,29 @@ const fn default_imaps_port() -> u16 {
 
 const fn default_submissions_port() -> u16 {
     465
+}
+
+/// A mail account to add with a sign-in the person's vault keeps. Nothing
+/// here is a secret: `password` names the vault item, which must be a login
+/// that belongs to both servers (`imap://<incoming host>:<port>` and
+/// `smtp://<outgoing host>:<port>`).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AddMailWithItem {
+    pub address: String,
+    #[serde(default)]
+    pub display_name: String,
+    /// The sign-in name, when it is neither the item's own nor the address.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub username: Option<String>,
+    pub incoming_host: String,
+    #[serde(default = "default_imaps_port")]
+    pub incoming_port: u16,
+    pub outgoing_host: String,
+    #[serde(default = "default_submissions_port")]
+    pub outgoing_port: u16,
+    /// The vault item that is the account's sign-in.
+    pub password: super::person_vault::ItemRef,
 }
 
 /// One address as mail carries it.
