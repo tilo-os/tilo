@@ -11625,6 +11625,7 @@ dependencies = [
  "tilo-lock",
  "tilo-media",
  "tilo-nm",
+ "tilo-paths",
  "tilo-power-mgmt",
  "tilo-rt",
  "tilo-seal",
@@ -17987,6 +17988,7 @@ name = "tilo-bluez"
 version = "0.1.0"
 dependencies = [
  "futures-util",
+ "tilo-paths",
  "tokio",
  "tracing",
  "workspace-hack",
@@ -18948,6 +18950,7 @@ dependencies = [
  "tempfile",
  "tilo-files",
  "tilo-nm",
+ "tilo-paths",
  "tilo-seat-peer",
  "tilo-test-env",
  "tokio",
@@ -20408,6 +20411,7 @@ version = "0.1.0"
 dependencies = [
  "futures-util",
  "thiserror 2.0.21",
+ "tilo-paths",
  "tilo-test-env",
  "tokio",
  "uuid",

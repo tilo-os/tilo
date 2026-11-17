@@ -38,7 +38,19 @@ pub struct UPowerMonitor {
 }
 
 impl UPowerMonitor {
+    /// Connect to the system bus and read the machine's own `upowerd`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if this session owns no machine
+    /// ([`tilo_paths::machine`]), if the system bus is unreachable, or if a
+    /// proxy cannot be built.
     pub async fn connect() -> zbus::Result<Self> {
+        if !tilo_paths::machine::owns_the_machine() {
+            return Err(zbus::Error::Failure(
+                "this session reaches no machine: UPower belongs to the desktop it runs in".into(),
+            ));
+        }
         let conn = Connection::system().await?;
         Self::with_connection(&conn).await
     }

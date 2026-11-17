@@ -240,6 +240,10 @@ class ScriptedSession:
         for name in ("DISPLAY", "WAYLAND_DISPLAY", "XDG_CURRENT_DESKTOP"):
             env.pop(name, None)
         env.update(
+            # This session runs beside a live desktop, so it owns no machine of the one it runs on:
+            # its services reach none of that desktop's daemons, and never the host's VPN helper
+            # (crates/platform/tilo-paths/src/machine.rs). Every process it starts inherits it.
+            TILO_MACHINE="hosted",
             TILO_TEST_CONTROL=str(self.control_socket),
             HOME=str(self.profile / "home"),
             XDG_CONFIG_HOME=str(self.profile / "config"),

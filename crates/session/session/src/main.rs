@@ -471,12 +471,13 @@ fn bus(ours: &[String], flag: &str) -> Bus {
 /// one, and no displays exported to it.
 #[cfg(target_os = "linux")]
 fn reach(ours: &[String], backend: Backend) -> Reach {
-    Reach::new(
+    Reach::of(
         backend,
         Buses {
             session: bus(ours, "--session-bus"),
             system: bus(ours, "--system-bus"),
         },
+        tilo_paths::machine::owns_the_machine(),
     )
 }
 
@@ -651,8 +652,11 @@ fn start(
         (backend != Backend::Headless).then(|| tilo_session_power::PowerLink::new(config.power));
     // A session in a window of another desktop runs on that desktop's machine: its services stay
     // off the host's daemons, its device stays the host's, and no session action it takes reaches
-    // the host.
-    let machine = if matches!(backend, Backend::Nested) {
+    // the host. A headless session told it is hosted (`TILO_MACHINE=hosted`, which a test run
+    // beside a live desktop declares) is the same: the daemons of the machine it runs on are that
+    // desktop's.
+    let machine = if matches!(backend, Backend::Nested) || !tilo_paths::machine::owns_the_machine()
+    {
         tilo_session::Machine::Window
     } else {
         tilo_session::Machine::Owned

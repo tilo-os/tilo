@@ -76,9 +76,7 @@ pub fn create_user(username: &str, full_name: &str, role: AccountRole) -> Result
     let username = validate_username(username)?.to_string();
     let full_name = validate_real_name(full_name)?.to_string();
     block(async move {
-        let conn = zbus::Connection::system()
-            .await
-            .map_err(|e| format!("cannot reach the system bus: {e}"))?;
+        let conn = crate::system_bus().await?;
         manager_proxy(&conn)
             .await?
             .call_method("CreateUser", &(username, full_name, role as i32))
@@ -99,9 +97,7 @@ pub fn delete_user(username: &str, uid: u64, remove_files: bool) -> Result<(), S
     }
     let uid = i64::try_from(uid).map_err(|_| "user id is out of range".to_string())?;
     block(async move {
-        let conn = zbus::Connection::system()
-            .await
-            .map_err(|e| format!("cannot reach the system bus: {e}"))?;
+        let conn = crate::system_bus().await?;
         manager_proxy(&conn)
             .await?
             .call_method("DeleteUser", &(uid, remove_files))
@@ -122,9 +118,7 @@ async fn call_user(
     method: &str,
     body: &(impl serde::ser::Serialize + zbus::zvariant::DynamicType),
 ) -> Result<(), String> {
-    let conn = zbus::Connection::system()
-        .await
-        .map_err(|e| format!("cannot reach the system bus: {e}"))?;
+    let conn = crate::system_bus().await?;
     let path = find_user(&conn, username).await?;
     let proxy = zbus::Proxy::new(&conn, DEST, path, USER)
         .await
@@ -152,9 +146,7 @@ pub fn set_automatic_login(username: &str, enabled: bool) -> Result<(), String> 
 pub fn automatic_login(username: &str) -> Result<bool, String> {
     validate_username(username)?;
     block(async move {
-        let conn = zbus::Connection::system()
-            .await
-            .map_err(|e| format!("cannot reach the system bus: {e}"))?;
+        let conn = crate::system_bus().await?;
         let path = find_user(&conn, username).await?;
         let proxy = zbus::Proxy::new(&conn, DEST, path, USER)
             .await

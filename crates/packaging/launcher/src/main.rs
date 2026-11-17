@@ -893,7 +893,17 @@ fn verify_in_app_cgroup(
 
 /// Make sure this launcher is in the app's own cgroup before it forks the sandbox, so the app's memory,
 /// OOM handling and lifetime are its own and never the compositor's (see [`launcher::scope`]).
+///
+/// A session that runs inside another desktop owns no machine of its own
+/// ([`tilo_paths::machine`]): the user manager it would ask is that desktop's, and a launch of this
+/// session is not a unit of its login. The app starts unscoped rather than joining the host's
+/// session target, which would end it — and everything else in that target — when the host's
+/// desktop does.
 fn enter_app_scope(app_id: &str) {
+    if !tilo_paths::machine::owns_the_machine() {
+        tilo_startup_metrics::handoff_mark("scope-skipped");
+        return;
+    }
     if let Err(error) = launcher::scope::join(app_id, app_id) {
         eprintln!("tilo-launcher: {app_id} runs outside a session scope: {error}");
         return;
