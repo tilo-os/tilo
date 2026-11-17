@@ -355,7 +355,7 @@ impl Workspace {
     }
 
     /// Whether app `app_id` still holds device `device` ("camera",
-    /// "microphone", as [`Capability::device_scope`] spells it) at `now`.
+    /// "microphone", as its sandbox scope spells it) at `now`.
     /// A revoke or an expiry answers `false` here at once, which is what
     /// ends a capture already running: nothing has to restart the app.
     #[must_use]

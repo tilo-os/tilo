@@ -414,8 +414,7 @@ struct ConsentsPrompter {
     consents: tilo_portal::consent::Consents,
 }
 
-/// Who asks: the app, in the workspace its launcher named. An app launched into no workspace asks
-/// as itself, with no workspace's grant behind it.
+/// Who asks: the app, in the workspace its launcher named.
 fn caller(handoff: &Handoff) -> PortalCaller {
     PortalCaller {
         workspace: handoff.workspace_id.clone(),

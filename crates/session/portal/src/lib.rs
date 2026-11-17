@@ -80,7 +80,7 @@ mod dbus_tests;
 mod session_dbus_tests;
 
 pub use auth::{AuthenticatedCall, PortalAuthenticator};
-pub use consent::{Consents, WorkspaceGrants};
+pub use consent::Consents;
 pub use inhibit::{Inhibition, Inhibitions, SessionState};
 pub use remote_desktop::{InputInjector, NoInput, RemoteInput};
 pub use requester::Requesters;
@@ -442,14 +442,6 @@ impl Portal {
     #[must_use]
     pub const fn consents(&self) -> &Consents {
         &self.consents
-    }
-
-    /// The same, letting what `grants` says of a caller's workspace stand
-    /// for the person's answer to an access question.
-    #[must_use]
-    pub fn with_consent_grants(mut self, grants: consent::WorkspaceGrants) -> Self {
-        self.consents = self.consents.clone().with_grants(grants);
-        self
     }
 
     /// The same, keeping access answered for good in `consents`.

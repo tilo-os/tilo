@@ -3,16 +3,11 @@
 //!
 //! The person answers the question once per request, for this session, or
 //! for good. Answers for good are kept on this device only, never in a
-//! workspace: they are one person's privacy choice, not a room's policy.
+//! workspace: the screen, the input, the camera and the microphone of a
+//! device are its person's to give. A grant some member of a shared
+//! workspace recorded for an app never answers for them.
 //! An app that asks the same thing again while its first question waits
 //! gets no second sheet; the repeat is declined.
-//!
-//! A workspace may also grant a capability to an app for everyone in it
-//! (its members decided the room's recorder may record): an app running
-//! in that workspace is then not asked ([`Consents::with_grants`]). Only
-//! a grant widens; the person's own refusals are never kept, so a
-//! workspace cannot override a "no" that was never stored, and a grant
-//! the workspace withdraws stops counting at once.
 
 use std::collections::{BTreeSet, HashSet};
 use std::path::PathBuf;
@@ -71,16 +66,12 @@ struct State {
     asking: HashSet<String>,
 }
 
-/// Whether the workspace `caller` runs in grants it `capability`.
-pub type WorkspaceGrants = Arc<dyn Fn(&PortalCaller, &str) -> bool + Send + Sync>;
-
 /// The person's access decisions and the questions that make them.
 #[derive(Clone)]
 pub struct Consents {
     questions: Questions,
     state: Arc<Mutex<State>>,
     path: Option<Arc<PathBuf>>,
-    grants: Option<WorkspaceGrants>,
 }
 
 fn key(app_id: &str, capability: &str) -> String {
@@ -105,7 +96,6 @@ impl Consents {
                 ..State::default()
             })),
             path: path.map(Arc::new),
-            grants: None,
         }
     }
 
@@ -121,14 +111,6 @@ impl Consents {
         )
     }
 
-    /// The same, letting what `grants` says a caller's workspace grants
-    /// stand for the person's answer.
-    #[must_use]
-    pub fn with_grants(mut self, grants: WorkspaceGrants) -> Self {
-        self.grants = Some(grants);
-        self
-    }
-
     /// The questions it asks through.
     #[must_use]
     pub const fn questions(&self) -> &Questions {
@@ -139,16 +121,8 @@ impl Consents {
     #[must_use]
     pub fn allowed(&self, caller: &PortalCaller, capability: &str) -> bool {
         let key = key(&caller.app_id, capability);
-        let decided = {
-            let state = self.state.lock_recover();
-            state.always.contains(&key) || state.session.contains(&key)
-        };
-        decided
-            || (caller.workspace.is_some()
-                && self
-                    .grants
-                    .as_ref()
-                    .is_some_and(|grants| grants(caller, capability)))
+        let state = self.state.lock_recover();
+        state.always.contains(&key) || state.session.contains(&key)
     }
 
     /// The apps allowed `capability` for good, as `(app, capability)`.
@@ -361,25 +335,22 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_workspace_grant_stands_for_the_answer_of_apps_running_in_it() {
+    async fn an_app_in_a_shared_workspace_is_asked_on_this_device() {
         let questions = Questions::new();
-        let consents = Consents::new(questions.clone(), None).with_grants(Arc::new(
-            |caller: &PortalCaller, capability: &str| {
-                caller.workspace.as_deref() == Some("studio") && capability == "screencast"
-            },
-        ));
+        let consents = Consents::new(questions.clone(), None);
         let in_studio = PortalCaller {
             workspace: Some("studio".into()),
             ..caller()
         };
-        assert!(consents.allowed(&in_studio, "screencast"));
-        assert!(!consents.allowed(&in_studio, "camera"));
-        assert!(
-            !consents.allowed(&caller(), "screencast"),
-            "outside any workspace"
-        );
-        assert_eq!(consents.decide(&in_studio, "a", screencast()).await, Ok(()));
-        assert!(questions.pending().is_empty(), "nobody was asked");
+        assert!(!consents.allowed(&in_studio, "screencast"));
+        let deciding = consents.decide(&in_studio, "a", screencast());
+        let answering = async {
+            tokio::task::yield_now().await;
+            assert_eq!(questions.pending().len(), 1, "the person is asked");
+            assert!(questions.answer("a", Answer::default()));
+        };
+        let (decided, ()) = tokio::join!(deciding, answering);
+        assert_eq!(decided, Ok(()));
     }
 
     #[test]
