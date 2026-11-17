@@ -8,7 +8,7 @@ use super::WORKSPACE_VERSION;
 
 /// A workspace's entry ([`super::StoredWorkspace`]).
 pub(crate) const FORMAT: Format = Format {
-    name: "owner workspace record",
+    name: "owner workspace document",
     version: WORKSPACE_VERSION,
     oldest: 5,
     steps: &[],

@@ -19,7 +19,7 @@ use super::{DOCUMENT_VERSION, Publication};
 
 /// The record's layout.
 pub(super) const FORMAT: Format = Format {
-    name: "governed workspace record",
+    name: "governed workspace document",
     version: DOCUMENT_VERSION,
     oldest: 4,
     steps: &[without_name],

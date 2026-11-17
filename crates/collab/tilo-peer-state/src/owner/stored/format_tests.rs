@@ -41,7 +41,7 @@ tilo_test_env::scenario! {
         assert_eq!(stored_version(&golden).unwrap(), WORKSPACE_VERSION);
         let read = || serde_json::from_slice::<StoredWorkspace>(&golden).unwrap();
         assert_golden_bytes(
-            "owner workspace record",
+            "owner workspace document",
             &golden,
             |_| {
                 let stored = read();
