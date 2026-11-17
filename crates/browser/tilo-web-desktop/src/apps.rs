@@ -10,6 +10,7 @@
 pub(crate) fn register() {
     activity_split::register();
     api_tester_split::register();
+    assistant_split::register();
     calculator_split::register();
     calendar_split::register();
     camera_split::register();
@@ -117,6 +118,40 @@ mod api_tester_split {
 
     pub(super) fn register() {
         registry::defer_arriving(APP, "API Tester", SkeletonShape::Ground, open);
+    }
+}
+
+mod assistant_split {
+    use std::ffi::c_void;
+
+    use ui::application::ApplicationDefinition;
+    use ui::application::registry::{self, Loading};
+    use ui::widget::SkeletonShape;
+
+    use crate::split::Callback;
+    use tilo_app_id::apps::ASSISTANT as APP;
+
+    #[link(wasm_import_module = "./__wasm_split.js")]
+    #[allow(improper_ctypes, reason = "the definition only passes between Rust")]
+    unsafe extern "C" {
+        #[link_name = "__wasm_split_load_assistant_b7d566d50166b17b_definition"]
+        fn load(callback: Callback, data: *const c_void);
+        #[link_name = "__wasm_split_00___assistant___00_import_b7d566d50166b17b_definition"]
+        fn definition() -> *const ApplicationDefinition;
+    }
+
+    #[unsafe(export_name = "__wasm_split_00___assistant___00_export_b7d566d50166b17b_definition")]
+    #[allow(improper_ctypes_definitions, reason = "called only from Rust")]
+    extern "C" fn export() -> *const ApplicationDefinition {
+        assistant::definition()
+    }
+
+    fn open() -> Loading {
+        Box::pin(crate::split::definition(load, definition))
+    }
+
+    pub(super) fn register() {
+        registry::defer_arriving(APP, "Assistant", SkeletonShape::Ground, open);
     }
 }
 

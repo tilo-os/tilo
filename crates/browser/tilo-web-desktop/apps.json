@@ -16,6 +16,13 @@
       "module": "api_tester"
     },
     {
+      "id": "so.tilo.assistant",
+      "name": "Assistant",
+      "category": "Office",
+      "version": "0.1.0",
+      "module": "assistant"
+    },
+    {
       "id": "so.tilo.calculator",
       "name": "Calculator",
       "category": "Utility",
