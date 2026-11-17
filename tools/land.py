@@ -43,6 +43,7 @@ import argparse
 import fcntl
 import json
 import os
+import re
 from pathlib import Path
 import shutil
 import subprocess
@@ -66,6 +67,8 @@ SHOWN_LINES = 120
 # changes: the round is tried again rather than answered. rcargo says so in these words.
 NO_BUILDER = ("remote builder unavailable",)
 NO_BUILDER_RETRY_SECONDS = 30
+# How a failed lint names the packages that did not build.
+NOT_BUILT = re.compile(r"could not compile `([^`]+)`")
 EXIT = {"landed": 0, "lint": 1, "conflict": 2, "error": 3}
 STILL_QUEUED = 75
 
@@ -302,6 +305,8 @@ class Lander:
         self.tree = place.worktree()
         # After a failed lint the next round tries the first half of what failed.
         self.limit = BATCH
+        # Changes a failed lint points at: each is linted alone, after the others.
+        self.suspects: set[str] = set()
 
     def doing(self, line: str) -> None:
         print(time.strftime("%H:%M:%S ") + line, flush=True)
@@ -352,6 +357,9 @@ class Lander:
             return False
         upstream = self.place.fetch(self.place.repo)
         self.prepare(upstream)
+        self.suspects &= {entry["id"] for entry in entries}
+        innocent = [entry for entry in entries if entry["id"] not in self.suspects]
+        entries = innocent or entries[:1]
         batch: list[tuple[dict, str]] = []
         for entry in entries:
             if len(batch) >= self.limit:
@@ -418,12 +426,40 @@ class Lander:
 
     def failed(self, batch: list[tuple[dict, str]], upstream: str, output: str) -> None:
         if len(batch) > 1:
-            # Which change broke it is not known yet: the next round tries the first half.
+            blamed = self.blamed(batch, upstream, output)
+            if blamed and len(blamed) < len(batch):
+                # The others are linted without them next; each of them alone after that.
+                self.suspects |= blamed
+                return
+            # Which change broke it is not known: the next round tries the first half.
             self.limit = max(1, len(batch) // 2)
             return
         lines = output.splitlines()
         shown = lines[-SHOWN_LINES:] if len(lines) > SHOWN_LINES else lines
         self.finish(batch[0][0], {"status": "lint", "onto": upstream, "output": shown})
+
+    def blamed(self, batch: list[tuple[dict, str]], upstream: str, output: str) -> set[str]:
+        """The changes that touch a package the failed lint could not build."""
+        failing = set(NOT_BUILT.findall(output))
+        if not failing:
+            return set()
+        try:
+            metadata = json.loads(subprocess.run(
+                ["cargo", "metadata", "--locked", "--no-deps", "--format-version", "1"],
+                cwd=self.tree, capture_output=True, text=True, check=True).stdout)
+        except (OSError, subprocess.CalledProcessError, ValueError):
+            return set()
+        tree = self.tree.resolve()
+        directories = [str(Path(package["manifest_path"]).resolve().parent.relative_to(tree)) + "/"
+                       for package in metadata.get("packages", []) if package["name"] in failing]
+        found = set()
+        previous = upstream
+        for entry, commit in batch:
+            files = out(self.tree, "diff", "--name-only", previous, commit).splitlines()
+            previous = commit
+            if any(path.startswith(directory) for path in files for directory in directories):
+                found.add(entry["id"])
+        return found
 
     def prune(self) -> None:
         """Answers nobody came back for within a day."""
@@ -433,6 +469,26 @@ class Lander:
                     path.unlink(missing_ok=True)
             except FileNotFoundError:
                 continue
+
+    def upgrade(self) -> None:
+        """Become the lander the branch itself holds now, so a busy lander still takes its fixes.
+
+        A lander only stops once nothing is queued, which with a change a minute may be never.
+        """
+        fresh = self.tree / "tools" / "land.py"
+        try:
+            code = fresh.read_bytes()
+            if code == Path(__file__).read_bytes():
+                return
+        except OSError:
+            return
+        program = self.place.dir / "lander.py"
+        partial = self.place.dir / f"lander.{os.getpid()}.partial"
+        partial.write_bytes(code)
+        partial.replace(program)
+        self.doing("taking up the lander on the branch's head")
+        # The lock's descriptor closes on exec; the new lander takes it again.
+        os.execv(sys.executable, [sys.executable, "-I", str(program), *sys.argv[1:]])
 
     def serve(self) -> None:
         self.prune()
@@ -446,6 +502,7 @@ class Lander:
                 time.sleep(10)
                 busy = True
             if busy:
+                self.upgrade()
                 idle_since = now()
                 continue
             if now() - idle_since > IDLE_SECONDS:
