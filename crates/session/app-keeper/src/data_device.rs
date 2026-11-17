@@ -9,6 +9,12 @@
 //! formats survive, and the first keyboard focus the new desktop gives is used to set it again,
 //! because a desktop takes a selection only from the client holding focus. A selection or drag
 //! the old desktop had offered is cancelled to the app when it goes away.
+//!
+//! Text is offered under every name it goes by, both ways (`tilo_x11_transfer`): the X11 server
+//! of a kept launch passes its programs' names through as they are, so an old program's
+//! `UTF8_STRING` copy is offered to the desktop as `text/plain;charset=utf-8` and `text/plain`
+//! too, and a desktop copy offered only as `text/plain` reaches X11 programs under their names.
+//! A request for one name is passed on as the best name the other side offered.
 
 use std::collections::HashMap;
 use std::os::fd::AsFd as _;
@@ -27,9 +33,16 @@ use smithay::reexports::wayland_server::{
 use wayland_client::protocol as c;
 use wayland_client::{Connection, Proxy as _, QueueHandle, WEnum, event_created_child};
 
+use tilo_x11_transfer::{names_added, pick_format, with_text_names};
+
 use crate::state::State;
 use crate::surfaces::Role;
 use crate::upstream::SurfaceRef;
+
+/// The name a request for `wanted` is passed on as, out of the names the other side `offered`.
+pub(crate) fn served_as(wanted: String, offered: &[String]) -> String {
+    pick_format(&wanted, offered).unwrap_or(wanted)
+}
 
 /// The `wl_data_device_manager` version the app is offered and the desktop's is bound at.
 const MANAGER_VERSION: u32 = 3;
@@ -136,8 +149,8 @@ impl State {
                 continue;
             };
             device.data_offer(&offer);
-            for mime in &mimes {
-                offer.offer(mime.clone());
+            for mime in with_text_names(&mimes) {
+                offer.offer(mime);
             }
             device.selection(Some(&offer));
             let id = offer.id();
@@ -261,7 +274,7 @@ impl State {
             return;
         };
         let twin = manager.create_data_source(&up.qh, ());
-        for mime in mimes {
+        for mime in with_text_names(&mimes) {
             twin.offer(mime);
         }
         twin.set_actions(actions);
@@ -363,7 +376,7 @@ impl State {
                 .unwrap_or_default();
             let manager = up.data_device_manager.as_ref()?;
             let twin = manager.create_data_source(&up.qh, ());
-            for mime in mimes {
+            for mime in with_text_names(&mimes) {
                 twin.offer(mime);
             }
             twin.set_actions(c::wl_data_device_manager::DndAction::from_bits_truncate(
@@ -491,8 +504,8 @@ impl State {
                     continue;
                 };
                 device.data_offer(&app_offer);
-                for mime in &mimes {
-                    app_offer.offer(mime.clone());
+                for mime in with_text_names(&mimes) {
+                    app_offer.offer(mime);
                 }
                 device.enter(serial, &app, x, y, Some(&app_offer));
                 let offer_id = app_offer.id();
@@ -694,10 +707,12 @@ impl Dispatch<WlDataSource, ()> for State {
                     .sources
                     .get(&id)
                     .and_then(|held| held.up.clone());
-                if let Some(twin) = twin {
-                    twin.offer(mime_type.clone());
-                }
                 if let Some(held) = state.data_device.sources.get_mut(&id) {
+                    if let Some(twin) = twin {
+                        for name in names_added(&held.mimes, &mime_type) {
+                            twin.offer(name);
+                        }
+                    }
                     held.mimes.push(mime_type);
                 }
             }
@@ -762,20 +777,20 @@ impl Dispatch<WlDataOffer, ()> for State {
         let Some(held) = state.data_device.offers.get(&id) else {
             return;
         };
-        let Some(up) = state
+        let Some((up, mimes)) = state
             .data_device
             .up_offers
             .get(&held.up)
-            .map(|up| up.offer.clone())
+            .map(|up| (up.offer.clone(), up.mimes.clone()))
         else {
             return;
         };
         match request {
             wl_data_offer::Request::Accept { serial, mime_type } => {
-                up.accept(serial, mime_type);
+                up.accept(serial, mime_type.map(|mime| served_as(mime, &mimes)));
             }
             wl_data_offer::Request::Receive { mime_type, fd } => {
-                up.receive(mime_type, fd.as_fd());
+                up.receive(served_as(mime_type, &mimes), fd.as_fd());
             }
             wl_data_offer::Request::Destroy => state.forget_offer(&id, false),
             wl_data_offer::Request::Finish => {
@@ -887,11 +902,14 @@ impl wayland_client::Dispatch<c::wl_data_offer::WlDataOffer, ()> for State {
                 let Some(up) = state.data_device.up_offers.get_mut(&id) else {
                     return;
                 };
-                up.mimes.push(mime_type.clone());
+                let added = names_added(&up.mimes, &mime_type);
+                up.mimes.push(mime_type);
                 let apps = up.apps.clone();
                 for app in apps {
                     if let Some(offer) = state.data_device.offers.get(&app) {
-                        offer.resource.offer(mime_type.clone());
+                        for name in &added {
+                            offer.resource.offer(name.clone());
+                        }
                     }
                 }
             }
@@ -919,16 +937,16 @@ impl wayland_client::Dispatch<c::wl_data_source::WlDataSource, ()> for State {
         let Some(app) = state.data_device.app_source_of(source.id().protocol_id()) else {
             return;
         };
-        let Some(source) = state
+        let Some((source, mimes)) = state
             .data_device
             .sources
             .get(&app)
-            .map(|held| held.resource.clone())
+            .map(|held| (held.resource.clone(), held.mimes.clone()))
         else {
             return;
         };
         match event {
-            Event::Send { mime_type, fd } => source.send(mime_type, fd.as_fd()),
+            Event::Send { mime_type, fd } => source.send(served_as(mime_type, &mimes), fd.as_fd()),
             Event::Cancelled => {
                 source.cancelled();
                 if state.data_device.owner == Some(app.clone()) {

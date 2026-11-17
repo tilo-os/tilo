@@ -46,17 +46,10 @@ use smithay::xwayland::xwm::XwmId;
 
 use crate::state::{ClientState, State};
 
-/// UTF-8 text, the form every text offer is also given in.
-pub const TEXT_MIME: &str = "text/plain;charset=utf-8";
+pub use tilo_x11_transfer::TEXT_MIME;
+pub(crate) use tilo_x11_transfer::normalized_mimes;
+use tilo_x11_transfer::{MAX_MIMES, TEXT_MIMES, is_text_mime, valid_mime};
 
-/// The names text goes by, most specific first: X11 clients ask for the older ones through
-/// Xwayland.
-const TEXT_MIMES: [&str; 5] = [TEXT_MIME, "text/plain", "UTF8_STRING", "STRING", "TEXT"];
-
-/// Cap on the formats one offer advertises.
-const MAX_MIMES: usize = 16;
-/// Cap on one format's name.
-const MAX_MIME_BYTES: usize = 128;
 /// Cap on what a hosted app's offer holds in all.
 pub const MAX_SELECTION_BYTES: usize = 8 * 1024 * 1024;
 
@@ -160,37 +153,6 @@ impl Selections {
             Selection::Primary => primary,
         }
     }
-}
-
-pub(crate) fn is_text_mime(mime: &str) -> bool {
-    TEXT_MIMES.contains(&mime)
-}
-
-fn valid_mime(mime: &str) -> bool {
-    !mime.is_empty()
-        && mime.len() <= MAX_MIME_BYTES
-        && !mime.chars().any(|c| c.is_control() || c.is_whitespace())
-}
-
-/// The formats an offer advertises: valid names only, bounded, and text under every name text goes
-/// by, UTF-8 first so old clients do not pick an ambiguous X11 alias.
-pub(crate) fn normalized_mimes(mimes: impl IntoIterator<Item = String>) -> Vec<String> {
-    let mut mimes: Vec<String> = mimes
-        .into_iter()
-        .filter(|mime| valid_mime(mime))
-        .take(MAX_MIMES)
-        .collect();
-    if mimes.iter().any(|mime| is_text_mime(mime)) {
-        for alias in TEXT_MIMES {
-            if !mimes.iter().any(|mime| mime == alias) && mimes.len() < MAX_MIMES {
-                mimes.push(alias.to_owned());
-            }
-        }
-    }
-    mimes.sort();
-    mimes.dedup();
-    mimes.sort_by_key(|mime| (mime != TEXT_MIME, mime.clone()));
-    mimes
 }
 
 /// The bytes an offer holds for `mime` , text under any of its names.
@@ -508,28 +470,6 @@ mod tests {
     tilo_test_env::scenario! {
         /// The formats a selection is offered and read under.
         fn text_selections_go_by_every_text_name;
-
-        phase text_offers_go_by_every_text_name_utf8_first_and_bad_names_are_dropped;
-        {
-            let mimes = normalized_mimes(strings(&["text/plain", "image/png", "bad mime", ""]));
-            assert_eq!(mimes.first().map(String::as_str), Some(TEXT_MIME));
-            for alias in TEXT_MIMES {
-                assert!(
-                    mimes.iter().any(|mime| mime == alias),
-                    "{alias} missing: {mimes:?}"
-                );
-            }
-            assert!(mimes.iter().any(|mime| mime == "image/png"));
-            assert!(
-                !mimes
-                    .iter()
-                    .any(|mime| mime.contains(' ') || mime.is_empty())
-            );
-            assert_eq!(
-                normalized_mimes(strings(&["image/png"])),
-                strings(&["image/png"])
-            );
-        }
 
         phase text_is_read_under_any_of_its_names;
         {

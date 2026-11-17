@@ -17717,6 +17717,7 @@ dependencies = [
  "tilo-files",
  "tilo-paths",
  "tilo-test-env",
+ "tilo-x11-transfer",
  "tracing",
  "tracing-subscriber",
  "uuid",
@@ -18526,6 +18527,7 @@ dependencies = [
  "tilo-wayland-ext",
  "tilo-window-share",
  "tilo-winit",
+ "tilo-x11-transfer",
  "tracing",
  "wayland-client",
  "wayland-egl",
@@ -23467,6 +23469,14 @@ dependencies = [
  "tilo-ui-host",
  "tilolang-tilo",
  "tracing",
+ "workspace-hack",
+]
+
+[[package]]
+name = "tilo-x11-transfer"
+version = "0.1.0"
+dependencies = [
+ "tilo-test-env",
  "workspace-hack",
 ]
 
@@ -29241,6 +29251,7 @@ dependencies = [
  "tilo-workspace-join",
  "tilo-workspace-keys",
  "tilo-written-view",
+ "tilo-x11-transfer",
  "tilo-zone-globe",
  "tilolang",
  "tilolang-app",

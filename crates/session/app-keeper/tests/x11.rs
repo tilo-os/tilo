@@ -39,6 +39,8 @@ struct X {
     root: Window,
     /// The clipboard this client owns, answered while the rig runs.
     clipboard: Option<Vec<u8>>,
+    /// Whether it names its text only `UTF8_STRING`, as old toolkits do.
+    old_names: bool,
 }
 
 /// Connect to the keeper's display as its app would, with the cookie its keeper wrote, or with
@@ -94,6 +96,7 @@ impl X {
             x11,
             root,
             clipboard: None,
+            old_names: false,
         }
     }
 
@@ -204,7 +207,11 @@ impl X {
         };
         // As GTK and Qt offer text: under its X11 name and its MIME type.
         let utf8 = self.atom("UTF8_STRING");
-        let mime = self.atom(MIME);
+        let mime = if self.old_names {
+            utf8
+        } else {
+            self.atom(MIME)
+        };
         let served = if request.target == self.atom("TARGETS") {
             self.x11
                 .change_property32(
@@ -306,43 +313,48 @@ tilo_test_env::scenario! {
     phase a_copy_in_the_x11_program_pastes_on_the_desktop;
     {
         tilo_test_env::require_capability!(XServer, servers(), "the keeper's X server");
-        let mut x = X::start();
-        let window = x.window(Some("Copying"), (0, 0), (200, 150), BLUE);
-        x.shown("Copying");
-        // A copy takes the keyboard focus the desktop gave the window.
-        x.pump(|x| {
+        // As GTK and Qt name text, and as an old program does, which a reader of `text/plain`
+        // reads all the same.
+        for (old_names, wanted) in [(false, MIME), (true, "text/plain")] {
+            let mut x = X::start();
+            x.old_names = old_names;
+            let window = x.window(Some("Copying"), (0, 0), (200, 150), BLUE);
+            x.shown("Copying");
+            // A copy takes the keyboard focus the desktop gave the window.
+            x.pump(|x| {
+                x.x11
+                    .get_input_focus()
+                    .ok()
+                    .and_then(|cookie| cookie.reply().ok())
+                    .is_some_and(|focus| focus.focus == window)
+            });
+            x.clipboard = Some(b"copied in X11".to_vec());
+            let clipboard = x.atom("CLIPBOARD");
             x.x11
-                .get_input_focus()
-                .ok()
-                .and_then(|cookie| cookie.reply().ok())
-                .is_some_and(|focus| focus.focus == window)
-        });
-        x.clipboard = Some(b"copied in X11".to_vec());
-        let clipboard = x.atom("CLIPBOARD");
-        x.x11
-            .set_selection_owner(window, clipboard, x11rb::CURRENT_TIME)
-            .expect("owner");
-        x.pump(|x| {
-            x.rig
+                .set_selection_owner(window, clipboard, x11rb::CURRENT_TIME)
+                .expect("owner");
+            x.pump(|x| {
+                x.rig
+                    .desktop()
+                    .selection_formats(Selection::Clipboard)
+                    .iter()
+                    .any(|mime| mime == wanted)
+            });
+            let reader = x
+                .rig
                 .desktop()
-                .selection_formats(Selection::Clipboard)
-                .iter()
-                .any(|mime| mime == MIME)
-        });
-        let reader = x
-            .rig
-            .desktop()
-            .receive_selection(Selection::Clipboard, MIME)
-            .expect("the desktop reads the copy");
-        let bytes = Arc::new(Mutex::new(None));
-        let written = Arc::clone(&bytes);
-        std::thread::spawn(move || {
-            let mut read = Vec::new();
-            let mut reader = reader;
-            let _ = std::io::Read::read_to_end(&mut reader, &mut read);
-            *written.lock().unwrap() = Some(read);
-        });
-        x.pump(|_| bytes.lock().unwrap().is_some());
-        assert_eq!(bytes.lock().unwrap().take().unwrap(), b"copied in X11");
+                .receive_selection(Selection::Clipboard, wanted)
+                .expect("the desktop reads the copy");
+            let bytes = Arc::new(Mutex::new(None));
+            let written = Arc::clone(&bytes);
+            std::thread::spawn(move || {
+                let mut read = Vec::new();
+                let mut reader = reader;
+                let _ = std::io::Read::read_to_end(&mut reader, &mut read);
+                *written.lock().unwrap() = Some(read);
+            });
+            x.pump(|_| bytes.lock().unwrap().is_some());
+            assert_eq!(bytes.lock().unwrap().take().unwrap(), b"copied in X11", "read as {wanted}");
+        }
     }
 }

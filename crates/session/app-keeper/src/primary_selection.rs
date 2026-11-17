@@ -35,6 +35,9 @@ use wayland_protocols::wp::primary_selection::zv1::{
     },
 };
 
+use tilo_x11_transfer::{names_added, with_text_names};
+
+use crate::data_device::served_as;
 use crate::state::State;
 
 /// A primary selection source the app created.
@@ -123,8 +126,8 @@ impl State {
                 continue;
             };
             device.data_offer(&offer);
-            for mime in &mimes {
-                offer.offer(mime.clone());
+            for mime in with_text_names(&mimes) {
+                offer.offer(mime);
             }
             device.selection(Some(&offer));
             let id = offer.id();
@@ -221,7 +224,7 @@ impl State {
             return;
         };
         let twin = manager.create_source(&up.qh, ());
-        for mime in mimes {
+        for mime in with_text_names(&mimes) {
             twin.offer(mime);
         }
         device.set_selection(Some(&twin), serial);
@@ -418,10 +421,12 @@ impl Dispatch<ServerSource, ()> for State {
                     .sources
                     .get(&id)
                     .and_then(|held| held.up.clone());
-                if let Some(twin) = twin {
-                    twin.offer(mime_type.clone());
-                }
                 if let Some(held) = state.primary.sources.get_mut(&id) {
+                    if let Some(twin) = twin {
+                        for name in names_added(&held.mimes, &mime_type) {
+                            twin.offer(name);
+                        }
+                    }
                     held.mimes.push(mime_type);
                 }
             }
@@ -462,16 +467,18 @@ impl Dispatch<ServerOffer, ()> for State {
         let Some(held) = state.primary.offers.get(&id) else {
             return;
         };
-        let Some(up) = state
+        let Some((up, mimes)) = state
             .primary
             .up_offers
             .get(&held.up)
-            .map(|up| up.offer.clone())
+            .map(|up| (up.offer.clone(), up.mimes.clone()))
         else {
             return;
         };
         match request {
-            offer::Request::Receive { mime_type, fd } => up.receive(mime_type, fd.as_fd()),
+            offer::Request::Receive { mime_type, fd } => {
+                up.receive(served_as(mime_type, &mimes), fd.as_fd());
+            }
             offer::Request::Destroy => state.primary_forget_offer(&id, false),
             _ => {}
         }
@@ -538,11 +545,14 @@ impl wayland_client::Dispatch<ZwpPrimarySelectionOfferV1, ()> for State {
             let Some(up) = state.primary.up_offers.get_mut(&id) else {
                 return;
             };
-            up.mimes.push(mime_type.clone());
+            let added = names_added(&up.mimes, &mime_type);
+            up.mimes.push(mime_type);
             let apps = up.apps.clone();
             for app in apps {
                 if let Some(offer) = state.primary.offers.get(&app) {
-                    offer.resource.offer(mime_type.clone());
+                    for name in &added {
+                        offer.resource.offer(name.clone());
+                    }
                 }
             }
         }
@@ -561,16 +571,18 @@ impl wayland_client::Dispatch<ZwpPrimarySelectionSourceV1, ()> for State {
         let Some(app) = state.primary.app_source_of(source.id().protocol_id()) else {
             return;
         };
-        let Some(source) = state
+        let Some((source, mimes)) = state
             .primary
             .sources
             .get(&app)
-            .map(|held| held.resource.clone())
+            .map(|held| (held.resource.clone(), held.mimes.clone()))
         else {
             return;
         };
         match event {
-            client_source::Event::Send { mime_type, fd } => source.send(mime_type, fd.as_fd()),
+            client_source::Event::Send { mime_type, fd } => {
+                source.send(served_as(mime_type, &mimes), fd.as_fd());
+            }
             client_source::Event::Cancelled => {
                 source.cancelled();
                 if state.primary.owner == Some(app) {

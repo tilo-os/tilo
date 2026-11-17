@@ -1,0 +1,16 @@
+[package]
+name = "tilo-x11-transfer"
+description = "What crosses between X11 and Wayland programs, shared by the compositor and the app keeper: the names text goes by on each side and which one serves a request."
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+
+[dependencies]
+workspace-hack = { version = "0.1" }
+
+[dev-dependencies]
+tilo-test-env = { path = "../../dev/test-env" }
+
+[lints]
+workspace = true
