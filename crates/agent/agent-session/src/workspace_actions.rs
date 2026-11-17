@@ -834,6 +834,9 @@ struct Mounted {
     /// Parts of the app's chains this record keeps none of (another
     /// record's chain): refused once, never handed to it again.
     foreign: std::collections::HashSet<DocumentRoute>,
+    /// What it and its parts had merged when it was last asked which parts
+    /// it wants ([`catch_up::hold_parts`]): asked again only once that moved.
+    wanted_at: Option<u64>,
     used: u64,
 }
 
@@ -2040,6 +2043,7 @@ impl Worker {
                     merged: Some(heads),
                     parts: HashMap::new(),
                     foreign: std::collections::HashSet::new(),
+                    wanted_at: None,
                     used: clock,
                 },
             );

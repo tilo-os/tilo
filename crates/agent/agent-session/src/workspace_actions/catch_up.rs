@@ -75,7 +75,7 @@ pub(super) fn hold_parts(holder: &DocumentRoute, mounted: &mut Mounted, state: &
     if newest.is_empty() {
         return;
     }
-    let mut asked: Vec<DocumentRoute> = newest
+    let asked: Vec<DocumentRoute> = newest
         .values()
         .map(|(_, route)| (*route).clone())
         .filter(|route| !mounted.parts.contains_key(route) && !mounted.foreign.contains(route))
@@ -84,6 +84,38 @@ pub(super) fn hold_parts(holder: &DocumentRoute, mounted: &mut Mounted, state: &
     if asked.is_empty() && mounted.parts.is_empty() {
         return;
     }
+    // What it wants moves only with what it holds: nothing merged or handed
+    // to it since it was asked last, it is not asked again.
+    if asked.is_empty() && mounted.wanted_at == Some(holding(mounted)) {
+        return;
+    }
+    hold_wanted(holder, mounted, state, &newest, asked);
+    mounted.wanted_at = Some(holding(mounted));
+}
+
+/// What `mounted` and its parts merged last, as one number: where
+/// [`hold_parts`] asked it which parts it wants.
+fn holding(mounted: &Mounted) -> u64 {
+    use std::hash::{Hash as _, Hasher as _};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    mounted.merged.hash(&mut hasher);
+    let mut parts: Vec<_> = mounted.parts.iter().collect();
+    parts.sort_by(|a, b| a.0.document.cmp(&b.0.document));
+    for (route, merged) in parts {
+        route.document.hash(&mut hasher);
+        merged.hash(&mut hasher);
+    }
+    hasher.finish()
+}
+
+/// The rounds of [`hold_parts`] from `asked`, the parts first handed.
+fn hold_wanted(
+    holder: &DocumentRoute,
+    mounted: &mut Mounted,
+    state: &WorkspaceState,
+    newest: &std::collections::HashMap<ui::resource::DocumentId, (u64, &DocumentRoute)>,
+    mut asked: Vec<DocumentRoute>,
+) {
     for _ in 0..HOLD_ROUNDS {
         for route in std::mem::take(&mut asked) {
             hold(&route, mounted, state);

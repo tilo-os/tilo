@@ -673,6 +673,7 @@ impl Worker {
                         merged: Some(heads),
                         parts: HashMap::new(),
                         foreign: std::collections::HashSet::new(),
+                        wanted_at: None,
                         used: clock,
                     },
                     access: policy.access,

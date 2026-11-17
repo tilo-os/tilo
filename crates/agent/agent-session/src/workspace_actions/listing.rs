@@ -29,6 +29,12 @@ impl Worker {
         query: &CatalogueQuery,
         revision: String,
     ) -> CataloguePage {
+        // Asked only who publishes (an agent's path resolves that before each
+        // call): the caller names the providers, and no resource is mounted or
+        // laid out for rows nobody asked for.
+        if query.max_results == 0 && query.provider.is_none() {
+            return CataloguePage::window(revision, Vec::new(), query, false);
+        }
         let size = query.page_size();
         // One more than the page: whether more follow.
         let wanted = size.saturating_add(1);
