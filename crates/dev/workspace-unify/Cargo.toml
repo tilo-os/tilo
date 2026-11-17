@@ -193,7 +193,7 @@ doc = false
 "codespan-reporting-0_13_1" = { package = "codespan-reporting", version = "^0.13.1", default-features = false, features = [] }
 "codex-0_3_0" = { package = "codex", version = "^0.3.0", default-features = false, features = ["default", "numeral-systems", "styling"] }
 "collab-types" = { path = "../../../crates/collab/collab-types", default-features = false, features = [] }
-"collaboration" = { path = "../../../crates/collab/collaboration", default-features = false, features = ["broker-transport", "default", "local-daemons", "native", "test-support"] }
+"collaboration" = { path = "../../../crates/collab/collaboration", default-features = false, features = ["audio", "broker-transport", "default", "local-daemons", "native", "test-support"] }
 "color-0_3_3" = { package = "color", version = "^0.3.3", default-features = false, features = ["bytemuck", "std"] }
 "color_quant-1_1_0" = { package = "color_quant", version = "^1.1.0", default-features = false, features = [] }
 "colorchoice-1_0_4" = { package = "colorchoice", version = "^1.0.4", default-features = false, features = [] }
