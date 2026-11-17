@@ -153,11 +153,7 @@ async fn agent_with_a_book<'a>(
     assert_eq!(status, 200, "{init}");
     agent.did("ebook#open", json!({})).await;
     agent
-        .did(
-            "ebook#shelve",
-            json!({"book": "book:dusk", "title": "Dusk", "author": "Ada", "subject": "Visas",
-                   "shared": false}),
-        )
+        .did("ebook#shelve", shelved("dusk", "Dusk", "Visas"))
         .await;
     agent
 }
@@ -272,4 +268,15 @@ async fn a_page_holding_the_root_answers_what_the_agent_asks_through_the_api() {
     assert_eq!(allowed["result"]["isError"], false, "it ran: {allowed}");
     assert_eq!(seen.asked.lock().unwrap().len(), 1);
     host.close().await;
+}
+
+/// What shelving the book `book` under `title` takes, filed under `about`.
+pub(super) fn shelved(book: &str, title: &str, about: &str) -> serde_json::Value {
+    json!({
+        "book": format!("book:{book}"),
+        "title": title,
+        "author": "Ada",
+        "subject": about,
+        "shared": false,
+    })
 }

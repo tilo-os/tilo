@@ -8,7 +8,9 @@
 )]
 
 use serde_json::{Value, json};
-use tilo_actions::remote::person_asking::{self, ActionName, Asked, AskedBy, Thing, Words};
+use tilo_actions::remote::person_asking::{
+    self, ActionName, ActionTarget, AgentName, Asked, AskedBy, Thing, Waiting, WaitingAnswer, Words,
+};
 use tilo_actions::remote::{
     ActionHost as _, ActionHostError, Caller, InvokeArgument, InvokeRequest, ReceiptStatus,
     RemoteActionTarget,
@@ -579,5 +581,110 @@ async fn what_stands_outlives_a_restart_of_the_server_and_is_bounded() {
     assert_eq!(workspaces.stands(&person, &one_more), None);
     // One that stands already is still answered as lasting.
     assert_eq!(answered_always(workspaces, &person, &asked), id);
+    server.shutdown().await;
+}
+
+/// The question `message` an agent asked, waiting since `asked_at_ms`.
+fn waiting(workspace: &str, message: &str, asked_at_ms: u64) -> Waiting {
+    let mut arguments = serde_json::Map::new();
+    arguments.insert("message".into(), json!(message));
+    arguments.insert("answer".into(), json!("yes"));
+    Waiting {
+        workspace: workspace.to_owned(),
+        conversation: "c_general".into(),
+        document: "part-0".into(),
+        message: message.to_owned(),
+        kind: "choice".into(),
+        words: "Which one?".into(),
+        by: AgentName {
+            id: AGENT.into(),
+            name: "Scout".into(),
+        },
+        asked_at_ms,
+        answers: vec![WaitingAnswer {
+            id: "yes".into(),
+            label: "Yes".into(),
+            target: ActionTarget {
+                app: "so.tilo.chat".into(),
+                document: "part-0".into(),
+                resource: format!("chat.messages/messages/{message}"),
+                action: "answer-question".into(),
+            },
+            arguments,
+        }],
+    }
+}
+
+/// The questions that wait are listed to the person they ask, over every
+/// workspace the server keeps and oldest first, and to nobody else: another
+/// member reads their own, and an agent, the person's own included, reads
+/// none.
+#[tokio::test]
+async fn the_questions_that_wait_are_listed_to_the_person_they_ask_alone() {
+    let dir = tempfile::tempdir().unwrap();
+    let (key, owner) = governor();
+    let server = test_host(dir.path(), &key, &owner).await;
+    let workspaces = server.workspaces();
+    let (workspace, workspace_id, holder) = governed(workspaces).await;
+    let ada = admit(workspaces, &workspace, &owner, 1).await;
+    let bo = admit(workspaces, &workspace, &owner, 2).await;
+    let (hers, his) = (
+        hex::encode(ada.user_public_key),
+        hex::encode(bo.user_public_key),
+    );
+    workspaces.note_waiting(
+        &workspace,
+        vec![
+            (hers.clone(), waiting(&workspace, "m_later", 2_000)),
+            (his, waiting(&workspace, "m_his", 1_500)),
+        ],
+    );
+    workspaces.note_waiting(
+        "another-workspace",
+        vec![(hers.clone(), waiting("another-workspace", "m_first", 1_000))],
+    );
+    let listing = person_asking::target(person_asking::WAITING, person_asking::LIST);
+    let asked = |who: &DeviceCert, asking: Caller| {
+        let (holder, listing, who) = (holder.clone(), listing.clone(), who.clone());
+        async move { ask_at(&holder, workspace_id, (&who, &asking), listing, json!({})).await }
+    };
+
+    let listed = asked(&ada, caller(&ada)).await.unwrap();
+    let questions = listed["questions"].as_array().unwrap();
+    let messages: Vec<&str> = questions
+        .iter()
+        .map(|question| question["message"].as_str().unwrap())
+        .collect();
+    assert_eq!(messages, ["m_first", "m_later"], "hers alone, oldest first");
+    assert_eq!(
+        serde_json::to_value(waiting(&workspace, "m_later", 2_000)).unwrap(),
+        questions[1],
+        "as a client binds it"
+    );
+    assert_eq!(questions[1]["askedAtMs"], json!(2_000));
+    assert_eq!(
+        questions[1]["answers"][0]["arguments"],
+        json!({"message": "m_later", "answer": "yes"})
+    );
+
+    let his = asked(&bo, caller(&bo)).await.unwrap();
+    assert_eq!(his["questions"].as_array().unwrap().len(), 1);
+    assert_eq!(his["questions"][0]["message"], json!("m_his"));
+    for (who, device, asking) in [
+        ("her own agent", &ada, caller(&ada).delegated_to(AGENT)),
+        ("her key on another device", &bo, caller(&ada)),
+    ] {
+        let refused = asked(device, asking).await;
+        assert!(
+            matches!(refused, Err(ActionHostError::UnknownAction)),
+            "{who}: {refused:?}"
+        );
+    }
+
+    // A workspace with none waiting any more says so, and the list follows.
+    workspaces.note_waiting(&workspace, Vec::new());
+    let left = asked(&ada, caller(&ada)).await.unwrap();
+    assert_eq!(left["questions"].as_array().unwrap().len(), 1);
+    assert_eq!(left["questions"][0]["message"], json!("m_first"));
     server.shutdown().await;
 }

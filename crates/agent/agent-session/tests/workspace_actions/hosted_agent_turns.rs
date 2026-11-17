@@ -1,5 +1,5 @@
-//! An agent a workspace made to run on its host works around the clock there: a person gives it
-//! an issue, and the host's agent works on it through the agent tools, as the person's agent, then
+//! An agent a workspace made to run on its server works around the clock there: a person gives it
+//! an issue, and the server's agent works on it through the agent tools, as the person's agent, then
 //! answers in the issue's thread. Its keeper's daily limit stops it before it spends past it.
 use super::*;
 use std::sync::Mutex;
@@ -13,7 +13,7 @@ use ui::tilo_workspace_agent::{WorkspaceAgents, workspace_agents};
 const CHAT: &str = "so.tilo.chat";
 const TASKS: &str = "so.tilo.tasks";
 /// The agent's id in the workspace's record of its agents.
-const SCOUT: &str = "scout";
+pub(super) const SCOUT: &str = "scout";
 
 /// A model whose turns are written out: each answer in order, then the last again. What each
 /// request asked is kept.
@@ -84,10 +84,10 @@ fn looks_then_answers(cost: u64, asked: Arc<Mutex<Vec<ModelRequest>>>) -> Model 
     })
 }
 
-/// The person makes an agent that runs on the host, as the Agents tab in a browser does: their
+/// The person makes an agent that runs on the server, as the Agents tab in a browser does: their
 /// device writes the workspace's record of its agents, with the agent's daily limit when one is
-/// set. Answers once the host holds it.
-async fn make_agent(
+/// set. Answers once the server holds it.
+pub(super) async fn make_agent(
     page: &Browser,
     workspaces: &tilo_relay::workspaces::Workspaces,
     workspace: &str,
@@ -148,7 +148,7 @@ async fn make_agent(
     }
 }
 
-/// The person files "Plan the launch" through the host's action service, as their page or their
+/// The person files "Plan the launch" through the server's action service, as their page or their
 /// MCP client does, and gives it to the agent. The part of the tracker's issues it went into.
 async fn file_issue(
     actions: &tilo_agent_session::workspace_actions::WorkspaceActions,
@@ -204,15 +204,15 @@ async fn tracker(
     tasks::part::IssuePart::read(&automerge::AutoCommit::load(&bytes).unwrap()).unwrap()
 }
 
-/// A host's own model that must never be asked: a turn that reaches it failed the test.
+/// A server's own model that must never be asked: a turn that reaches it failed the test.
 fn never_asked(asked: Arc<Mutex<Vec<ModelRequest>>>) -> Model {
     looks_then_answers(1, asked)
 }
 
-/// The keeper linked a model of their own: the agent the host runs for them works with it, asked
-/// with their own key, and the host's model is never asked. What it cost is counted on the agent's
-/// record as the provider charged it, on a host that decides every change against its app's
-/// surface, as tilo.sh's relay does.
+/// The keeper linked a model of their own: the agent the server runs for them works with it, asked
+/// with their own key, and the server's model is never asked. What it cost is counted on the agent's
+/// record as the provider charged it, on a server that decides every change against its app's
+/// surface, as tilo.sh's server does.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_agent_on_the_host_works_with_its_keepers_own_model() {
     use tilo_relay::workspaces::person_model::ProviderProtocol;
@@ -222,8 +222,8 @@ async fn an_agent_on_the_host_works_with_its_keepers_own_model() {
     let host = enrol(&root, "tilo-sh", DeviceCapabilities::member());
     let browser = enrol(&root, "browser", DeviceCapabilities::member());
     let state = crate::support::scratch_dir();
-    // The host's own count of what the agent spent is a change of Chat's, decided like any
-    // other: the native apps name their surfaces as the host first runs them.
+    // The server's own count of what the agent spent is a change of Chat's, decided like any
+    // other: the native apps name their surfaces as the server first runs them.
     let _ = crate::common::catalogue();
     tilo_relay::surfaces::decide_receipt(&state.path().join("surfaces"));
     let (relay, actions) = crate::harness::hosted::serving_records_with_actions(
@@ -243,7 +243,7 @@ async fn an_agent_on_the_host_works_with_its_keepers_own_model() {
     let tasks_record =
         file_issue(&actions, &workspaces, &workspace, &root, (&host, &browser)).await;
 
-    // The keeper's own provider, as their settings and their vault keep it on this host.
+    // The keeper's own provider, as their settings and their vault keep it on this server.
     let theirs = ScriptedProvider::answering([
         Reply::tool_call("call-1", "tilo_ls", serde_json::json!({})).costing(700),
         Reply::text("I looked through the workspace: the plan is ready for you.").costing(300),
@@ -341,8 +341,8 @@ async fn an_agent_on_the_host_works_with_its_keepers_own_model() {
 }
 
 /// A keeper who linked a provider is never answered by another model: one whose key is missing is
-/// told so, where they asked, and the host's own model stays unasked. A keeper who linked nothing
-/// on a host that runs no model is told what to link.
+/// told so, where they asked, and the server's own model stays unasked. A keeper who linked nothing
+/// on a server that runs no model is told what to link.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_keeper_whose_model_cannot_answer_is_told_and_no_other_model_is_asked() {
     use tilo_relay::workspaces::person_model::ProviderProtocol;
@@ -377,7 +377,7 @@ async fn a_keeper_whose_model_cannot_answer_is_told_and_no_other_model_is_asked(
             .collect()
     };
 
-    // Nothing linked, and a host that runs no model: the person is told what to link.
+    // Nothing linked, and a server that runs no model: the person is told what to link.
     let agents = HostAgents::new(workspaces.clone(), actions.clone(), None);
     let turns = agents.turns(&workspace).await.unwrap();
     assert_eq!(turns.len(), 1, "{turns:?}");
@@ -389,7 +389,7 @@ async fn a_keeper_whose_model_cannot_answer_is_told_and_no_other_model_is_asked(
         "{told:?}"
     );
 
-    // A provider linked without its key: its keeper is told which key is missing, and the host's
+    // A provider linked without its key: its keeper is told which key is missing, and the server's
     // own model does not answer in its place.
     workspaces
         .link_model_for(
@@ -435,11 +435,11 @@ async fn an_agent_on_the_host_works_on_the_issue_a_person_gives_it() {
     .await;
     let workspaces = relay.workspaces().unwrap().clone();
     let workspace = workspaces.create("Team").await.unwrap().workspace;
-    // The person's page joins: the device the host admits their agent's turns on.
+    // The person's page joins: the device the server admits their agent's turns on.
     let page = Browser::open_at(&relay, &browser, &host, &workspace).await;
     let person = hex::encode(root.verifying_key().to_bytes());
 
-    // The person makes an agent that runs on the host, as the Agents tab in a browser does.
+    // The person makes an agent that runs on the server, as the Agents tab in a browser does.
     let agents_document = collab_types::workspace_document_id(ui::tilo_workspace_agent::KIND);
     make_agent(&page, &workspaces, &workspace, &person, None).await;
 
@@ -598,7 +598,7 @@ async fn an_agent_on_the_host_stops_at_its_keepers_daily_limit() {
 }
 
 /// The first part of the chat's messages, as the workspace keeps it.
-async fn conversation_part(
+pub(super) async fn conversation_part(
     workspaces: &tilo_relay::workspaces::Workspaces,
     workspace: &str,
 ) -> chat::parts::ChatPart {
@@ -612,9 +612,9 @@ async fn conversation_part(
     })
 }
 
-/// The person writes `text` to the agent in their conversation with it, through the host's action
+/// The person writes `text` to the agent in their conversation with it, through the server's action
 /// service, as their page does. The message's id.
-async fn write_to_agent(
+pub(super) async fn write_to_agent(
     actions: &tilo_agent_session::workspace_actions::WorkspaceActions,
     workspaces: &tilo_relay::workspaces::Workspaces,
     workspace: &str,
@@ -691,7 +691,7 @@ async fn an_agent_on_the_host_answers_the_message_a_person_writes_it() {
         .await
         .unwrap();
 
-    // They write to the agent, and no device of theirs has to be on for what follows: the host
+    // They write to the agent, and no device of theirs has to be on for what follows: the server
     // reads the turn from its own copy of the chat.
     let written = (&root, &browser);
     let first = write_to_agent(
@@ -856,7 +856,7 @@ async fn long_notes(
 }
 
 /// A conversation that outgrew what a turn is told as written. The turn carries what its agent is
-/// to take into the conversation's summary; once the answer has its words the host asks a model
+/// to take into the conversation's summary; once the answer has its words the server asks a model
 /// once for it and Chat keeps it, so the next turn is told what was said long ago and asks for
 /// nothing more. When the conversation outgrows it again the summary is extended from where it
 /// stood. The question goes to the keeper's own model once they linked one, and is counted on
@@ -918,7 +918,7 @@ async fn an_agent_on_the_host_keeps_the_summary_of_a_long_conversation() {
     )
     .await;
 
-    // The keeper linked nothing yet, so the host's model answers the turn, and the summary's
+    // The keeper linked nothing yet, so the server's model answers the turn, and the summary's
     // question is asked as the turn was.
     let hosts = Arc::new(Mutex::new(Vec::new()));
     let asked = Arc::clone(&hosts);
@@ -1098,7 +1098,7 @@ async fn an_agent_on_the_host_keeps_the_summary_of_a_long_conversation() {
         );
     }
 
-    // Every call is counted on the agent's day: two of the host's model, two of the keeper's.
+    // Every call is counted on the agent's day: two of the server's model, two of the keeper's.
     let deadline = tilo_test_env::hang_deadline();
     loop {
         let bytes = workspaces

@@ -29,6 +29,9 @@ use super::{ActionAddress, RemoteActionTarget};
 pub const PROVIDER: &str = "tilo.asking";
 /// The resource the lasting permissions are actions of.
 pub const PERMISSIONS: &str = "permissions";
+/// The resource the questions that wait for the person are read from: its
+/// [`LIST`] answers a [`WaitingQuestions`].
+pub const WAITING: &str = "waiting";
 /// Every permission that stands for the person, as a
 /// [`Permissions`].
 pub const LIST: &str = "list";
@@ -228,6 +231,60 @@ pub struct Permission {
 #[serde(rename_all = "camelCase")]
 pub struct Permissions {
     pub permissions: Vec<Permission>,
+}
+
+/// An action of a document, as a client calls it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ActionTarget {
+    /// The app that keeps the document.
+    pub app: String,
+    pub document: String,
+    pub resource: String,
+    pub action: String,
+}
+
+/// One answer a waiting question offers, as the typed action that gives it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WaitingAnswer {
+    pub id: String,
+    /// What its button says; empty for an answer its kind words itself.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub label: String,
+    pub target: ActionTarget,
+    pub arguments: serde_json::Map<String, serde_json::Value>,
+}
+
+/// One question that waits for the person: a message of a conversation,
+/// asked by an agent their server has for them.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Waiting {
+    pub workspace: String,
+    /// The conversation it stands in.
+    pub conversation: String,
+    /// The document that holds the message.
+    pub document: String,
+    pub message: String,
+    /// The question's kind, as the conversation's document names it.
+    pub kind: String,
+    /// What is asked, in its asker's words.
+    pub words: String,
+    /// Who asked.
+    pub by: AgentName,
+    /// Since when it waits, in milliseconds since the Unix epoch.
+    pub asked_at_ms: u64,
+    /// The answers it offers, in order; none for a question a protected
+    /// field answers.
+    pub answers: Vec<WaitingAnswer>,
+}
+
+/// Every question that waits for the person, oldest first.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WaitingQuestions {
+    pub questions: Vec<Waiting>,
 }
 
 /// The permission to take back.

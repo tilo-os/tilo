@@ -17,21 +17,24 @@
 //! action is decided, and reads the store each time: a permission taken
 //! back is gone for the very next action.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex, Weak};
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 use tilo_actions::remote::person_asking::{
     self, AgentName, Asked, AskedBy, Call, MAX_NAME_BYTES, MAX_WORDS_BYTES, Permission,
-    Permissions, Source, TakeBack, Words,
+    Permissions, Source, TakeBack, Waiting, WaitingQuestions, Words,
 };
 use tilo_actions::remote::{ActionHostError, Caller, InvokeRequest};
 use tilo_lock::MutexRecover as _;
 use tilo_user_identity::DeviceCert;
 
-use super::Workspaces;
 use super::person_settings::{answer, argument};
+use super::{Workspaces, WorkspacesInner};
+
+pub mod kept_asks;
 
 /// The most permissions that stand for one person at a time.
 pub const MAX_PERMISSIONS: usize = 256;
@@ -55,6 +58,30 @@ fn writing<T>(work: impl FnOnce() -> T) -> T {
     drop(alone);
     done
 }
+
+/// The questions that wait for this server's people, by workspace: each with
+/// the person it asks (their root key, hex). Whoever works the workspaces'
+/// agents reads them from the conversations and says them here
+/// ([`Workspaces::note_waiting`]); nothing is kept across a restart, the
+/// conversations are.
+#[derive(Default)]
+struct WaitingIndex(Mutex<BTreeMap<String, Vec<(String, Waiting)>>>);
+
+/// What a server keeps in memory of what its people are asked: the asks that
+/// wait for an answer ([`kept_asks`]), and the questions that wait.
+#[derive(Default)]
+struct Held {
+    asks: kept_asks::KeptAsks,
+    waiting: WaitingIndex,
+}
+
+/// What each server of this process keeps in memory of what its people are
+/// asked, by the directory its state is in, with the server it is of: a server
+/// that starts again on the same state begins with nothing and reads its
+/// disk. It is kept here and not with the server's other state, whose file
+/// stands at its size ceiling.
+type Holders = BTreeMap<PathBuf, (Weak<WorkspacesInner>, Arc<Held>)>;
+static HOLDERS: Mutex<Holders> = Mutex::new(BTreeMap::new());
 
 /// What a person's answer `always` lets stand.
 #[derive(Clone, Debug)]
@@ -210,6 +237,23 @@ fn names_a_question(by: &AskedBy) -> bool {
 }
 
 impl Workspaces {
+    /// What this server keeps in memory of what its people are asked.
+    fn asking(&self) -> Arc<Held> {
+        let mut holders = HOLDERS.lock_recover();
+        // A server that ended keeps nothing.
+        holders.retain(|_, (holder, _)| holder.strong_count() > 0);
+        let (holder, kept) = holders
+            .entry(self.inner.dir.clone())
+            .or_insert_with(|| (Arc::downgrade(&self.inner), Arc::default()));
+        if !std::ptr::eq(holder.as_ptr(), Arc::as_ptr(&self.inner)) {
+            *holder = Arc::downgrade(&self.inner);
+            *kept = Arc::default();
+        }
+        let kept = Arc::clone(kept);
+        drop(holders);
+        kept
+    }
+
     /// Where this server keeps what stands for `person`.
     fn permissions_dir(&self, person: &[u8; 32]) -> PathBuf {
         self.person_settings_root(person)
@@ -337,6 +381,42 @@ impl Workspaces {
         })
     }
 
+    /// The questions that wait in `workspace` now, each with the person it
+    /// asks (their root key, hex): what whoever works its agents read from
+    /// its conversations. It replaces what was said of that workspace before.
+    pub fn note_waiting(&self, workspace: &str, waiting: Vec<(String, Waiting)>) {
+        let kept = self.asking();
+        let mut index = kept.waiting.0.lock_recover();
+        if waiting.is_empty() {
+            index.remove(workspace);
+        } else {
+            index.insert(workspace.to_owned(), waiting);
+        }
+        drop(index);
+    }
+
+    /// Every question that waits for `person`, over the workspaces this
+    /// server keeps, oldest first.
+    #[must_use]
+    pub fn waiting_for(&self, person: &[u8; 32]) -> WaitingQuestions {
+        let person = hex::encode(person);
+        let kept = self.asking();
+        let index = kept.waiting.0.lock_recover();
+        let mut questions: Vec<Waiting> = index
+            .values()
+            .flatten()
+            .filter(|(asked, _)| *asked == person)
+            .map(|(_, waiting)| waiting.clone())
+            .collect();
+        drop(index);
+        questions.sort_by(|a, b| {
+            a.asked_at_ms
+                .cmp(&b.asked_at_ms)
+                .then_with(|| a.message.cmp(&b.message))
+        });
+        WaitingQuestions { questions }
+    }
+
     /// Answer a [`person_asking::PROVIDER`] request.
     fn person_asking_invoke(
         &self,
@@ -348,6 +428,9 @@ impl Workspaces {
         let person = Self::asking_person(caller, certificate, workspace_id)?;
         let address = &request.target.address;
         match (address.resource.as_str(), address.action.as_str()) {
+            (person_asking::WAITING, person_asking::LIST) => {
+                answer(&Ok::<_, String>(self.waiting_for(&person)))
+            }
             (person_asking::PERMISSIONS, person_asking::LIST) => {
                 answer(&Ok::<_, String>(self.permissions_of(&person)))
             }
