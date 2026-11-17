@@ -164,6 +164,59 @@ test('signing in asks every known host for the envelope, then reloads as that pe
   assert.equal(errors[0].code, 'unknown-action');
 });
 
+test('a sign-in that fails reaches whoever asked for it, where the desktop’s own action hands it on', async () => {
+  const identity = fakeIdentity();
+  const mount = fakeMount();
+  const errors = [];
+  let reloads = 0;
+  const refusal = Object.assign(new Error('Passkeys cannot be used here'), {code: 'passkeys-refused'});
+  const actions = createIdentityActions({passkeys: withPasskeys, identity, rpId: 'example.com', lookups: () => ['https://a.example'],
+    signIn: async () => { throw refusal; }, reload: () => { reloads += 1; }, onError: error => errors.push(error)});
+  await actions.attach(mount);
+  // The first screen signs in through this, and says the failure itself.
+  await assert.rejects(actions.signIn(), {code: 'passkeys-refused'});
+  assert.deepEqual(errors, []);
+  assert.deepEqual(mount.actions, [KEEP.id, RECOVERY.id, SIGN_IN.id]);
+  // The desktop's action has nowhere to say it: it is handed on, and the passkey actions,
+  // which cannot work in this place, are offered no longer.
+  await actions.perform(SIGN_IN.id);
+  assert.deepEqual(errors, [refusal]);
+  assert.deepEqual(mount.actions, [RECOVERY.id]);
+  assert.equal(reloads, 0, 'nobody was signed in');
+});
+
+test('where passkeys cannot be used, keeping goes on with a recovery key', async () => {
+  const identity = fakeIdentity();
+  // A web view inside an app that may not use this site's passkeys: the browser said it can
+  // make one, and the system refuses before it shows anything.
+  identity.keepWithPasskey = async () => { throw Object.assign(new Error('Passkeys cannot be used here'), {code: 'passkeys-refused'}); };
+  const mount = fakeMount();
+  const errors = [];
+  const published = [];
+  const actions = createIdentityActions({passkeys: withPasskeys, identity, rpId: 'example.com', hosts: () => ['https://a.example'],
+    publish: async ({origin}) => { published.push(origin); }, onError: error => errors.push(error)});
+  await actions.attach(mount);
+  assert.deepEqual(mount.actions, [KEEP.id, RECOVERY.id, SIGN_IN.id]);
+  await actions.perform(KEEP.id);
+  assert.equal(identity.kept, false);
+  assert.deepEqual(published, [], 'nothing was kept, so nothing is published');
+  assert.deepEqual(errors, [], 'the place cannot: said to the person, not a failure to report');
+  assert.deepEqual(mount.actions, [RECOVERY.id], 'what a browser without passkeys is offered');
+  assert.deepEqual(mount.offers, [RECOVERY.id]);
+  assert.equal(mount.said.at(-1).title, 'Passkeys can’t be used here');
+  assert.match(mount.said.at(-1).body, /^A recovery key brings you back as yourself in their place/);
+  // Any other failure of keeping is a failure still.
+  const broken = fakeIdentity();
+  broken.keepWithPasskey = async () => { throw Object.assign(new Error('no PRF'), {code: 'prf-unsupported'}); };
+  const other = fakeMount();
+  const failing = createIdentityActions({passkeys: withPasskeys, identity: broken, onError: error => errors.push(error)});
+  await failing.attach(other);
+  await failing.perform(KEEP.id);
+  assert.deepEqual(errors.map(error => error.code), ['prf-unsupported']);
+  assert.deepEqual(other.actions, [KEEP.id, RECOVERY.id, SIGN_IN.id]);
+  assert.deepEqual(other.offers, []);
+});
+
 test('setting a name names the person and offers to keep them', async () => {
   const identity = fakeIdentity();
   const mount = fakeMount();

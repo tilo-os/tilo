@@ -27,7 +27,7 @@ import {applicationName, loadRuntime, mountDesktop, prefetchApplication, prefetc
 import {connectPeer, httpsPost, identityProfile, inspectInvitation, joinWorkspace, openInvitation, profileDevice, withCustody} from './peer.mjs';
 import {readBrowserAccounts} from './browser-accounts.mjs';
 import {idbStorage, openDeviceCustody} from './device-custody.mjs';
-import {createIdentityActions, SIGN_IN, setupOrigin, syncProfile} from './identity-actions.mjs';
+import {createIdentityActions, setupOrigin, syncProfile} from './identity-actions.mjs';
 import {firstRun, MCP_URL, openFirstRun, openSignIn, readSetup, setupDone, setupLater} from './first-run.mjs';
 import {pickImageFile, squarePhoto} from './profile-photos.mjs';
 import {deviceLabel, PAIRING_WAIT, pairingFailure, pairingStatus, pairSecret, whenRequested} from './pairing.mjs';
@@ -2118,7 +2118,9 @@ function inputPause() {
 function offerFirstRun({page, identityActions, runtime}) {
   firstRun.reveal();
   const peer = page.peer;
-  if (identityActions) firstRun.offerSignIn(() => identityActions.perform(SIGN_IN.id));
+  // Its failure reaches the screen, which says it: the desktop's own action
+  // (`perform`) keeps a failure to itself.
+  if (identityActions) firstRun.offerSignIn(() => identityActions.signIn());
   const identity = currentIdentity();
   if (!peer?.origin || !peer.workspace || !identity || peer.userPublicKey !== identity.userPublicKey) {
     if (!firstRunCodesOffered) firstRun.unavailable({code: 'no-workspace'});
