@@ -259,32 +259,39 @@ struct ActionOptions {
     step: Option<syn::Ident>,
 }
 
+impl ActionOptions {
+    /// What an `#[action]` with no arguments declares.
+    fn empty() -> Self {
+        Self {
+            id: None,
+            label: None,
+            keywords: Vec::new(),
+            icon: None,
+            did: None,
+            field: None,
+            destructive: false,
+            irreversible: false,
+            housekeeping: false,
+            external: false,
+            local: false,
+            local_if: None,
+            incoming_message: false,
+            answers: false,
+            item: None,
+            within: Vec::new(),
+            undo: None,
+            writes: Vec::new(),
+            items: None,
+            prepare: None,
+            audience: None,
+            by_app: false,
+            step: None,
+        }
+    }
+}
+
 fn action_options(attr: &Attribute) -> syn::Result<ActionOptions> {
-    let mut options = ActionOptions {
-        id: None,
-        label: None,
-        keywords: Vec::new(),
-        icon: None,
-        did: None,
-        field: None,
-        destructive: false,
-        irreversible: false,
-        housekeeping: false,
-        external: false,
-        local: false,
-        local_if: None,
-        incoming_message: false,
-        answers: false,
-        item: None,
-        within: Vec::new(),
-        undo: None,
-        writes: Vec::new(),
-        items: None,
-        prepare: None,
-        audience: None,
-        by_app: false,
-        step: None,
-    };
+    let mut options = ActionOptions::empty();
     if matches!(attr.meta, Meta::Path(_)) {
         return Ok(options);
     }
