@@ -240,12 +240,12 @@ class Resource:
         return self._workspace.client.handoff(self._act(name, args))
 
     async def _act(self, name: str, args: Mapping[str, Any]) -> Any:
-        from ._run import Run
+        from ._invocation import Invocation
 
         answer = await self._workspace._outcome(
             f"{self.path}#{kebab(name)}", args, surface=self._surface()
         )
-        if isinstance(answer, Run):
+        if isinstance(answer, Invocation):
             return await answer._result(None)
         return answer
 

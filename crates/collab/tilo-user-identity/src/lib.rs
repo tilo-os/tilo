@@ -123,10 +123,10 @@ pub use cert::{
     verify_stand_in_cert_at,
 };
 pub use certification::{
-    CERTIFICATION_REQUEST_TAG, CERTIFICATION_SCHEMA_VERSION, CertificationError,
-    CertificationPolicy, CertificationRequest, MAX_CERTIFICATION_REQUEST_LIFETIME_NS,
-    issue_device_cert, issue_device_cert_as_stand_in, issue_device_cert_async, prepare_device_cert,
-    verify_issued_cert,
+    CERTIFICATION_CLOCK_ALLOWANCE_NS, CERTIFICATION_REQUEST_TAG, CERTIFICATION_SCHEMA_VERSION,
+    CertificationError, CertificationPolicy, CertificationRequest,
+    MAX_CERTIFICATION_REQUEST_LIFETIME_NS, issue_device_cert, issue_device_cert_as_stand_in,
+    issue_device_cert_async, prepare_device_cert, verify_issued_cert,
 };
 #[cfg(not(target_arch = "wasm32"))]
 pub use clock::wait_for_wall_clock;
