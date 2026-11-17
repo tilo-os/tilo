@@ -569,12 +569,12 @@ async fn a_response_that_spends_the_budget_ends_in_an_error_not_a_short_body() {
     assert_eq!(refused.headers()[ERROR_HEADER], "over-budget");
 }
 
-/// A host's own request to an address a person named reaches the public
+/// A server's own request to an address a person named reaches the public
 /// internet alone: an address inside the network is refused before anything
 /// is dialled, and a name that resolves inside it is never dialled.
 #[tokio::test]
 async fn a_guarded_client_reaches_no_address_inside_the_network() {
-    use tilo_net::proxy::host::{check_destination, guarded_client};
+    use tilo_net::proxy::host::{check_destination, guarded_client, refused_address};
 
     let inside = Responder::silent();
     let literal = url::Url::parse(&inside.url()).unwrap();
@@ -592,8 +592,24 @@ async fn a_guarded_client_reaches_no_address_inside_the_network() {
         Arc::new(|_| Box::pin(async { Ok(vec![IpAddr::from([127, 0, 0, 1])]) }));
     let guarded = guarded_client(Destinations::Public, Arc::clone(&resolves_inside)).unwrap();
     let named = format!("http://models.example:{}/v1/models", inside.port());
-    assert!(guarded.get(&named).send().await.is_err());
+    let refused = guarded.get(&named).send().await.unwrap_err();
+    assert!(
+        refused_address(&refused),
+        "a caller reads that the name was refused, not that nobody answered: {refused:?}"
+    );
     inside.assert_untouched();
+    // A request that fails for another reason is not such a refusal.
+    let closed = {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.local_addr().unwrap().port()
+    };
+    let let_in = guarded_client(Destinations::Any, Arc::clone(&resolves_inside)).unwrap();
+    let nobody = let_in
+        .get(format!("http://models.example:{closed}/"))
+        .send()
+        .await
+        .unwrap_err();
+    assert!(!refused_address(&nobody));
 
     // The same name is dialled where it resolves once every address is let.
     let answering = Responder::start(vec![Reply::status(200).body("listed")]);

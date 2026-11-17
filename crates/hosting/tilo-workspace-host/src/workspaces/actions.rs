@@ -59,7 +59,7 @@ use tilo_actions::remote::{
     CatalogueResource, CatalogueRow, InvocationLog, InvocationReceipt, InvocationState,
     InvokeArgument, InvokeRequest, Pending, RemoteActionMessage, WORKSPACE_GOVERNANCE_KIND,
     WORKSPACE_GOVERNANCE_PROVIDER, host_account, mcp_server, person_accounts, person_asking,
-    person_models, person_telling, person_vault, workspace_governance_resource,
+    person_connections, person_models, person_telling, person_vault, workspace_governance_resource,
 };
 use tilo_actions::{
     ActionAddress, ActionContract, ActionDescriptor, ActionKind, ActionOutput, ActionParam,
@@ -73,6 +73,8 @@ use tokio::sync::Mutex as AsyncMutex;
 
 #[cfg(all(feature = "agents", not(target_arch = "wasm32")))]
 mod calendars;
+#[cfg(not(target_arch = "wasm32"))]
+mod connections;
 pub(super) mod host;
 #[cfg(not(target_arch = "wasm32"))]
 mod mail;
@@ -707,6 +709,23 @@ fn call_params() -> Vec<ActionParam> {
     ]
 }
 
+/// Who asks one of this device's own providers: the workspace the request
+/// came through, its caller, and the device the transport certified for it.
+type Asked<'a> = (Option<WorkspaceId>, &'a Caller, Option<&'a DeviceCert>);
+
+#[cfg(target_arch = "wasm32")]
+impl Workspaces {
+    /// A page keeps no connections of its own: the server of its person's
+    /// workspace connects for them.
+    fn connections_invoke(
+        _workspaces: &Self,
+        _asked: Asked<'_>,
+        _request: &InvokeRequest,
+    ) -> std::future::Ready<Result<Value, ActionHostError>> {
+        std::future::ready(Err(ActionHostError::UnknownAction))
+    }
+}
+
 /// Where a provider publishes its verbs: the provider and the kind of
 /// resource it publishes them on.
 #[derive(Clone, Copy)]
@@ -1172,8 +1191,8 @@ impl Workspaces {
 
     /// What `caller`, on the device `certificate` when the transport named
     /// it, may do here about workspace `workspace_id` (`None` when asked of
-    /// the host itself): the governance of the workspace it carries, their own
-    /// business in that workspace, and the host's operations when they are its
+    /// the serving device itself): the governance of the workspace it carries, their own
+    /// business in that workspace, and the serving device's operations when they are its
     /// person's.
     pub(super) async fn catalogue(
         &self,
@@ -1257,13 +1276,21 @@ impl Workspaces {
         {
             offer.add(telling::TELLING, "", telling::agent_rows(own));
         }
+        // An agent of a person's finds what it may read of the services
+        // that person connected. Adding one is the person's own, and no row.
+        #[cfg(not(target_arch = "wasm32"))]
+        if wants(person_connections::PROVIDER)
+            && Self::connects_as_agent((workspace_id, caller, certificate))
+        {
+            offer.add(connections::CONNECTIONS, "", connections::agent_rows());
+        }
         offer.page(query)
     }
 
     /// Run `request` from `caller`, on the device `certificate` when the
     /// transport named it, by the provider it names: a workspace's on the
-    /// workspace carrying it, the host's own on any workspace or asked of
-    /// the host itself (`None`).
+    /// workspace carrying it, the serving device's own on any workspace or asked of
+    /// the serving device itself (`None`).
     async fn invoke(
         &self,
         workspace_id: Option<WorkspaceId>,
@@ -1381,7 +1408,7 @@ impl Workspaces {
                     reason: error.to_string(),
                 })
             }
-            _ => Err(ActionHostError::UnknownAction),
+            _ => Self::connections_invoke(self, (workspace_id, caller, certificate), request).await,
         }
     }
 
@@ -1647,7 +1674,7 @@ impl Workspaces {
         let app = args.required_text("app")?.to_owned();
         let command = if action == governance::INSTALL_APP {
             let file = args.text("file")?.map(str::to_owned);
-            // Members fetch the file from this host: it must be here first.
+            // Members fetch the file from this holder: it must be here first.
             if let Some(file) = &file
                 && !self.keeps_app_file(workspace, file)
             {
@@ -1681,7 +1708,7 @@ impl Workspaces {
         Ok(json!({ "generation": done.generation, "running": running }))
     }
 
-    /// A piece of an app version's package file, for this host to keep and
+    /// A piece of an app version's package file, for this holder to keep and
     /// answer members with. Answers how many bytes are in, or that the
     /// whole file is.
     fn upload_app_piece(&self, workspace: &str, args: &Args) -> Result<Value, ActionHostError> {
@@ -2607,7 +2634,7 @@ fn mcp_value(workspaces: &Workspaces) -> Value {
 }
 
 /// The providers a relay that governs workspaces answers itself.
-const PROVIDERS: [&str; 8] = [
+const PROVIDERS: [&str; 9] = [
     WORKSPACE_GOVERNANCE_PROVIDER,
     HOST_ACTIONS_PROVIDER,
     mcp_server::PROVIDER,
@@ -2621,6 +2648,8 @@ const PROVIDERS: [&str; 8] = [
     person_telling::PROVIDER,
     // What the person's agents no longer ask them, in the same store.
     person_asking::PROVIDER,
+    // The services the person connected by their address.
+    person_connections::PROVIDER,
 ];
 
 /// What a relay that governs workspaces answers remote actions addressed to it
