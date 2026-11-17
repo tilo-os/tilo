@@ -613,6 +613,20 @@ impl Workspaces {
         }
     }
 
+    /// The workspaces `person`'s own list names that this server does not govern, each by
+    /// its id and the name the list gives it: what another server keeps for them, as a
+    /// device of theirs last said. Nothing this server governs is among them, whoever is in
+    /// it.
+    pub async fn kept_elsewhere(&self, person: &[u8; 32]) -> Vec<(String, String)> {
+        let here: std::collections::BTreeSet<String> = self
+            .list()
+            .await
+            .into_iter()
+            .map(|summary| summary.workspace)
+            .collect();
+        self.inner.personal.named_without(person, &here)
+    }
+
     /// Keep `list` as `device`'s person's list, already permitted to.
     pub(super) fn keep_personal(
         &self,
@@ -899,6 +913,24 @@ impl Workspaces {
     }
 }
 
+impl PersonalLists {
+    /// The workspaces `person`'s list names, without those `here` holds: each by its id and
+    /// the name the list gives it.
+    fn named_without(
+        &self,
+        person: &[u8; 32],
+        here: &std::collections::BTreeSet<String>,
+    ) -> Vec<(String, String)> {
+        self.of(person)
+            .list
+            .workspaces
+            .into_iter()
+            .filter(|kept| !here.contains(&kept.workspace))
+            .map(|kept| (kept.workspace, kept.name))
+            .collect()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -936,6 +968,44 @@ mod tests {
                     .cloned()
                     .unwrap_or_else(|| cert.device_label.clone())
             })
+    }
+
+    #[test]
+    fn a_persons_list_names_what_another_server_keeps_and_nothing_governed_here() {
+        let dir = tempfile::tempdir().unwrap();
+        let lists = PersonalLists::new(dir.path());
+        let root = SigningKey::from_bytes(&rand::random());
+        let person = root.verifying_key().to_bytes();
+        let desktop = key_of(&root, "studio");
+        let (firm, team) = (
+            "6f1c2d3e-4a5b-4c6d-8e7f-0a1b2c3d4e5f",
+            "0a1b2c3d-4e5f-4a6b-8c7d-9e8f7a6b5c4d",
+        );
+        let named = |workspace: &str, name: &str| -> PersonalWorkspace {
+            serde_json::from_value(serde_json::json!({"workspace": workspace, "name": name}))
+                .unwrap()
+        };
+        let list = PersonalList {
+            workspaces: vec![named(firm, "Firm"), named(team, "Team")],
+            ..PersonalList::default()
+        };
+        lists
+            .keep(&desktop, list, 1, &RevocationList::new())
+            .unwrap();
+        let here = std::collections::BTreeSet::from([team.to_owned()]);
+
+        assert_eq!(
+            lists.named_without(&person, &here),
+            [(firm.to_owned(), "Firm".to_owned())],
+            "a workspace this server governs is never told as another server's"
+        );
+        let other = SigningKey::from_bytes(&rand::random())
+            .verifying_key()
+            .to_bytes();
+        assert!(
+            lists.named_without(&other, &here).is_empty(),
+            "nobody is told what another person's list names"
+        );
     }
 
     #[test]
