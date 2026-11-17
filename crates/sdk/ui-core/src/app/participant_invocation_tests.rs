@@ -320,7 +320,7 @@ tilo_test_env::scenario! {
             .expect("attributed change");
         assert_eq!(
             context.invoker,
-            Some(tilo_actions::ActionInvoker::person("person:guest")),
+            Some(tilo_actions::ActionInvoker::person("guest")),
             "history names the delivered actor, never the envelope's"
         );
     }
