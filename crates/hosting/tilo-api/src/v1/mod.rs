@@ -239,6 +239,7 @@ async fn answer(
         ),
         Begun::Conflict(why) => refusal(&ApiError::new("idempotency_conflict", why)),
         Begun::Fresh => {
+            let running = idempotency::Running::new(&server.v1.remembered, &holder, key);
             let answered = caller.with_idempotency(key).handle(operation).await;
             // A pending answer is asked about again by a retry, and a refusal
             // the host may not repeat (busy, unreachable) is not kept. Nor is
@@ -268,7 +269,7 @@ async fn answer(
                 }
                 _ => None,
             };
-            server.v1.remembered.finish(&holder, key, kept);
+            running.finish(kept);
             reply(answered)
         }
     }

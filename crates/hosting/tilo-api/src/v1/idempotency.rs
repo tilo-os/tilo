@@ -146,6 +146,42 @@ impl Remembered {
     }
 }
 
+/// A request begun under a key, until its answer is kept: a request that never answers — its
+/// handler panicked, or its caller hung up and the request was dropped — is forgotten, so a
+/// retry runs it rather than waiting on it as still running.
+pub struct Running<'a> {
+    remembered: &'a Remembered,
+    holder: String,
+    key: String,
+    finished: bool,
+}
+
+impl<'a> Running<'a> {
+    #[must_use]
+    pub fn new(remembered: &'a Remembered, holder: &str, key: &str) -> Self {
+        Self {
+            remembered,
+            holder: holder.to_owned(),
+            key: key.to_owned(),
+            finished: false,
+        }
+    }
+
+    /// The request answered `answer` ([`Remembered::finish`]).
+    pub fn finish(mut self, answer: Option<Stored>) {
+        self.finished = true;
+        self.remembered.finish(&self.holder, &self.key, answer);
+    }
+}
+
+impl Drop for Running<'_> {
+    fn drop(&mut self) {
+        if !self.finished {
+            self.remembered.finish(&self.holder, &self.key, None);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -179,6 +215,18 @@ mod tests {
         let request = request_digest("POST", "/x", b"{}");
         assert_eq!(remembered.begin("g", "k", request), Begun::Fresh);
         remembered.finish("g", "k", None);
+        assert_eq!(remembered.begin("g", "k", request), Begun::Fresh);
+    }
+
+    #[test]
+    fn a_request_that_never_answers_is_forgotten_so_a_retry_runs_it() {
+        let remembered = Remembered::default();
+        let request = request_digest("POST", "/v1/workspaces", b"{}");
+        assert_eq!(remembered.begin("g", "k", request), Begun::Fresh);
+        let running = Running::new(&remembered, "g", "k");
+        assert_eq!(remembered.begin("g", "k", request), Begun::Running);
+        // Its handler panicked, or its caller hung up and the request was dropped.
+        drop(running);
         assert_eq!(remembered.begin("g", "k", request), Begun::Fresh);
     }
 
