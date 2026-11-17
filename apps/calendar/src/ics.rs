@@ -343,6 +343,25 @@ fn names_somebody(line: &ContentLine) -> bool {
     matches!(line.name.as_str(), "ORGANIZER" | "ATTENDEE")
 }
 
+/// Whether `text` leaves writing to somebody it names to the calendar server
+/// it is stored on: a line that names somebody says neither
+/// `SCHEDULE-AGENT=CLIENT` nor `SCHEDULE-AGENT=NONE` (RFC 6638), so a server
+/// that schedules by itself may write to them when the entry is rewritten.
+#[must_use]
+pub fn leaves_writing_to_its_server(text: &str) -> bool {
+    pim_lines::unfold(text)
+        .iter()
+        .filter_map(|line| ContentLine::parse(line))
+        .filter(names_somebody)
+        .any(|line| {
+            line.param("SCHEDULE-AGENT").is_none_or(|agent| {
+                !agent.values.iter().any(|value| {
+                    value.eq_ignore_ascii_case("CLIENT") || value.eq_ignore_ascii_case("NONE")
+                })
+            })
+        })
+}
+
 /// Append `line`, which names somebody, so that the server it is stored on
 /// writes to nobody about it: `SCHEDULE-AGENT=CLIENT` (RFC 6638) tells a
 /// server that schedules by itself that the calendar's own client does. What
@@ -2140,6 +2159,15 @@ mod tests {
             ["ada@example.test", "cy@example.test", "urn:uuid:5d2b"]
         );
         assert_eq!(people, named(invitation));
+        // And it says of itself whether anything is left to a server.
+        assert!(leaves_writing_to_its_server(invitation));
+        assert!(!leaves_writing_to_its_server(&kept));
+        assert!(!leaves_writing_to_its_server(
+            "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:a\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n"
+        ));
+        assert!(!leaves_writing_to_its_server(
+            "BEGIN:VEVENT\r\nATTENDEE;schedule-agent=none:mailto:bo@example.test\r\nEND:VEVENT\r\n"
+        ));
     }
 
     fn outlook_zone(tzid: &str) -> String {
