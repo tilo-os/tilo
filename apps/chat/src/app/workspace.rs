@@ -36,6 +36,18 @@ impl ChatApp {
         self
     }
 
+    /// Open the workspace's agents record later, when the workspace delivers one the window
+    /// did not hold as it opened: the record is the workspace's own, and whoever makes its first
+    /// agent does so from anywhere, at any time.
+    #[must_use]
+    pub(crate) fn with_agents_opener(
+        mut self,
+        opener: ui::framework::RecordOpener<ui::tilo_workspace_agent::WorkspaceAgents>,
+    ) -> Self {
+        self.agents_opener = Some(opener);
+        self
+    }
+
     /// Follow the workspace's agents record: what each agent is called, by its bare id.
     ///
     /// An agent is a member of the workspace like a person is, and its
@@ -44,6 +56,15 @@ impl ChatApp {
     /// names it always, so an author reads by its name whether or not it is
     /// running. Whether any name changed, so the window shows them again.
     pub(super) fn follow_agents(&mut self) -> bool {
+        if self.agents_document.is_none() {
+            // A record the workspace delivered after this window opened is opened here, once it
+            // arrives: the opener retries only when something new did.
+            let id = ui::resource::workspace::document_id(ui::tilo_workspace_agent::KIND);
+            self.agents_document = self
+                .agents_opener
+                .as_ref()
+                .and_then(|opener| opener.open(&id));
+        }
         let Some(record) = self.agents_document.clone() else {
             return false;
         };
