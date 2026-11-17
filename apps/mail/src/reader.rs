@@ -9,6 +9,7 @@
 mod html;
 
 use std::collections::{HashMap, HashSet};
+use std::fmt::Write as _;
 
 use taffy::{NodeId, TaffyTree};
 use vello::Scene;
@@ -1417,12 +1418,13 @@ impl Widget for MessageReader {
             if !shown.is_empty() {
                 shown.push_str("\n\n");
             }
-            shown.push_str(&format!(
+            let _ = write!(
+                shown,
                 "{}\n{}\n\n{}",
                 message.from.display(),
                 message.subject,
                 message.body
-            ));
+            );
         }
         cx.element("article");
         cx.text(ui::composition::TextLook::new(

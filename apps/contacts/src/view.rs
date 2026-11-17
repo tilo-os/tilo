@@ -357,6 +357,7 @@ impl Widget for ContactList {
                 words.push_str(&row.secondary);
             }
             let part = cx.part(&format!("contact{index}"), "ContactRow", rect);
+            part.tag = Some("li");
             part.own = Some(ui::composition::Own::Text(ui::composition::TextLook::new(
                 words,
                 &style,

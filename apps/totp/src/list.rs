@@ -204,7 +204,9 @@ impl AccountList {
             if rect.y1 < self.rect.y0 || rect.y0 > self.rect.y1 {
                 continue;
             }
-            let code = if self.is_revealed(account.id) {
+            let code = if !account.secret_is_valid() {
+                unkeyed_caption()
+            } else if self.is_revealed(account.id) {
                 totp::group_code(&totp::code_at(account, now))
             } else {
                 totp::group_code(&"\u{2022}".repeat(account.digits.clamp(4, 10) as usize))
@@ -217,6 +219,7 @@ impl AccountList {
             words.push('\n');
             words.push_str(&code);
             let part = cx.part(&format!("account{index}"), "TotpRow", rect);
+            part.tag = Some("li");
             part.own = Some(ui::composition::Own::Text(ui::composition::TextLook::new(
                 words,
                 &style,

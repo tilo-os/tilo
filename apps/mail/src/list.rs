@@ -909,6 +909,7 @@ impl Widget for MessageList {
                 continue;
             }
             let part = cx.part(&format!("row{index}"), "MessageRow", rect);
+            part.tag = Some("li");
             part.own = Some(ui::composition::Own::Text(ui::composition::TextLook::new(
                 format!("{} — {}\n{}", text.sender, text.subject, text.when),
                 &style,

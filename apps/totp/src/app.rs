@@ -2023,19 +2023,27 @@ pub(crate) mod tests {
         img.save(path).unwrap();
     }
 
+    fn rows_of<'a>(
+        node: &'a ui::composition::Composed,
+        out: &mut Vec<&'a ui::composition::Composed>,
+    ) {
+        if node.widget == "TotpRow" {
+            out.push(node);
+        }
+        for child in &node.children {
+            rows_of(child, out);
+        }
+    }
     #[test]
     fn the_list_composes_accounts_and_their_hidden_codes_as_text() {
-        let (app, state) = app_with_state();
+        let (mut app, state) = app_with_state();
+        app.refresh_list();
         let mut harness =
             ui::headless::FrameHarness::for_root(state, app, (600, 700), Theme::dark());
         harness.relayout();
         let composed = harness.composition();
-        let rows: Vec<&ui::composition::Composed> = composed
-            .root
-            .children
-            .iter()
-            .filter(|child| child.widget == "TotpRow")
-            .collect();
+        let mut rows = Vec::new();
+        rows_of(&composed.root, &mut rows);
         assert!(
             !rows.is_empty(),
             "the demo accounts are listed: {:#?}",

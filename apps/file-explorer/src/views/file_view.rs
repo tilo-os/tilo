@@ -828,6 +828,7 @@ impl Widget for FileView {
                 continue;
             }
             let part = cx.part(&format!("item{i}"), "FileEntry", rect);
+            part.tag = Some("li");
             part.own = Some(ui::composition::Own::Text(ui::composition::TextLook::new(
                 entry.name.clone(),
                 &style,

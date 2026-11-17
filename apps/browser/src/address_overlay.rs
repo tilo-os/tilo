@@ -255,7 +255,6 @@ impl Widget for AddressSuggestions {
             })
             .collect::<Vec<_>>()
             .join("\n\n");
-        cx.element("ul");
         cx.text(ui::composition::TextLook::new(
             shown,
             &style,

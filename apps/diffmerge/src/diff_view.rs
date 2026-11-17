@@ -3,6 +3,7 @@
 //! the scene itself and owns its scroll offset.
 
 use std::collections::HashMap;
+use std::fmt::Write as _;
 use std::sync::Arc;
 
 use taffy::prelude::*;
@@ -452,11 +453,12 @@ impl Widget for DiffView {
             let number = |line: Option<usize>| {
                 line.map_or_else(|| "    ".to_owned(), |n| format!("{n:>4} "))
             };
-            shown.push_str(&format!(
-                "{}{left}    {}{right}\n",
+            let _ = writeln!(
+                shown,
+                "{}{left}    {}{right}",
                 number(row.left_no),
                 number(row.right_no)
-            ));
+            );
         }
         cx.element("pre");
         let mut look =
@@ -1226,6 +1228,10 @@ pub(crate) mod performance_tests {
             view.model.rows.len()
         );
     }
+}
+#[cfg(test)]
+mod html_tests {
+    use super::*;
 
     #[test]
     fn the_diff_composes_both_sides_as_text() {
