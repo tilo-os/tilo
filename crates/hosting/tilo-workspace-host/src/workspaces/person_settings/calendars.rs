@@ -64,6 +64,9 @@ pub const SET_CATEGORIES: &str = "set-categories";
 const ASSISTANT_MAY: [&str; 6] = [LIST, SYNC, ENTRIES, FREE, ADD_INVITATION, SET_CATEGORIES];
 /// How old a copy may be before a read asks the server again.
 const FRESH_MS: i64 = 60_000;
+/// How old a copy may be before whoever waits on an entry's time asks the
+/// server again: an entry moved on its server is known here within that.
+const TIMES_FRESH_MS: i64 = 5 * 60_000;
 const ENTRY_TYPE: &str = "text/calendar; charset=utf-8";
 const MAX_ENTRY_BYTES: usize = 2 * 1024 * 1024;
 const LIMITS: Limits = Limits {
@@ -576,16 +579,21 @@ fn remove(root: &Path, account: &str) -> Result<Listed, String> {
 /// Bring the copies of `accounts` up to date when they are older than a
 /// reader should be answered from. A server that does not answer leaves
 /// its copy, with why.
-fn freshen(root: &Path, accounts: &[Account]) {
+fn freshen(root: &Path, accounts: &[Account], fresh_ms: i64) {
     for account in accounts {
-        if now_ms().saturating_sub(read_kept(root, &account.id).synced_at_ms) > FRESH_MS {
+        if now_ms().saturating_sub(read_kept(root, &account.id).synced_at_ms) > fresh_ms {
             let _ = sync(root, account);
         }
     }
 }
 
-fn entries(root: &Path, accounts: &[Account], asked: &SpanAsked) -> Result<Value, String> {
-    freshen(root, accounts);
+fn entries(
+    root: &Path,
+    accounts: &[Account],
+    asked: &SpanAsked,
+    fresh_ms: i64,
+) -> Result<Value, String> {
+    freshen(root, accounts, fresh_ms);
     let held = held(root, accounts);
     let events: Vec<&Event> = held.iter().map(|held| &held.event).collect();
     let mut answered = asked.answer(&events)?;
@@ -610,7 +618,7 @@ fn entries(root: &Path, accounts: &[Account], asked: &SpanAsked) -> Result<Value
 }
 
 fn free(root: &Path, accounts: &[Account], asked: &FreeAsked) -> Result<Value, String> {
-    freshen(root, accounts);
+    freshen(root, accounts, FRESH_MS);
     let held = held(root, accounts);
     let events: Vec<&Event> = held.iter().map(|held| &held.event).collect();
     serde_json::to_value(asked.answer(&events)?).map_err(|error| error.to_string())
@@ -760,7 +768,7 @@ fn set_categories(root: &Path, accounts: &[Account], asked: &Categories) -> Resu
         .map(|named| calendar::model::category(named))
         .collect::<Option<Vec<String>>>()
         .ok_or("a category is a few words of at most 64 characters")?;
-    freshen(root, accounts);
+    freshen(root, accounts, FRESH_MS);
     let held = held(root, accounts)
         .into_iter()
         .find(|held| held.event.id.to_string() == asked.entry)
@@ -824,6 +832,44 @@ impl Workspaces {
             }
             _ => false,
         }
+    }
+
+    /// Every occurrence between `from_ms` and `to_ms` in the calendar
+    /// accounts `person` named the agent `agent` of `workspace` for, each as
+    /// [`ENTRIES`] answers one: what an automation that waits on an entry's
+    /// time reads before it tells that agent. Nothing where they named it
+    /// for no calendar account, so an automation hands an agent nothing of a
+    /// calendar its person did not let it read. A copy older than five
+    /// minutes is brought up to date first, and a server that does not
+    /// answer leaves the copy as it stood.
+    ///
+    /// # Errors
+    /// The span does not read, or the read did not end.
+    pub async fn calendar_occurrences_for(
+        &self,
+        person: &[u8; 32],
+        workspace: &str,
+        agent: &str,
+        from_ms: i64,
+        to_ms: i64,
+    ) -> Result<Vec<Value>, String> {
+        let root = self.person_settings_root(person);
+        let named = accounts_of_assistant(&root, NamedAgent { workspace, agent });
+        let mut accounts = accounts_at(&root);
+        accounts.retain(|account| named.contains(&account.id));
+        if accounts.is_empty() {
+            return Ok(Vec::new());
+        }
+        let asked = SpanAsked::between_ms(from_ms, to_ms)
+            .ok_or_else(|| "a time no calendar reaches".to_owned())?;
+        off_thread(move || {
+            let mut read = entries(&root, &accounts, &asked, TIMES_FRESH_MS)?;
+            match read.get_mut("entries").map(Value::take) {
+                Some(Value::Array(occurrences)) => Ok(occurrences),
+                _ => Ok(Vec::new()),
+            }
+        })
+        .await
     }
 
     /// Add a calendar account with the sign-in a vault item keeps. A
@@ -947,7 +993,7 @@ impl Workspaces {
             }
             ENTRIES => {
                 let asked: SpanAsked = argument(request, "a span to read")?;
-                answer(&off_thread(move || entries(&root, &accounts, &asked)).await)
+                answer(&off_thread(move || entries(&root, &accounts, &asked, FRESH_MS)).await)
             }
             FREE => {
                 let asked: FreeAsked = argument(request, "a span to find free time in")?;
@@ -963,5 +1009,75 @@ impl Workspaces {
             }
             _ => Err(ActionError::UnknownAction),
         }
+    }
+}
+
+/// What a test of something that reads a person's calendars keeps of them
+/// without a calendar server at hand.
+#[cfg(any(test, feature = "test-support"))]
+impl Workspaces {
+    /// Keep a calendar account for `person` as if its server had been pulled
+    /// this moment: one calendar that holds `entries`, each the iCalendar
+    /// text of one entry, with the agent `named` (a workspace and the
+    /// agent's id there) named for the account when one is given. Answers
+    /// the account's id. Calling it again replaces what the calendar holds,
+    /// as the next pull does after another client changed it.
+    ///
+    /// # Errors
+    /// The account or the copy could not be kept.
+    pub fn keep_calendar_as_pulled(
+        &self,
+        person: &[u8; 32],
+        named: Option<(&str, &str)>,
+        entries: &[String],
+    ) -> Result<String, String> {
+        const SERVER: &str = "https://calendar.example.test/dav/";
+        const CALENDAR: &str = "https://calendar.example.test/dav/calendars/ada/work/";
+        let root = self.person_settings_root(person);
+        let id = account_id("ada", &server_of(SERVER)?);
+        let mut store = calendar::AccountStore::new();
+        store.upsert(CalendarAccount {
+            id: id.clone(),
+            config: CalDavConfig {
+                display_name: "Work".into(),
+                server_url: SERVER.into(),
+                username: "ada".into(),
+                password: "kept-for-a-test".into(),
+                oauth_account_id: None,
+            },
+            calendars: vec![RemoteCalendar {
+                id: CALENDAR.into(),
+                name: "Work".into(),
+                color: 0,
+                visible: true,
+                read_only: false,
+            }],
+            collapsed: false,
+        });
+        store.persist_in(&root).map_err(|error| error.to_string())?;
+        if let Some((workspace, agent)) = named {
+            let naming = tilo_actions::remote::person_accounts::AssistantAccess {
+                account: id.clone(),
+                agent: agent.to_owned(),
+                may: true,
+            };
+            super::say_assistant(&root, workspace, &naming)?;
+        }
+        let mut kept = Kept {
+            synced_at_ms: now_ms(),
+            ..Kept::default()
+        };
+        let calendar = kept.calendars.entry(CALENDAR.to_owned()).or_default();
+        for (place, ics) in entries.iter().enumerate() {
+            calendar.entries.insert(
+                format!("{CALENDAR}{place}.ics"),
+                KeptEntry {
+                    etag: None,
+                    ics: ics.clone(),
+                },
+            );
+        }
+        write_kept(&root, &id, &kept)?;
+        Ok(id)
     }
 }

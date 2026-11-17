@@ -682,8 +682,12 @@ fn described(setting_up: bool) -> Vec<ActionParam> {
             "when",
             "What starts it, as one line: `once at 2026-11-17T11:32:00Z` (a moment, with its \
              offset from UTC), `every day at 09:00`, `every Monday, Thursday at 17:30` (this \
-             host's clock), `every 3600 seconds`, or a change in the workspace as a Shortcut \
-             writes it.",
+             host's clock), `every 3600 seconds`, `15 minutes before \"entries.*.start\" in a \
+             \"tilo.accounts.calendars\" where categories is \"Travel\"` (a moment before, `at` \
+             or after the start or the end, `entries.*.end`, of each entry in its person's \
+             calendars, every occurrence of one that repeats; each `where` names a field of the \
+             entry and the value it holds, and what the assistant is told carries the entry), \
+             or a change in the workspace as a Shortcut writes it.",
         ),
         needed(
             "instruction",

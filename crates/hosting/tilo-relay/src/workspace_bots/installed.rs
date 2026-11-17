@@ -57,6 +57,8 @@ use tilo_content::{ContentStore, WorkspaceStores};
 // grant lets it settle.
 use tilo_automation::grant::OUTBOX_FIELD;
 use tilo_lock::MutexRecover as _;
+
+mod times;
 /// How long the runner waits with nothing to do before it looks again.
 const IDLE: Duration = Duration::from_secs(30);
 /// How long a key holder holds a bot schedule's lease before another may
@@ -141,6 +143,10 @@ struct Progress {
     /// workspace's governance.
     #[serde(default)]
     members: Option<BTreeMap<String, MemberMark>>,
+    /// What each trigger at a time a resource holds has answered, by the
+    /// trigger's place among the program's triggers.
+    #[serde(default)]
+    times: BTreeMap<usize, tilo_automation::resource_time::Answered>,
 }
 
 impl Progress {
@@ -237,6 +243,12 @@ pub struct BotRunner {
     /// The next fire time of the schedules this key holder holds, ms since
     /// the epoch, so its idle wait ends at it.
     next_schedule_ms: Option<i64>,
+    /// The person the program is carried out for, by their root key in hex,
+    /// when it is carried out for one.
+    person: Option<String>,
+    /// The next moment of a time a resource holds that the program waits
+    /// for, ms since the epoch, so its idle wait ends at it too.
+    next_time_ms: Option<i64>,
     /// The emoji pictures already kept for the connectors, by address.
     kept: Mutex<BTreeSet<String>>,
     /// Records of the workspace the bot follows that this host could not read
@@ -337,6 +349,8 @@ impl BotRunner {
             state_file,
             clock: Arc::new(tilo_clock::SystemClock),
             next_schedule_ms: None,
+            person: None,
+            next_time_ms: None,
             kept: Mutex::new(BTreeSet::new()),
             unreadable: Mutex::new(BTreeSet::new()),
             #[cfg(test)]
@@ -344,12 +358,14 @@ impl BotRunner {
         })
     }
 
-    /// Run the bot for `person` (hex root): the steps of its program that
-    /// ask the host itself, an instruction to that person's assistant, are
+    /// Carry the bot's program out for `person` (hex root), whose own
+    /// calendars its triggers may wait on: the steps of its program that ask
+    /// this holder itself, an instruction to that person's assistant, are
     /// answered through `steps` for them. A bot the operator installed runs
     /// for nobody and is offered none.
     #[must_use]
-    pub fn runs_for(self, person: String, steps: Arc<dyn HostSteps>) -> Self {
+    pub fn runs_for(mut self, person: String, steps: Arc<dyn HostSteps>) -> Self {
+        self.person = Some(person.clone());
         self.api.runs_for(person, steps);
         self
     }
@@ -427,7 +443,7 @@ impl BotRunner {
             .shortcut
             .triggers
             .iter()
-            .any(|trigger| Timed::of(trigger).is_none());
+            .any(|trigger| Timed::of(trigger).is_none() && !times::waits_on_a_time(trigger));
         loop {
             if let Err(error) = self.step().await {
                 tracing::warn!(installation = %self.bot.installation, %error, "bot runner did not finish a pass");
@@ -440,6 +456,7 @@ impl BotRunner {
                 .wake_at_ms()
                 .into_iter()
                 .chain(self.next_schedule_ms)
+                .chain(self.next_time_ms)
                 .min()
                 .map_or(IDLE, |at| {
                     Duration::from_millis(
@@ -545,6 +562,7 @@ impl BotRunner {
     /// trigger on the clock that has come.
     async fn take_in(&mut self, now_ms: i64) -> Result<Vec<Firing>, String> {
         let mut firings = self.schedule_firings(now_ms).await;
+        firings.extend(self.time_firings(now_ms).await);
         let armed = [Armed {
             firer: Firer::Bot {
                 installation: &self.bot.installation,

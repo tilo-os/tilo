@@ -45,6 +45,7 @@ pub mod invocation;
 pub mod path;
 pub mod program;
 pub mod requirements;
+pub mod resource_time;
 mod saved;
 pub mod scenario;
 pub mod schedule;

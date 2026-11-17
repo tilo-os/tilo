@@ -9,14 +9,14 @@ use crate::workspaces::person_model::scripted::{Asked, Linking, Reply, ScriptedP
 use crate::workspaces::person_model::{Interaction, ProviderProtocol};
 
 /// The id of the assistant a test's person keeps.
-const ASSISTANT: &str = "assistant";
+pub(super) const ASSISTANT: &str = "assistant";
 /// What the test's program asks its person's model.
 const QUESTION: &str = "Is this the first working day of the month?";
 
 /// `keeper` keeps an assistant in `workspace`, as their own device makes one:
 /// an agent in the workspace's record of its agents, with the most it may
 /// spend in a day.
-async fn keeps_an_assistant(
+pub(super) async fn keeps_an_assistant(
     workspaces: &Workspaces,
     workspace: &str,
     cert: &DeviceCert,
