@@ -1030,7 +1030,11 @@ async fn a_bridge_posts_under_another_name_signed_by_its_own_device() {
         .find(|message| message.text == "welcome!")
         .map(|message| message.author.clone())
         .expect("the bridge posted");
-    assert_eq!(post, tilo_resource::MemberId::bot(GREETER), "still the bot's");
+    assert_eq!(
+        post,
+        tilo_resource::MemberId::bot(GREETER),
+        "still the bot's"
+    );
     let shown: Vec<_> = AutoCommit::load(&bytes)
         .unwrap()
         .get_changes(&[])
