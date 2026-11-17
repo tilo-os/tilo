@@ -8,12 +8,12 @@
  * resource's path (`contacts/<resource>`): its attributes are the app's fields
  * (read-only ones `readonly`) and its methods are the app's actions, named in camel
  * case and taking the arguments the wire takes them under. An action that takes
- * longer answers a `Run`. A record is the object the wire carries, and an enum whose
+ * longer answers an `Invocation`. A record is the object the wire carries, and an enum whose
  * cases carry fields is an object whose tag the app's schema names. An action whose
  * name is one the interface already has is run with `action("…")`, which the file
  * says where it is. An undoable action that answers nothing also has a `<action>Many`,
 which applies it to every argument object of a list in a few all-or-nothing steps,
-all of them one run.
+all of them one invocation group.
  */
 
 import { resourceProxy } from "tilo-sdk";
@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.contacts@24bb7d60c312800c";
+export const SURFACE = "so.tilo.contacts@ad4d4c1b4ade24ee";
 
 export interface Address {
   id: string;
@@ -194,43 +194,51 @@ export interface Book extends tilo.Resource {
   }): Promise<void>;
 }
 
+/** The actions `Book` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const BOOK_ACTIONS = ["exportVcardContent"] as const;
+
 /** The `contacts.book` kind at `path`. */
 export function book(ws: tilo.Workspace, path: string): Book {
-  return resourceProxy(ws, path, SURFACE) as unknown as Book;
+  return resourceProxy(ws, path, SURFACE, BOOK_ACTIONS) as unknown as Book;
 }
 
 /** Contacts — `contacts.contacts`. */
 export interface Contacts extends tilo.Resource {
-  contacts: Contact[];
+  contacts: Array<tilo.Entry<Contact>>;
   readonly removed: string[];
   newContact(args: {
     name: string;
   }): Promise<void>;
-  /** Runs `new-contact` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `new-contact` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   newContactMany(items: NewContactArgs[]): Promise<tilo.ActionAnswer[]>;
   addContacts(args: {
     contacts: Contact[];
   }): Promise<void>;
-  /** Runs `add-contacts` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `add-contacts` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   addContactsMany(items: AddContactsArgs[]): Promise<tilo.ActionAnswer[]>;
   deleteContact(args: {
     contact: string;
   }): Promise<void>;
-  /** Runs `delete-contact` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `delete-contact` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   deleteContactMany(items: DeleteContactArgs[]): Promise<tilo.ActionAnswer[]>;
   mergeContacts(args: {
     contact: string;
     source: string;
     take_from_source: MergeField[];
     merged?: Contact;
-  }): Promise<tilo.Run | void>;
-  /** Runs `merge-contacts` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  }): Promise<void>;
+  /** Runs `merge-contacts` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   mergeContactsMany(items: MergeContactsArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 
+/** The actions `Contacts` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const CONTACTS_ACTIONS = ["newContact", "newContactMany", "addContacts", "addContactsMany", "deleteContact", "deleteContactMany", "mergeContacts", "mergeContactsMany"] as const;
+
 /** The `contacts.contacts` kind at `path`. */
 export function contacts(ws: tilo.Workspace, path: string): Contacts {
-  return resourceProxy(ws, path, SURFACE) as unknown as Contacts;
+  return resourceProxy(ws, path, SURFACE, CONTACTS_ACTIONS) as unknown as Contacts;
 }
 
 /** Contact identities — `tilo.contacts.identities`. */
@@ -240,12 +248,12 @@ export interface Identities extends tilo.Resource {
     person: string;
     label: string;
   }): Promise<void>;
-  /** Runs `project-contact` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `project-contact` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   projectContactMany(items: ProjectContactArgs[]): Promise<tilo.ActionAnswer[]>;
   removeContact(args: {
     person: string;
   }): Promise<void>;
-  /** Runs `remove-contact` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `remove-contact` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   removeContactMany(items: RemoveContactArgs[]): Promise<tilo.ActionAnswer[]>;
   confirmEndpoint(args: {
     person: string;
@@ -253,7 +261,7 @@ export interface Identities extends tilo.Resource {
     service: string;
     recipient: string;
   }): Promise<void>;
-  /** Runs `confirm-endpoint` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `confirm-endpoint` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   confirmEndpointMany(items: ConfirmEndpointArgs[]): Promise<tilo.ActionAnswer[]>;
   confirmAccount(args: {
     person: string;
@@ -263,7 +271,7 @@ export interface Identities extends tilo.Resource {
     recipient: string;
     revision: string;
   }): Promise<void>;
-  /** Runs `confirm-account` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `confirm-account` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   confirmAccountMany(items: ConfirmAccountArgs[]): Promise<tilo.ActionAnswer[]>;
   replaceEndpoint(args: {
     person: string;
@@ -272,7 +280,7 @@ export interface Identities extends tilo.Resource {
     service: string;
     recipient: string;
   }): Promise<void>;
-  /** Runs `replace-endpoint` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `replace-endpoint` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   replaceEndpointMany(items: ReplaceEndpointArgs[]): Promise<tilo.ActionAnswer[]>;
   replaceAccount(args: {
     person: string;
@@ -283,31 +291,31 @@ export interface Identities extends tilo.Resource {
     recipient: string;
     revision: string;
   }): Promise<void>;
-  /** Runs `replace-account` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `replace-account` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   replaceAccountMany(items: ReplaceAccountArgs[]): Promise<tilo.ActionAnswer[]>;
   projectPhones(args: {
     person: string;
     phones: string[];
   }): Promise<void>;
-  /** Runs `project-phones` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `project-phones` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   projectPhonesMany(items: ProjectPhonesArgs[]): Promise<tilo.ActionAnswer[]>;
   projectEmails(args: {
     person: string;
     emails: string[];
   }): Promise<void>;
-  /** Runs `project-emails` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `project-emails` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   projectEmailsMany(items: ProjectEmailsArgs[]): Promise<tilo.ActionAnswer[]>;
   projectContacts(args: {
     people: Projected[];
     removed: string[];
   }): Promise<void>;
-  /** Runs `project-contacts` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `project-contacts` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   projectContactsMany(items: ProjectContactsArgs[]): Promise<tilo.ActionAnswer[]>;
   forgetEndpoint(args: {
     person: string;
     endpoint: string;
   }): Promise<void>;
-  /** Runs `forget-endpoint` for each of `items`: one all-or-nothing step per call, all of them one run that History lists once and one undo takes back. */
+  /** Runs `forget-endpoint` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   forgetEndpointMany(items: ForgetEndpointArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 

@@ -203,7 +203,7 @@ ForgetEndpointArgs = TypedDict("ForgetEndpointArgs", {
 
 class Book(Resource):
     """Contacts — `contacts.book`."""
-    __surface__ = "so.tilo.contacts@24bb7d60c312800c"
+    __surface__ = "so.tilo.contacts@ad4d4c1b4ade24ee"
     def export_vcard_content(self,
         *,
         contact: str | None = None,
@@ -217,11 +217,15 @@ class Book(Resource):
             args["name"] = name
         return self.action("export-vcard-content", **args)
 
+    # The actions a call reaches before the resource is read: `await tracker.create(...)`
+    # needs no `load()` first.
+    __actions__ = frozenset({"export_vcard_content"})
+
 
 class Contacts(Resource):
     """Contacts — `contacts.contacts`."""
-    __surface__ = "so.tilo.contacts@24bb7d60c312800c"
-    contacts: list[Contact]
+    __surface__ = "so.tilo.contacts@ad4d4c1b4ade24ee"
+    contacts: list[Entry[Contact]]
     @property
     def removed(self) -> list[str]:
         """Read only."""
@@ -257,7 +261,7 @@ class Contacts(Resource):
         source: str,
         take_from_source: list[MergeField],
         merged: Contact | None = None,
-    ) -> Run | None:
+    ) -> None:
         """Runs the app's action."""
         args: dict[str, Any] = {}
         args["contact"] = contact
@@ -271,11 +275,15 @@ class Contacts(Resource):
         """Runs `merge-contacts` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("merge-contacts", items)
 
+    # The actions a call reaches before the resource is read: `await tracker.create(...)`
+    # needs no `load()` first.
+    __actions__ = frozenset({"new_contact", "new_contact_many", "add_contacts", "add_contacts_many", "delete_contact", "delete_contact_many", "merge_contacts", "merge_contacts_many"})
+
 
 class Identities(Resource):
     """Contact identities — `tilo.contacts.identities`."""
-    __surface__ = "so.tilo.contacts@24bb7d60c312800c"
-    people: list[Person]
+    __surface__ = "so.tilo.contacts@ad4d4c1b4ade24ee"
+    people: list[Entry[Person]]
 
     def project_contact(self,
         *,
