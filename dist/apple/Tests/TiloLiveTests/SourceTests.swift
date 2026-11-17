@@ -794,6 +794,35 @@ final class TiloSourceTests: XCTestCase {
         XCTAssertEqual(sent, [["kind": "agent", "id": "reed", "name": "Reed"]])
     }
 
+    /// As main's page did once in the proof against a site: it was in before it handed over its device's entry.
+    func testAPageThatHandsOverItsDevicesEntryAMomentAfterItIsInIsWaitedFor() async throws {
+        try await start(.assistant)
+        try await run("""
+            window.byKind = true; window.agents = [kept('reed', {name: 'Reed'})]; location.hash = '#/w/ws-1/so.tilo.chat'; enter(false);
+            setTimeout(() => enter(true), 700)
+            """)
+        try await until("nothing more stands in the way") { self.setups.last == .ready }
+        XCTAssertFalse(setups.contains { if case .noAssistant = $0 { true } else { false } })
+        try await source.send(Draft(text: "Hello"), to: .main)
+        let sent = try await sentTo()
+        XCTAssertEqual(sent, [["kind": "agent", "id": "reed", "name": "Reed"]])
+    }
+
+    func testAnUnansweredAskForThePersonsOwnWorkspaceIsAskedAgainAndTheAssistantIsMadeThere() async throws {
+        try await start(.assistant, livesInOwn: true)
+        // Her server does not say at first which workspace is her own; a moment later it does.
+        try await run("""
+            window.byKind = true; window.agents = [];
+            const own = await device.ownWorkspace();
+            window.noOwn = true; location.hash = '#/@' + own.origin.slice(8) + '/w/' + own.id + '/so.tilo.chat'; enter(true);
+            setTimeout(() => { window.noOwn = false; }, 500)
+            """)
+        try await until("nothing more stands in the way") { self.setups.last == .ready }
+        XCTAssertFalse(setups.contains { if case .noAssistant = $0 { true } else { false } })
+        let made = try await agentsKept()
+        XCTAssertEqual(made, #"[["assistant",true]]"#)
+    }
+
     func testWhereTheServerRefusesToMakeOneTheMainChatSaysWhyAndAskingAgainMakesIt() async throws {
         try await start(.assistant)
         try await run("window.byKind = true; window.agents = []; window.mayNotMake = true; location.hash = '#/w/ws-1/so.tilo.chat'; enter(true)")

@@ -232,7 +232,7 @@ public final class TiloEngine: NSObject {
     }
 
     /// The page's next word of a change: `false` when none came within `patience`.
-    func nextChange(within patience: Duration) async -> Bool {
+    public func nextChange(within patience: Duration) async -> Bool {
         let id = UUID()
         let timer = Task { [weak self] in
             try? await Task.sleep(for: patience)

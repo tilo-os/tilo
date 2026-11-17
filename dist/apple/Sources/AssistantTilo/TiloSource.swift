@@ -252,12 +252,15 @@ public final class TiloSource: AssistantSource {
             root = whose.person
             // The assistant lives in the person's own workspace. A device is let in where its
             // link leads, so it goes to the person's own once, where the page says which it is.
-            if livesInOwn, !soughtOwn {
-                soughtOwn = true
-                ownRoute = (try? await engine.ownWorkspace())?.route
-                if let ownRoute, EngineAddress.isElsewhere(route, than: ownRoute) {
-                    try? engine.open(route: ownRoute)
-                    return
+            if livesInOwn {
+                // An ask that went unanswered is made again the next time the page is in.
+                if ownRoute == nil { ownRoute = (try? await engine.ownWorkspace())?.route }
+                if !soughtOwn, let ownRoute {
+                    soughtOwn = true
+                    if EngineAddress.isElsewhere(route, than: ownRoute) {
+                        try? engine.open(route: ownRoute)
+                        return
+                    }
                 }
             }
         }
@@ -379,6 +382,23 @@ public final class TiloSource: AssistantSource {
         throw unread
     }
 
+    /// The workspace's agents as its server says them. A page that is in hands its device's
+    /// entry over a moment later, and until then nothing can be asked of its server: that
+    /// moment is waited for, three seconds at most.
+    private func agentsWhenOffered() async throws -> [JSON] {
+        let end = ContinuousClock.now.advanced(by: .seconds(3))
+        while true {
+            do {
+                return try await engine.whenPublished(within: .seconds(6)) { try await self.agentsOnServer() }
+            } catch let problem as TiloEngine.Problem {
+                guard case .refused(code: "unavailable", reason: _) = problem, ContinuousClock.now < end,
+                      case .open = engine.state, (try? await engine.whose()) == nil
+                else { throw problem }
+                _ = await engine.nextChange(within: .milliseconds(500))
+            }
+        }
+    }
+
     /// The person's assistant among a workspace's agents: the active one they keep that no
     /// outside client connects as and that is nobody's sub-agent, the earliest made.
     private static func assistant(among all: [JSON], of person: String) -> JSON? {
@@ -414,10 +434,22 @@ public final class TiloSource: AssistantSource {
         defer { finding = false }
         setups.set(.findingAssistant)
         do {
-            var all = try await engine.whenPublished(within: .seconds(6)) { try await self.agentsOnServer() }
+            var all = try await agentsWhenOffered()
             if TiloSource.assistant(among: all, of: me) == nil {
                 // An assistant lives in its person's own workspace: none is made anywhere else.
+                // Where the server did not say which workspace that is, it is asked once more.
+                if livesInOwn, !standsInOwn, ownRoute == nil, case .open(let route) = engine.state,
+                   let own = try? await engine.whenPublished(within: .seconds(4), { try await self.engine.ownWorkspace() }) {
+                    ownRoute = own.route
+                    if EngineAddress.isElsewhere(route, than: own.route) {
+                        soughtOwn = true
+                        try? engine.open(route: own.route)
+                        return
+                    }
+                    standsInOwn = true
+                }
                 guard !livesInOwn || standsInOwn else {
+                    if startedOver { return }
                     setups.set(.noAssistant(TiloSource.notInOwn))
                     return
                 }
