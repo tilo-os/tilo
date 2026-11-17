@@ -22,6 +22,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 use tilo_actions::ActionKey;
 use tilo_actions::params::{ActionParam, ParamType};
+use tilo_actions::remote::person_telling::Kind;
 use tilo_agent::transform::MAX_PROMPT_BYTES;
 use tilo_automation::schedule::Timed;
 use tilo_automation::{
@@ -44,6 +45,24 @@ pub const MIN_PERIOD_SECS: u64 = 60;
 /// written into the program's text, so no word of it is read as a
 /// placeholder.
 pub const INSTRUCTION_INPUT: &str = "instruction";
+/// What a word that names no way an event's result is told is answered.
+const TOLD_AS: &str = "an event's result is told as `reminder`, `brief` or `news`";
+
+/// How an event's result is told, as the word `said` names it: `reminder`,
+/// `brief` or `news`. None for an empty word, which says nothing.
+///
+/// # Errors
+/// The word names no way an event's result is told. A question is none: it
+/// is asked by the work itself, and waits for its answer.
+pub fn told_as_of(said: &str) -> Result<Option<Kind>, String> {
+    match said.trim().to_ascii_lowercase().as_str() {
+        "" => Ok(None),
+        "reminder" => Ok(Some(Kind::Reminder)),
+        "brief" => Ok(Some(Kind::Brief)),
+        "news" => Ok(Some(Kind::News)),
+        _ => Err(TOLD_AS.to_owned()),
+    }
+}
 
 /// One event, as its person or their assistant described it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -65,6 +84,11 @@ pub struct Definition {
     pub every: Option<u64>,
     /// What its person's assistant is told when it goes on.
     pub instruction: String,
+    /// How its result is told to its person, where they or their assistant
+    /// said: as a reminder, a brief or news. Left out, a moment is a
+    /// reminder and everything else is news ([`Self::tells_as`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub told_as: Option<Kind>,
     /// When it was set up, ms since the epoch.
     pub set_up_at_ms: i64,
 }
@@ -110,8 +134,26 @@ impl Definition {
             Some(1) | None => None,
             every => every,
         };
+        if self.told_as == Some(Kind::Question) {
+            return Err(TOLD_AS.to_owned());
+        }
         self.when = tilo_automation::text::trigger_line(&self.trigger()?);
         Ok(self)
+    }
+
+    /// What its result is told to its person as: what they or their
+    /// assistant said, else a reminder for a moment and news for everything
+    /// else. Whether it then reaches them is their own rule's to say, never
+    /// the event's.
+    #[must_use]
+    pub fn tells_as(&self) -> Kind {
+        self.told_as.unwrap_or_else(|| {
+            if matches!(self.trigger(), Ok(TriggerSpec::Once { .. })) {
+                Kind::Reminder
+            } else {
+                Kind::News
+            }
+        })
     }
 
     /// What starts the event.
@@ -336,6 +378,7 @@ mod tests {
             only_if: Some("  ".into()),
             every: Some(1),
             instruction: " Say that it is time to call home. ".into(),
+            told_as: None,
             set_up_at_ms: 1,
         }
     }
@@ -545,6 +588,77 @@ mod tests {
             let refused = watching(when).err().unwrap_or_default();
             assert!(refused.contains(says), "{when}: {refused}");
         }
+    }
+
+    #[test]
+    fn an_event_says_how_its_result_is_told_and_keeps_the_word_both_ways() {
+        let checked = |event: Definition| event.checked().unwrap_or_else(|error| panic!("{error}"));
+        // Nothing said: a moment is a reminder, and what comes round is news.
+        let moment = checked(reminder());
+        assert_eq!((moment.told_as, moment.tells_as()), (None, Kind::Reminder));
+        let daily = checked(Definition {
+            when: "every day at 09:00".into(),
+            ..reminder()
+        });
+        assert_eq!((daily.told_as, daily.tells_as()), (None, Kind::News));
+        let kept = serde_json::to_value(&daily).unwrap_or_default();
+        assert!(
+            kept.get("toldAs").is_none(),
+            "nothing said is nothing kept: {kept}"
+        );
+
+        // Said, the word decides whatever starts the event, and what is kept
+        // of it reads back as the same event.
+        for (said, told) in [
+            ("brief", Kind::Brief),
+            ("news", Kind::News),
+            ("reminder", Kind::Reminder),
+        ] {
+            for when in ["every day at 09:00", "once at 2026-11-17T11:32:00Z"] {
+                let event = checked(Definition {
+                    when: when.into(),
+                    told_as: told_as_of(said).unwrap_or_else(|error| panic!("{error}")),
+                    ..reminder()
+                });
+                assert_eq!(event.tells_as(), told, "{said}, {when}");
+                let kept = serde_json::to_value(&event).unwrap_or_default();
+                assert_eq!(kept["toldAs"], json!(said), "{kept}");
+                assert_eq!(
+                    serde_json::from_value::<Definition>(kept).ok(),
+                    Some(event),
+                    "{said}, {when}"
+                );
+            }
+        }
+        // What was kept before an event could say it reads as one that says
+        // nothing.
+        let before = serde_json::from_value::<Definition>(json!({
+            "id": "7f0c1c0e-5a1b-4a52-9d0f-0d6f3a1b2c3d",
+            "name": "Call home",
+            "when": "once at 2026-11-17T11:32:00Z",
+            "instruction": "Say that it is time to call home.",
+            "setUpAtMs": 1,
+        }))
+        .unwrap_or_else(|error| panic!("{error}"));
+        assert_eq!((before.told_as, before.tells_as()), (None, Kind::Reminder));
+
+        // The word is read whatever its case, and an empty one says nothing.
+        assert_eq!(told_as_of(" Brief "), Ok(Some(Kind::Brief)));
+        assert_eq!(told_as_of("  "), Ok(None));
+        // A word that names no way an event's result is told is refused in
+        // words. A question is none: no event makes one of its result.
+        for wrong in ["question", "important", "loud"] {
+            let refused = told_as_of(wrong).err().unwrap_or_default();
+            assert!(refused.contains("`brief`"), "{wrong}: {refused}");
+        }
+        let asking = Definition {
+            told_as: Some(Kind::Question),
+            ..reminder()
+        }
+        .checked()
+        .err()
+        .unwrap_or_default();
+        assert!(asking.contains("`brief`"), "{asking}");
     }
 
     #[test]

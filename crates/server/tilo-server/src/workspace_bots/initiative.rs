@@ -1422,7 +1422,7 @@ fn for_the_assistant() -> Vec<Offered> {
                 "event",
                 ParamType::Object,
                 "The event to set up, as `set-up` of tilo.events takes it: name, when, \
-                 instruction, and optionally onlyIf, every, purpose, style, guidance.",
+                 instruction, and optionally onlyIf, every, toldAs, purpose, style, guidance.",
             ),
         ],
         kind: ActionKind::Undoable,

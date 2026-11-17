@@ -20,6 +20,12 @@
 //! action reaches an event of anyone but the asker's own person. Letting an
 //! event's work act unasked ([`person_events::PERMIT`]) is the person's
 //! alone: their agent is refused it.
+//!
+//! An event says how its result is told to its person
+//! ([`Definition::tells_as`]), and the turn it starts carries that as its
+//! cause. It says so only of its own person's event: nothing here names
+//! anyone else, and whether a thing then reaches that person, and through
+//! their do-not-disturb, stays their own rule's to say.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -36,13 +42,14 @@ use tilo_actions::params::{ActionParam, ParamType};
 use tilo_actions::remote::person_events::{
     self, Change, EventView, Events, Named, Permission, SetUp, Sort,
 };
+use tilo_actions::remote::person_telling::Kind;
 use tilo_actions::remote::{
     ActionCallError, Caller, CataloguePage, CatalogueProvider, CatalogueQuery, CatalogueResource,
     CatalogueRow, InvocationReceipt, InvokeArgument, InvokeRequest, Pending, ReceiptStatus,
     RemoteActionMessage,
 };
 use tilo_actions::{ActionOutput, ExecutionLocus, OperationKind};
-use tilo_agent_session::bot::event::Definition;
+use tilo_agent_session::bot::event::{Definition, told_as_of};
 use tilo_agent_session::bot::host_steps::{HostStepError, HostSteps, Keeps as _};
 use tilo_agent_session::bot::kept::{self, NoteChange};
 use tilo_automation::TriggerSpec;
@@ -175,10 +182,10 @@ impl PersonEvents {
             |actions: tilo_agent_session::workspace_actions::WorkspaceActions| -> StepsFor {
                 let workspaces = workspaces.clone();
                 Arc::new(move |event: &Definition| {
-                    let kind = if matches!(event.trigger(), Ok(TriggerSpec::Once { .. })) {
-                        assistant::REMINDER
-                    } else {
-                        assistant::EVENT
+                    let kind = match event.tells_as() {
+                        Kind::Reminder => assistant::REMINDER,
+                        Kind::Brief => assistant::BRIEF,
+                        Kind::Question | Kind::News => assistant::EVENT,
                     };
                     assistant::steps_starting_turns(
                         workspaces.clone(),
@@ -517,6 +524,7 @@ impl PersonEvents {
             only_if: asked.only_if,
             every: asked.every,
             instruction: asked.instruction,
+            told_as: told_as_of(asked.told_as.as_deref().unwrap_or_default()).map_err(refused)?,
             set_up_at_ms: tilo_clock::unix_now_ms_i64(),
         }
         .checked()
@@ -565,6 +573,9 @@ impl PersonEvents {
         }
         if let Some(instruction) = asked.instruction {
             definition.instruction = instruction;
+        }
+        if let Some(said) = asked.told_as {
+            definition.told_as = told_as_of(&said).map_err(refused)?;
         }
         let definition = definition.checked().map_err(refused)?;
         watched_address(&definition).map_err(refused)?;
@@ -658,6 +669,7 @@ fn view(event: &Running) -> EventView {
         every: definition.every,
         count: kept.counts().get("").copied().unwrap_or(0),
         instruction: definition.instruction.clone(),
+        told_as: definition.told_as,
         note: kept::note_value(kept.note()),
         on,
         permits: kept.permits().to_vec(),
@@ -793,6 +805,16 @@ fn described(setting_up: bool) -> Vec<ActionParam> {
             "every",
             ParamType::Integer,
             "Go on only every so many times: 10 for every tenth. 1 is every time.",
+        ),
+        ActionParam::optional(
+            "toldAs",
+            ParamType::Text,
+            "How its result is told to your person: `brief` reaches them with a notice every \
+             time it fires, as a reminder does; `news` stays in their list and reaches them \
+             only where their own rule calls it important; `reminder` is something they asked \
+             to be reminded of. Left out, a moment (`once at`) is a reminder and everything \
+             else is news. Say `brief` only where your person asked to be told every time. \
+             Empty takes the word away.",
         ),
         ActionParam::optional(
             "purpose",

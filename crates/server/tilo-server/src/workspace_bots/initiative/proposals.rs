@@ -16,7 +16,7 @@ use tilo_actions::remote::person_events::SetUp;
 use tilo_actions::remote::person_initiative::{
     self, Kind, Proposal, Proposals, Propose, ProposedTask, State,
 };
-use tilo_agent_session::bot::event::Definition;
+use tilo_agent_session::bot::event::{Definition, told_as_of};
 
 /// The most proposals kept for a person. Past it the oldest that were
 /// decided go; what still waits is never dropped.
@@ -108,6 +108,7 @@ fn event_checked(event: SetUp) -> Result<SetUp, String> {
         only_if: event.only_if.clone(),
         every: event.every,
         instruction: event.instruction.clone(),
+        told_as: told_as_of(event.told_as.as_deref().unwrap_or_default())?,
         set_up_at_ms: 0,
     }
     .checked()?;
