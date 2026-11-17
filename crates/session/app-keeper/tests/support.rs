@@ -227,8 +227,13 @@ impl Rig {
         self.attach_desktop(compositor);
     }
 
-    fn attach_desktop(&mut self, mut compositor: Compositor) {
-        let socket = compositor.connect_client().expect("desktop connection");
+    fn attach_desktop(&mut self, compositor: Compositor) {
+        // As the session connects a keeper: a connection it hands over itself, for the keeper's
+        // process, which is this one in a test.
+        let socket = compositor
+            .client_connector()
+            .connect_for(std::process::id())
+            .expect("desktop connection");
         self.keeper.attach(socket).expect("attach");
         self.desktop = Some(compositor);
     }

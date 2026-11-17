@@ -962,7 +962,9 @@ made, instead of crashing a software renderer that maps it. A tablet tool's
 hardware identity reaches a client whole: both 64-bit values are sent as
 their two uint32 words. An output's
 description can be set, beyond what make, model and name derive. A drag
-still open does not keep the display (and its clients' sockets) alive. Five
+still open does not keep the display (and its clients' sockets) alive. A compositor
+names the client that may set a selection without keyboard focus, which is how an
+app keeper re-asserts what its app owned across a desktop restart. Five
 imports and a cast are fixed so it builds without warnings. See
 `vendor/smithay/TILO-PATCH.md` for the details and when to drop each change.
 

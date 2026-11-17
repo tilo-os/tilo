@@ -780,6 +780,10 @@ impl State {
         self.drop_unseen_outputs();
         self.desktop_data_device();
         self.desktop_primary_selection();
+        // The app's own selections are offered to the desktop it just attached to, before its
+        // windows get the focus: a paste into anything else first must still find them.
+        self.reassert_owner();
+        self.primary_reassert_owner();
         self.desktop_text_input();
         self.desktop_pointer_constraints();
         self.desktop_relative_pointers();

@@ -455,3 +455,15 @@ desktop went away from that socket closing, so nothing may outlive the drop.
 sends.
 
 Remove this once upstream does not hold the display in a grab.
+## A client the compositor names may set a selection without focus
+
+`wl_data_device.set_selection` and the primary selection's are taken only from the client with
+keyboard focus (and the focus it just left). An app keeper re-asserts what its app owned on the
+desktop that went away as soon as the new desktop attaches, before any window of the app has the
+focus, so the compositor needs a way to name that client itself: `SelectionHandler::
+may_set_selection_without_focus(ty, client, serial)`, asked when the focus rule refuses, with the
+request's serial left to the compositor's meaning. Both `SetSelection` requests in
+`src/wayland/selection/data_device/device.rs` and `src/wayland/selection/primary_selection/
+device.rs` ask it. The compositor bounds the exception; the default refuses.
+
+Remove this once upstream offers a protocol by which a kept client may re-assert a selection.

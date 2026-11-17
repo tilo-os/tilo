@@ -24,7 +24,9 @@ use tilo_compositor::clipboard_history::{
 use tilo_compositor::{Compositor, Selection, StackPolicy};
 use tilo_session_core::surface::{HostLayer, SurfaceHost};
 
-use crate::harness::{TestClient, headless, mapped_client, pump_one as pump, settle};
+use crate::harness::{
+    TestClient, headless, mapped_client, pump as pump_many, pump_one as pump, settle,
+};
 
 /// Offer `formats` as the clipboard, serving `payload` for each.
 fn copy(client: &mut TestClient, formats: &[&str], payload: &[u8]) {
@@ -221,4 +223,204 @@ fn a_clients_copy_is_read_as_its_bytes_arrive_and_secrets_are_kept_out() {
         1,
         "only the copy the person may keep is kept"
     );
+}
+
+/// Set the selection from a connection the session handed to an app keeper, with the time its
+/// app made the copy.
+fn claim(client: &mut TestClient, formats: &[&str], payload: &[u8], at: u32) {
+    let source = client.data_source(formats, payload);
+    client
+        .seen
+        .data_device
+        .as_ref()
+        .unwrap()
+        .set_selection(Some(&source), at);
+}
+
+/// Read the clipboard through the compositor, letting `client` answer as the loop turns.
+fn read(compositor: &mut Compositor, client: &mut TestClient) -> Vec<u8> {
+    let mut pull = compositor
+        .pull_selection(Selection::Clipboard, TEXT_MIME)
+        .expect("the read starts");
+    for _ in 0..500 {
+        match pull.drain() {
+            Pulled::Ready(bytes) => return bytes,
+            Pulled::Pending => {
+                client.exchange();
+                compositor
+                    .dispatch(Duration::from_millis(2))
+                    .expect("dispatch");
+            }
+            Pulled::Lost => panic!("the copy was lost"),
+        }
+    }
+    panic!("the copy never arrived");
+}
+
+/// A client with a window that holds the keyboard, whose own writes are not part of a test.
+fn focused(compositor: &mut Compositor) -> TestClient {
+    let mut client = mapped_client(compositor, "editor", (200, 100), [0, 255, 0, 255]);
+    client.own_data_device(compositor);
+    pump(compositor, &mut client, |_, client| {
+        client.seen.keyboard_focused
+    });
+    client
+}
+
+/// A connection the session handed to the process `pid`, with its data device.
+fn handed(compositor: &mut Compositor) -> TestClient {
+    let mut client = TestClient::connect_for(compositor, std::process::id());
+    pump(compositor, &mut client, |_, client| {
+        client.seen.seat.is_some()
+    });
+    client.own_data_device(compositor);
+    client
+}
+
+#[test]
+fn a_kept_client_offers_its_selection_before_its_window_has_the_focus() {
+    let mut compositor = headless(Box::new(StackPolicy));
+    let mut editor = focused(&mut compositor);
+    let mut kept = handed(&mut compositor);
+    assert!(kept.seen.seat.is_some(), "a seat for the handed connection");
+
+    // The app behind the keeper copied on its last desktop; the new one has nothing, and the app
+    // has not been focused yet.
+    claim(&mut kept, &[TEXT_MIME], b"kept text", 1_000);
+    pump_many(
+        &mut compositor,
+        &mut [&mut editor, &mut kept],
+        |compositor, _| {
+            compositor
+                .selection_formats(Selection::Clipboard)
+                .iter()
+                .any(|mime| mime == TEXT_MIME)
+        },
+    );
+    assert_eq!(
+        compositor.selection_formats(Selection::Clipboard),
+        [TEXT_MIME.to_owned()]
+    );
+    assert_eq!(read(&mut compositor, &mut kept), b"kept text");
+}
+
+#[test]
+fn an_ordinary_client_cannot_set_a_selection_without_focus() {
+    let mut compositor = headless(Box::new(StackPolicy));
+    let _editor = focused(&mut compositor);
+    let mut other = TestClient::connect(&mut compositor);
+    pump(&mut compositor, &mut other, |_, client| {
+        client.seen.seat.is_some()
+    });
+    other.own_data_device(&mut compositor);
+    let before = compositor.selection_changes(Selection::Clipboard);
+
+    let source = other.data_source(&[TEXT_MIME], b"not allowed");
+    other
+        .seen
+        .data_device
+        .as_ref()
+        .unwrap()
+        .set_selection(Some(&source), 0);
+    settle(&mut compositor, &mut other);
+    assert_eq!(
+        compositor.selection_changes(Selection::Clipboard),
+        before,
+        "a client without the focus cannot copy"
+    );
+    assert!(
+        compositor
+            .selection_formats(Selection::Clipboard)
+            .is_empty()
+    );
+}
+
+#[test]
+fn a_kept_clients_claim_loses_to_a_copy_made_first() {
+    let mut compositor = headless(Box::new(StackPolicy));
+    let mut editor = focused(&mut compositor);
+    let mut kept = handed(&mut compositor);
+    copy(&mut editor, &[TEXT_MIME], b"copied first");
+    pump(&mut compositor, &mut editor, |compositor, _| {
+        compositor
+            .selection_formats(Selection::Clipboard)
+            .iter()
+            .any(|mime| mime == TEXT_MIME)
+    });
+
+    claim(&mut kept, &[TEXT_MIME], b"kept text", 1_000);
+    settle(&mut compositor, &mut kept);
+    assert_eq!(
+        compositor.selection_changes(Selection::Clipboard),
+        1,
+        "the keeper's claim did not take the selection"
+    );
+    assert_eq!(read(&mut compositor, &mut editor), b"copied first");
+}
+
+#[test]
+fn the_kept_client_whose_app_copied_last_wins() {
+    // Two keepers claim in either order: the time the copy was made decides, not the order the
+    // connections arrived in.
+    for newer_first in [true, false] {
+        let mut compositor = headless(Box::new(StackPolicy));
+        let mut editor = focused(&mut compositor);
+        let mut older = handed(&mut compositor);
+        let mut newer = handed(&mut compositor);
+        if newer_first {
+            claim(&mut newer, &[TEXT_MIME], b"copied later", 2_000);
+            settle(&mut compositor, &mut newer);
+            claim(&mut older, &[TEXT_MIME], b"copied earlier", 1_000);
+            settle(&mut compositor, &mut older);
+        } else {
+            claim(&mut older, &[TEXT_MIME], b"copied earlier", 1_000);
+            settle(&mut compositor, &mut older);
+            claim(&mut newer, &[TEXT_MIME], b"copied later", 2_000);
+            settle(&mut compositor, &mut newer);
+        }
+        pump_many(
+            &mut compositor,
+            &mut [&mut editor, &mut older, &mut newer],
+            |compositor, _| {
+                compositor
+                    .selection_formats(Selection::Clipboard)
+                    .iter()
+                    .any(|mime| mime == TEXT_MIME)
+            },
+        );
+        assert_eq!(
+            compositor.selection_formats(Selection::Clipboard),
+            [TEXT_MIME.to_owned()]
+        );
+        assert_eq!(
+            read(&mut compositor, &mut newer),
+            b"copied later",
+            "the app that copied last owns the clipboard, whichever keeper arrived last"
+        );
+    }
+}
+
+#[test]
+fn a_later_copy_replaces_a_kept_clients_claim() {
+    let mut compositor = headless(Box::new(StackPolicy));
+    let mut editor = focused(&mut compositor);
+    let mut kept = handed(&mut compositor);
+    claim(&mut kept, &[TEXT_MIME], b"kept text", 1_000);
+    pump_many(
+        &mut compositor,
+        &mut [&mut editor, &mut kept],
+        |compositor, _| {
+            compositor
+                .selection_formats(Selection::Clipboard)
+                .iter()
+                .any(|mime| mime == TEXT_MIME)
+        },
+    );
+
+    let before = compositor.selection_changes(Selection::Clipboard);
+    copy(&mut editor, &[TEXT_MIME], b"copied later");
+    pump(&mut compositor, &mut editor, |compositor, _| {
+        compositor.selection_changes(Selection::Clipboard) != before
+    });
+    assert_eq!(read(&mut compositor, &mut editor), b"copied later");
 }

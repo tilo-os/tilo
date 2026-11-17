@@ -60,19 +60,38 @@ fn an_apps_copy_reaches_the_desktop_and_pastes_after_a_restart() {
     );
 
     rig.attach_new(640, 480);
-    rig.pump(&mut [&mut app], |rig, _| !rig.windows().is_empty());
+    // The copy is on the new desktop before the app's window has been focused: a paste into
+    // another app first finds it.
     rig.pump(&mut [&mut app], |rig, _| {
         rig.desktop()
             .selection_formats(Selection::Clipboard)
             .iter()
             .any(|mime| mime == MIME)
     });
+    assert!(
+        !app.heard.keyboard_entered,
+        "the copy was offered before the kept app was focused"
+    );
     let reader = rig
         .desktop()
         .receive_selection(Selection::Clipboard, MIME)
         .expect("the app's copy was re-offered to the new desktop");
     assert_eq!(read(&mut rig, &mut app, reader), b"kept text");
     assert_eq!(app.heard.sent, [MIME, MIME]);
+
+    // A new window comes back, and a copy made elsewhere replaces what the kept app had.
+    rig.pump(&mut [&mut app], |rig, _| !rig.windows().is_empty());
+    rig.desktop()
+        .set_selection(
+            Selection::Clipboard,
+            vec![(MIME.to_owned(), b"copied elsewhere".to_vec())],
+        )
+        .expect("the desktop sets a selection");
+    let reader = rig
+        .desktop()
+        .receive_selection(Selection::Clipboard, MIME)
+        .expect("the newer copy is what the desktop serves");
+    assert_eq!(read(&mut rig, &mut app, reader), b"copied elsewhere");
 }
 
 #[test]
@@ -155,18 +174,22 @@ fn the_primary_selection_crosses_a_restart_too() {
     rig.settle(&mut [&mut app]);
     assert!(app.heard.primary_selection.is_none());
     rig.attach_new(640, 480);
-    rig.pump(&mut [&mut app], |rig, _| !rig.windows().is_empty());
     rig.pump(&mut [&mut app], |rig, _| {
         rig.desktop()
             .selection_formats(Selection::Primary)
             .iter()
             .any(|mime| mime == MIME)
     });
+    assert!(
+        !app.heard.keyboard_entered,
+        "the primary selection was offered before the kept app was focused"
+    );
     let reader = rig
         .desktop()
         .receive_selection(Selection::Primary, MIME)
         .expect("the primary selection was re-offered");
     assert_eq!(read(&mut rig, &mut app, reader), b"selected");
+    rig.pump(&mut [&mut app], |rig, _| !rig.windows().is_empty());
 }
 
 #[test]

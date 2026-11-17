@@ -1,8 +1,9 @@
 //! The primary selection: `zwp_primary_selection_device_manager_v1`.
 //!
 //! Select-then-middle-click, forwarded like the clipboard and with the same rule across a
-//! restart: the app's own primary selection is kept and offered to the new desktop once it
-//! gives the app's window focus. No payload is read here; descriptors are passed as they are.
+//! restart: the app's own primary selection is kept and offered to the new desktop as soon as it
+//! attaches, before the app's window has the focus. No payload is read here; descriptors are
+//! passed as they are.
 
 use std::collections::HashMap;
 use std::os::fd::AsFd as _;
@@ -72,6 +73,9 @@ pub(crate) struct PrimarySelection {
     selection: Option<u32>,
     focus: Option<ClientId>,
     owner: Option<ObjectId>,
+    /// When that source was set, in milliseconds of the machine's monotonic clock: the time the
+    /// new desktop compares two keepers' claims by.
+    owner_at: u32,
 }
 
 impl PrimarySelection {
@@ -85,6 +89,7 @@ impl PrimarySelection {
             selection: None,
             focus: None,
             owner: None,
+            owner_at: 0,
         }
     }
 
@@ -193,11 +198,20 @@ impl State {
     }
 
     fn primary_reoffer_owner(&mut self) {
-        self.primary_offer_owner(false);
+        self.primary_offer_owner(false, None);
     }
 
-    /// Offer the app's selection to the desktop: `force` replaces the twin already there.
-    fn primary_offer_owner(&mut self, force: bool) {
+    /// Offer the app's primary selection as soon as the desktop attaches, before the app's window
+    /// has the focus: the compositor takes it from a session-handed connection for a short while
+    /// after it arrives, when nothing else owns the selection yet.
+    pub(crate) fn primary_reassert_owner(&mut self) {
+        let at = self.primary.owner_at;
+        self.primary_offer_owner(false, Some(at));
+    }
+
+    /// Offer the app's selection to the desktop: `force` replaces the twin already there. `claim`
+    /// is the time the app's selection was made, when this is the first offer after an attach.
+    fn primary_offer_owner(&mut self, force: bool, claim: Option<u32>) {
         let Some(owner) = self.primary.owner.clone() else {
             return;
         };
@@ -206,7 +220,7 @@ impl State {
             return;
         };
         let (has_twin, mimes) = (source.up.is_some(), source.mimes.clone());
-        if self.primary.focus.is_none() || (has_twin && !force) {
+        if (claim.is_none() && self.primary.focus.is_none()) || (has_twin && !force) {
             return;
         }
         if force
@@ -215,7 +229,7 @@ impl State {
         {
             twin.destroy();
         }
-        let serial = self.seat.last_serial();
+        let serial = claim.unwrap_or_else(|| self.seat.last_serial());
         let Some(up) = self.up.as_ref() else {
             return;
         };
@@ -285,7 +299,8 @@ impl State {
             return;
         }
         self.primary.owner = Some(id);
-        self.primary_offer_owner(true);
+        self.primary.owner_at = crate::data_device::now_ms();
+        self.primary_offer_owner(true, None);
     }
 
     fn upstream_primary_selection(&mut self, offer: Option<ZwpPrimarySelectionOfferV1>) {

@@ -54,7 +54,6 @@ use tilo_session_core::surface::{
 };
 
 /// Per-client data every Wayland client carries.
-#[derive(Default)]
 pub struct ClientState {
     compositor: CompositorClientState,
     /// The session started this client and trusts it with privileged protocols (locking the
@@ -74,12 +73,57 @@ pub struct ClientState {
     /// The session handed this connection to the process in [`Self::pid`] itself: a socket pair
     /// names the session as its peer, so the pid it was handed to is the client's.
     handed: bool,
+    /// When the connection arrived: a keeper's claim on a selection counts from here.
+    attached: std::time::Instant,
+    /// Whether this connection has spent its one claim on each selection (see
+    /// [`crate::selection::Selection`]).
+    claimed: [std::sync::atomic::AtomicBool; 2],
+}
+
+impl Default for ClientState {
+    fn default() -> Self {
+        Self {
+            compositor: CompositorClientState::default(),
+            trusted: false,
+            pid: AtomicU32::new(0),
+            exited: Arc::default(),
+            output: None,
+            touch_bound: AtomicBool::new(false),
+            handed: false,
+            attached: std::time::Instant::now(),
+            claimed: [
+                std::sync::atomic::AtomicBool::new(false),
+                std::sync::atomic::AtomicBool::new(false),
+            ],
+        }
+    }
 }
 
 impl ClientState {
     /// Whether the client may use privileged protocols.
     pub(crate) const fn trusted(&self) -> bool {
         self.trusted
+    }
+
+    /// Whether the session handed this connection over itself.
+    pub(crate) const fn handed(&self) -> bool {
+        self.handed
+    }
+
+    /// When this connection arrived.
+    pub(crate) const fn attached(&self) -> std::time::Instant {
+        self.attached
+    }
+
+    /// Whether this connection has spent its one claim on `selection`, marking it spent.
+    pub(crate) fn spend_claim(&self, selection: crate::selection::Selection) -> bool {
+        let index = match selection {
+            crate::selection::Selection::Clipboard => 0,
+            crate::selection::Selection::Primary => 1,
+        };
+        self.claimed
+            .get(index)
+            .is_some_and(|claimed| claimed.swap(true, Ordering::Relaxed))
     }
 
     /// The output the session connected the client for, when it named one.
