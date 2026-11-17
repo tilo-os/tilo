@@ -122,10 +122,16 @@ fn page_workspace(
         .into_iter()
         .map(|mut member| {
             let root = member.root();
+            // A person the workspace has not named goes by their own device's
+            // label. A key made to act for them is no device of theirs and no
+            // name of theirs: what it is called says what it is ("API key
+            // "Visa backend""), never who its person is.
             if member.name.is_empty()
-                && let Some(cert) = certificates
-                    .iter()
-                    .find(|cert| Some(cert.user_public_key) == root)
+                && let Some(cert) = certificates.iter().find(|cert| {
+                    Some(cert.user_public_key) == root
+                        && cert.capabilities.agent.is_none()
+                        && !cert.capabilities.stand_in
+                })
             {
                 member.name.clone_from(&cert.device_label);
             }
@@ -1540,5 +1546,75 @@ impl Workspaces {
             ))));
         }
         Ok((redemption, grant.label.clone(), role))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use collab_types::Person;
+    use ed25519_dalek::SigningKey;
+    use tilo_peer_state::Member;
+    use tilo_user_identity::{DeviceCapabilities, sign_device_cert};
+
+    /// `person`'s device, labelled `label`, holding `capabilities`.
+    fn device(person: &SigningKey, label: &str, capabilities: DeviceCapabilities) -> DeviceCert {
+        let mut cert = DeviceCert {
+            user_public_key: person.verifying_key().to_bytes(),
+            device_public_key: SigningKey::from_bytes(&rand::random())
+                .verifying_key()
+                .to_bytes(),
+            device_label: label.into(),
+            capabilities,
+            issued_at_ns: 1,
+            expires_at_ns: None,
+            signature: [0; 64],
+            issuer: None,
+        };
+        sign_device_cert(&mut cert, person).unwrap();
+        cert
+    }
+
+    /// A workspace of one person the page has no name for: the row's name is
+    /// their own device's label, and never what a key of theirs is called.
+    #[test]
+    fn a_key_of_a_person_is_no_name_for_them_on_a_page() {
+        let person = SigningKey::from_bytes(&rand::random());
+        let root = person.verifying_key().to_bytes();
+        let member = Member::of_person(&Person::new(hex::encode(root), ""), Some(Role::Owner));
+        let summary = || WorkspaceSummary {
+            workspace: "team".to_owned(),
+            workspace_id: WorkspaceId::from_u128(1),
+            name: "Team".to_owned(),
+            generation: 1,
+            members: vec![member.clone()],
+            devices: std::collections::BTreeMap::new(),
+        };
+        let name = |summary: WorkspaceSummary, certs: &[DeviceCert]| {
+            page_workspace(summary, certs, &BTreeSet::new(), [0; 32]).members[0]
+                .name
+                .clone()
+        };
+
+        // Their key made for a backend acts as them, and is called what it
+        // is: a page reading that as their name lists a key as a person.
+        let backend = device(
+            &person,
+            "API key \u{201c}Visa backend\u{201d}",
+            DeviceCapabilities::server_key_grant(),
+        );
+        assert_eq!(
+            name(summary(), std::slice::from_ref(&backend)),
+            "",
+            "a key is nobody to list"
+        );
+        // Their own device names them, with the key of theirs listed beside
+        // it: a key is no name to fall back to.
+        let laptop = device(&person, "Quin's laptop", DeviceCapabilities::member());
+        assert_eq!(
+            name(summary(), &[backend, laptop]),
+            "Quin's laptop",
+            "a key of theirs is not their name where a device of theirs is"
+        );
     }
 }
