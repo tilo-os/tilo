@@ -39,13 +39,13 @@ class SubjectIdentity(unittest.TestCase):
             document = located(root)
             self.assertEqual(assets.subject_digest(document), expected)
             with tempfile.TemporaryDirectory() as temporary:
-                manifest = Path(temporary).resolve() / 'operator.json'
-                manifest.write_text(json.dumps(document))
+                pin = Path(temporary).resolve() / 'operator.json'
+                pin.write_text(json.dumps(document))
                 self.assertEqual(assets.validate(document), document)
                 # A locator-independent subject pin is not proof that the
                 # supplied archives and complete trees actually exist.
                 with self.assertRaises(FileNotFoundError):
-                    qualifier.source_assets(manifest)
+                    qualifier.source_assets(pin)
         legacy = located(Path('/tmp/legacy'))
         del legacy['distribution']
         self.assertEqual(assets.subject_digest(legacy), expected)
