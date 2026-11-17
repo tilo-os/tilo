@@ -3,6 +3,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
+use ui::framework::LiveRow;
 use ui::tilo_actions::ResourceSpec;
 use ui::tilo_resource::{Effect, SearchEntry};
 use uuid::Uuid;
@@ -80,8 +81,9 @@ fn index_database_and_schema(
     let focus = DbEffect::FocusDatabase {
         connection: connection.id,
     };
-    let database = ResourceSpec::new(&database_id, "database.database", &database_name)
-        .with_action(focus.bound());
+    let database = LiveRow::new(&database_id, "database.database", &database_name)
+        .operation(focus.bound())
+        .into_resource();
     index_resource(
         rows,
         resources,
@@ -96,8 +98,9 @@ fn index_database_and_schema(
             connection: connection.id,
             schema: schema.name.clone(),
         };
-        let schema_resource = ResourceSpec::new(&schema_id, "database.schema", &schema.name)
-            .with_action(focus.bound());
+        let schema_resource = LiveRow::new(&schema_id, "database.schema", &schema.name)
+            .operation(focus.bound())
+            .into_resource();
         index_resource(
             rows,
             resources,
@@ -127,7 +130,13 @@ fn index_relation(
         catalog_resource_id("relation", &[connection_id, &schema.name, &relation.name]);
     let result =
         hit(&relation.name, &relation_id).subtitled(format!("{}.{}", schema.name, relation.name));
-    let resource = ResourceSpec::new(
+    let browse = DbEffect::Browse {
+        connection,
+        schema: schema.name.clone(),
+        table: relation.name.clone(),
+    }
+    .bound();
+    let resource = LiveRow::new(
         &relation_id,
         match relation.kind {
             crate::model::RelationKind::Table => "database.table",
@@ -135,18 +144,12 @@ fn index_relation(
         },
         &relation.name,
     )
-    .with_action(
-        DbEffect::Browse {
-            connection,
-            schema: schema.name.clone(),
-            table: relation.name.clone(),
-        }
-        .bound(),
-    );
+    .operation(browse.clone())
+    .into_resource();
     index_resource(
         rows,
         resources,
-        resource.clone(),
+        resource,
         "browse",
         format!("{} {} {:?}", schema.name, relation.name, relation.kind),
         result,
@@ -164,8 +167,9 @@ fn index_relation(
                 ("table", text(&relation.name)),
             ],
         ));
-        let mut column_resource = ResourceSpec::new(&column_id, "database.column", &column.name);
-        column_resource.actions.clone_from(&resource.actions);
+        let column_resource = LiveRow::new(&column_id, "database.column", &column.name)
+            .operation(browse.clone())
+            .into_resource();
         index_resource(
             rows,
             resources,
@@ -201,11 +205,11 @@ fn index_current_result(
             generation,
         };
         let mut result_resource =
-            ResourceSpec::new(&result_id, "database.query-result", result.message())
-                .with_action(read.bound().reads_document())
-                .with_action(show.bound());
+            LiveRow::new(&result_id, "database.query-result", result.message())
+                .operation(read.bound().reads_document())
+                .operation(show.bound());
         if result.is_select {
-            result_resource = result_resource.with_action(
+            result_resource = result_resource.operation(
                 DbEffect::ExportCsv {
                     connection,
                     generation,
@@ -213,6 +217,7 @@ fn index_current_result(
                 .bound(),
             );
         }
+        let result_resource = result_resource.into_resource();
         index_resource(
             rows,
             resources,
@@ -231,14 +236,15 @@ fn index_transactions(
 ) {
     let transaction_id = catalog_resource_id("transaction", &[&connection.to_string()]);
     let begin = DbEffect::Begin { connection };
-    let transaction = ResourceSpec::new(
+    let transaction = LiveRow::new(
         &transaction_id,
         "database.transaction",
         t("db-search-transaction"),
     )
-    .with_action(begin.bound())
-    .with_action(DbEffect::Commit { connection }.bound())
-    .with_action(DbEffect::Rollback { connection }.bound());
+    .operation(begin.bound())
+    .operation(DbEffect::Commit { connection }.bound())
+    .operation(DbEffect::Rollback { connection }.bound())
+    .into_resource();
     index_resource(
         rows,
         resources,
@@ -259,11 +265,12 @@ fn index_query_history(
     let history_id = catalog_resource_id("query-history", &[connection_id]);
     resources.insert(
         history_id.clone(),
-        ResourceSpec::new(
+        LiveRow::new(
             &history_id,
             "database.query-history",
             t("db-search-query-history"),
-        ),
+        )
+        .into_resource(),
     );
     for entry in session
         .query_history
@@ -285,8 +292,9 @@ fn index_query_history(
             connection: connection.id,
             generation: entry.generation,
         };
-        let history_entry = ResourceSpec::new(&entry_id, "database.query-history-entry", &title)
-            .with_action(rerun.bound());
+        let history_entry = LiveRow::new(&entry_id, "database.query-history-entry", &title)
+            .operation(rerun.bound())
+            .into_resource();
         index_resource(
             rows,
             resources,
