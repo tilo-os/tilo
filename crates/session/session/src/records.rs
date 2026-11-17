@@ -53,6 +53,9 @@ struct Held {
     /// What it holds as its app tells search, where this host reads that here
     /// ([`Records::over`]); empty otherwise.
     contents: Arc<[ui::search::index_publication::IndexEntry]>,
+    /// For what a part of a chain the app keeps beside its own record holds, the part's
+    /// storage key: its items are the app's own, opened through it.
+    part: Option<String>,
 }
 
 /// The device's record indexes, as search offers them.
@@ -286,6 +289,9 @@ type ReadContents = (
     Arc<[ui::search::index_publication::IndexEntry]>,
 );
 
+/// How the storage key of a part of a chain starts ([`ui::resource::DocumentId::part`]).
+const CHAIN_PART: &str = "derived_part.";
+
 /// Every record the indexes in `store` name, by id, with the workspaces that name it, and with
 /// what each holds as its app tells search where `contents` keeps it. A record two workspaces
 /// hold is one entry here: it is one record.
@@ -313,8 +319,28 @@ fn read_indexes(store: &dyn DurableStore, contents: Option<&Contents>) -> Vec<He
                     package: package.clone(),
                     workspaces: vec![workspace.clone()],
                     contents: Arc::from([]),
+                    part: None,
                 },
             );
+            // The parts of the chains the app keeps beside its own record (Notes' notes,
+            // Tasks' issues) are named by no index: what they hold is found as the app's own.
+            for stored in store.documents(&package, &workspace).unwrap_or_default() {
+                if !stored.starts_with(CHAIN_PART) {
+                    continue;
+                }
+                held.insert(
+                    format!("{package}\u{1f}{workspace}\u{1f}{stored}"),
+                    Held {
+                        id: primary.as_str().to_owned(),
+                        kind: String::new(),
+                        name: None,
+                        package: package.clone(),
+                        workspaces: vec![workspace.clone()],
+                        contents: Arc::from([]),
+                        part: Some(stored),
+                    },
+                );
+            }
         }
         for (record, name) in crate::platform::records::named_checkouts(store, &package, &workspace)
             .unwrap_or_default()
@@ -328,6 +354,7 @@ fn read_indexes(store: &dyn DurableStore, contents: Option<&Contents>) -> Vec<He
                     package: package.clone(),
                     workspaces: Vec::new(),
                     contents: Arc::from([]),
+                    part: None,
                 });
             if entry.name.is_none() {
                 entry.name = name;
@@ -353,7 +380,7 @@ fn read_indexes(store: &dyn DurableStore, contents: Option<&Contents>) -> Vec<He
                 "{}\u{1f}{}\u{1f}{}",
                 record.package,
                 record.workspaces.first().map_or("", String::as_str),
-                record.id
+                record.part.as_deref().unwrap_or(&record.id)
             );
             let entries = match kept.remove(&key) {
                 Some((at, entries)) if at == heads => entries,
@@ -372,6 +399,9 @@ fn read_indexes(store: &dyn DurableStore, contents: Option<&Contents>) -> Vec<He
 /// it holds is read from it. `None` for a record whose document is not here yet.
 fn resource_document(store: &dyn DurableStore, record: &Held) -> Option<automerge::AutoCommit> {
     let workspace = record.workspaces.first()?;
+    if let Some(part) = &record.part {
+        return crate::platform::records::stored(store, &record.package, workspace, part);
+    }
     let primary = ui::resource::DocumentId::package_primary();
     let route = if record.id == primary.as_str() {
         primary.route().to_owned()

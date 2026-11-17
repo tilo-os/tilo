@@ -237,6 +237,24 @@ impl<R: Resource> Replica<R> {
         self.invoke(invoke, true)
     }
 
+    /// Who later actions are invoked by, as a verb reads it: the author, or
+    /// the invoker, acting as attributed. `None` when neither is set.
+    #[must_use]
+    pub fn invoker(&self) -> Option<tilo_actions::ActionInvoker> {
+        let author = self.author.as_ref().or(self.invoker.as_ref())?;
+        let invoker = match &self.acting {
+            Some(acting) => tilo_actions::ActionInvoker::admitted(acting),
+            None => {
+                tilo_actions::ActionInvoker::admitted(&tilo_actions::Acting::member(author.clone()))
+            }
+        };
+        Some(
+            invoker
+                .with_appearance(self.appearance.clone())
+                .named(self.name.clone()),
+        )
+    }
+
     fn invoke(&mut self, invoke: Invoke<R>, confirmed: bool) -> Result<&ActionEnvelope, ApiError> {
         if let Some(refusal) = invoke.refusal() {
             return Err(ApiError::InvalidArguments(refusal.to_owned()));
@@ -258,21 +276,8 @@ impl<R: Resource> Replica<R> {
         // An author is also the invoker a verb reads (`ActionCx::author`), as
         // the host pins the signed-in person.
         let ambient = self
-            .author
-            .as_ref()
-            .or(self.invoker.as_ref())
-            .map(|author| {
-                let invoker = match &self.acting {
-                    Some(acting) => tilo_actions::ActionInvoker::admitted(acting),
-                    None => tilo_actions::ActionInvoker::admitted(&tilo_actions::Acting::member(
-                        author.clone(),
-                    )),
-                };
-                let invoker = invoker
-                    .with_appearance(self.appearance.clone())
-                    .named(self.name.clone());
-                tilo_actions::ActionContext::default().with_invoker(invoker)
-            });
+            .invoker()
+            .map(|invoker| tilo_actions::ActionContext::default().with_invoker(invoker));
         let ambient = match &self.app {
             Some((id, label)) => Some(ambient.unwrap_or_default().with_app(id, label)),
             None => ambient,

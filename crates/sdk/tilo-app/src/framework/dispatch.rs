@@ -360,6 +360,20 @@ type PermissionStates = Rc<RefCell<Vec<(Asked, LocalState<bool>)>>>;
 /// An immediate action and the serial it was applied at.
 type Serialed<R> = (u64, <R as Resource>::Action);
 
+/// The gesture last written to a record, the step it joined, the input event
+/// it was written in, and whether that step was opened by typing.
+type Stepped = (tilo_actions::ActionId, tilo_actions::ActionId, u64, bool);
+
+/// Run `write` with `step` open as the thread's undo step (else the one
+/// open now), the one before it open again after.
+fn in_step<T>(step: Option<tilo_actions::ActionId>, write: impl FnOnce() -> T) -> T {
+    let open = tilo_actions::executor::current_step();
+    tilo_actions::executor::open_step(step.or(open));
+    let written = write();
+    tilo_actions::executor::open_step(open);
+    written
+}
+
 /// Applies a group of the resource's actions now, as one action.
 type GroupNow<R> = Rc<
     dyn Fn(
@@ -1884,12 +1898,54 @@ impl<R: Resource> Dispatcher<R> {
     ) -> Dispatcher<C> {
         let mut core = self.core.for_resource(id, (C::KIND, C::LABEL), read_only);
         core.permissions = Rc::clone(&self.core.permissions);
+        let apply = Rc::new(apply);
+        let grouped = Rc::clone(&apply);
+        // The step the last gesture written here joined, and the input event
+        // it was written in: a gesture that continues it (the next letter of
+        // a word) joins it, and so does another opened in the same event (a
+        // key press that indents each selected line), as the window's own
+        // history keeps one event's edits one step.
+        let stepped: Rc<Cell<Option<Stepped>>> = Rc::default();
         Dispatcher {
             core,
             group: Rc::default(),
             permission_of: Rc::new(tilo_resource::need_of::<C>),
-            submit_now: Rc::new(move |_, _, action: &C::Action, _| apply(action)),
-            group_now: None,
+            // The step the action opens or continues (the letters of a word)
+            // is open while it is written, so the record's history takes
+            // the step back as one.
+            submit_now: Rc::new(move |_, _, action: &C::Action, context: ActionContext| {
+                let event = ui_core::input_generation::generation();
+                // Typing is a run of its own: a correction made as a word
+                // ends is a step apart from the word.
+                let typing = C::continuable(action);
+                let step = context.gesture.map(|gesture| match stepped.get() {
+                    Some((last, step, _, _)) if last == gesture => step,
+                    // Within one event the edits after the first join its
+                    // step (Markdown typed and turned into formatting), but
+                    // a word's correction is a step apart from the typing.
+                    Some((_, step, at, opened_typing))
+                        if at == event && !(typing && opened_typing) =>
+                    {
+                        stepped.set(Some((gesture, step, event, opened_typing)));
+                        step
+                    }
+                    _ => {
+                        stepped.set(Some((gesture, gesture, event, typing)));
+                        gesture
+                    }
+                });
+                in_step(step, || (*apply)(action))
+            }),
+            // A group's members are written in one step of their own, which
+            // the record's history takes back as one.
+            group_now: Some(Rc::new(move |_, _, group, _| {
+                in_step(Some(tilo_actions::ActionId::default()), || {
+                    group
+                        .actions
+                        .iter()
+                        .try_for_each(|action| (*grouped)(action))
+                })
+            })),
             last: Rc::default(),
             reported_as: None,
         }

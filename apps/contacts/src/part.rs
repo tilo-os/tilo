@@ -636,6 +636,7 @@ impl ui::framework::Chained for ContactPart {
         action: &mut Self::Action,
         _book: &crate::resource::Contacts,
         parts: &[(u64, Rc<Self>)],
+        _invoker: &ui::tilo_actions::ActionInvoker,
     ) -> Result<(), String> {
         prepare(action, parts)
     }

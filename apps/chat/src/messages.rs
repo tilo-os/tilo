@@ -1216,6 +1216,7 @@ impl Chained for ChatPart {
         action: &mut Self::Action,
         chat: &Chat,
         _parts: &[(u64, Rc<Self>)],
+        _invoker: &ui::tilo_actions::ActionInvoker,
     ) -> Result<(), String> {
         match &mut action.operation {
             ChatPartAction::Post(post) => {

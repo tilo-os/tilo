@@ -8271,14 +8271,35 @@ impl FrameHarness {
         self.invalidate_local();
         self.pump_component_wakes();
         if let Some(wake) = &self.component_wake {
-            return wake
-                .binding
-                .records
-                .read(&wake.binding.checkout.id, |doc| {
-                    serde_json::to_string_pretty(&automerge::AutoSerde::from(doc))
-                        .unwrap_or_else(|error| format!("{{\"error\":\"{error}\"}}"))
+            let records = &wake.binding.records;
+            let Some(mut dump) = records.read(&wake.binding.checkout.id, |doc| {
+                serde_json::to_value(automerge::AutoSerde::from(doc))
+            }) else {
+                return "{\"error\":\"canonical record unavailable\"}".into();
+            };
+            // The parts of a chain the record keeps beside it (a notebook's
+            // notes) are dumped with it, each under its record's id.
+            let parts: serde_json::Map<String, serde_json::Value> = records
+                .open_resources()
+                .into_iter()
+                .filter(|held| held.id.chain_part().is_some())
+                .filter_map(|held| {
+                    let part = records
+                        .read(&held.id, |doc| {
+                            serde_json::to_value(automerge::AutoSerde::from(doc))
+                        })?
+                        .ok()?;
+                    Some((held.id.as_str().to_owned(), part))
                 })
-                .unwrap_or_else(|| "{\"error\":\"canonical record unavailable\"}".into());
+                .collect();
+            if !parts.is_empty()
+                && let Ok(serde_json::Value::Object(fields)) = &mut dump
+            {
+                fields.insert("parts".into(), serde_json::Value::Object(parts));
+            }
+            return dump
+                .and_then(|dump| serde_json::to_string_pretty(&dump))
+                .unwrap_or_else(|error| format!("{{\"error\":\"{error}\"}}"));
         }
         serde_json::to_string_pretty(&automerge::AutoSerde::from(self.state.doc.document()))
             .unwrap_or_else(|e| format!("{{\"error\":\"{e}\"}}"))

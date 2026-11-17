@@ -43,6 +43,16 @@ pub(crate) const RESOURCE_ACTION_TYPE: &str = "tilo.app.record-action";
 pub(crate) struct ResourceAction {
     pub(crate) record: String,
     pub(crate) action: EncodedAction,
+    /// Whether the action invoked declares no answer: what it carries out
+    /// (a generic edit carrying a verb that does answer) answers its caller
+    /// nothing then.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub(crate) quiet: bool,
+    /// The published action that declares an answer, when what it carries
+    /// out names no verb of its own (a note body's `replace-range`, carried
+    /// as an edit of the body): it answers as that action.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) answers: Option<String>,
 }
 
 type Apply<P> = Box<dyn Fn(&<P as Resource>::Action, &ActionInvoker) -> Result<(), ActionError>>;
@@ -225,10 +235,17 @@ pub(crate) fn route_operation(
     record: &str,
 ) -> tilo_actions::ActionSpec {
     let record = record.to_owned();
+    let quiet = matches!(
+        spec.action_type().contract.result,
+        tilo_actions::ResultSpec::None
+    );
+    let answers = (!quiet).then(|| spec.id.clone());
     spec.routed(operation, move |action| {
         let routed = ResourceAction {
             record: record.clone(),
             action,
+            quiet,
+            answers: answers.clone(),
         };
         EncodedAction::encode_operation(operation, &routed).unwrap_or_else(|error| EncodedAction {
             type_id: tilo_actions::resource::INVALID_ARGUMENTS_TYPE.to_owned(),

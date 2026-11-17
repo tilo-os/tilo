@@ -14,8 +14,13 @@
 //!
 //! The resource of the parts says how they are used ([`Chained`]): which
 //! part an action changes (the one holding the item it names, or for a new
-//! item the head or the part after it), and what an action reads of the
-//! app's own record where it is invoked. Everything else is the framework's:
+//! item the head or the part after it), what an action reads of the app's
+//! own record and of the other parts where it is invoked
+//! ([`Chained::prepare`]), and what one action means for the items other
+//! parts keep ([`Chained::spread`]: the links to a renamed note,
+//! relabelled in every part holding one, each part's change its own step
+//! there, by the same invoker). A part's action reads only its own part, so
+//! it replays the same everywhere. Everything else is the framework's:
 //!
 //! - **One API.** The chain is published beside the app's resource as one
 //!   resource ([`Chain::id`]): the head's actions, and every held part's
@@ -73,8 +78,10 @@ use super::live::Live;
 use super::resources::ResourceApi;
 
 mod listing;
+mod reading;
 
 use listing::{Listing, Page};
+use reading::{ChainRead, offer_nested_reads, parse_read_cursor, read_cursor, read_spec};
 
 /// The operation type a chain's published actions are carried out under:
 /// the host applies the action to the part of the chain it names.
@@ -162,14 +169,44 @@ pub trait Chained: Resource {
     /// `parts` are the parts this device holds, oldest first: what an
     /// action checks across items of other parts reads them here (a task
     /// placed before one kept in another part, a parent that must exist),
-    /// so the verb itself still reads only its own part.
+    /// so the verb itself still reads only its own part. `invoker` is who
+    /// it is invoked by: what an action naming "mine" resolves against (the
+    /// one note they made).
     fn prepare(
         action: &mut Self::Action,
         base: &<Self::Base as Resource>::State,
         parts: &[(u64, Rc<Self::State>)],
+        invoker: &ActionInvoker,
     ) -> Result<(), String> {
-        let _ = (action, base, parts);
+        let _ = (action, base, parts, invoker);
         Ok(())
+    }
+
+    /// Further actions the same invocation writes into other parts, right
+    /// after `action` landed in part `index`: what one change means for
+    /// items kept elsewhere (the links to a renamed note, relabelled in
+    /// every part holding one). `parts` are the parts held, oldest first,
+    /// `index` with `action` applied. Each is written as the same invoker's,
+    /// a history step of its own in the part it names; one naming `index`
+    /// or a part not held here is not written. None by default.
+    fn spread(
+        action: &Self::Action,
+        index: u64,
+        parts: &[(u64, Rc<Self::State>)],
+    ) -> Vec<(u64, Self::Action)> {
+        let _ = (action, index, parts);
+        Vec::new()
+    }
+
+    /// The items the parts keep that the chain does not show, by their
+    /// resource ids ([`tilo_resource::items::item_resource_id`]), given the
+    /// parts held, oldest first: what reads across parts says is not there
+    /// (a note under one that was deleted, kept in another part). Neither
+    /// published, found by search nor read, and shown again once what hid
+    /// it is back. None by default.
+    fn hidden(parts: &[(u64, Rc<Self::State>)]) -> std::collections::HashSet<String> {
+        let _ = parts;
+        std::collections::HashSet::new()
     }
 
     /// Whether the chain exists only beside the window's own record, never
@@ -316,6 +353,9 @@ pub(crate) struct ChainState<P: Chained> {
     unwritten: RefCell<Unwritten<P>>,
     /// Whether the actions that waited are being applied now.
     draining: Cell<bool>,
+    /// What the verb written last answers its caller with
+    /// ([`Resource::answer`]), until [`ResourceApi::apply_answering`] takes it.
+    answered: RefCell<Option<serde_json::Value>>,
 }
 
 /// What a held chain does without reading its parts' state: opening, holding
@@ -447,6 +487,9 @@ thread_local! {
     /// part, by its entry in the record of them: told by whichever window
     /// applies it.
     static ANSWERS: RefCell<HashMap<String, Later>> = RefCell::default();
+    /// The published action a chain's answer is carrying out, when it
+    /// declares an answer ([`super::resources::ResourceAction::answers`]).
+    static ASKED: RefCell<Option<String>> = const { RefCell::new(None) };
 }
 
 /// An action that waits for the part it changes to arrive, as the record
@@ -691,14 +734,11 @@ impl ChainCore {
         &self,
         table: Option<&'static tilo_resource::table::ModelTable>,
         parts: &[(u64, &dyn Any)],
-        payload: &[u8],
+        read: &ChainRead,
         prepare: &dyn Fn(&mut listing::Filter) -> Result<(), String>,
+        hidden: &std::collections::HashSet<String>,
     ) -> Result<serde_json::Value, String> {
-        let read = ChainRead::of(payload)?;
         let table = table.ok_or_else(|| format!("{} answer no reads", self.part.label))?;
-        if let Some(item) = read.item.as_deref() {
-            return self.read_item(table, parts, item);
-        }
         let Some(&(newest, _)) = parts.last() else {
             return Ok(serde_json::json!({ "kind": self.part.kind }));
         };
@@ -717,7 +757,7 @@ impl ChainCore {
                 "nextCursor": read_cursor(at, skip),
             }));
         }
-        let listing = Listing::of(&read, table, &self.part, parts, prepare)?;
+        let listing = Listing::of(read, table, &self.part, parts, prepare)?;
         let mut page = Page::new(read.page_size);
         // Where the page ran out of parts, rather than out of room.
         let mut ended = None;
@@ -732,7 +772,8 @@ impl ChainCore {
                 skip = 0;
             }
             let kind = self.part.kind;
-            let Some(passed) = page.take(*index, *state, table, kind, &listing, skip) else {
+            let Some(passed) = page.take(*index, *state, table, kind, &listing, hidden, skip)
+            else {
                 break;
             };
             ended = Some((*index, passed));
@@ -766,25 +807,6 @@ impl ChainCore {
         Ok(serde_json::Value::Object(answer))
     }
 
-    /// One item of a part this device holds, as the read of it answers.
-    fn read_item(
-        &self,
-        table: &'static tilo_resource::table::ModelTable,
-        parts: &[(u64, &dyn Any)],
-        item: &str,
-    ) -> Result<serde_json::Value, String> {
-        for (_, state) in parts.iter().rev() {
-            if let Ok(value) = tilo_resource::table::item_json(table, *state, self.part.kind, item)
-            {
-                return Ok(value);
-            }
-        }
-        Err(format!(
-            "{item} is in a part of these {} this device does not hold",
-            self.part.label.to_lowercase()
-        ))
-    }
-
     /// Apply a history verb to the part it names ([`PartEdit`]), invoked by
     /// `invoker` (`action` is that verb): checked as an undoable change where the chain publishes
     /// the verb, and written into the part's history as any of its steps.
@@ -816,7 +838,7 @@ impl ChainCore {
         self.hold_kept(edit.part)
             .map_err(|error| self.refused(error))?;
         let encoded = edit.encoded().map_err(ActionError::Refused)?;
-        self.write(edit.part, action, encoded, invoker, None)?;
+        self.write(edit.part, action, encoded, invoker, None, &mut |_, _| {})?;
         let now = self
             .workspace
             .store
@@ -838,11 +860,13 @@ impl ChainCore {
         encoded: tilo_actions::EncodedAction,
         invoker: &ActionInvoker,
         place: Option<String>,
+        written: &mut dyn FnMut(&mut ui_core::automerge::AutoCommit, &[ChangeHash]),
     ) -> Result<Vec<String>, ActionError> {
         let mut context = ActionContext::for_resource(&self.id, self.part.kind, self.part.label)
             .with_app(self.workspace.app_id, self.workspace.app_title)
             .with_invoker(invoker.clone())
-            .with_change(tilo_actions::Action::change_kind(action));
+            .with_change(tilo_actions::Action::change_kind(action))
+            .in_step();
         if let Some(place) = place.filter(|place| !place.trim().is_empty()) {
             context = context.with_facet(tilo_actions::ActionFacet::new(
                 tilo_actions::PLACE_FACET,
@@ -864,6 +888,7 @@ impl ChainCore {
                     context,
                 )
                 .map(|envelope| {
+                    written(doc, &before);
                     ui_core::bound_dispatch::minted_items(
                         doc,
                         self.part.kind,
@@ -1461,6 +1486,7 @@ impl<P: Chained> ChainState<P> {
             undone: RefCell::default(),
             unwritten: RefCell::default(),
             draining: Cell::new(false),
+            answered: RefCell::default(),
         };
         // Asked for as the chain opens, with the window's other records: the
         // newest part arrives in the same round trip. A chain with a part
@@ -1646,7 +1672,7 @@ impl<P: Chained> ChainState<P> {
         let parts = self.held();
         for entry in unsent {
             let mut action = entry.action.clone();
-            if P::prepare(&mut action, &base, &parts).is_err() {
+            if P::prepare(&mut action, &base, &parts, &entry.invoker).is_err() {
                 continue;
             }
             let Ok(encoded) = tilo_resource::encode::<P>(&action) else {
@@ -1703,7 +1729,7 @@ impl<P: Chained> ChainState<P> {
         let mut action = action.clone();
         let base = (self.base)();
         let parts = self.parts();
-        P::prepare(&mut action, &base, &parts).map_err(ActionError::Refused)?;
+        P::prepare(&mut action, &base, &parts, invoker).map_err(ActionError::Refused)?;
         let place = P::place(&action, &base);
         drop(base);
         let index = P::part_for(&action, &parts).map_err(ActionError::Refused)?;
@@ -1724,8 +1750,40 @@ impl<P: Chained> ChainState<P> {
             Opened::Asked => return Ok(Write::Arriving),
         }
         let encoded = tilo_resource::encode::<P>(&action)?;
-        let created = self.write(index, &action, encoded, invoker, place)?;
+        // A field edit and a verb declared to answer nothing (a move) answer
+        // nothing, whatever they made; the rest answer what the part says
+        // they made (a note's id, the blocks a body's action touched).
+        // An edit naming no verb answers as the published action it carries
+        // out, when that declares an answer (a body's `replace-range`).
+        let verb = super::workspace::verb_of::<P>(&action);
+        let asked = ASKED.with(|asked| asked.borrow().clone());
+        let answering = verb.as_deref().or(asked.as_deref()).filter(|verb| {
+            *verb != tilo_resource::FIELD_EDIT
+                && *verb != tilo_resource::APPLY
+                && !P::declarations()
+                    .iter()
+                    .any(|decl| decl.id == *verb && decl.result.is_none())
+        });
+        let created = self.write_answering(index, &action, encoded, invoker, place, answering)?;
+        self.spread(&action, index, invoker);
         Ok(Write::Done(index, created))
+    }
+
+    /// Write what `action`, just written into part `index`, means for the
+    /// other parts held here ([`Chained::spread`]), each as `invoker`'s step
+    /// in its part. One a part refuses is logged: the action itself stands.
+    fn spread(&self, action: &P::Action, index: u64, invoker: &ActionInvoker) {
+        let parts = self.parts();
+        for (part, further) in P::spread(action, index, &parts) {
+            if part == index || !parts.iter().any(|(held, _)| *held == part) {
+                continue;
+            }
+            let written = tilo_resource::encode::<P>(&further)
+                .and_then(|encoded| self.write(part, &further, encoded, invoker, None));
+            if let Err(error) = written {
+                tracing::warn!(kind = P::KIND, part, %error, "a change was not carried to another part");
+            }
+        }
     }
 
     /// Apply `group` — several actions invoked as one — as the part (or
@@ -1750,7 +1808,7 @@ impl<P: Chained> ChainState<P> {
         let mut indices = Vec::with_capacity(group.actions.len());
         for action in &group.actions {
             let mut action = action.clone();
-            P::prepare(&mut action, &base, &parts).map_err(ActionError::Refused)?;
+            P::prepare(&mut action, &base, &parts, invoker).map_err(ActionError::Refused)?;
             places.push(P::place(&action, &base));
             self.may(&action)?;
             indices.push(P::part_for(&action, &parts).map_err(ActionError::Refused)?);
@@ -1774,7 +1832,7 @@ impl<P: Chained> ChainState<P> {
         let head = self.core.parts.borrow().keys().next_back().copied();
         let mut written = None;
         let mut created = Vec::new();
-        for (index, members) in per_part {
+        for (index, members) in per_part.clone() {
             if let Some(previous) = head.filter(|head| head.checked_add(1) == Some(index)) {
                 self.carry(previous, index, invoker)?;
             }
@@ -1792,6 +1850,13 @@ impl<P: Chained> ChainState<P> {
             )?;
             created = self.write(index, &group, encoded, invoker, place)?;
             written = Some(index);
+        }
+        for (index, members) in &per_part {
+            for at in members {
+                if let Some(action) = prepared.get(*at) {
+                    self.spread(action, *index, invoker);
+                }
+            }
         }
         Ok(Write::Done(written.unwrap_or(0), created))
     }
@@ -1850,7 +1915,31 @@ impl<P: Chained> ChainState<P> {
         invoker: &ActionInvoker,
         place: Option<String>,
     ) -> Result<Vec<String>, ActionError> {
-        let created = self.core.write(index, action, encoded, invoker, place)?;
+        self.write_answering(index, action, encoded, invoker, place, None)
+    }
+
+    /// [`Self::write`], keeping what the verb `answering` answers its caller
+    /// with ([`Resource::answer`]: the note it made) for
+    /// [`ResourceApi::apply_answering`].
+    fn write_answering(
+        &self,
+        index: u64,
+        action: &dyn tilo_actions::Action,
+        encoded: tilo_actions::EncodedAction,
+        invoker: &ActionInvoker,
+        place: Option<String>,
+        answering: Option<&str>,
+    ) -> Result<Vec<String>, ActionError> {
+        let mut answered = |doc: &mut ui_core::automerge::AutoCommit, before: &[ChangeHash]| {
+            if let Some(verb) = answering {
+                let after = doc.get_heads();
+                let changes = doc.diff(before, &after);
+                *self.answered.borrow_mut() = P::answer(doc, verb, &changes);
+            }
+        };
+        let created = self
+            .core
+            .write(index, action, encoded, invoker, place, &mut answered)?;
         self.refresh();
         self.core.moved();
         Ok(created)
@@ -1884,9 +1973,15 @@ impl<P: Chained> ChainState<P> {
             .to_resources();
         let held: Vec<u64> = parts.iter().map(|(index, _)| *index).collect();
         self.core.forget_unheld(&held);
-        let published = self
+        let mut published = self
             .core
             .publish(resource, earlier, places, P::RESOURCE_TABLE);
+        let hidden = P::hidden(&parts);
+        if !hidden.is_empty() {
+            published
+                .children
+                .retain(|child| !hidden.contains(child.id.as_str()));
+        }
         *self.published.borrow_mut() = Some((revision, published.clone()));
         published
     }
@@ -1907,6 +2002,15 @@ impl<P: Chained> ChainState<P> {
                 });
             entries.extend(found.iter().cloned());
         }
+        let hidden = P::hidden(&parts);
+        if !hidden.is_empty() {
+            entries.retain(|entry| {
+                entry
+                    .anchor
+                    .as_deref()
+                    .is_none_or(|anchor| !hidden.contains(anchor))
+            });
+        }
         entries
     }
 
@@ -1923,16 +2027,25 @@ impl<P: Chained> ChainState<P> {
             })
     }
 
-    /// [`ChainCore::read`] of the parts held.
+    /// [`ChainCore::read`] of the parts held, without the items the chain
+    /// does not show; an item read from the part keeping it
+    /// ([`Self::read_item`]).
     pub(crate) fn read(&self, payload: &[u8]) -> Result<serde_json::Value, String> {
+        let read = ChainRead::of(payload)?;
         let parts = self.parts();
+        let hidden = P::hidden(&parts);
+        if let Some(item) = read.item.as_deref() {
+            let table = P::RESOURCE_TABLE.ok_or_else(|| format!("{} answer no reads", P::LABEL))?;
+            return self.read_item(table, &parts, &hidden, item, read.version.as_deref());
+        }
         let base = (self.base)();
         let prepare = |filter: &mut listing::Filter| P::prepare_read(filter, &base, &parts);
         let held: Vec<(u64, &dyn Any)> = parts
             .iter()
             .map(|(index, state)| (*index, &**state as &dyn Any))
             .collect();
-        self.core.read(P::RESOURCE_TABLE, &held, payload, &prepare)
+        self.core
+            .read(P::RESOURCE_TABLE, &held, &read, &prepare, &hidden)
     }
 }
 
@@ -1952,156 +2065,6 @@ fn by_part(indices: &[u64]) -> Vec<(u64, Vec<usize>)> {
 #[inline(never)]
 fn part_edit(payload: &[u8]) -> Result<PartEdit, String> {
     tilo_actions::decode_json(payload).map_err(|error| error.to_string())
-}
-
-/// Offer the chain's read on every resource under an item that its part's
-/// table reads (an item's rich-text body), bound to that resource.
-fn offer_nested_reads(
-    children: &mut [tilo_actions::ResourceSpec],
-    table: &'static tilo_resource::table::ModelTable,
-    part: &PartType,
-    chain: &str,
-) {
-    for child in children {
-        let id = child.id.as_str().to_owned();
-        if tilo_resource::table::reads_item(table, part.kind, &id)
-            && !child.actions.iter().any(|spec| spec.id == "read")
-        {
-            child.actions.push(read_spec(part.label, chain, Some(&id)));
-        }
-        offer_nested_reads(&mut child.children, table, part, chain);
-    }
-}
-
-/// The read a chain of parts labelled `label` publishes: on the chain, what it holds, newest part
-/// first and paged; on an item of a part, that item's content. `item` is the
-/// item's resource id, bound here rather than passed, as the record's own
-/// read binds the item it is offered on.
-fn read_spec(label: &str, chain: &str, item: Option<&str>) -> tilo_actions::ActionSpec {
-    let (chain, item) = (chain.to_owned(), item.map(str::to_owned));
-    let label = format!("Read the {}", label.to_lowercase());
-    let mut spec = tilo_actions::ActionSpec::typed_operation(
-        "read",
-        label.clone(),
-        label,
-        OperationKind::View,
-        CHAIN_READ_TYPE,
-        vec![
-            tilo_actions::ActionParam::optional(
-                "cursor",
-                tilo_actions::ParamType::Text,
-                "Where the page read before ended, as its `nextCursor` said (default: the newest part)",
-            )
-            .nullable(),
-            tilo_actions::ActionParam::optional(
-                "pageSize",
-                tilo_actions::ParamType::Integer,
-                "How many items to answer with at most",
-            )
-            .with_schema(serde_json::json!({
-                "type": "integer",
-                "minimum": 1,
-                "maximum": READ_PAGE_MAX,
-            })),
-            tilo_actions::ActionParam::optional(
-                "fields",
-                tilo_actions::ParamType::Array,
-                "The fields each row carries of its item, by name (default: what these list of themselves)",
-            )
-            .with_schema(serde_json::json!({
-                "type": "array",
-                "items": { "type": "string" },
-            })),
-            tilo_actions::ActionParam::optional(
-                "where",
-                tilo_actions::ParamType::Object,
-                "Answer only the items whose fields equal these: each a field's name (dotted to reach into a record) with its value, or a list of values for any one of them",
-            )
-            .with_schema(serde_json::json!({ "type": "object" })),
-        ],
-        move |args| {
-            let given = args.to_json();
-            let payload = serde_json::json!({
-                "chain": chain,
-                "item": item,
-                "cursor": args.text("cursor"),
-                "pageSize": args.integer("pageSize"),
-                "fields": given.get("fields"),
-                "where": given.get("where"),
-            });
-            tilo_actions::EncodedAction::encode_operation(CHAIN_READ_TYPE, &payload)
-                .unwrap_or_else(|_| tilo_actions::EncodedAction {
-                    type_id: CHAIN_READ_TYPE.into(),
-                    payload: Vec::new(),
-                })
-        },
-    )
-    .of_kind(tilo_actions::ActionKind::Read)
-    .with_description(
-        "What this holds as typed data: the items of its parts, the newest part first, a page at \
-         a time with `cursor` passing on where a page ended, each row with its item's address, \
-         its name and the fields asked for (`fields`), only the items `where` holds of; an \
-         item's own content when the read is of that item.",
-    )
-    // Typed data for a program to reason about; a person reads what the
-    // app shows.
-    .for_audience(tilo_actions::Audience::Agents);
-    spec.type_mut().contract.result = tilo_actions::ResultSpec::Json {
-        schema: serde_json::json!({"type": "object"}),
-    };
-    spec.reads_document()
-}
-
-/// What one read of a chain asks for, as its published action carries it.
-struct ChainRead {
-    item: Option<String>,
-    cursor: Option<String>,
-    page_size: usize,
-    /// The fields each row carries, when the caller names them.
-    fields: Option<Vec<String>>,
-    /// What an item's fields equal for its row to be answered.
-    filter: listing::Filter,
-}
-
-impl ChainRead {
-    fn of(payload: &[u8]) -> Result<Self, String> {
-        let args: serde_json::Value = if payload.is_empty() {
-            serde_json::Value::Null
-        } else {
-            tilo_actions::decode_json(payload).map_err(|error| error.to_string())?
-        };
-        let text = |key: &str| {
-            args.get(key)
-                .and_then(serde_json::Value::as_str)
-                .filter(|value| !value.is_empty())
-                .map(str::to_owned)
-        };
-        let page_size = args
-            .get("pageSize")
-            .and_then(serde_json::Value::as_u64)
-            .and_then(|size| usize::try_from(size).ok())
-            .unwrap_or(READ_PAGE)
-            .clamp(1, READ_PAGE_MAX);
-        let (fields, filter) = listing::asked(&args)?;
-        Ok(Self {
-            item: text("item"),
-            cursor: text("cursor"),
-            page_size,
-            fields,
-            filter,
-        })
-    }
-}
-
-/// Where a page of a chain's read ended: the part it was reading and how many
-/// of that part's items, newest first, it has answered with.
-fn read_cursor(part: u64, taken: usize) -> String {
-    format!("{part}:{taken}")
-}
-
-fn parse_read_cursor(cursor: &str) -> Option<(u64, usize)> {
-    let (part, taken) = cursor.split_once(':')?;
-    Some((part.parse().ok()?, taken.parse().ok()?))
 }
 
 /// `resource`'s document actions, and those of its children, carried out on
@@ -2215,6 +2178,7 @@ impl<P: Chained> ResourceApi for ChainState<P> {
         let action: P::Action =
             tilo_actions::decode_json(&action.payload).map_err(|error| error.to_string())?;
         super::resources::not_by_app::<P>(&action)?;
+        self.answered.borrow_mut().take();
         // One that waits for its part creates its items once it is written.
         let resources = self
             .apply_as(&action, invoker, &mut None)
@@ -2222,7 +2186,7 @@ impl<P: Chained> ResourceApi for ChainState<P> {
             .map(|(_, created)| created)
             .unwrap_or_default();
         Ok(tilo_actions::ActionOutput {
-            value: None,
+            value: self.answered.borrow_mut().take(),
             resources,
         })
     }
@@ -2353,6 +2317,25 @@ impl<P: Chained> Chain<P> {
             chain: Rc::clone(&self.state),
             held: Rc::new(held),
         })
+    }
+
+    /// Read part `index`'s document as this window holds it: what a hand
+    /// widget showing an item of the part (a rich-text body) reads, as a
+    /// view's widgets read the app's own record. `None` while the part is
+    /// not held here.
+    pub fn read_part<T>(
+        &self,
+        index: u64,
+        read: impl FnOnce(&ui_core::automerge::AutoCommit) -> T,
+    ) -> Option<T> {
+        if !self.state.core.parts.borrow().contains_key(&index) {
+            return None;
+        }
+        self.state
+            .core
+            .workspace
+            .store
+            .read(&self.state.core.chain.part(index), read)
     }
 
     /// The number of the chain's head: the newest part held. `None` while
@@ -2979,7 +2962,14 @@ impl Chains {
         let invoker = ui_core::invocation_scope::current_invoker()
             .or_else(|| me.cloned().map(ActionInvoker::member))
             .ok_or("nobody changes a past version")?;
-        api.apply_in(&request.action, &invoker, live)
+        let asked = ASKED.with(|asked| asked.replace(request.answers.clone()));
+        let output = api.apply_in(&request.action, &invoker, live);
+        ASKED.with(|asking| asking.replace(asked));
+        let mut output = output?;
+        if request.quiet {
+            output.value = None;
+        }
+        Ok(output)
     }
 
     /// Answer a read of the chain `chain` ([`CHAIN_READ_TYPE`]) from the

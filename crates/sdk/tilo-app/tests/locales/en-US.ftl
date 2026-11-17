@@ -90,6 +90,14 @@ test-chain-log-rename = Rename the log
 test-chain-log-part = Lines
 test-chain-log-part-write = Write a line
 
+## crates/sdk/tilo-app/tests/chain_spread.rs
+test-spread-deck = Deck
+test-spread-deck-rename = Rename the deck
+test-spread-deck-part = Cards
+test-spread-deck-part-add = Add a card
+test-spread-deck-part-rename = Rename a card
+test-spread-deck-part-repoint = Point the cards at another
+
 ## crates/sdk/tilo-app/tests/child_records.rs
 test-child-workspace = Workspace
 test-child-workspace-touch = Rename nothing

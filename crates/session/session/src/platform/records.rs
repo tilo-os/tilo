@@ -502,6 +502,21 @@ pub fn document(
     stored_document(store, &key)
 }
 
+/// The record document `app` keeps in `workspace` under the storage key `stored`
+/// ([`durable_store::DurableStore::documents`]), as far as its writer finished writing it:
+/// a document read without its id, as a part of a chain is listed.
+pub fn stored(
+    store: &dyn DurableStore,
+    app: &str,
+    workspace: &str,
+    stored: &str,
+) -> Option<AutoCommit> {
+    stored_document(
+        store,
+        &StorageKey::document(app, workspace, stored.to_owned()),
+    )
+}
+
 /// The record document kept at `key`, as far as its writer finished writing it.
 fn stored_document(store: &dyn DurableStore, key: &StorageKey) -> Option<AutoCommit> {
     let stored = match store.read(key) {

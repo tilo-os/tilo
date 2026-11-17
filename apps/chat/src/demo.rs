@@ -914,9 +914,18 @@ pub fn apply_part_doc_as(
     let mut action = invoke
         .build(now_ms.unwrap_or_else(ui::tilo_resource::origin_now_ms))
         .map_err(ApiError::InvalidArguments)?;
-    ChatPart::prepare(&mut action, chat, &[]).map_err(ApiError::Failed)?;
     let mut replica = attribute(Replica::<ChatPart>::from_doc(std::mem::take(part)))
         .in_app(<crate::ChatShell as ui::framework::ResourceApp>::ID, "Chat");
+    let prepared = replica
+        .invoker()
+        .ok_or_else(|| ApiError::Failed("no one is named to act".to_owned()))
+        .and_then(|invoker| {
+            ChatPart::prepare(&mut action, chat, &[], &invoker).map_err(ApiError::Failed)
+        });
+    if let Err(error) = prepared {
+        *part = std::mem::take(replica.doc_mut());
+        return Err(error);
+    }
     if let Some(now_ms) = now_ms {
         replica.set_now_ms(now_ms);
     }

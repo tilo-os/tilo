@@ -628,6 +628,7 @@ impl Chained for ArticlePart {
         action: &mut Self::Action,
         library: &Library,
         parts: &[(u64, Rc<Self>)],
+        _invoker: &ui::tilo_actions::ActionInvoker,
     ) -> Result<(), String> {
         prepare(action, library, parts)
     }

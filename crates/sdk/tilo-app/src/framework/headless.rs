@@ -700,6 +700,63 @@ impl<A: ResourceApp> HeadlessApp<A> {
         )
     }
 
+    /// A window of the app on a fresh profile that holds what this window
+    /// holds now: its record and every part of a chain it keeps beside it,
+    /// as a member whose device synced them opens the app. The two share
+    /// nothing afterwards: what one writes reaches the other through
+    /// [`Self::deliver_changes_to`] and [`Self::deliver_record_to`].
+    pub fn another_device(&self) -> Result<Self, LaunchError> {
+        let profile = Rc::new(profile_directory().map_err(operation)?);
+        {
+            let native =
+                ui_core::application::NativeProfile::open(&profile.path().join("state"), None)?;
+            let app = super::app::hooks::<A>().id();
+            let own = self.checkout().id.clone();
+            for checkout in self.records.open_resources() {
+                let primary = checkout.id == own && own.is_package_primary();
+                if checkout.id != own && checkout.id.chain_part().is_none() {
+                    continue;
+                }
+                let Some(mut doc) = self.records.read(&checkout.id, Clone::clone) else {
+                    continue;
+                };
+                if primary {
+                    let _landing = ui_core::resource::transfer::install_workspace_document(
+                        native.store(),
+                        app,
+                        TEST_WORKSPACE,
+                        &mut doc,
+                    )
+                    .map_err(operation)?;
+                } else {
+                    let _installed = ui_core::resource::transfer::install_as(
+                        native.store(),
+                        app,
+                        TEST_WORKSPACE,
+                        checkout,
+                        &mut doc,
+                    )
+                    .map_err(operation)?;
+                }
+            }
+        }
+        Self::open(
+            Profile::Window(
+                profile,
+                TEST_WORKSPACE.to_owned(),
+                TEST_DEVICE.to_owned(),
+                INSTANCE + 1,
+            ),
+            Role::Owner,
+            AUTHOR,
+            &[],
+            None,
+            None,
+            None,
+            |_| {},
+        )
+    }
+
     /// The app launched with `arguments` to continue `handoff`'s playback,
     /// as the session launches the target of a media handoff.
     pub fn handed_off(arguments: &[&str], handoff: PlaybackHandoff) -> Result<Self, LaunchError> {
@@ -1154,6 +1211,16 @@ impl<A: ResourceApp> HeadlessApp<A> {
     /// or one it keeps beside it (a part of a chain).
     pub fn resource_document(&self, id: &DocumentId) -> Option<Vec<u8>> {
         self.records.read(id, |doc| doc.clone().save())
+    }
+
+    /// Read the document of `id` as this window holds it, without a copy:
+    /// its own record, or one it keeps beside it (a part of a chain).
+    pub fn read_record<T>(
+        &self,
+        id: &DocumentId,
+        read: impl FnOnce(&tilo_resource::Doc) -> T,
+    ) -> Option<T> {
+        self.records.read(id, read)
     }
 
     /// Submit `submit` through the running view's own dispatcher, as a
@@ -2006,6 +2073,42 @@ impl<A: ResourceApp> HeadlessApp<A> {
         Ok(())
     }
 
+    /// A copy of `id`, a record the app keeps beside its own (a part of a
+    /// chain), written by another participant: a member's replica, for a
+    /// test to edit and [`Self::merge_peer_record`] back. `None` while the
+    /// record is not open here.
+    pub fn peer_record(&self, id: &DocumentId) -> Option<tilo_resource::Doc> {
+        // What the window has written and not committed yet is its own,
+        // committed here, before the member's replica starts.
+        self.records.with(id, tilo_resource::Doc::fork)
+    }
+
+    /// [`Self::merge_peer`] for `id`, a record the app keeps beside its own
+    /// (a part of a chain): the peer's edits arrive in the running app, and
+    /// the app's edits arrive in `peer`.
+    pub fn merge_peer_record(
+        &mut self,
+        id: &DocumentId,
+        peer: &mut tilo_resource::Doc,
+    ) -> Result<(), String> {
+        use tilo_automerge::ApplyIncoming;
+        let checkout = self
+            .records
+            .open_resources()
+            .into_iter()
+            .find(|open| open.id == *id)
+            .ok_or("the record is not open here")?;
+        let mut ours = self
+            .records
+            .read(id, Clone::clone)
+            .ok_or("the record is not open here")?;
+        peer.merge_incoming(&mut ours)
+            .map_err(|error| error.to_string())?;
+        self.records.merge_peer_document(&checkout, peer.save())?;
+        self.harness().relayout();
+        Ok(())
+    }
+
     /// Another replica's change to `record`, a record open in the app's
     /// store (its own, or a part of a chain beside it), arriving as a workspace's
     /// replication delivers it: `edit` writes on that replica as it stands
@@ -2073,6 +2176,23 @@ impl<A: ResourceApp> HeadlessApp<A> {
             .into_iter()
             .filter_map(|version| version.context)
             .collect()
+    }
+
+    /// What each version of the record `id` did through an action, oldest
+    /// first: a record the app keeps beside its own, such as a part of a
+    /// chain, as this window holds it.
+    pub fn record_history(&self, id: &DocumentId) -> Vec<tilo_actions::ActionContext> {
+        self.record_versions(id)
+            .into_iter()
+            .filter_map(|version| version.context)
+            .collect()
+    }
+
+    /// The versions of the record `id`, oldest first ([`Self::record_history`]).
+    pub fn record_versions(&self, id: &DocumentId) -> Vec<tilo_resource::history::Version> {
+        self.records
+            .read(id, |doc| tilo_resource::history::versions(&mut doc.clone()))
+            .unwrap_or_default()
     }
 
     /// The sentences History shows for `entries` in en-US, through the app's

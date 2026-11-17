@@ -136,6 +136,9 @@ pub(crate) struct ViewStorage {
     records: Option<super::chain::WorkspaceResources>,
     /// The chains the views opened ([`super::Chain`]).
     chains: super::chain::Chains,
+    /// The view operations the chains publish on what they hold, at the
+    /// chains' revision they were collected at.
+    chain_views: RefCell<Option<(u64, Rc<std::collections::HashSet<String>>)>>,
     /// The records every app of the workspace opens, when the host keeps them:
     /// not in a view of a past version.
     workspace: Option<Rc<super::workspace::WorkspaceState>>,
@@ -235,6 +238,7 @@ impl ViewStorage {
             kept_by: RefCell::default(),
             records: hosted.records,
             chains: super::chain::Chains::default(),
+            chain_views: RefCell::default(),
             workspace: hosted.workspace,
             emoji: hosted.emoji,
         })
@@ -409,6 +413,54 @@ impl ViewStorage {
         self.chains.apis().iter().fold(0u64, |revision, api| {
             revision.wrapping_mul(31).wrapping_add(api.revision())
         })
+    }
+
+    /// The view operations the records kept beside the app's own publish,
+    /// on themselves or on what they hold (a note's body opened in an
+    /// editor): the window handles them as it does its own record's.
+    pub(crate) fn record_view_types(&self) -> std::collections::HashSet<String> {
+        fn collect(
+            resource: &tilo_actions::ResourceSpec,
+            views: &mut std::collections::HashSet<String>,
+        ) {
+            views.extend(
+                resource
+                    .actions
+                    .iter()
+                    .filter(|spec| spec.kind == tilo_actions::OperationKind::View)
+                    .filter_map(|spec| spec.operation_type.clone()),
+            );
+            for child in &resource.children {
+                collect(child, views);
+            }
+        }
+        let mut views = std::collections::HashSet::new();
+        let mut beside = self
+            .person
+            .as_ref()
+            .map(super::person::PersonState::resources)
+            .unwrap_or_default();
+        beside.extend(self.section_apis.borrow().iter().map(|api| api.publish()));
+        for resource in &beside {
+            collect(resource, &mut views);
+        }
+        // A chain holds every part's items: collected once per change.
+        let revision = self.chains_revision();
+        let mut kept = self.chain_views.borrow_mut();
+        let chains = match kept.as_ref() {
+            Some((at, chains)) if *at == revision => Rc::clone(chains),
+            _ => {
+                let mut chains = std::collections::HashSet::new();
+                for api in self.chains.apis() {
+                    collect(&api.publish(), &mut chains);
+                }
+                let chains = Rc::new(chains);
+                *kept = Some((revision, Rc::clone(&chains)));
+                chains
+            }
+        };
+        views.extend(chains.iter().cloned());
+        views
     }
 
     pub(crate) fn resource_resources(&self) -> Vec<tilo_actions::ResourceSpec> {

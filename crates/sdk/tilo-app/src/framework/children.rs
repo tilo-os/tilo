@@ -996,6 +996,8 @@ fn wrap_child(spec: ActionSpec, api: &str, child: &Id) -> ActionSpec {
                 &super::resources::ResourceAction {
                     record: api.clone(),
                     action,
+                    quiet: false,
+                    answers: None,
                 },
             )
         });

@@ -19,6 +19,8 @@ pub mod block_editor_gestures;
 pub mod by_app;
 #[path = "chain_list.rs"]
 pub mod chain_list;
+#[path = "chain_spread.rs"]
+pub mod chain_spread;
 #[path = "child_records.rs"]
 pub mod child_records;
 #[path = "child_resources.rs"]

@@ -1446,10 +1446,24 @@ impl AppComponent {
         }));
         let sampled = self
             .with_live_component(&captured, |binding, root, _registry| {
-                if root.take_save_retry()
-                    && let Err(error) = binding.records.try_flush_resource(&binding.checkout.id)
-                {
-                    tracing::warn!(%error, "retrying a failed record save");
+                // The parts of a chain the window keeps beside its record (a
+                // notebook's notes) are saved as the record is: one still
+                // being written, or failed, is the window's to say, and its
+                // retry retries them too.
+                let parts: Vec<_> = binding
+                    .records
+                    .open_resources()
+                    .into_iter()
+                    .filter(|held| held.id.chain_part().is_some())
+                    .collect();
+                if root.take_save_retry() {
+                    for id in std::iter::once(&binding.checkout.id)
+                        .chain(parts.iter().map(|part| &part.id))
+                    {
+                        if let Err(error) = binding.records.try_flush_resource(id) {
+                            tracing::warn!(%error, "retrying a failed record save");
+                        }
+                    }
                 }
                 let refusals = binding.records.take_refusals(&binding.checkout.id);
                 for refusal in &refusals {
@@ -1468,8 +1482,30 @@ impl AppComponent {
                 if status == crate::resource::ResourceSaveStatus::Saving {
                     binding
                         .records
-                        .wake_on_save_progress(&binding.checkout.id, wake);
+                        .wake_on_save_progress(&binding.checkout.id, std::sync::Arc::clone(&wake));
                     status = binding.records.save_status(&binding.checkout.id).ok()?;
+                }
+                for part in &parts {
+                    if matches!(status, crate::resource::ResourceSaveStatus::Failed(_)) {
+                        break;
+                    }
+                    match binding.records.save_status(&part.id) {
+                        Ok(failed @ crate::resource::ResourceSaveStatus::Failed(_)) => {
+                            status = failed
+                        }
+                        Ok(crate::resource::ResourceSaveStatus::Saving) => {
+                            binding
+                                .records
+                                .wake_on_save_progress(&part.id, std::sync::Arc::clone(&wake));
+                            if binding.records.save_status(&part.id).ok()
+                                == Some(crate::resource::ResourceSaveStatus::Saving)
+                                && status == crate::resource::ResourceSaveStatus::Saved
+                            {
+                                status = crate::resource::ResourceSaveStatus::Saving;
+                            }
+                        }
+                        _ => {}
+                    }
                 }
                 root.resource_save_status(status.clone());
                 Some((status, !refusals.is_empty() || !said.is_empty()))

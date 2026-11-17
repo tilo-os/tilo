@@ -586,7 +586,7 @@ impl IssuePart {
         &mut self,
         cx: &mut ActionCx,
         issue: &Id,
-        #[param("The note", resource = "notes.notebook.pages")] note: ResourceAt,
+        #[param("The note", resource = "notes.pages.pages")] note: ResourceAt,
     ) -> Result<(), Refusal> {
         let (Some(app), Some(resource)) = (
             NonBlank::parse(&note.app),
@@ -1481,6 +1481,7 @@ impl ui::framework::Chained for IssuePart {
         action: &mut Self::Action,
         tracker: &Tracker,
         parts: &[(u64, Rc<Self>)],
+        _invoker: &ui::tilo_actions::ActionInvoker,
     ) -> Result<(), String> {
         prepare(action, tracker, parts)
     }
