@@ -33,6 +33,21 @@ os/rootfs/
 # binaries into its own build context's bin/, so no repository has one.
 bin/
 
+# Containerfile.host's context is assembled by tools/ci/publish/host-build.sh, which copies the
+# built programs into bin/. They are staged at build time and never come from the repository
+# context.
+bin/tilo-relay
+bin/tilo-relay-admin
+bin/tilo-enroll
+bin/fs
+bin/tilo-api
+bin/tilo-legacy
+bin/tilo-hosted-jail
+bin/tilo-esp-write
+bin/tilo-image-trust
+bin/tilo-image-policy-check
+bin/tilo-board-successor
+
 # Logs / scratch
 *.log
 **/*.h264
