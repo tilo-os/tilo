@@ -231,11 +231,15 @@ public struct LiveThing: Identifiable, Hashable, Sendable {
     public var title: String
     /// Whatever the source needs to find it again. Nothing but the source's own view reads it.
     public var reference: String
+    /// Whether the source's view says how tall the thing is, as a view on live data does. One that
+    /// does not is given the height every live thing has.
+    public var sizesItself: Bool
 
-    public init(id: ID, title: String, reference: String) {
+    public init(id: ID, title: String, reference: String, sizesItself: Bool = false) {
         self.id = id
         self.title = title
         self.reference = reference
+        self.sizesItself = sizesItself
     }
 }
 

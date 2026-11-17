@@ -105,6 +105,7 @@ public final class TiloEngine: NSObject {
     private let ear = Ear()
     private var stateListeners: [UUID: AsyncStream<State>.Continuation] = [:]
     private var changeListeners: [UUID: AsyncStream<Void>.Continuation] = [:]
+    private var sizeListeners: [UUID: AsyncStream<(String, CGSize)>.Continuation] = [:]
     /// Whoever waits for the page's next word of a change, once.
     private var changeWaiters: [UUID: CheckedContinuation<Bool, Never>] = [:]
     /// How often a page that stopped on its way in is loaded again before it is said.
@@ -223,6 +224,16 @@ public final class TiloEngine: NSObject {
         return stream
     }
 
+    /// The size a live thing's content asks for, by the thing's id, as its mount in the page
+    /// says it: once it is known and whenever it changes, from now on.
+    public func contentSizes() -> AsyncStream<(String, CGSize)> {
+        let (stream, continuation) = AsyncStream.makeStream(of: (String, CGSize).self, bufferingPolicy: .bufferingNewest(32))
+        let id = UUID()
+        sizeListeners[id] = continuation
+        continuation.onTermination = { [weak self] _ in Task { @MainActor in self?.sizeListeners[id] = nil } }
+        return stream
+    }
+
     /// The app expects what the page holds to change soon: an agent is at work on what it
     /// shows. For `time`, a minute at most, every word of the page is handed on, also where
     /// nothing says that its device heard anything.
@@ -303,6 +314,9 @@ public final class TiloEngine: NSObject {
         case record(app: String, record: String)
         /// This app on a record it makes now.
         case new(app: String)
+        /// The view a message carries, shown alone by Chat in the page: named by its message and
+        /// the conversation it stands in, never by its text.
+        case messageView(message: String, conversation: String)
     }
 
     /// Mount a live thing in the engine's own document, beside Chat and through the page's own
@@ -313,6 +327,8 @@ public final class TiloEngine: NSObject {
         let asked: [String: JSON] = switch what {
         case .record(let app, let record): ["app": .string(app), "record": .string(record)]
         case .new(let app): ["app": .string(app), "newDocument": true]
+        case .messageView(let message, let conversation):
+            ["app": .string(EngineAddress.chat), "view": .object(["message": .string(message), "conversation": .string(conversation)])]
         }
         return try await ask("return globalThis.__tiloLive.show(id, what)",
                              ["id": id, "what": JSON.object(asked).any])["record"]?.string
@@ -421,6 +437,14 @@ public final class TiloEngine: NSObject {
             let waiting = changeWaiters
             changeWaiters.removeAll()
             for waiter in waiting.values { waiter.resume(returning: true) }
+        case "live":
+            // What a live thing's content asks for. A page's number is a wish, never a command:
+            // it is taken only as a size a message can have.
+            guard let id = said["id"] as? String, let width = said["width"] as? Double, let height = said["height"] as? Double,
+                  width.isFinite, height.isFinite, width >= 0, height >= 0
+            else { return }
+            let size = CGSize(width: min(width, 4096), height: min(height, 4096))
+            for listener in sizeListeners.values { listener.yield((id, size)) }
         case "state":
             stand(entry: said["entry"] as? String ?? "", arrival: said["arrival"] as? String ?? "",
                   code: said["code"] as? String ?? "", status: said["status"] as? String ?? "",

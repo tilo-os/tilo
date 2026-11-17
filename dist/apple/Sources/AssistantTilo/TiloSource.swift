@@ -765,6 +765,12 @@ public final class TiloSource: AssistantSource {
             let title = shared["reference"]?["label"]?.string ?? message.text
             live.append(AssistantCore.LiveThing(id: .init(message.id), title: title, reference: "record:\(app):\(record)"))
         }
+        // The view a message carries stands in it live, named by its message: its text stays in Tilo.
+        if live.isEmpty, let view = fields["view"], !view.isNull {
+            let apps = (view["reads"]?.array ?? []).compactMap(\.string).map { $0.replacingOccurrences(of: "_", with: " ").capitalized }
+            live.append(AssistantCore.LiveThing(id: .init(message.id), title: apps.isEmpty ? message.text : apps.joined(separator: ", "),
+                                                reference: "view:\(message.name):\(message.conversation)", sizesItself: true))
+        }
         let author: Message.Author
         if message.author.id == me, message.author.kind != .agent {
             author = .person

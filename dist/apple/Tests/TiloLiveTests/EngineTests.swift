@@ -86,11 +86,24 @@ final class EngineTests: XCTestCase {
           if (what.app === 'so.tilo.refuses') throw new Error('not_permitted: You may not open this');
           window.opened.push({...what, shown: element.style.display});
           const record = what.record ?? 'uuid:made-now';
+          // Chat offers, on the item of a message that carries a view, the view `view`.
+          const chat = what.app === 'so.tilo.chat';
           return {
             semantics: document.createElement('div'), editor: {focus: () => { window.focused = record; }},
             state: () => ({phase: 'presented', record}),
-            actions: () => [{address: {resource: 'word-processor.document', action: 'read-text'}, resource_kind: 'word-processor.document'}],
-            invokeAction: async (resource, action) => ({state: 'completed', output: {value: {from: record, action}}}),
+            actions: () => chat
+              ? [{address: {resource: 'chat.workspace/messages/m6', action: 'reveal-message'}, resource_kind: 'chat.workspace.messages', view: {id: 'message', open_action: 'reveal-message', primary: true}},
+                 {address: {resource: 'chat.workspace/messages/m7', action: 'reveal-message'}, resource_kind: 'chat.workspace.messages', view: {id: 'message', open_action: 'reveal-message', primary: true}},
+                 {address: {resource: 'chat.workspace/messages/m7', action: 'show-view'}, resource_kind: 'chat.workspace.messages', view: {id: 'view', open_action: 'show-view'}}]
+              : [{address: {resource: 'word-processor.document', action: 'read-text'}, resource_kind: 'word-processor.document'}],
+            invokeAction: async (resource, action, args) => {
+              if (chat) {
+                (window.shownAlone ??= []).push({resource, action, args});
+                // Its mount then says the size the view asks for, and says it again unchanged.
+                setTimeout(() => { what.onStatus?.({content: {width: 320, height: 148.2}}); what.onStatus?.({content: {width: 320, height: 148.4}}); }, 0);
+              }
+              return {state: 'completed', output: {value: {from: record, action}}};
+            },
             cleanup: async () => { window.tookDown = record; },
           };
         };
@@ -306,6 +319,37 @@ final class EngineTests: XCTestCase {
             "return [...document.querySelectorAll('[data-tilo-live]')].map(place => place.dataset.tiloLive + ':' + place.style.display).join(' ') + ' took down ' + window.tookDown",
             arguments: [:], in: nil, contentWorld: .page) as? String
         XCTAssertEqual(left, "draft:none took down uuid:1f0e")
+    }
+
+    func testAMessagesViewIsChatMountedBesideToldItsMessageAndItsSizeIsHeardOnce() async throws {
+        try await run("location.hash = '#/w/ws-1/so.tilo.chat'; offerBeside(); enter()")
+        try await until("the engine is in") { if case .open = self.engine.state { true } else { false } }
+        var heard: [String] = []
+        let listening = Task { @MainActor in
+            for await (id, size) in self.engine.contentSizes() { heard.append("\(id) \(Int(size.width))x\(Int(size.height))") }
+        }
+        defer { listening.cancel() }
+        try await engine.show(live: "m7", .messageView(message: "m7", conversation: "c_chat"))
+        // Chat is mounted beside as the page itself opens it, and told the message by the action
+        // its item offers for the view. The view's text never crossed.
+        let did = try await engine.view.callAsyncJavaScript(
+            "return JSON.stringify([opened.map(what => [what.app, 'view' in what, what.instance]), window.shownAlone])",
+            arguments: [:], in: nil, contentWorld: .page) as? String
+        XCTAssertEqual(did, #"[[["so.tilo.chat",false,100]],[{"resource":"chat.workspace/messages/m7","action":"show-view","args":{}}]]"#)
+        try await until("the size the view asks for") { !heard.isEmpty }
+        try await Task.sleep(for: .milliseconds(120))
+        XCTAssertEqual(heard, ["m7 320x149"], "a size said again unchanged is not handed on twice")
+        // A message that cannot be named is refused in Tilo's words, and nothing of it is left in the page.
+        do {
+            try await engine.show(live: "bad", .messageView(message: "no such/message", conversation: "c_chat"))
+            XCTFail("a message that cannot be named was taken for shown")
+        } catch let problem as TiloEngine.Problem {
+            XCTAssertEqual(problem, .refused(code: "unknown_action", reason: "no such message"))
+        }
+        let kept = try await engine.view.callAsyncJavaScript(
+            "return [...document.querySelectorAll('[data-tilo-live]')].map(place => place.dataset.tiloLive).join(' ')",
+            arguments: [:], in: nil, contentWorld: .page) as? String
+        XCTAssertEqual(kept, "m7")
     }
 
     func testAPageThatSaysItsOwnChangesIsListenedTo() async throws {
