@@ -34,6 +34,7 @@ public enum Drawing {
         content.main = mainChat
         content.subAgents = subAgents
         content.subAgentChats = ["usage-drop": usageDropChat]
+        content.replies = ["maya": mayaReplies]
         content.tasks = tasks
         content.automations = automations
         content.supervision = supervision
@@ -74,6 +75,17 @@ public enum Drawing {
                  notice: "Maya at Northwind asks for the October numbers. A reply is drafted."),
             Item(id: "remind-ask", at: at(9, 44), .message(Message(.person, "remind me in 30 minutes to call Jonas"))),
             Item(id: "remind-answer", at: at(9, 44), .message(Message(.assistant, "I will remind you at 10:14."))),
+        ]
+    }
+
+    /// The two replies the line "Reply to Maya at Northwind" counts and the conversation leaves
+    /// out. The drawing only counts them; these words are made up in its manner.
+    public static var mayaReplies: [Item] {
+        [
+            Item(id: "maya-figures", at: at(9, 10), .message(Message(
+                .assistant, "The October figures are in the metrics sheet: revenue, burn and runway."))),
+            Item(id: "maya-draft", at: at(9, 11), .message(Message(
+                .assistant, "The reply is drafted in your words, with the three figures and nothing else."))),
         ]
     }
 

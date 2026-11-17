@@ -56,6 +56,56 @@ final class SourceTests: XCTestCase {
         XCTAssertNil(facts?.model, "there is no model before the person links a provider")
     }
 
+    func testATasksRepliesAreHandedOverWhenAskedFor() async throws {
+        let source = Drawing.source()
+        let replies = try await source.replies(of: "maya", in: .main)
+        XCTAssertEqual(replies, Drawing.mayaReplies)
+        XCTAssertEqual(replies.count, 2, "as many as the task's line counts")
+        guard case .replies(let counted)? = Drawing.mainChat.first(where: { $0.id == "maya" })?.task?.standing else { return XCTFail() }
+        XCTAssertEqual(counted, replies.count)
+        // They are no part of the conversation, and a task without any has none.
+        XCTAssertFalse(source.items().contains { item in replies.contains { $0.id == item.id } })
+        let none = try await source.replies(of: "morning-rundown", in: .main)
+        XCTAssertEqual(none, [])
+        // Nobody signed in, nothing handed over.
+        await refused({ _ = try await MemorySource().replies(of: "maya", in: .main) }, .signedOut)
+    }
+
+    /// A source written before replies were asked for still answers: it has none to show.
+    func testASourceThatKeepsNoRepliesHasNoneToShow() async throws {
+        struct Plain: AssistantSource {
+            let inner = MemorySource()
+            func session() -> AsyncStream<Session> { inner.session() }
+            func reach() -> AsyncStream<Reach> { inner.reach() }
+            func pair(with link: PairingLink) async throws {}
+            func signOut() async {}
+            func conversation(_ chat: Chat) -> AsyncStream<ConversationChange> { inner.conversation(chat) }
+            func earlier(in chat: Chat, before item: Item.ID) async throws -> [Item] { [] }
+            func send(_ draft: Draft, to chat: Chat) async throws {}
+            func answer(_ question: Question.ID, with choice: Choice.ID) async throws {}
+            func keep(_ secret: Secret, for request: SecretRequest.ID) async throws {}
+            func fetchSecret(for request: SecretRequest.ID) async throws {}
+            func decline(_ request: SecretRequest.ID) async throws {}
+            func authenticate(_ offer: ConnectionOffer.ID) async throws -> URL? { nil }
+            func decline(_ offer: ConnectionOffer.ID) async throws {}
+            func file(of attachment: Attachment.ID) async throws -> URL { throw SourceProblem.unreachable }
+            func subAgents() -> AsyncStream<[SubAgent]> { inner.subAgents() }
+            func startSubAgent(job: String) async throws {}
+            func stop(_ subAgent: SubAgent.ID) async throws {}
+            func tasks() -> AsyncStream<[AssistantTask]> { inner.tasks() }
+            func addTask(_ title: String) async throws {}
+            func automations() -> AsyncStream<[Automation]> { inner.automations() }
+            func setOn(_ on: Bool, for automation: Automation.ID) async throws {}
+            func supervision() -> AsyncStream<Supervision> { inner.supervision() }
+            func setAssistantOn(_ on: Bool) async throws {}
+            func models() async throws -> [ModelChoice] { [] }
+            func choose(_ model: ModelChoice.ID, for work: WorkKind) async throws {}
+            func forget(_ learned: Supervision.Learned.ID) async throws {}
+        }
+        let replies = try await Plain().replies(of: "maya", in: .main)
+        XCTAssertEqual(replies, [])
+    }
+
     func testNothingIsTakenBeforeSomeoneIsSignedIn() async {
         let source = MemorySource()
         await refused({ try await source.send(Draft(text: "hello"), to: .main) }, .signedOut)

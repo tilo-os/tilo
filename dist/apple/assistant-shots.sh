@@ -9,8 +9,16 @@
 #                                              simulator: the notifications with their buttons and the live
 #                                              activities, as OUT/phone/told.txt and two pictures of its screen
 #
-# The simulator is one of its own, named assistant-shots, made when it is missing and shut down
-# again after. DEVELOPER_DIR names the Xcode to build with, when it is not the selected one.
+# The simulator is one of its own, made when it is missing and shut down again after.
+#
+# Environment:
+#   TILO_APPLE_SIGNING_IDENTITY  who signs the Mac's picture tool. A program started on this Mac is
+#                                signed by someone; without a name the Mac's pictures are not drawn.
+#   TILO_SHOTS_SIMULATOR         the simulator's name (default assistant-shots)
+#   TILO_SHOTS_DEVICE            the kind of iPhone (default "iPhone 18 Pro")
+#   TILO_SHOTS_TEXT              the text size the phone is set to, as simctl names it (default large)
+#   TILO_BUILD_JOBS              how many compilers run at once (default: as many as the Mac has cores)
+#   DEVELOPER_DIR                the Xcode to build with, when it is not the selected one
 set -euo pipefail
 
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -26,6 +34,9 @@ die() { say "$*"; exit 1; }
 mkdir -p "$1"
 out="$(cd "$1" && pwd)"
 what="${2:-all}"
+simulator_name="${TILO_SHOTS_SIMULATOR:-assistant-shots}"
+jobs=()
+[ -z "${TILO_BUILD_JOBS:-}" ] || jobs=(-j "$TILO_BUILD_JOBS")
 
 # Tilo Sans, the face the window is drawn in. The repository keeps no font: its font tool
 # prepares the catalogue once, outside the sources.
@@ -41,7 +52,10 @@ faces() {
 
 mac() {
   local scratch="$repo/target/apple.noindex/swiftpm-mac"
-  (cd "$here" && xcrun swift build --scratch-path "$scratch" --product AssistantShots >&2)
+  # Nothing that nobody signed is started on this Mac: the system holds such a program at its start.
+  [ -n "${TILO_APPLE_SIGNING_IDENTITY:-}" ] || die "name who signs the picture tool in TILO_APPLE_SIGNING_IDENTITY"
+  (cd "$here" && xcrun swift build ${jobs[@]+"${jobs[@]}"} --scratch-path "$scratch" --product AssistantShots >&2)
+  codesign --force --timestamp=none --sign "$TILO_APPLE_SIGNING_IDENTITY" "$scratch/debug/AssistantShots" >&2
   "$scratch/debug/AssistantShots" --out "$out/mac" --fonts "$fonts"
 }
 
@@ -50,7 +64,7 @@ mac() {
 bundle() {
   local sdk bin app="$made/Assistant Shots.app" appex
   sdk="$(xcrun --sdk iphonesimulator --show-sdk-path)"
-  local flags=(-c release --triple "$(uname -m)-apple-ios26.4-simulator" --sdk "$sdk" --scratch-path "$made/swiftpm")
+  local flags=(-c release ${jobs[@]+"${jobs[@]}"} --triple "$(uname -m)-apple-ios26.4-simulator" --sdk "$sdk" --scratch-path "$made/swiftpm")
   (cd "$here" && xcrun swift build "${flags[@]}" >&2)
   bin="$(cd "$here" && xcrun swift build "${flags[@]}" --show-bin-path)"
   appex="$app/PlugIns/AssistantWidgets.appex"
@@ -99,13 +113,14 @@ simulator() {
   device="$(xcrun simctl list devices -j | python3 -I -c '
 import json, sys
 found = [d["udid"] for devices in json.load(sys.stdin)["devices"].values() for d in devices
-         if d["name"] == "assistant-shots" and d.get("isAvailable")]
+         if d["name"] == sys.argv[1] and d.get("isAvailable")]
 print(found[0] if found else "")
-')"
-  [ -n "$device" ] || device="$(xcrun simctl create assistant-shots "iPhone 18 Pro")"
+' "$simulator_name")"
+  [ -n "$device" ] || device="$(xcrun simctl create "$simulator_name" "${TILO_SHOTS_DEVICE:-iPhone 18 Pro}")"
   xcrun simctl boot "$device" 2>/dev/null || true
   xcrun simctl bootstatus "$device" -b >/dev/null
   xcrun simctl status_bar "$device" override --time "9:41" >/dev/null 2>&1 || true
+  xcrun simctl ui "$device" content_size "${TILO_SHOTS_TEXT:-large}" >/dev/null 2>&1 || true
   printf '%s\n' "$device"
 }
 

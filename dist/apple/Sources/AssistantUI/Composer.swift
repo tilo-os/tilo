@@ -183,6 +183,12 @@ extension Markdown.Mark {
 /// character kept, Markdown's own signs out of sight but where the person is writing.
 @MainActor
 enum FieldStyle {
+    /// The ground under code in a line: its colour, kept with the letters it lies under. The
+    /// drawing pads code by one point above and below and five beside, and rounds it by five.
+    nonisolated static let ground = NSAttributedString.Key("so.tilo.assistant.field.ground")
+    nonisolated static let groundPad: CGFloat = 5
+    nonisolated static let groundRadius: CGFloat = 5
+
     static func base(_ scheme: ColorScheme) -> [NSAttributedString.Key: Any] {
         [.font: PlatformFont.tilo(15), .foregroundColor: Token.ink.platform(scheme),
          .paragraphStyle: paragraph(first: 0, rest: 0)]
@@ -219,7 +225,11 @@ enum FieldStyle {
             case .strike:
                 storage.addAttribute(.strikethroughStyle, value: NSUnderlineStyle.single.rawValue, range: range)
             case .code:
-                storage.addAttributes([.font: PlatformFont.tiloMono(13), .backgroundColor: Token.raised.platform(scheme)], range: range)
+                storage.addAttribute(.font, value: PlatformFont.tiloMono(13), range: range)
+                // Its ground reaches over its two signs, which give it the drawing's room on both sides.
+                let from = max(0, range.location - 1), to = min(length, range.location + range.length + 1)
+                storage.addAttribute(FieldStyle.ground, value: Token.raised.platform(scheme),
+                                     range: NSRange(location: from, length: to - from))
             case .link:
                 storage.addAttribute(.foregroundColor, value: Token.asst.platform(scheme), range: range)
             case .heading(let level):
@@ -231,15 +241,21 @@ enum FieldStyle {
                 // their lines go on under them: the room the drawing gives a list's number.
                 let follows = marks.contains { $0.range.upperBound + 1 == mark.range.lowerBound && $0.isListItem }
                 let before: CGFloat = follows || mark.range.lowerBound == 0 ? 0 : 4
-                storage.addAttribute(.paragraphStyle, value: paragraph(first: 4.5, rest: 20, before: before), range: range)
+                var rest: CGFloat = 20
                 if let sign = marks.first(where: { $0.kind == .marker && mark.range.contains($0.range.lowerBound) }),
                    sign.range.upperBound < length, let signRange = self.range(sign.range, in: length) {
+                    // A list's number is set in figures of one width, as a page sets it.
+                    let face = mark.kind == .listItem(ordered: true) ? PlatformFont.tiloFigures(15) : PlatformFont.tilo(15)
+                    storage.addAttribute(.font, value: face, range: signRange)
                     let written = storage.attributedSubstring(from: signRange).string + " "
-                    let taken = (written as NSString).size(withAttributes: [.font: PlatformFont.tilo(15)]).width
-                    if 20 - 4.5 - taken > 0 {
-                        storage.addAttribute(.kern, value: 20 - 4.5 - taken, range: NSRange(location: sign.range.upperBound, length: 1))
+                    let taken = (written as NSString).size(withAttributes: [.font: face]).width
+                    // In a face whose number is wider than the drawing's room, the lines go on where the words begin.
+                    rest = max(rest, 4.5 + taken)
+                    if rest - 4.5 - taken > 0 {
+                        storage.addAttribute(.kern, value: rest - 4.5 - taken, range: NSRange(location: sign.range.upperBound, length: 1))
                     }
                 }
+                storage.addAttribute(.paragraphStyle, value: paragraph(first: 4.5, rest: rest, before: before), range: range)
             case .quote:
                 storage.addAttributes([.foregroundColor: Token.ink2.platform(scheme), .paragraphStyle: paragraph(first: 0, rest: 12)],
                                       range: range)
@@ -257,6 +273,10 @@ enum FieldStyle {
             guard let range = range(hidden) else { continue }
             // Still in the text, and taking no room: a sign shows again when the caret comes to it.
             storage.addAttributes([.font: PlatformFont.systemFont(ofSize: 0.01), .foregroundColor: PlatformColor.clear], range: range)
+            // A sign of code that is out of sight leaves the room the drawing pads code with.
+            if range.length == 1, storage.attribute(FieldStyle.ground, at: range.location, effectiveRange: nil) != nil {
+                storage.addAttribute(.kern, value: FieldStyle.groundPad, range: range)
+            }
         }
         storage.endEditing()
     }
@@ -325,8 +345,63 @@ enum FieldStyle {
     }
 }
 
+/// Lays the field's words out as the system does, and draws the ground under code as the
+/// drawing has it: rounded, with room around the letters.
+final class FieldLayout: NSLayoutManager {
+    /// Where code's grounds lie, in the text container's own measure, each with its colour.
+    func grounds() -> [(rect: CGRect, colour: PlatformColor)] {
+        guard let storage = textStorage, let container = textContainers.first else { return [] }
+        var found: [(rect: CGRect, colour: PlatformColor)] = []
+        let face = PlatformFont.tiloMono(13)
+        ensureLayout(for: container)
+        storage.enumerateAttribute(FieldStyle.ground, in: NSRange(location: 0, length: storage.length), options: []) { value, range, _ in
+            guard let colour = value as? PlatformColor else { return }
+            let glyphs = glyphRange(forCharacterRange: range, actualCharacterRange: nil)
+            let none = NSRange(location: NSNotFound, length: 0)
+            enumerateEnclosingRects(forGlyphRange: glyphs, withinSelectedGlyphRange: none, in: container) { rect, _ in
+                // As tall as the code's own letters with a point above and below, wherever the line's foot is.
+                let glyph = self.glyphIndex(for: CGPoint(x: rect.minX + 0.5, y: rect.midY), in: container)
+                let line = self.lineFragmentRect(forGlyphAt: glyph, effectiveRange: nil)
+                let baseline = line.minY + self.location(forGlyphAt: glyph).y
+                let tall = min(face.ascender - face.descender + 2, line.height)
+                // Never past its own line: the last line's foot is the field's.
+                let top = min(max(baseline - face.ascender - 1, line.minY), line.maxY - tall)
+                found.append((CGRect(x: rect.minX, y: top, width: rect.width, height: tall), colour))
+            }
+        }
+        return found
+    }
+
+    override func drawBackground(forGlyphRange glyphsToShow: NSRange, at origin: CGPoint) {
+        super.drawBackground(forGlyphRange: glyphsToShow, at: origin)
+        for ground in grounds() {
+            let rect = ground.rect.offsetBy(dx: origin.x, dy: origin.y)
+            ground.colour.setFill()
+            // Text is only ever drawn on the main thread.
+            MainActor.assumeIsolated {
+                #if os(macOS)
+                NSBezierPath(roundedRect: rect, xRadius: FieldStyle.groundRadius, yRadius: FieldStyle.groundRadius).fill()
+                #else
+                UIBezierPath(roundedRect: rect, cornerRadius: FieldStyle.groundRadius).fill()
+                #endif
+            }
+        }
+    }
+}
+
 #if os(macOS)
 import AppKit
+
+/// The message field's own text view. It keeps the modifier keys of the key it was last given,
+/// so Return and Shift Return are told apart by the key itself, however the key came.
+final class FieldTextView: NSTextView {
+    private(set) var keyFlags: NSEvent.ModifierFlags = []
+
+    override func keyDown(with event: NSEvent) {
+        keyFlags = event.modifierFlags
+        super.keyDown(with: event)
+    }
+}
 
 /// The system's text view as the message field.
 struct MarkdownField: NSViewRepresentable {
@@ -350,7 +425,8 @@ struct MarkdownField: NSViewRepresentable {
         scroll.hasVerticalScroller = true
         scroll.autohidesScrollers = true
         scroll.scrollerStyle = .overlay
-        let view = NSTextView(usingTextLayoutManager: false)
+        let view = FieldTextView(usingTextLayoutManager: false)
+        view.textContainer?.replaceLayoutManager(FieldLayout())
         view.delegate = context.coordinator
         view.isRichText = false
         view.allowsUndo = true
@@ -423,7 +499,8 @@ struct MarkdownField: NSViewRepresentable {
 
         func textView(_ textView: NSTextView, doCommandBy selector: Selector) -> Bool {
             guard selector == #selector(NSResponder.insertNewline(_:)) else { return false }
-            if NSApp.currentEvent?.modifierFlags.contains(.shift) == true {
+            let flags = (textView as? FieldTextView)?.keyFlags ?? NSApp.currentEvent?.modifierFlags ?? []
+            if flags.contains(.shift) {
                 textView.insertNewlineIgnoringFieldEditor(nil)
             } else {
                 parent.onSend()
@@ -459,7 +536,15 @@ struct MarkdownField: UIViewRepresentable {
     }
 
     func makeUIView(context: Context) -> FieldView {
-        let view = FieldView(usingTextLayoutManager: false)
+        // The system's own layout of text, with the field's way of drawing code's ground.
+        let storage = NSTextStorage()
+        let layout = FieldLayout()
+        storage.addLayoutManager(layout)
+        let container = NSTextContainer(size: CGSize(width: 0, height: CGFloat.greatestFiniteMagnitude))
+        container.widthTracksTextView = true
+        layout.addTextContainer(container)
+        let view = FieldView(frame: .zero, textContainer: container)
+        view.kept = storage
         view.delegate = context.coordinator
         view.backgroundColor = .clear
         view.textContainerInset = .zero
@@ -532,6 +617,8 @@ struct MarkdownField: UIViewRepresentable {
 /// keyboard attached Return sends and Shift Return makes a line, as on a Mac.
 final class FieldView: UITextView {
     var send: (() -> Void)?
+    /// The words the view lays out: a text view made over a layout of its own does not keep them itself.
+    var kept: NSTextStorage?
 
     override var keyCommands: [UIKeyCommand]? {
         let command = UIKeyCommand(input: "\r", modifierFlags: [], action: #selector(sendPressed))

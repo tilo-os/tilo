@@ -38,6 +38,11 @@ public protocol AssistantSource: Sendable {
     /// Older pieces than the oldest the caller holds, oldest first. Empty at the beginning.
     func earlier(in chat: Chat, before item: Item.ID) async throws -> [Item]
 
+    /// The replies of a task that its line counts and the conversation does not show, oldest
+    /// first: what stands under the line once the person opens "2 replies". Empty when there
+    /// are none to show.
+    func replies(of task: AssistantTask.ID, in chat: Chat) async throws -> [Item]
+
     /// Send what the person wrote, with what they attached.
     func send(_ draft: Draft, to chat: Chat) async throws
 
@@ -114,6 +119,9 @@ public protocol AssistantSource: Sendable {
 
 extension AssistantSource {
     public func register(_ address: PushAddress) async {}
+
+    /// A source that keeps no replies apart from the conversation has none to show.
+    public func replies(of task: AssistantTask.ID, in chat: Chat) async throws -> [Item] { [] }
 }
 
 /// How a conversation changed.

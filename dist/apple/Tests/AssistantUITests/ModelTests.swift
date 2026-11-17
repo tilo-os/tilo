@@ -98,6 +98,35 @@ final class ModelTests: XCTestCase {
         XCTAssertNotNil(model.problem)
     }
 
+    func testATasksRepliesOpenUnderItsLineAndArePutAwayAgain() async throws {
+        let model = AssistantModel(source: Drawing.source())
+        model.start()
+        try await until { model.conversation(.main).isLoaded }
+        XCTAssertTrue(model.openReplies.isEmpty)
+        model.toggleReplies(of: "maya", under: "maya", in: .main)
+        try await until { model.openReplies["maya"] != nil }
+        XCTAssertEqual(model.openReplies["maya"], Drawing.mayaReplies)
+        XCTAssertEqual(model.conversation(.main).items, Drawing.mainChat, "the replies are no pieces of the conversation")
+        model.toggleReplies(of: "maya", under: "maya", in: .main)
+        XCTAssertNil(model.openReplies["maya"], "the same press puts them away, at once")
+        // A task with none to show opens on nothing, and says so by holding none.
+        model.toggleReplies(of: "morning-rundown", under: "rundown-1", in: .main)
+        try await until { model.openReplies["rundown-1"] != nil }
+        XCTAssertEqual(model.openReplies["rundown-1"], [])
+    }
+
+    func testRepliesThatCannotBeFetchedOpenNothingAndSayWhy() async throws {
+        let source = Drawing.source()
+        let model = AssistantModel(source: source)
+        model.start()
+        try await until { model.conversation(.main).isLoaded }
+        source.set(.unreachable)
+        model.toggleReplies(of: "maya", under: "maya", in: .main)
+        try await until { model.problem != nil }
+        XCTAssertEqual(model.problem, AssistantWords.unreachable.said)
+        XCTAssertNil(model.openReplies["maya"])
+    }
+
     func testWordsWithNoLinkInThemPairNothing() async {
         let model = AssistantModel(source: MemorySource())
         await model.prime()

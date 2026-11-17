@@ -343,7 +343,20 @@ sends. Attachments and dictation stand under the field, and dictation is the she
 **A secret** is typed into the system's protected field. What is typed lives in that one view
 until Save hands it to `AssistantSource.keep`, and the field is emptied before the call. It is
 never part of a message, a draft, a notification or a log, and a `Secret` prints nothing of
-itself.
+itself. The Mac's window is not one the system restores, so nothing of it is written down for
+its next start; on an iPhone the field is covered while the app is not in front, which is
+when the system keeps a picture of the window.
+
+**A task's replies.** A task's line counts the replies the conversation does not show.
+Pressed, they open under the line (`AssistantSource.replies(of:in:)`), and the same press
+puts them away. On a narrow window what does not fit beside a task's title goes under the
+title, where its words begin, and the Important mark stays on the title's line while it fits.
+
+**The Mac app** is one AppKit window that holds these views, with the menus and the menu-bar
+item's menu made by hand (`MacApp`, in `AssistantUI`). SwiftUI makes a scene's menus and its
+menu-bar item only while the app runs on a screen; made by hand, each is a thing a test builds
+and drives with nothing on a screen. `Entry.main` in `AssistantMac` is all the program adds:
+it names the source.
 
 **Type and colour** are the drawing's: its colours as named tokens (`Token`), its measures
 (`Measure`), its lines 1.45 apart. The face is Tilo Sans, which is the drawing's Instrument
@@ -369,7 +382,10 @@ capability.
 
 **Pictures.** `assistant-shots.sh DIR` draws every screen with nothing on screen, light and
 dark: the Mac's by this Mac, in a window that is never put on a screen, and the iPhone's in a
-simulator that shows no window. Asked for `told`, it also hands the system the drawing's
+simulator that shows no window. The Mac's picture tool is signed before it is started
+(`TILO_APPLE_SIGNING_IDENTITY`): nothing that nobody signed is started on a Mac that someone
+works on. The script's head names the simulator, the kind of iPhone and the text size it is
+set to. Asked for `told`, it also hands the system the drawing's
 notifications and live activities there, and writes down what the system then holds.
 
 ## Limits
@@ -508,6 +524,25 @@ associated with its site: that takes an App ID with the Associated Domains capab
 nothing here makes. What is checked instead: that a build names its sites exactly when its
 profile grants it, what the system answers a page in a build that names none, and the page's
 sentence for it.
+
+Tilo Assistant's Mac app is driven by its tests while it runs (`Tests/AssistantUITests`;
+`Drive.swift` says how): the app as its program makes it, over a source that writes its calls
+down, in a window that is made and never ordered onto a screen, in a process that may never
+come to the front. Every key is a real key event: typing into the message field, Return and
+Shift Return, the menus' keys through the menus themselves, Return and Escape in a sheet. A
+SwiftUI control answers no mouse event in a window that is not on a screen, however it is
+handed one, so a control is pressed by its accessibility press, after the check that it is
+what stands at its own centre. Checked so: the field (formatting in place, what is sent, a
+pasted paragraph, a long text that scrolls inside it), the sidebar and a sub-agent's window,
+the two ways to start a sub-agent, the answers under a message, a task's replies, the panel's
+four parts and an event's switch, the assistant view, every line of the menus with its key,
+the menu-bar item's lines, where the window's three buttons stand, and that what is typed
+into the protected field reaches the source's `keep` and nothing else (no message, no draft,
+no log line, not the pasteboard, nothing the app keeps). Not checked by it, because only a
+window on a screen shows it: the pointer's own way into the views (hover, how a press looks,
+a drag), the two pop-up menus, the search popover, the file picker and dictation (each puts a
+window of the system's on the screen), whether the conversation keeps its end in view while
+the field under it grows, and the app's first start on a screen.
 
 `TiloLive` is checked by its own tests, which run the engine against a page that speaks as
 Tilo's does: where the page stands, a change, reads, actions and their refusals, a second

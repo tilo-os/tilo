@@ -48,6 +48,7 @@ struct SecretCard: View {
     /// Dots to stand in the field for a picture of it filled. Nothing a person types comes this way.
     var pictured = ""
     @Environment(AssistantModel.self) private var model
+    @Environment(\.coversSecrets) private var covered
     @State private var typed = ""
     @State private var saving = false
 
@@ -72,6 +73,20 @@ struct SecretCard: View {
                 .padding(.horizontal, 12)
                 .padding(.vertical, 10)
                 .background(Token.content, in: RoundedRectangle(cornerRadius: 9))
+                .overlay {
+                    // Out of sight while the app is not in front: not how long it is, not a dot of it.
+                    if covered {
+                        HStack(spacing: 10) {
+                            Glyph(.lock).foregroundStyle(Token.ink3)
+                            Spacer(minLength: 0)
+                        }
+                        .padding(.horizontal, 12)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .background(Token.content, in: RoundedRectangle(cornerRadius: 9))
+                        .accessibilityHidden(true)
+                    }
+                }
+                .accessibilityHidden(covered)
                 Flow(spacing: 8, lineSpacing: 8) {
                     Button(AssistantWords.save.said, action: save)
                         .buttonStyle(BoxButtonStyle(isMain: true))

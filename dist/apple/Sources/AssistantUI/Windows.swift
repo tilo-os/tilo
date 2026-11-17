@@ -1,5 +1,8 @@
 import AssistantCore
 import SwiftUI
+#if os(iOS)
+import UIKit
+#endif
 
 /// What every view of the assistant stands in: the model, and how lines are worded, which
 /// follows the person's language and calendar and the minute it is.
@@ -204,6 +207,9 @@ public struct PhoneRoot: View {
     @Environment(AssistantModel.self) private var model
     @Environment(\.wording) private var wording
     @State private var path: [AssistantModel.Place]
+    /// Whether the app is in front. When it leaves the front the system keeps a picture of its
+    /// window, and what stands in a protected field is put out of sight before that.
+    @State private var inFront = true
 
     /// `path` is what stands on the list of conversations when the window opens: the main chat,
     /// unless something else is asked for. Empty is the list itself.
@@ -240,6 +246,9 @@ public struct PhoneRoot: View {
         .sheet(isPresented: $model.asksForJob) {
             JobSheet().presentationDetents([.medium])
         }
+        .environment(\.coversSecrets, !inFront)
+        .onReceive(NotificationCenter.default.publisher(for: UIApplication.willResignActiveNotification)) { _ in inFront = false }
+        .onReceive(NotificationCenter.default.publisher(for: UIApplication.didBecomeActiveNotification)) { _ in inFront = true }
     }
 
     @ViewBuilder

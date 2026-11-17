@@ -145,7 +145,8 @@ struct MarkdownText: View {
                             .frame(width: width, alignment: .leading)
                             .accessibilityHidden(true)
                     } else {
-                        Text(entry.0).frame(width: width, alignment: .leading)
+                        // Figures of one width, as a page sets a list's numbers.
+                        Text(entry.0).monospacedDigit().frame(width: width, alignment: .leading)
                     }
                     inline(entry.1)
                 }
@@ -191,31 +192,151 @@ struct EyeChip: View {
     }
 }
 
-/// The line that names a task above its pieces: `.task`.
+/// The line that names a task above its pieces: `.task`. Where the window is too narrow for
+/// all of it, what does not fit goes under the title, where the title's words begin.
 struct TaskLineView: View {
     let line: TaskLine
     let isImportant: Bool
+    /// The piece the line stands before and the conversation it stands in: its replies open under it.
+    let before: Item.ID
+    let chat: Chat
     @Environment(AssistantModel.self) private var model
     @Environment(\.wording) private var wording
 
     var body: some View {
-        Flow(spacing: 7, lineSpacing: 4) {
-            Glyph(.into).foregroundStyle(Token.ink3)
+        let said = wording.line(line.standing)
+        let replies = line.standing.replies
+        HStack(alignment: .top, spacing: 7) {
+            Glyph(.into).foregroundStyle(Token.ink3).frame(height: 20)
             EyeChip()
-            Text(line.title).foregroundStyle(Token.ink)
-            if let said = wording.line(line.standing) {
-                if case .replies = line.standing {
-                    Button("· \(said)") { model.showTasks(.active) }.buttonStyle(.plain).foregroundStyle(Token.asst)
-                } else {
-                    Text("· \(said)").foregroundStyle(Token.ink3)
+            TitleRun(spacing: 7, lineSpacing: 2) {
+                Text(line.title).foregroundStyle(Token.ink)
+                    .layoutValue(key: TitleRun.Part.self, value: .title)
+                    .accessibilityLabel(spoken(nil))
+                    .accessibilityAddTraits(.isHeader)
+                if let said {
+                    if let replies {
+                        // The replies open under the line, and the same words put them away again.
+                        Button("· \(said)") { model.toggleReplies(of: line.task, under: before, in: chat) }
+                            .buttonStyle(.plain).foregroundStyle(Token.asst)
+                            .accessibilityLabel(model.openReplies[before] != nil ? AssistantWords.hideReplies.said
+                                : AssistantWords.counted(replies, one: .showReplyOne, many: .showReplyMany))
+                    } else {
+                        Text("· \(said)").foregroundStyle(Token.ink3)
+                    }
+                }
+                if isImportant {
+                    ImportantMark().layoutValue(key: TitleRun.Part.self, value: .mark)
+                        .accessibilityHidden(replies != nil)
                 }
             }
-            if isImportant { ImportantMark() }
+            .frame(minHeight: 20)
         }
         .font(.line135)
         .padding(.top, 6)
-        .accessibilityElement(children: .combine)
-        .accessibilityAddTraits(.isHeader)
+        // One heading that says all of it; where the replies can be opened, the heading and that button.
+        .accessibilityElement(children: replies == nil ? .ignore : .contain)
+        .accessibilityLabel(spoken(said))
+        .accessibilityAddTraits(replies == nil ? .isHeader : [])
+    }
+
+    /// The line as it is read out: the task, how it stands, and that it is important.
+    private func spoken(_ said: String?) -> String {
+        [line.title, said, isImportant ? AssistantWords.important.said : nil].compactMap { $0 }.joined(separator: ", ")
+    }
+}
+
+private extension TaskLine.Standing {
+    var replies: Int? {
+        if case .replies(let count) = self { count } else { nil }
+    }
+}
+
+/// A task's title with what follows it. While all of it fits on one line it stands as the
+/// drawing has it: the title, how the task stands, the Important mark. Where it does not, the
+/// mark stays on the title's line while it fits there, and the rest goes under the title.
+struct TitleRun: Layout {
+    enum Role: Sendable {
+        case title, rest, mark
+    }
+
+    struct Part: LayoutValueKey {
+        static let defaultValue = Role.rest
+    }
+
+    var spacing: CGFloat = 7
+    var lineSpacing: CGFloat = 2
+
+    private struct Placed {
+        var index: Int
+        var size: CGSize
+    }
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let rows = rows(of: subviews, within: proposal.width ?? .infinity)
+        let width = rows.map { width(of: $0) }.max() ?? 0
+        let height = rows.map { height(of: $0) }.reduce(0, +) + lineSpacing * CGFloat(max(0, rows.count - 1))
+        return CGSize(width: width, height: height)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        var y = bounds.minY
+        for row in rows(of: subviews, within: bounds.width) {
+            let tall = height(of: row)
+            var x = bounds.minX
+            for placed in row {
+                subviews[placed.index].place(at: CGPoint(x: x, y: y + (tall - placed.size.height) / 2), anchor: .topLeading,
+                                             proposal: ProposedViewSize(placed.size))
+                x += placed.size.width + spacing
+            }
+            y += tall + lineSpacing
+        }
+    }
+
+    private func width(of row: [Placed]) -> CGFloat {
+        row.map(\.size.width).reduce(0, +) + spacing * CGFloat(max(0, row.count - 1))
+    }
+
+    private func height(of row: [Placed]) -> CGFloat {
+        row.map(\.size.height).max() ?? 0
+    }
+
+    private func rows(of subviews: Subviews, within width: CGFloat) -> [[Placed]] {
+        func fitted(_ index: Int) -> CGSize {
+            let ideal = subviews[index].sizeThatFits(.unspecified)
+            guard ideal.width > width else { return ideal }
+            return subviews[index].sizeThatFits(ProposedViewSize(width: max(width, 0), height: nil))
+        }
+        let ideal = subviews.indices.map { subviews[$0].sizeThatFits(.unspecified) }
+        let whole = ideal.map(\.width).reduce(0, +) + spacing * CGFloat(max(0, subviews.count - 1))
+        if whole <= width { return [subviews.indices.map { Placed(index: $0, size: ideal[$0]) }] }
+
+        var rows: [[Placed]] = []
+        var later = Array(subviews.indices)
+        // The title's line, with the mark beside it while both fit.
+        if let title = subviews.indices.first(where: { subviews[$0][Part.self] == .title }) {
+            let mark = subviews.indices.first { subviews[$0][Part.self] == .mark }
+            let beside = mark.map { ideal[title].width + spacing + ideal[$0].width <= width } ?? false
+            var first = [Placed(index: title, size: fitted(title))]
+            if let mark, beside { first.append(Placed(index: mark, size: ideal[mark])) }
+            rows.append(first)
+            later.removeAll { $0 == title || (beside && $0 == mark) }
+        }
+        // What is left, one after the other, on as many lines as it takes.
+        var row: [Placed] = []
+        var used: CGFloat = 0
+        for index in later {
+            let size = fitted(index)
+            if !row.isEmpty, used + spacing + size.width > width {
+                rows.append(row)
+                row = []
+                used = 0
+            }
+            used += (row.isEmpty ? 0 : spacing) + size.width
+            row.append(Placed(index: index, size: size))
+        }
+        if !row.isEmpty { rows.append(row) }
+        return rows
     }
 }
 

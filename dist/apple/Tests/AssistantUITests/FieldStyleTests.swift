@@ -42,14 +42,29 @@ final class FieldStyleTests: XCTestCase {
         let entry = place(of: "1. pull", in: typed)
         let paragraph = try XCTUnwrap(storage.attribute(.paragraphStyle, at: entry, effectiveRange: nil) as? NSParagraphStyle)
         XCTAssertEqual(paragraph.firstLineHeadIndent, 4.5)
-        XCTAssertEqual(paragraph.headIndent, 20)
+        // The drawing's twenty points, or more where the face at hand sets a number wider than the drawing's does.
+        XCTAssertGreaterThanOrEqual(paragraph.headIndent, 20)
+        XCTAssertLessThan(paragraph.headIndent, 23)
         XCTAssertEqual(try font(storage, at: entry).pointSize, 15)
+        // A number is set in figures of one width, as a page sets a list's, so the words follow it closely.
+        let figures = try font(storage, at: entry)
+        func wide(_ figure: String, _ face: NSFont) -> CGFloat { (figure as NSString).size(withAttributes: [.font: face]).width }
+        XCTAssertEqual(wide("1", figures), wide("0", figures), accuracy: 0.01)
+        XCTAssertEqual(wide("1", figures), wide("8", figures), accuracy: 0.01)
+        let after = storage.attribute(.kern, at: entry + 2, effectiveRange: nil) as? CGFloat ?? 0
+        XCTAssertEqual(4.5 + wide("1. ", figures) + after, paragraph.headIndent, accuracy: 0.1, "the words begin where their lines go on under them")
 
-        // Code is set in the fixed face on a ground of its own.
+        // Code is set in the fixed face on a ground of its own, which reaches over its two signs.
         let code = place(of: "billing#retry", in: typed)
         XCTAssertTrue(try font(storage, at: code).isFixedPitch)
-        XCTAssertNotNil(storage.attribute(.backgroundColor, at: code, effectiveRange: nil))
-        XCTAssertNil(storage.attribute(.backgroundColor, at: place(of: "is live", in: typed), effectiveRange: nil))
+        XCTAssertEqual(storage.attribute(FieldStyle.ground, at: code, effectiveRange: nil) as? NSColor, Token.raised.platform(.light))
+        XCTAssertNotNil(storage.attribute(FieldStyle.ground, at: code - 1, effectiveRange: nil))
+        XCTAssertNotNil(storage.attribute(FieldStyle.ground, at: code + "billing#retry".count, effectiveRange: nil))
+        XCTAssertNil(storage.attribute(FieldStyle.ground, at: place(of: "is live", in: typed), effectiveRange: nil))
+        XCTAssertNil(storage.attribute(FieldStyle.ground, at: place(of: "check", in: typed), effectiveRange: nil))
+        // Out of sight, its signs leave the room the drawing pads code with.
+        XCTAssertEqual(storage.attribute(.kern, at: code - 1, effectiveRange: nil) as? CGFloat, FieldStyle.groundPad)
+        XCTAssertEqual(storage.attribute(.kern, at: code + "billing#retry".count, effectiveRange: nil) as? CGFloat, FieldStyle.groundPad)
     }
 
     func testMarkdownsSignsShowWhereThePersonWrites() throws {

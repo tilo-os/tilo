@@ -17,6 +17,8 @@ public enum AssistantWords: String, CaseIterable, Sendable {
     case todayAt = "today-at", yesterdayAt = "yesterday-at"
     case lineScheduled = "line-scheduled", lineActedAlone = "line-acted-alone"
     case replyOne = "reply-one", replyMany = "reply-many", important
+    case showReplyOne = "show-reply-one", showReplyMany = "show-reply-many", hideReplies = "hide-replies"
+    case noReplies = "no-replies"
     case readyOne = "ready-one", readyMany = "ready-many", seeAllTasks = "see-all-tasks"
     case youChose = "you-chose", answering, earlier
     case nothingYet = "nothing-yet", nothingYetBody = "nothing-yet-body"
@@ -58,6 +60,9 @@ public enum AssistantWords: String, CaseIterable, Sendable {
     // The menu bar and the menus.
     case openApp = "open-app", waitsOne = "waits-one", waitsMany = "waits-many", waitsNone = "waits-none"
     case pauseAssistant = "pause-assistant", resumeAssistant = "resume-assistant", quit, viewMenu = "view-menu"
+    case about, hideApp = "hide-app", hideOthers = "hide-others", showAll = "show-all"
+    case fileMenu = "file-menu", closeWindow = "close-window", editMenu = "edit-menu", undo, redo, cut, copy, paste
+    case selectAll = "select-all", windowMenu = "window-menu", minimize, zoom
     // Notifications and the live activity.
     case reminder, brief, inProgressCount = "in-progress-count"
 
@@ -88,6 +93,10 @@ public enum AssistantWords: String, CaseIterable, Sendable {
         case .replyOne: "1 reply"
         case .replyMany: "{count} replies"
         case .important: "Important"
+        case .showReplyOne: "Show 1 reply"
+        case .showReplyMany: "Show {count} replies"
+        case .hideReplies: "Hide replies"
+        case .noReplies: "Nothing more to show"
         case .readyOne: "1 ready for review"
         case .readyMany: "{count} ready for review"
         case .seeAllTasks: "See all tasks"
@@ -211,6 +220,22 @@ public enum AssistantWords: String, CaseIterable, Sendable {
         case .resumeAssistant: "Let the assistant go on"
         case .quit: "Quit {app}"
         case .viewMenu: "View"
+        case .about: "About {app}"
+        case .hideApp: "Hide {app}"
+        case .hideOthers: "Hide others"
+        case .showAll: "Show all"
+        case .fileMenu: "File"
+        case .closeWindow: "Close window"
+        case .editMenu: "Edit"
+        case .undo: "Undo"
+        case .redo: "Redo"
+        case .cut: "Cut"
+        case .copy: "Copy"
+        case .paste: "Paste"
+        case .selectAll: "Select all"
+        case .windowMenu: "Window"
+        case .minimize: "Minimize"
+        case .zoom: "Zoom"
         case .reminder: "Reminder"
         case .brief: "Brief"
         case .inProgressCount: "{count} in progress"

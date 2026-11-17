@@ -45,6 +45,8 @@ public final class AssistantModel {
     public var shownItem: Item.ID?
     /// Counts up each time the message field should take the caret.
     public private(set) var fieldCalls = 0
+    /// The replies that stand open under a task's line, by the piece the line stands before.
+    public private(set) var openReplies: [Item.ID: [Item]] = [:]
 
     /// Called for each piece that arrives after the conversation was first read.
     @ObservationIgnored public var told: ((Item, Chat) -> Void)?
@@ -220,6 +222,19 @@ public final class AssistantModel {
         }
     }
 
+    /// Open a task's replies under its line, or put them away again.
+    public func toggleReplies(of task: AssistantTask.ID, under line: Item.ID, in chat: Chat) {
+        if openReplies[line] != nil {
+            openReplies[line] = nil
+            return
+        }
+        Task {
+            var found: [Item] = []
+            guard await self.call({ found = try await self.source.replies(of: task, in: chat) }) else { return }
+            self.openReplies[line] = found
+        }
+    }
+
     public func answer(_ question: Question.ID, with choice: Choice.ID) {
         Task { await self.call { try await self.source.answer(question, with: choice) } }
     }
@@ -323,4 +338,7 @@ extension EnvironmentValues {
     /// The view that draws a live Tilo thing. Whoever implements `AssistantSource` supplies it;
     /// the frame draws an empty place where there is none.
     @Entry public var liveThingView: (@MainActor (LiveThing) -> AnyView)?
+    /// Whether what stands in a protected field is put out of sight: while the app is not in
+    /// front, when the system keeps a picture of its window.
+    @Entry public var coversSecrets = false
 }

@@ -27,7 +27,7 @@ public struct ConversationView: View {
                         if conversation.isLoaded, rows.isEmpty { empty }
                         if let agent = liveAgent, let thing = agent.live { LiveThingPlace(thing: thing) }
                         ForEach(rows) { row in
-                            RowView(row: row, picturedSecret: picturedSecret).id(row.id)
+                            RowView(row: row, chat: chat, picturedSecret: picturedSecret).id(row.id)
                         }
                         if conversation.isAnswering {
                             Fine(words: "\(AssistantWords.answering.said)…").padding(.leading, 14)
@@ -76,6 +76,7 @@ public struct ConversationView: View {
 /// One thing the conversation draws under another.
 private struct RowView: View {
     let row: Conversation.Row
+    let chat: Chat
     let picturedSecret: String
     @Environment(AssistantModel.self) private var model
 
@@ -83,18 +84,43 @@ private struct RowView: View {
         switch row {
         case .mark(let words, _):
             TimeMark(words: words)
-        case .task(let line, let isImportant, _):
-            TaskLineView(line: line, isImportant: isImportant)
+        case .task(let line, let isImportant, let before):
+            TaskLineView(line: line, isImportant: isImportant, before: before, chat: chat)
+            if let replies = model.openReplies[before] { Replies(replies: replies) }
         case .caption(let words, _):
             Fine(words: words)
         case .piece(let item, let marked):
             if marked { ImportantMark() }
-            piece(item)
+            PieceView(item: item, picturedSecret: picturedSecret)
         }
     }
+}
 
-    @ViewBuilder
-    private func piece(_ item: Item) -> some View {
+/// A task's replies, open under its line: each as the conversation shows a piece, set in under
+/// the line's arrow with a thread beside them.
+private struct Replies: View {
+    let replies: [Item]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            if replies.isEmpty { Fine(words: AssistantWords.noReplies.said) }
+            ForEach(replies) { PieceView(item: $0, picturedSecret: "") }
+        }
+        .padding(.leading, 27)
+        .overlay(alignment: .leading) {
+            RoundedRectangle(cornerRadius: 1).fill(Token.line).frame(width: 2).padding(.leading, 7)
+                .accessibilityHidden(true)
+        }
+    }
+}
+
+/// One piece of a conversation, as the drawing draws its kind.
+private struct PieceView: View {
+    let item: Item
+    let picturedSecret: String
+    @Environment(AssistantModel.self) private var model
+
+    var body: some View {
         switch item.content {
         case .message(let message):
             MessageView(message: message)

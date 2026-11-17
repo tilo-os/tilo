@@ -10,6 +10,8 @@ public final class MemorySource: AssistantSource, @unchecked Sendable {
         public var main: [Item] = []
         public var subAgents: [SubAgent] = []
         public var subAgentChats: [SubAgent.ID: [Item]] = [:]
+        /// The replies a task's line counts and the conversation does not show.
+        public var replies: [AssistantTask.ID: [Item]] = [:]
         public var tasks: [AssistantTask] = []
         public var automations: [Automation] = []
         public var supervision = Supervision()
@@ -30,6 +32,7 @@ public final class MemorySource: AssistantSource, @unchecked Sendable {
     private let supervisionNow: Broadcast<Supervision>
     private let modelChoices: [ModelChoice]
     private let pairsAs: Person?
+    private let taskReplies: [AssistantTask.ID: [Item]]
     private var feeds: [Chat: Feed]
     private var vault: [SecretRequest.ID: Secret] = [:]
     private var files: [Attachment.ID: URL] = [:]
@@ -44,6 +47,7 @@ public final class MemorySource: AssistantSource, @unchecked Sendable {
         supervisionNow = Broadcast(content.supervision)
         modelChoices = content.models
         pairsAs = content.pairsAs
+        taskReplies = content.replies
         var feeds: [Chat: Feed] = [.main: Feed(content.main)]
         for agent in content.subAgents {
             feeds[.subAgent(agent.id)] = Feed(content.subAgentChats[agent.id] ?? [])
@@ -113,6 +117,11 @@ public final class MemorySource: AssistantSource, @unchecked Sendable {
         // Memory holds a conversation whole: nothing is older than what a listener got.
         try signedIn()
         return []
+    }
+
+    public func replies(of task: AssistantTask.ID, in chat: Chat) async throws -> [Item] {
+        try signedIn()
+        return taskReplies[task] ?? []
     }
 
     public func send(_ draft: Draft, to chat: Chat) async throws {

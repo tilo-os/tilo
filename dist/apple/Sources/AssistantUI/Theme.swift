@@ -192,6 +192,20 @@ extension PlatformFont {
         #endif
     }
 
+    /// The same face with every figure as wide as the next: how a page sets a list's numbers.
+    public static func tiloFigures(_ size: CGFloat) -> PlatformFont {
+        let base = tilo(size)
+        #if os(macOS)
+        let features = [[NSFontDescriptor.FeatureKey.typeIdentifier: kNumberSpacingType,
+                         NSFontDescriptor.FeatureKey.selectorIdentifier: kMonospacedNumbersSelector]]
+        return NSFont(descriptor: base.fontDescriptor.addingAttributes([.featureSettings: features]), size: base.pointSize) ?? base
+        #else
+        let features = [[UIFontDescriptor.FeatureKey.type: kNumberSpacingType,
+                         UIFontDescriptor.FeatureKey.selector: kMonospacedNumbersSelector]]
+        return UIFont(descriptor: base.fontDescriptor.addingAttributes([.featureSettings: features]), size: base.pointSize)
+        #endif
+    }
+
     public static func tiloMono(_ size: CGFloat) -> PlatformFont {
         #if os(macOS)
         NSFont.monospacedSystemFont(ofSize: size, weight: .regular)
