@@ -131,11 +131,12 @@ printf 'FROM localhost/tilo-host:ci\nRUN echo %s > /usr/lib/tilo/host-assurance-
 podman build -q -t "$update_ref" -f "$work/update/Containerfile" "$work/update" >/dev/null
 podman save --format oci-archive -o "$work/update.tar" "$update_ref"
 rm -f "$work/update.raw"
-# The disk holds the whole archive the machine stages, so size it from the
-# archive: a fixed number here would fail as a full filesystem on whichever
-# image grew past it, and name nothing that said why.
+# The disk holds what the machine stages: the whole archive, and the layout
+# skopeo unpacks it into beside the archive. Size it from the archive rather
+# than a fixed number, which fails as a full filesystem on whichever image grew
+# past it and names nothing that said why.
 archive_mib=$(( ($(stat -c %s "$work/update.tar") + 1048575) / 1048576 ))
-truncate -s "$(( archive_mib + 256 ))M" "$work/update.raw"
+truncate -s "$(( 2 * archive_mib + 256 ))M" "$work/update.raw"
 mkfs.ext4 -q -F -L tiloupdate "$work/update.raw"
 mkdir -p "$work/mnt"
 mount -o loop "$work/update.raw" "$work/mnt"
@@ -150,6 +151,10 @@ export TILO_DISTROBOX="" TILO_ACCEL=kvm TILO_USER TILO_PASS
 export TILO_RUN=$work/run TILO_DISK=$disk
 export TILO_SERIAL_SOCKET=$work/run/serial.sock
 export TILO_CONSOLE_LOG=$out/console.log TILO_CONSOLE_USER=$TILO_USER TILO_CONSOLE_PASS=$TILO_PASS
+# One line may import a gigabyte into the machine's storage (bootc switch) or
+# check on a service that is still fetching its guest; the script's own waits
+# are the bound on those, not the console runner's default for one command.
+export TILO_CONSOLE_DEADLINE=1800
 mkdir -p "$TILO_RUN"
 boot_vm() {
   ./os/dev/vm.sh boot --2d --disk "$disk" --attach "$work/update.qcow2"
@@ -207,7 +212,8 @@ ok 'tilo-boot-health judges the server by tilo-server-health'
 say 'stage the update and break it on the staged deployment only'
 as_root 'mkdir -p /mnt/update && mount /dev/vdb /mnt/update && skopeo copy --quiet \
   oci-archive:/mnt/update/update.oci.tar oci:/mnt/update/image:tilo-host' > "$out/stage-transfer.txt" 2>&1 \
-  || die "could not put the update image on the machine; see $out/stage-transfer.txt"
+  || { cat "$out/stage-transfer.txt" >/dev/console 2>/dev/null || true
+       die "could not put the update image on the machine; see $out/stage-transfer.txt"; }
 ok 'the update image is on the machine' 
 
 RUNNER='./os/tests/serial_runner.sh' SUDO_PASS="$TILO_PASS" FAULT=server \
