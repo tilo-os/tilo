@@ -172,7 +172,7 @@ impl Workspaces {
 
     /// What `cert`'s device hears when it is a member of `workspace` already,
     /// and the entry keeps nobody out of it: the workspace's own admission,
-    /// with the device_access its changes there are decided against brought up to
+    /// with what devices may do there, which its changes are decided against, brought up to
     /// date first. `None` for a device the workspace does not admit, and for
     /// one whose person the entry refuses.
     #[expect(

@@ -295,7 +295,7 @@ impl ChromeSource for PageChrome {
     fn facts(&self, facts: &mut Facts) {
         facts.number(self.here.borrow().revision());
         facts.number(self.notifications.revision());
-        facts.number(u64::from(self.shared.requester.code()));
+        facts.number(u64::from(self.shared.role.code()));
         facts.number(tilo_session::platform::readings::Machine::revision(
             &*self.machine,
         ));
@@ -2477,7 +2477,7 @@ mod tests {
         assert_eq!(offers("owner", Some(Role::Owner)), all);
         // Until the workspace has answered, nothing is offered to take back.
         assert_eq!(offers(GUEST, None), none);
-        let own = crate::desktop::Requester::default();
+        let own = crate::desktop::SharedRole::default();
         assert_eq!(offered_edits(&own.of(GUEST), &authors, &tree), all);
     }
 
@@ -2493,7 +2493,7 @@ mod tests {
             .map(|(id, _)| *id)
             .unwrap();
         for role in [Role::Editor, Role::Moderator] {
-            shared.requester.set(Some(role));
+            shared.role.set(Some(role));
             let held = shared.holders(&tree, GUEST, "Lounge", &mut person);
             if role == Role::Moderator {
                 assert!(held.is_empty(), "a moderator closes anyone's window");
@@ -2513,7 +2513,7 @@ mod tests {
         let (tree, authors) = lounge();
         let shared = crate::desktop::Shared::default();
         shared.authors.borrow_mut().clone_from(&authors);
-        shared.requester.set(Some(Role::Editor));
+        shared.role.set(Some(Role::Editor));
         let mut person = |id: &str| (id.to_owned(), (1, 2, 3));
         shared
             .members

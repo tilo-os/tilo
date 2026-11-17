@@ -1524,7 +1524,7 @@ struct Socket {
     path: PathBuf,
     /// The socket standing at `path` when it was bound: a session that takes the path later binds
     /// one of its own, which this one leaves standing.
-    access: Option<(u64, u64)>,
+    inode: Option<(u64, u64)>,
     /// The connection number the next connection taken is given.
     next: AtomicU64,
     /// The launches a connection is checked against, the channel its asks arrive on, and the wake

@@ -206,7 +206,7 @@ async fn a_crowds_shared_writes_hold_each_invitation_grant_across_a_restart() {
 
 /// An entry cut off between committing a device's admission and settling it
 /// (the page that asked closed meanwhile) leaves governance holding the
-/// device while the relay decides its changes against device_access without it.
+/// device while the relay decides its changes against what devices may do, without it.
 /// The device's next entry finds it admitted already, and settles what
 /// governance holds before answering, so its changes are decided with it.
 #[tokio::test]

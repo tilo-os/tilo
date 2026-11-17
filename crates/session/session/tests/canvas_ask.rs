@@ -506,7 +506,7 @@ fn a_place_moved_to_a_point_is_drawn_there() {
         let origin = crate::common::places(&session);
         assert!(
             origin.is_empty(),
-            "{row:?}: nothing stands on the canvas the row starts on: {standing:?}"
+            "{row:?}: nothing stands on the canvas the row starts on: {origin:?}"
         );
         let key = match row {
             PlaceOrigin::PlacedRecord => {

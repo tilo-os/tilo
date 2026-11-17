@@ -61,7 +61,7 @@ pub struct Look<'a> {
 /// What this device told, and what must not be told again.
 #[derive(Default)]
 pub struct Held {
-    /// Per record (`app` and route), the tags told and still live_tags.
+    /// Per record (`app` and route), the tags told and still live.
     told: BTreeMap<(String, String), BTreeSet<String>>,
     /// Per record, where it was last looked at: what changed since is all a look reads of it.
     seen: BTreeMap<(String, String), Seen>,

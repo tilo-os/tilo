@@ -7,7 +7,7 @@
 //! for every layer someone shows, as the [`Sink`] it was started with says
 //! ([`super::live_pictures`] publishes them). A layer nobody shows is not
 //! encoded, and a layer that starts being shown starts at a keyframe: the
-//! last_keyframe one while the picture has not changed since, so a still screen
+//! last one while the picture has not changed since, so a still screen
 //! costs no encode, or one encoded from the last frame at once.
 //!
 //! **Receiving.** The workspace's live session seals a picture per layer and

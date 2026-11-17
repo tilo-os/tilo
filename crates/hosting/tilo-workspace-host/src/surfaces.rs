@@ -255,7 +255,7 @@ pub(crate) fn arrived() {
 /// record is no part of what the workspace grants ([`collab_types::OwnResource`]):
 /// it is theirs to write whatever their role. `None` for any other role, for
 /// a change of the author's own record, for a workspace whose governor
-/// projected no device_access (`device_access`), and for a delta that carries no
+/// projected nothing its devices may do (`device_access`), and for a delta that carries no
 /// document change at all.
 pub(crate) fn role_refusal(
     delta: &[u8],
@@ -321,7 +321,7 @@ pub(crate) fn own_refusal(
 /// a change that names no action, a cleartext op that brings claims of its
 /// own, a claim to an action or field the app's surface does not publish,
 /// one writing a unit outside its action's footprint, or, where the workspace's
-/// governor projected its members' device_access (`device_access`), an action the
+/// governor projected what its members' devices may do (`device_access`), an action the
 /// author is not granted. Ops whose surface has not arrived here yet are
 /// left to the workspace's devices, which hold them. `payloads` reads the
 /// document frame.

@@ -214,8 +214,8 @@ impl SharedRole {
     }
 
     /// `person` as the desktop's policy asks about them.
-    pub fn of<'a>(&self, person: &'a str) -> tilo_desktop_model::commands::SharedRole<'a> {
-        tilo_desktop_model::commands::SharedRole {
+    pub fn of<'a>(&self, person: &'a str) -> tilo_desktop_model::commands::Requester<'a> {
+        tilo_desktop_model::commands::Requester {
             person,
             role: self.role(),
             members: None,
@@ -250,7 +250,7 @@ impl LateFeedback {
             return Err("feedback is already installed".into());
         }
         let sender = crate::feedback_code::install(startup, Rc::clone(&self.store))?;
-        *shared.feedback.borrow_mut() = Some(ownership);
+        *shared.feedback.borrow_mut() = Some(sender);
         // The model this page may use also looks over reports before they
         // are sent: its host's, or a provider the person set up here.
         // Without one, the model the workspace's host lends its reporters does,
@@ -448,8 +448,8 @@ impl Shared {
         &self,
         person: &'a str,
         members: Option<&'a std::collections::BTreeSet<String>>,
-    ) -> tilo_desktop_model::commands::SharedRole<'a> {
-        tilo_desktop_model::commands::SharedRole {
+    ) -> tilo_desktop_model::commands::Requester<'a> {
+        tilo_desktop_model::commands::Requester {
             members,
             ..self.role.of(person)
         }
