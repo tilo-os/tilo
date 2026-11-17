@@ -114,6 +114,10 @@ so a fix often saves several times what `nm` shows for it. What has paid most so
   its content. The effect specs and the popover took 1,622,528 bytes out of the 66 x86_64 tapps
   (median 20,992; Tasks 113,152, Feeds 77,312, Camera 80,384), the chain 41 to 49 KB out of each
   of the six apps that keep one (267,776 in all).
+- A virtual list's code reads its model through `AnyModel` and keeps its keys as `ListKey`
+  (`VirtualRows`); `VirtualList<M>` only converts between them and `M`. Each model type had
+  cost an app about 200 KB: Tasks, Notes, Messages, Passwords, Snippets, Backups, Code Editor and
+  Canvas came out 200 to 440 KB smaller each.
 
 Not every erasure pays. Routing `Widget`'s default methods through a trait object made the apps
 larger: the per-type copies of a leaf widget's defaults were identical, so the linker already

@@ -558,7 +558,7 @@
         },
         {
           "name": "count",
-          "doc": "How many new things wait behind it (unread notifications, new mail), on an icon-only button: a count standing on its icon's top-trailing corner, as an app icon's does, and nothing at 0.",
+          "doc": "How many new things wait behind it (unread notifications, new mail), on an icon-only button: a count on its icon's top-trailing corner, as an app icon's does, and nothing at 0.",
           "type": {
             "option": "int"
           }
@@ -600,7 +600,7 @@
     },
     {
       "name": "Place",
-      "doc": "A resource's view standing on a canvas: the view on the window surface, with a handle shown over its corner on hover and focus that names it, holds its controls and moves it.",
+      "doc": "A resource's view on a canvas: the view on the window surface, with a handle shown over its corner on hover and focus that names it, holds its controls and moves it.",
       "props": [
         {
           "name": "name",
@@ -5455,7 +5455,7 @@
         },
         {
           "name": "caret",
-          "doc": "A caret standing on a surface rather than a field in a form: no well and no fill, only as wide as what it holds, growing as the words are typed. The canvas's caret.",
+          "doc": "A caret on a surface rather than a field in a form: no well and no fill, only as wide as what it holds, growing as the words are typed. The canvas's caret.",
           "type": "bool"
         }
       ],
@@ -5817,7 +5817,7 @@
         },
         {
           "name": "removed",
-          "doc": "The rows standing in for nodes someone else removed that the person has not seen go: they stand after the nodes, struck, each with its mark. The UI host places them.",
+          "doc": "The rows in place of nodes someone else removed that the person has not seen go: they stand after the nodes, struck, each with its mark. The UI host places them.",
           "accepts": {
             "component": "TreeViewNode"
           },
@@ -6204,7 +6204,7 @@
     },
     {
       "name": "WindowFrame",
-      "doc": "A window standing on a shell: the window surface with its edge and shadow, holding the window's content and its controls, clipped to its radius.",
+      "doc": "A window on a shell: the window surface with its edge and shadow, holding the window's content and its controls, clipped to its radius.",
       "props": [
         {
           "name": "name",

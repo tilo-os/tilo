@@ -864,10 +864,7 @@ impl PageSidebar {
             reveal = selected;
             self.last_selection = selected;
         }
-        match selected {
-            Some(page) => self.tree.selection_mut().select_only(page),
-            None => self.tree.selection_mut().clear(),
-        }
+        self.tree.select_only(selected);
         if let Some(page) = reveal {
             self.tree.focus_row(page);
             self.tree.reveal(&page);

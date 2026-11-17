@@ -796,16 +796,12 @@ impl DescribedList {
             return false;
         };
         let key = id.and_then(|id| list.model().key_presenting(id));
-        let selection = list.selection_mut();
-        let now: Vec<String> = selection.stored_keys().cloned().collect();
+        let now: Vec<String> = list.selection().stored_keys().cloned().collect();
         let want: Vec<String> = key.iter().cloned().collect();
         if now == want {
             return false;
         }
-        selection.clear();
-        if let Some(key) = key {
-            selection.select_only(key);
-        }
+        list.select_only(key);
         true
     }
 
@@ -1321,7 +1317,9 @@ fn row_menu(list: &dyn Widget, at: Option<Point>, select: &Event) -> Vec<MenuEnt
     };
     let key = match at {
         Some(point) => list.key_at_point(point),
-        None => list.focused_row_key(),
+        None => list
+            .focused_row_key()
+            .and_then(|key| key.get::<String>().cloned()),
     };
     let Some(key) = key else {
         return Vec::new();
@@ -2309,7 +2307,7 @@ mod tests {
         let mut list = DescribedList::from_props("list", props);
         let inner = list.list_mut().expect("the list stands");
         lay_out(inner, 400.0);
-        inner.activate_key("row-1".to_owned());
+        inner.activate_key(crate::widget::ListKey::new("row-1".to_owned()));
         assert_eq!(inner.open_row().map(String::as_str), Some("row-1"));
         let fired = queue.take();
         assert_eq!(fired.len(), 1, "the host hears one event: {fired:?}");

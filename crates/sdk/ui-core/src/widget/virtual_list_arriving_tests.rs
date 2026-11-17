@@ -98,7 +98,7 @@ tilo_test_env::scenario! {
         assert_eq!(
             list.arrivals
                 .face(
-                    &0,
+                    &ListKey::new(0u64),
                     SkeletonShape::Row(crate::widget::RowShape::TITLE),
                     skeleton
                 )
@@ -138,7 +138,7 @@ tilo_test_env::scenario! {
             let _ = lay_out(&mut list, 300.0);
             assert_eq!(list.mounted[0].state, MountedRowState::Ready);
             assert_eq!(builds.get(), 1);
-            assert!(list.arrivals.fade(&0, shows).is_some(), "it fades in");
+            assert!(list.arrivals.fade(&ListKey::new(0u64), shows).is_some(), "it fades in");
             assert!(Widget::needs_animation_frame(&list));
         });
         assert!(

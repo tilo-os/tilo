@@ -2,8 +2,7 @@
 //! selection paints, the band over a group and the boundary a drop lands on all read the view's
 //! tops, and a list that follows its end stands its rows down at its foot.
 
-use super::ListModel;
-use super::VirtualList;
+use super::VirtualRows;
 use crate::widget::RowSelection;
 use crate::widget::row_selection::selection_sink;
 use vello::kurbo::Rect;
@@ -21,7 +20,7 @@ pub(super) fn selection_around(row: Rect, content: Rect, bleed: f64) -> Rect {
     )
 }
 
-impl<M: ListModel> VirtualList<M> {
+impl VirtualRows {
     pub(super) fn shown_top(&self, top: f64) -> f64 {
         self.rect.y0 + self.end_slack() + top
     }

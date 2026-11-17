@@ -137,7 +137,7 @@ symbol_relocations = 6592
 "libtilo_settings_engine.so" = 14155776
 "libtilo_spotify_engine.so" = 11599872
 "libtilo_theme_painter_engine.so" = 131072
-"libtilo_timezone_engine.so" = 1310720
+"libtilo_timezone_engine.so" = 327680
 "libtilo_typst_engine.so" = 41156608
 "libtilo_youtube_engine.so" = 5898240
 

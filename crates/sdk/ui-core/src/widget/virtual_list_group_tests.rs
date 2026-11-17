@@ -225,7 +225,7 @@ tilo_test_env::scenario! {
             .collect();
         let mut list = grouped(groups);
         let _ = settle(&mut list);
-        let asked = list.model.asked.get();
+        let asked = list.model().asked.get();
         assert!(
             asked <= 400,
             "a layout asks about the rows it lays out, not the whole list: {asked} of 100000"

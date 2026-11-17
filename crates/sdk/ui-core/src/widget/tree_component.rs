@@ -1580,7 +1580,7 @@ impl Described for DescribedTreeView {
             let mut chosen = KeySelection::new();
             for key in selected {
                 if self.rows.holds(&key) {
-                    chosen.toggle(key);
+                    chosen.toggle(crate::widget::ListKey::new(key));
                 }
             }
             *self.list.selection_mut() = chosen;

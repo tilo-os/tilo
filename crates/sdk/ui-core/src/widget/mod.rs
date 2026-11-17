@@ -2608,10 +2608,10 @@ mod row_selection;
 mod rows;
 pub mod virtual_list;
 pub use virtual_list::{
-    DescribedList, DescribedRows, DuplicateListKey, ItemRow, ListEdges, ListItemProps, ListModel,
-    PaintedRowLifts, RowActionRects, RowBuild, RowContentBox, RowGroup, RowLift, RowRenameField,
-    RowSelection, RowSelectionSink, TREE_INDENT, TreeMarks, TreeMove, TreeRow, VecListModel,
-    VirtualList, VirtualListProps, row_content_box,
+    AnyModel, DescribedList, DescribedRows, DuplicateListKey, ItemRow, ListEdges, ListItemProps,
+    ListKey, ListModel, PaintedRowLifts, RowActionRects, RowBuild, RowContentBox, RowGroup,
+    RowLift, RowRenameField, RowSelection, RowSelectionSink, TREE_INDENT, TreeMarks, TreeMove,
+    TreeRow, VecListModel, VirtualList, VirtualListProps, VirtualRows, row_content_box,
 };
 mod activation;
 pub(crate) mod control_verb;

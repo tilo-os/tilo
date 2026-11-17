@@ -246,23 +246,23 @@ macro_rules! decorator_trait {
         }
 
         macro_rules! concrete_decorator_widget {
-            ($d ty:ty) => {
+            ([$d ($d generic:tt)*] $d ty:ty) => {
                 const _: () = {
                     use crate::widget::decorator::concrete::Decorator;
 
-                    impl crate::widget::decorator::Decorated for $d ty {
+                    impl<$d ($d generic)*> crate::widget::decorator::Decorated for $d ty {
                         fn decorated(&self) -> &dyn Widget {
                             Decorator::inner(self).as_dyn_widget()
                         }
                     }
 
-                    impl crate::widget::decorator::DecoratedMut for $d ty {
+                    impl<$d ($d generic)*> crate::widget::decorator::DecoratedMut for $d ty {
                         fn decorated_mut(&mut self) -> &mut dyn Widget {
                             Decorator::inner_mut(self).as_dyn_widget_mut()
                         }
                     }
 
-                    impl Widget for $d ty {
+                    impl<$d ($d generic)*> Widget for $d ty {
                         fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
                             Decorator::html(self, cx)
                         }
@@ -281,6 +281,9 @@ macro_rules! decorator_trait {
                         )*
                     }
                 };
+            };
+            ($d ty:ty) => {
+                concrete_decorator_widget!([] $d ty);
             };
         }
     };
@@ -421,7 +424,7 @@ decorator_trait! {
             let node = Decorator::build_layout(self, taffy, theme, node_map);
             let inner = (
                 std::ptr::from_ref(self.inner()).cast::<()>(),
-                self.inner().concrete_type_name(),
+                Widget::concrete_type_name(self.inner()),
             );
             stand_in(node_map, node, inner, self);
             node
@@ -677,6 +680,7 @@ concrete_decorator_widget!(super::media_transport::MediaTransport);
 concrete_decorator_widget!(super::window_search::QueryView);
 concrete_decorator_widget!(super::TabStrip);
 concrete_decorator_widget!(super::page_slide::PageSlide);
+concrete_decorator_widget!([M: super::ListModel + 'static] super::VirtualList<M>);
 
 #[cfg(test)]
 #[path = "decorator_tests.rs"]

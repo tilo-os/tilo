@@ -1,10 +1,10 @@
 //! Choosing a row, published as the list's view action `select`
 //! ([`VirtualList::on_view`]): what the host and agents reach of it.
 
-use super::{ListModel, VirtualList};
+use super::{ListKey, VirtualRows};
 use crate::widget::Widget;
 
-impl<M: ListModel> VirtualList<M> {
+impl VirtualRows {
     /// Called with the row chosen: the list, as control `id`, publishes
     /// choosing a row as its view action `select`
     /// (`view_choice`), each row addressed by
@@ -12,7 +12,7 @@ impl<M: ListModel> VirtualList<M> {
     /// a screen reader, a script and an agent choose through the same
     /// action. What is chosen is the window's own state, never an edit.
     #[must_use]
-    pub fn on_view(mut self, id: impl Into<String>, f: impl FnMut(M::Key) + 'static) -> Self {
+    pub fn on_view(mut self, id: impl Into<String>, f: impl FnMut(ListKey) + 'static) -> Self {
         let id = id.into();
         self.test_id = Some(id.clone());
         self.view = Some((
@@ -32,7 +32,7 @@ impl<M: ListModel> VirtualList<M> {
     pub fn on_activate_view(
         mut self,
         id: impl Into<String>,
-        f: impl FnMut(M::Key) + 'static,
+        f: impl FnMut(ListKey) + 'static,
     ) -> Self {
         let id = id.into();
         self.opens = Some((
@@ -54,7 +54,7 @@ impl<M: ListModel> VirtualList<M> {
         self
     }
 
-    pub(super) fn focused_row_key(&self) -> Option<M::Key> {
+    pub(super) fn focused_row_key(&self) -> Option<ListKey> {
         self.mounted
             .iter()
             .find(|row| crate::widget::context_menu_area::focus_within(row.widget.as_ref()))
@@ -73,7 +73,7 @@ impl<M: ListModel> VirtualList<M> {
     }
 }
 
-impl<M: ListModel + 'static> VirtualList<M> {
+impl VirtualRows {
     fn start_view(
         &mut self,
         op: &crate::widget::ResourceOperation<'_>,
@@ -111,7 +111,7 @@ impl<M: ListModel + 'static> VirtualList<M> {
     }
 }
 
-impl<M: ListModel + 'static> crate::widget::ResourceOperations for VirtualList<M> {
+impl crate::widget::ResourceOperations for VirtualRows {
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         let history = crate::widget::resource_operation::local_history_handlers(self);
         match (
@@ -140,7 +140,7 @@ impl<M: ListModel + 'static> crate::widget::ResourceOperations for VirtualList<M
     }
 }
 
-impl<M: ListModel + 'static> crate::resources::PublishesResources for VirtualList<M> {
+impl crate::resources::PublishesResources for VirtualRows {
     fn resources(&self, _doc: &automerge::AutoCommit) -> Vec<tilo_actions::ResourceSpec> {
         let rows = || self.entries();
         self.view
@@ -155,7 +155,7 @@ impl<M: ListModel + 'static> crate::resources::PublishesResources for VirtualLis
     }
 }
 
-impl<M: ListModel + 'static> crate::widget::controls::ActionControls for VirtualList<M> {
+impl crate::widget::controls::ActionControls for VirtualRows {
     fn attach_controls(
         &mut self,
         domain: &crate::ControlDomain,
@@ -198,9 +198,8 @@ impl<M: ListModel + 'static> crate::widget::controls::ActionControls for Virtual
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use crate::Theme;
-    use crate::widget::{Element, VecListModel};
+    use crate::widget::{Element, VecListModel, VirtualList};
     use std::cell::RefCell;
     use std::rc::Rc;
 

@@ -4,16 +4,17 @@
 use std::cell::Cell;
 use std::rc::Rc;
 
-use super::{ListModel, MountedRowState, VirtualList};
+use super::MountedRowState;
+use super::{ListKey, VirtualRows};
 use crate::time::Instant;
 use crate::widget::arriving_rows::RowReserve;
 use crate::widget::{Element, Showing};
 
-impl<M: ListModel> VirtualList<M> {
+impl VirtualRows {
     pub(super) fn observe_row(
         &mut self,
         index: usize,
-        key: &M::Key,
+        key: &ListKey,
         now: Instant,
     ) -> MountedRowState {
         let state = self.model.row_state(index);
@@ -51,7 +52,7 @@ impl<M: ListModel> VirtualList<M> {
     }
 }
 
-impl<M: ListModel + 'static> VirtualList<M> {
+impl VirtualRows {
     pub(super) fn arrivals_wake(&self) -> Option<Instant> {
         self.arrivals
             .next_wake_deadline(crate::time::now())

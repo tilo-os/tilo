@@ -7,13 +7,6 @@
 reason = "Each amount is that app's overage at the 2026-11-15 measurement plus the ratchet's 1 % headroom, rounded up to 64 KiB, so an app a few kilobytes over still gets 64 KiB; t's app-sizes-x86_64 (run r1a9de479eb) measured the tapps. Browser, Calendar, Chat, Code Editor, Ebook, Mail, Notes and Tasks are not here: reading and writing the shared document codecs in the runtime took them below their raised budgets, so their budgets were lowered instead (9398258bffd)."
 run = "r1a9de479eb"
 
-# Backups: its records answer a read of what they hold, its actions are
-# labelled from its catalogue, and the surface it publishes grew 353 bytes.
-# Named code +33,622 (own +4,054, tilo_resource +876, serde_json +43, core and
-# alloc +11,948); 4,096 over its old budget.
-[apps."so.tilo.backups"]
-x86_64 = 65536
-
 # Clocks: its schedule and alarm records answer a read, its actions are
 # labelled from its catalogue, it draws through the toolkit's keyed children,
 # and its surface grew 1,509 bytes. Named code +29,274 (own +2,588,
@@ -44,19 +37,6 @@ x86_64 = 131072
 [apps."so.tilo.maps"]
 x86_64 = 65536
 
-# Messages: apps read another app's records through the record API, presence
-# is keyed by member, and its surface grew 3,948 bytes. Named code +73,374
-# (own +2,756, tilo_resource +7,373, serde_json +908, core and alloc +20,524);
-# 77,312 over its old budget.
-[apps."so.tilo.messages"]
-x86_64 = 131072
-
-# Passwords: a login is saved and listed by an action, and its surface grew 873
-# bytes. Its own code grew 9,400 bytes; named code +38,297 (tilo_resource +810,
-# serde_json +82, core and alloc +11,891); 31,744 over its old budget.
-[apps."so.tilo.passwords"]
-x86_64 = 65536
-
 # Pdf Viewer: renders pages on demand, actions carry sealed content references,
 # and its surface grew 12,231 bytes. Its own code grew 13,266 bytes; named code
 # +21,898 (tilo_resource +1,752, serde_json +3,521, core and alloc +13,058);
@@ -76,13 +56,6 @@ x86_64 = 65536
 # code grew 5,498 bytes; named code +26,946 (tilo_resource +1,045, serde_json
 # -37, core and alloc +10,268); 34,816 over its old budget.
 [apps."so.tilo.shortcuts"]
-x86_64 = 65536
-
-# Snippets: it draws through the toolkit's keyed children, its actions are
-# labelled from its catalogue, and its surface grew 975 bytes. Its own crate
-# fell 1,124 bytes; named code +27,990 (tilo_resource +621, serde_json -9, core
-# and alloc +10,899); 46,080 over its old budget.
-[apps."so.tilo.snippets"]
 x86_64 = 65536
 
 # Terminal: actions carry sealed content references, an agent editing its files

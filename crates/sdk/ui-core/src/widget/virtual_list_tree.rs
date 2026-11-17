@@ -10,7 +10,9 @@ use vello::Scene;
 use vello::kurbo::{Affine, Rect};
 use winit::keyboard::{Key, NamedKey};
 
-use super::{ListModel, RowGroup, RowStance, VirtualList};
+use super::typed::KeyedMarks;
+use super::{ListKey, VirtualRows};
+use super::{RowGroup, RowStance};
 use crate::reorder::{DropPlacement, DropTarget, ReorderDrop};
 use crate::theme::Theme;
 
@@ -26,7 +28,7 @@ pub(super) struct Chevrons {
     pub(super) step: f64,
 }
 
-impl<M: ListModel> VirtualList<M> {
+impl VirtualRows {
     pub(super) fn chevrons(&self) -> Chevrons {
         Chevrons {
             x0: self.rect.x0,
@@ -38,22 +40,18 @@ impl<M: ListModel> VirtualList<M> {
 }
 
 impl Chevrons {
-    pub(super) fn gutter<K: Clone + Eq + Hash>(
-        &self,
-        marks: &TreeMarks<K>,
-        key: &K,
-    ) -> Option<f64> {
+    pub(super) fn gutter(&self, marks: &Rc<dyn KeyedMarks>, key: &ListKey) -> Option<f64> {
         if !marks.is_branch(key) {
             return None;
         }
         Some(self.x0 + self.lead + self.column + (f64::from(marks.depth(key)) - 1.0) * self.step)
     }
 
-    pub(super) fn rect<K: Clone + Eq + Hash>(
+    pub(super) fn rect(
         &self,
-        marks: &TreeMarks<K>,
+        marks: &Rc<dyn KeyedMarks>,
         theme: &Theme,
-        key: &K,
+        key: &ListKey,
         row: Rect,
         folded: bool,
     ) -> Option<(Rect, bool)> {
@@ -68,12 +66,12 @@ impl Chevrons {
 
     /// Paint the hairline up each depth's gutter the row `key` stands past, through its own box
     /// `row`, so a deep tree keeps its structure legible.
-    pub(super) fn paint_guides<K: Clone + Eq + Hash>(
+    pub(super) fn paint_guides(
         &self,
-        marks: &TreeMarks<K>,
+        marks: &Rc<dyn KeyedMarks>,
         scene: &mut Scene,
         transform: Affine,
-        key: &K,
+        key: &ListKey,
         row: Rect,
         color: vello::peniko::Color,
     ) {
@@ -91,13 +89,13 @@ impl Chevrons {
         }
     }
 
-    pub(super) fn paint<K: Clone + Eq + Hash>(
+    pub(super) fn paint(
         &self,
-        marks: &TreeMarks<K>,
+        marks: &Rc<dyn KeyedMarks>,
         scene: &mut Scene,
         transform: Affine,
         theme: &Theme,
-        key: &K,
+        key: &ListKey,
         row: Rect,
         folded: bool,
     ) {
@@ -125,10 +123,10 @@ pub struct TreeRow<K> {
 
 #[derive(Debug)]
 pub struct TreeMarks<K> {
-    depth: std::cell::RefCell<HashMap<K, u32>>,
+    pub(super) depth: std::cell::RefCell<HashMap<K, u32>>,
     folded: std::cell::RefCell<HashSet<K>>,
-    branches: std::cell::RefCell<HashSet<K>>,
-    nested: std::cell::RefCell<HashSet<K>>,
+    pub(super) branches: std::cell::RefCell<HashSet<K>>,
+    pub(super) nested: std::cell::RefCell<HashSet<K>>,
 }
 
 impl<K> Default for TreeMarks<K> {
@@ -190,9 +188,9 @@ pub enum TreeMove {
     Outdent,
 }
 
-impl<M: ListModel> VirtualList<M> {
+impl VirtualRows {
     #[must_use]
-    pub fn with_tree(mut self, marks: Rc<TreeMarks<M::Key>>) -> Self {
+    pub(super) fn with_tree(mut self, marks: Rc<dyn KeyedMarks>) -> Self {
         self.tree = Some(marks);
         self.tree_rows.clear();
         self.tree_hidden.clear();
@@ -212,12 +210,12 @@ impl<M: ListModel> VirtualList<M> {
     /// starts a group under. `None` while the row is not placed (folded away, or far from the
     /// box).
     #[must_use]
-    pub fn row_rect(&self, key: &M::Key) -> Option<Rect> {
+    pub fn row_rect(&self, key: &ListKey) -> Option<Rect> {
         self.row_box(self.model.index_of(key)?)
     }
 
     #[must_use]
-    pub fn disclosure_rect(&self, key: &M::Key) -> Option<Rect> {
+    pub fn disclosure_rect(&self, key: &ListKey) -> Option<Rect> {
         let marks = self.tree.as_ref()?;
         let row = self.line_box(key, self.row_rect(key)?);
         let gutter = self.chevrons().gutter(marks, key)?;
@@ -238,7 +236,7 @@ impl<M: ListModel> VirtualList<M> {
     /// The line is the box the row's content stands in — the one its text, its leading control
     /// and its lift share — across the slot the list gives it. A finger's row takes a taller slot
     /// than its box, so the slot's own centre is not the line's.
-    pub(super) fn line_box(&self, key: &M::Key, row: Rect) -> Rect {
+    pub(super) fn line_box(&self, key: &ListKey, row: Rect) -> Rect {
         let own = self
             .mounted
             .iter()
@@ -255,19 +253,19 @@ impl<M: ListModel> VirtualList<M> {
     }
 
     #[must_use]
-    pub fn row_depth(&self, key: &M::Key) -> u32 {
+    pub fn row_depth(&self, key: &ListKey) -> u32 {
         self.tree.as_ref().map_or(0, |marks| marks.depth(key))
     }
 
     #[must_use]
-    pub fn row_is_branch(&self, key: &M::Key) -> bool {
+    pub fn row_is_branch(&self, key: &ListKey) -> bool {
         self.tree.as_ref().is_some_and(|marks| marks.is_branch(key))
     }
 
     /// The key of the `nth` row the list shows, counting the rows on screen in reading order: a
     /// folded row's subtasks are not among them, nor a closed group's rows.
     #[must_use]
-    pub fn visible_key(&self, nth: usize) -> Option<M::Key> {
+    pub fn visible_key(&self, nth: usize) -> Option<ListKey> {
         let mut seen = 0;
         for index in 0..self.model.len() {
             let Some(key) = self.model.key_at(index) else {
@@ -303,7 +301,7 @@ impl<M: ListModel> VirtualList<M> {
     }
 
     #[must_use]
-    pub fn row_action_rect(&self, key: &M::Key, action: usize) -> Option<Rect> {
+    pub fn row_action_rect(&self, key: &ListKey, action: usize) -> Option<Rect> {
         let index = self.model.index_of(key)?;
         let row = self
             .mounted
@@ -315,7 +313,7 @@ impl<M: ListModel> VirtualList<M> {
             .copied()
     }
 
-    pub fn fold_row(&mut self, key: &M::Key, folded: bool) -> bool {
+    pub fn fold_row(&mut self, key: &ListKey, folded: bool) -> bool {
         let Some(marks) = self.tree.clone() else {
             return false;
         };
@@ -332,7 +330,7 @@ impl<M: ListModel> VirtualList<M> {
     }
 
     #[must_use]
-    pub fn row_folded(&self, key: &M::Key) -> bool {
+    pub fn row_folded(&self, key: &ListKey) -> bool {
         self.tree.as_ref().is_some_and(|marks| marks.is_folded(key))
     }
 
@@ -340,19 +338,19 @@ impl<M: ListModel> VirtualList<M> {
         if self.tree.is_none() {
             return;
         }
-        let rebuilt: Vec<M::Key> = self.invalidated.iter().cloned().collect();
+        let rebuilt: Vec<ListKey> = self.invalidated.iter().cloned().collect();
         for key in rebuilt {
             self.tree_rows.remove(&key);
         }
-        let rows: Vec<(usize, M::Key)> = range
+        let rows: Vec<(usize, ListKey)> = range
             .clone()
             .filter_map(|index| Some((index, self.model.key_at(index)?)))
             .collect();
-        let mut over: Vec<(M::Key, u32, bool)> = Vec::new();
-        let mut depth: HashMap<M::Key, u32> = HashMap::new();
-        let mut hidden: HashSet<M::Key> = HashSet::new();
-        let mut branches: Vec<M::Key> = Vec::new();
-        let mut nested: Vec<M::Key> = Vec::new();
+        let mut over: Vec<(ListKey, u32, bool)> = Vec::new();
+        let mut depth: HashMap<ListKey, u32> = HashMap::new();
+        let mut hidden: HashSet<ListKey> = HashSet::new();
+        let mut branches: Vec<ListKey> = Vec::new();
+        let mut nested: Vec<ListKey> = Vec::new();
         let mut heading: Option<RowGroup> = None;
         for (index, key) in &rows {
             let group = self.model.group_at(*index);
@@ -420,14 +418,12 @@ impl<M: ListModel> VirtualList<M> {
             self.first_level_branch = Some(branch || (kept && staying));
         }
         if let Some(marks) = &self.tree {
-            marks.depth.borrow_mut().extend(depth);
-            marks.branches.borrow_mut().extend(branches);
-            marks.nested.borrow_mut().extend(nested);
+            marks.mark(depth, branches, nested);
         }
         self.tree_hidden = hidden;
     }
 
-    fn under_open(&mut self, key: &M::Key) -> bool {
+    fn under_open(&mut self, key: &ListKey) -> bool {
         let Some(open) = self.open.clone() else {
             return false;
         };
@@ -444,7 +440,7 @@ impl<M: ListModel> VirtualList<M> {
         false
     }
 
-    fn tree_facts(&mut self, key: &M::Key) -> Option<TreeRow<M::Key>> {
+    fn tree_facts(&mut self, key: &ListKey) -> Option<TreeRow<ListKey>> {
         if let Some(facts) = self.tree_rows.get(key) {
             return Some(facts.clone());
         }
@@ -454,7 +450,7 @@ impl<M: ListModel> VirtualList<M> {
         Some(facts)
     }
 
-    fn folded(&self, key: &M::Key) -> bool {
+    fn folded(&self, key: &ListKey) -> bool {
         self.tree.as_ref().is_some_and(|marks| marks.is_folded(key))
     }
 
@@ -466,9 +462,7 @@ impl<M: ListModel> VirtualList<M> {
         // chevron hangs in as unknown for a pass, and every row of the tree would stand a step
         // over and back whenever the model changed — a rename moving the whole page tree.
         if let Some(marks) = &self.tree {
-            marks.depth.borrow_mut().clear();
-            marks.branches.borrow_mut().clear();
-            marks.nested.borrow_mut().clear();
+            marks.clear();
         }
     }
 
@@ -507,18 +501,18 @@ impl<M: ListModel> VirtualList<M> {
         }
         self.lead = lead;
         self.update_edges();
-        let mounted: Vec<M::Key> = self.mounted.iter().map(|row| row.key.clone()).collect();
+        let mounted: Vec<ListKey> = self.mounted.iter().map(|row| row.key.clone()).collect();
         self.invalidate_rows(mounted);
     }
 
-    fn disclosure_at(&self, key: &M::Key) -> bool {
+    fn disclosure_at(&self, key: &ListKey) -> bool {
         self.last_cursor.is_some_and(|cursor| {
             self.disclosure_rect(key)
                 .is_some_and(|rect| rect.contains(cursor))
         })
     }
 
-    pub(super) fn press_row(&mut self, key: M::Key, modifiers: winit::event::Modifiers) {
+    pub(super) fn press_row(&mut self, key: ListKey, modifiers: winit::event::Modifiers) {
         if self.disclosure_at(&key) {
             if self.open.as_ref() == Some(&key) {
                 self.open_where_it_stands(key);
@@ -545,7 +539,7 @@ impl<M: ListModel> VirtualList<M> {
 
     /// How many rows under its top row `key` stands, read from what the model says of its
     /// parents rather than from the rows in view: a move reaches rows the window never built.
-    pub(super) fn depth_of(&mut self, key: &M::Key) -> u32 {
+    pub(super) fn depth_of(&mut self, key: &ListKey) -> u32 {
         if let Some(depth) = self.tree_facts(key).and_then(|facts| facts.depth) {
             return depth;
         }
@@ -561,7 +555,7 @@ impl<M: ListModel> VirtualList<M> {
         depth
     }
 
-    fn above_of(&mut self, key: &M::Key, index: usize, depth: u32) -> Option<M::Key> {
+    fn above_of(&mut self, key: &ListKey, index: usize, depth: u32) -> Option<ListKey> {
         if let Some(above) = self.tree_facts(key).and_then(|facts| facts.above) {
             return Some(above);
         }
@@ -596,9 +590,9 @@ impl<M: ListModel> VirtualList<M> {
 
     pub(super) fn move_target(
         &mut self,
-        key: &M::Key,
+        key: &ListKey,
         movement: TreeMove,
-    ) -> Option<DropTarget<M::Key>> {
+    ) -> Option<DropTarget<ListKey>> {
         let index = self.model.index_of(key)?;
         let depth = self.depth_of(key);
         match movement {
@@ -626,14 +620,14 @@ impl<M: ListModel> VirtualList<M> {
 
     /// Move the row of `key` one step through its tree, through the same validator and commit
     /// a drop uses; the row keeps the keyboard and stays in view. Whether it moved.
-    pub fn move_row(&mut self, key: &M::Key, movement: TreeMove) -> bool {
+    pub fn move_row(&mut self, key: &ListKey, movement: TreeMove) -> bool {
         if self.reorder_validator.is_none() || self.reorder_commit.is_none() {
             return false;
         }
         let Some(target) = self.move_target(key, movement) else {
             return false;
         };
-        let model = &self.model;
+        let model = &*self.model;
         let accepted = self
             .reorder_validator
             .as_mut()
@@ -692,10 +686,10 @@ impl<M: ListModel> VirtualList<M> {
     pub(super) fn tree_candidate(
         &mut self,
         index: usize,
-        key: &M::Key,
+        key: &ListKey,
         row: Rect,
         cursor: vello::kurbo::Point,
-    ) -> Option<crate::reorder::DropCandidate<M::Key>> {
+    ) -> Option<crate::reorder::DropCandidate<ListKey>> {
         let marks = self.tree.clone()?;
         let fraction = ((cursor.y - row.y0) / row.height().max(1.0)).clamp(0.0, 1.0);
         let depth = self.depth_of(key);
@@ -739,7 +733,7 @@ impl<M: ListModel> VirtualList<M> {
         })
     }
 
-    pub(super) fn unfold_for_drop(&mut self, key: &M::Key) -> bool {
+    pub(super) fn unfold_for_drop(&mut self, key: &ListKey) -> bool {
         self.fold_row(key, false)
     }
 

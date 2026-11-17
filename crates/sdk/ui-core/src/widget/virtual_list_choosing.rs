@@ -1,12 +1,13 @@
 //! What a list reports as the person's choice: the rows they chose by hand, and the ones an
 //! action moved onto on its way to what it opened.
 
-use super::{Choosing, ListModel, VirtualList};
+use super::Choosing;
+use super::{ListKey, VirtualRows};
 
-impl<M: ListModel> VirtualList<M> {
+impl VirtualRows {
     pub(super) fn apply_selection(
         &mut self,
-        key: M::Key,
+        key: ListKey,
         toggle: bool,
         extend: bool,
         choosing: Choosing,
@@ -14,7 +15,7 @@ impl<M: ListModel> VirtualList<M> {
         if self.reading {
             return;
         }
-        let model = &self.model;
+        let model = &*self.model;
         crate::widget::rows::choose(
             &mut self.selection,
             key.clone(),
@@ -29,11 +30,11 @@ impl<M: ListModel> VirtualList<M> {
         self.report_selection(choosing);
     }
 
-    pub(super) fn choose_quietly(&mut self, key: M::Key) {
+    pub(super) fn choose_quietly(&mut self, key: ListKey) {
         if self.reading {
             return;
         }
-        let model = &self.model;
+        let model = &*self.model;
         crate::widget::rows::choose(
             &mut self.selection,
             key,
@@ -45,7 +46,7 @@ impl<M: ListModel> VirtualList<M> {
         self.report_selection(Choosing::Following);
     }
 
-    pub(super) fn emit_selection(&mut self, key: M::Key) {
+    pub(super) fn emit_selection(&mut self, key: ListKey) {
         if self
             .model
             .index_of(&key)
@@ -79,8 +80,8 @@ impl<M: ListModel> VirtualList<M> {
         }
     }
 
-    pub(super) fn selected_keys(&self) -> Vec<M::Key> {
-        let mut keys: Vec<M::Key> = if self.selection.is_select_all() {
+    pub(super) fn selected_keys(&self) -> Vec<ListKey> {
+        let mut keys: Vec<ListKey> = if self.selection.is_select_all() {
             (0..self.model.len())
                 .filter_map(|index| self.model.key_at(index))
                 .filter(|key| self.selection.is_selected(key))

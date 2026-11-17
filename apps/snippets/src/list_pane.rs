@@ -180,11 +180,7 @@ impl ListPane {
         if let Body::List(list) = &mut self.body
             && (!same_rows || open != self.open)
         {
-            let selection = list.selection_mut();
-            selection.clear();
-            if let Some(open) = &open {
-                selection.select_only(open.clone());
-            }
+            list.select_only(open.clone());
         }
         if !same_place || open != self.open {
             self.reveal.clone_from(&open);

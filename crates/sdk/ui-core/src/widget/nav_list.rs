@@ -1304,10 +1304,10 @@ impl NavList {
             .filter(|key| self.list.model().is_item(key));
         match &key {
             Some(key) => {
-                self.list.selection_mut().select_only(key.clone());
+                self.list.select_only(Some(key.clone()));
                 self.list.focus_row(key.clone());
             }
-            None => self.list.selection_mut().clear(),
+            None => self.list.select_only(None),
         }
         self.shared.borrow_mut().selected = key.as_deref().map(app_id).map(str::to_owned);
         key
@@ -1621,7 +1621,7 @@ impl NavList {
         };
         self.list.reveal(&key);
         if self.list.model().is_item(&key) {
-            self.list.selection_mut().select_only(key.clone());
+            self.list.select_only(Some(key.clone()));
             self.shared.borrow_mut().choose(&key);
         }
     }

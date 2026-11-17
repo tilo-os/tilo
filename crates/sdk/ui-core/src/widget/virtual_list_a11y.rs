@@ -8,7 +8,8 @@ use super::edit::RenameStamp;
 use super::groups::{Band, HEADING_TARGET};
 use super::jump::PILL_TARGET;
 use super::open::first_page_title;
-use super::{ListModel, MountedRow, MountedRowState, VirtualList};
+use super::{ListKey, VirtualRows};
+use super::{MountedRow, MountedRowState};
 use crate::a11y::{AccessNode, AccessState, Role};
 use crate::widget::Widget;
 use vello::kurbo::Rect;
@@ -70,7 +71,7 @@ impl From<&MountedRowState> for RowStateStamp {
     }
 }
 
-impl<M: ListModel> VirtualList<M> {
+impl VirtualRows {
     #[cfg(any(test, feature = "test-support"))]
     pub fn access_row_builds_for_test(&self) -> usize {
         self.access_rows.borrow().builds
@@ -91,17 +92,17 @@ impl<M: ListModel> VirtualList<M> {
     /// carries a control of its own (a box to tick, a field, a button) that the row's state
     /// alone does not reach. A row of words stays summarized: the row states it, and its words
     /// are not read twice.
-    pub(super) fn handing_controls(&self, row: &MountedRow<M::Key>) -> bool {
+    pub(super) fn handing_controls(&self, row: &MountedRow<ListKey>) -> bool {
         self.held_open(row) || holds_controls(row.widget.as_ref())
     }
 
-    fn held_open(&self, row: &MountedRow<M::Key>) -> bool {
+    fn held_open(&self, row: &MountedRow<ListKey>) -> bool {
         self.open.as_ref() == Some(&row.key)
     }
 
     pub(super) fn row_node(
         &self,
-        row: &MountedRow<M::Key>,
+        row: &MountedRow<ListKey>,
         enabled: bool,
     ) -> crate::a11y::AccessNode {
         let count = self.model.len();
@@ -129,7 +130,7 @@ impl<M: ListModel> VirtualList<M> {
                 .focusable(true)
                 .focused(self.is_focused && self.focused_key.as_ref() == Some(&row.key))
                 .selected(self.selection.is_selected(&row.key))
-                .context_menu(self.menus.row_offers(&self.model, &row.key))
+                .context_menu(self.menus.row_offers(&*self.model, &row.key))
                 .disabled(!enabled),
         );
         // A row that is a control of its own — a task's box, say — keeps its state and what it
@@ -416,7 +417,7 @@ impl<M: ListModel> VirtualList<M> {
 
     fn row_access_inputs(
         &self,
-        row: &MountedRow<M::Key>,
+        row: &MountedRow<ListKey>,
         enabled: bool,
         count: usize,
     ) -> RowAccessInputs {
@@ -441,7 +442,7 @@ impl<M: ListModel> VirtualList<M> {
             bounds: self.row_box(row.index),
             focused: self.is_focused && self.focused_key.as_ref() == Some(&row.key),
             selected: self.selection.is_selected(&row.key),
-            menu: self.menus.row_offers(&self.model, &row.key),
+            menu: self.menus.row_offers(&*self.model, &row.key),
             disabled: !enabled,
             level,
             expanded,
