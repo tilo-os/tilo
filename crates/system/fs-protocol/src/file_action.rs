@@ -78,8 +78,14 @@ pub enum FileAction {
     },
     /// Put `node` in the trash, with what it holds.
     Trash { node: String },
-    /// Take `node` out of the trash, back into the folder it was in.
-    Restore { node: String },
+    /// Take `node` out of the trash: into `parent`, else back into the folder it was in.
+    /// Whoever holds the whole tree names `parent` when that folder is gone too, which one
+    /// chunk's document cannot see.
+    Restore {
+        node: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        parent: Option<String>,
+    },
 }
 
 impl FileAction {
@@ -91,7 +97,7 @@ impl FileAction {
             | Self::Write { node, .. }
             | Self::Move { node, .. }
             | Self::Trash { node }
-            | Self::Restore { node } => node,
+            | Self::Restore { node, .. } => node,
         }
     }
 
@@ -215,13 +221,14 @@ impl FileAction {
                 doc.put(&obj, PREV_PARENT_KEY, current)?;
                 doc.put(&obj, PARENT_KEY, TRASH_ID)?;
             }
-            Self::Restore { node } => {
+            Self::Restore { node, parent } => {
                 let obj = node_obj(doc, &nodes, node)?;
                 if doc.str_at(&obj, PARENT_KEY).as_deref() != Some(TRASH_ID) {
                     return Err(ActionError::Refused("it is not in the trash".into()));
                 }
-                let back = doc
-                    .str_at(&obj, PREV_PARENT_KEY)
+                let back = parent
+                    .clone()
+                    .or_else(|| doc.str_at(&obj, PREV_PARENT_KEY))
                     .filter(|parent| parent != TRASH_ID)
                     .unwrap_or_else(|| ROOT_ID.to_owned());
                 doc.put(&obj, PARENT_KEY, back)?;

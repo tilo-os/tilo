@@ -611,6 +611,7 @@ impl Resource for FilesTree {
             ActionDecl::new(verbs::RESTORE, "Restore", vec![node()], |args, _| {
                 Ok(FileAction::Restore {
                     node: text(args, "node")?,
+                    parent: None,
                 })
             })
             .describe("Take a file or folder out of the trash, back where it was."),
