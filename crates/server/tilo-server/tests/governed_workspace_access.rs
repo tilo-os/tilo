@@ -41,14 +41,21 @@ async fn connect(
 /// How long a refused change is given to surface before its absence counts.
 const QUIET: Duration = Duration::from_millis(400);
 
-/// Nothing of a member's: no state and no action reaches `client` for
-/// [`QUIET`], the listing the server pushes aside.
-async fn quiet(client: &ServerClient, window: Duration) -> bool {
-    let deadline = tokio::time::Instant::now() + window;
+/// Whether `bytes` carries `marker`.
+fn carries(bytes: &[u8], marker: &[u8]) -> bool {
+    bytes.windows(marker.len()).any(|window| window == marker)
+}
+
+/// Nothing of the refused change reaches `client` within [`QUIET`]: the
+/// workspace publishes the removal itself, and that is not the change.
+async fn refused_change_is_unseen(client: &ServerClient, marker: &[u8]) -> bool {
+    let deadline = tokio::time::Instant::now() + QUIET;
     while let Ok(Some(envelope)) = tokio::time::timeout_at(deadline, client.recv()).await {
-        match envelope {
-            Envelope::PersonalList { .. } | Envelope::Ping | Envelope::Pong => {}
-            other => panic!("the member heard {other:?}"),
+        if let Envelope::Delta { delta, .. } = &envelope {
+            assert!(
+                !carries(delta, marker),
+                "the live member heard the refused change"
+            );
         }
     }
     true
@@ -248,7 +255,7 @@ async fn governed_access_removes_a_live_person_without_widening_other_workspaces
         "{told:?}"
     );
     assert!(
-        quiet(&bob_client, QUIET).await,
+        refused_change_is_unseen(&bob_client, b"removed-live-writer").await,
         "the live member hears nothing of the refused change"
     );
     assert!(
@@ -291,7 +298,7 @@ async fn governed_access_removes_a_live_person_without_widening_other_workspaces
         })
         .unwrap();
     assert!(
-        quiet(&bob_client, QUIET).await,
+        refused_change_is_unseen(&bob_client, b"removed-writer").await,
         "the live member hears nothing of the refused change"
     );
     closes(&alice_reconnect).await;
