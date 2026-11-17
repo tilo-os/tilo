@@ -56,17 +56,12 @@ impl Fixture {
         &'a self,
         side: Side,
         state_outbound: Option<&'a mpsc::Sender<StateDelivery>>,
-        member_limits: Option<&'a crate::member_limits::MemberLimits>,
-        own_user: Option<&'a [u8; 32]>,
     ) -> SessionCtx<'a> {
         let (outbound, disconnect) = match side {
             Side::Source => (&self.source.tx, &self.source.disconnect),
             Side::Recipient => (&self.recipient_tx, &self.recipient_disconnect),
         };
-        let mut ctx = self.connection_ctx(outbound, disconnect, state_outbound);
-        ctx.member_limits = member_limits;
-        ctx.own_user_public_key = own_user.unwrap_or(&self.source.own_user);
-        ctx
+        self.connection_ctx(outbound, disconnect, state_outbound)
     }
 
     /// What a connection of its own to this fixture's workspace is handled
@@ -100,7 +95,6 @@ impl Fixture {
             environments: Box::leak(Box::default()),
             positions: None,
             compactor: None,
-            member_limits: None,
             resumes: Box::leak(Box::default()),
             agent: Box::leak(Box::default()),
             channel_reader: Box::leak(Box::default()),
@@ -314,7 +308,7 @@ impl Fixture {
         crate::persistence::receipt(receipt).await.unwrap();
     }
     async fn write(&self, delivery: StateDelivery, wire: &mut Vec<u8>) {
-        let session = self.ctx(Side::Recipient, None, None, None);
+        let session = self.ctx(Side::Recipient, None);
         write_state_delivery(
             delivery,
             &self.recipient,
@@ -631,7 +625,7 @@ async fn a_commit_is_acknowledged_only_once_it_is_retained() {
     let fixture = Fixture::new();
     let (release, reached) =
         crate::store::test_barrier::install(fixture.store.root(), "state-persist");
-    let session = fixture.ctx(Side::Source, None, None, None);
+    let session = fixture.ctx(Side::Source, None);
     let commit = fixture.commit(1, [5; 16]);
     let mut committing = Box::pin(handle_commit(&fixture.source.peer, &session, &[WS], commit));
     tokio::select! {
@@ -657,7 +651,7 @@ async fn a_copy_of_a_commit_in_flight_waits_for_it_and_is_not_admitted_again() {
     let fixture = Fixture::new();
     let (release, reached) =
         crate::store::test_barrier::install(fixture.store.root(), "state-persist");
-    let session = fixture.ctx(Side::Source, None, None, None);
+    let session = fixture.ctx(Side::Source, None);
     let commit = fixture.commit(1, [5; 16]);
     let mut first = Box::pin(handle_commit(
         &fixture.source.peer,
@@ -688,72 +682,6 @@ async fn a_copy_of_a_commit_in_flight_waits_for_it_and_is_not_admitted_again() {
     };
     assert_eq!(order(first.unwrap()), order(copy.unwrap()));
     assert_eq!(fixture.store.load_retained().unwrap().len(), 1);
-}
-
-/// Two commits by the fixture's source within one bucket refill, with a
-/// burst of one change, as a server whose own user is `stranger` or else
-/// the source's own.
-async fn two_commits_with_a_burst_of_one(stranger: Option<[u8; 32]>) -> Vec<Option<Envelope>> {
-    let fixture = Fixture::new();
-    let own_user = stranger.unwrap_or(fixture.source.own_user);
-    let limits =
-        crate::member_limits::MemberLimits::new(crate::member_limits::MemberLimitsConfig {
-            burst: 1,
-            ..Default::default()
-        });
-    let session = fixture.ctx(Side::Source, None, Some(&limits), Some(&own_user));
-    let mut answers = Vec::new();
-    for (index, op) in [(1, [5; 16]), (2, [6; 16])] {
-        let commit = fixture.commit(index, op);
-        let answer = tokio::time::timeout(
-            std::time::Duration::from_secs(30),
-            handle_commit(&fixture.source.peer, &session, &[WS], commit),
-        )
-        .await
-        .unwrap()
-        .unwrap();
-        answers.push(answer);
-    }
-    answers
-}
-
-#[tokio::test]
-async fn a_member_over_the_change_limit_is_refused_and_keeps_the_session() {
-    let answers = two_commits_with_a_burst_of_one(Some([0xee; 32])).await;
-    // The budget is spent before admission, so the first commit takes the
-    // one change whatever the fixture's membership then answers.
-    assert!(
-        !matches!(
-            &answers[0],
-            Some(Envelope::CommitRefused {
-                refusal: tilo_server_protocol::refusal::Refusal::TooFast { .. },
-                ..
-            })
-        ),
-        "{:?}",
-        answers[0]
-    );
-    // The second commit within the bucket's refill time is refused, and
-    // the session stays open (no error).
-    assert!(matches!(
-        &answers[1],
-        Some(Envelope::CommitRefused {
-            refusal: tilo_server_protocol::refusal::Refusal::TooFast { .. },
-            ..
-        })
-    ));
-}
-
-#[tokio::test]
-async fn bots_and_the_host_are_never_limited() {
-    // A public workspace's bots are delegated by the host-held root, so they
-    // chain to the server's own user; a burst must not become refusals.
-    let answers = two_commits_with_a_burst_of_one(None).await;
-    assert!(
-        answers
-            .iter()
-            .all(|answer| matches!(answer, Some(Envelope::Committed { .. })))
-    );
 }
 
 #[tokio::test]
@@ -1242,7 +1170,6 @@ async fn sync_request_waits_for_owner_capacity_and_rechecks_source() {
                 environments: Box::leak(Box::default()),
                 positions: None,
                 compactor: None,
-                member_limits: None,
                 resumes: Box::leak(Box::default()),
                 agent: Box::leak(Box::default()),
                 channel_reader: Box::leak(Box::default()),
@@ -1332,7 +1259,7 @@ async fn unsubscribed_sync_request_cannot_publish_after_a_replacement_subscribes
         .lock()
         .await
         .remove_subscriber(&fixture.source.peer.device_public_key);
-    let session = fixture.ctx(Side::Source, None, None, None);
+    let session = fixture.ctx(Side::Source, None);
     handle_sync_request(
         &fixture.source.peer,
         &session,
@@ -1452,7 +1379,7 @@ impl Fixture {
         &self,
     ) -> Result<(WorkspaceId, ReplayTicket, ReplayHandle, Arc<ReplayCatchup>), PeerError> {
         let (state_tx, _state_rx) = mpsc::channel(32);
-        let session = self.ctx(Side::Recipient, Some(&state_tx), None, None);
+        let session = self.ctx(Side::Recipient, Some(&state_tx));
         let mut replay = None;
         handle_subscribe(
             &self.recipient,
@@ -1864,7 +1791,7 @@ impl Fixture {
         write: &mut W,
     ) -> Result<mpsc::Receiver<StateDelivery>, PeerError> {
         let (state_tx, state_rx) = mpsc::channel(32);
-        let session = self.ctx(Side::Recipient, Some(&state_tx), None, None);
+        let session = self.ctx(Side::Recipient, Some(&state_tx));
         Box::pin(handle_inbound_frame(
             Envelope::Subscribe {
                 workspace_id: self.store.workspace_id(),
@@ -2257,7 +2184,7 @@ async fn access_requests_reach_every_member() {
 #[tokio::test]
 async fn a_deleted_workspace_leaves_the_session_its_other_workspaces() {
     let fixture = Fixture::new();
-    let ctx = fixture.ctx(Side::Recipient, None, None, None);
+    let ctx = fixture.ctx(Side::Recipient, None);
     let mut subscribed = vec![WS];
     super::access::audit_subscriber_access(&fixture.recipient, &ctx, &mut subscribed)
         .await

@@ -1,68 +1,14 @@
-//! `Commit`: a delta whose author waits for its host order, with the
-//! per-member change budget and the commit log.
+//! `Commit`: a delta whose author waits for its host order, and the commit
+//! log.
 
 use super::{
     AuthenticatedPeer, Envelope, PeerError, SessionCtx, SharedWorkspace, authorized_state_source,
     desktop_refusal, enqueue_state_inner, file_refusal_of, governor_notice, resume_document,
     unix_now_ns, unpublished,
 };
-use crate::member_limits::Ownership;
 use crate::workspace_access::WorkspaceOperation;
 use tilo_server_protocol::WorkspaceId;
 use tilo_server_protocol::refusal::Refusal;
-
-/// Spends `peer`'s budget for one change as its `ownership` is, unless the
-/// server's own user sent it: the host device and the bots a host-held root
-/// delegated must never turn a burst into refusals.
-pub(super) fn over_change_limit(
-    peer: &AuthenticatedPeer,
-    session: &SessionCtx<'_>,
-    ownership: Ownership,
-) -> Option<crate::member_limits::Limited> {
-    let limits = session.member_limits?;
-    if peer.user_public_key == *session.own_user_public_key {
-        return None;
-    }
-    limits
-        .admit_change(&peer.user_public_key, ownership, tilo_clock::now())
-        .err()
-}
-
-/// Whether `cert` is its person's backend: their server key, or a key that
-/// server key minted for one of their workspaces (its certificate names the
-/// server key as its issuer). Its changes are its person's own, and spend
-/// the owner's budget: a backend runs an agent per customer, each with a key
-/// minted for that customer's workspace, and their changes together are the
-/// backend's, never a guest's.
-pub(super) fn of_backend(cert: &tilo_user_identity::DeviceCert) -> bool {
-    cert.capabilities.server_key
-        || cert
-            .issuer
-            .as_ref()
-            .is_some_and(|issuer| issuer.capabilities.server_key)
-}
-
-/// How the change budget sees `peer` in `runtime`'s workspace: as an owner
-/// when it is their person's backend ([`of_backend`]), or when the workspace is their person's own; as a guest
-/// everywhere else.
-pub(super) fn change_ownership(
-    peer: &AuthenticatedPeer,
-    runtime: &crate::workspace::WorkspaceRuntime,
-) -> Ownership {
-    let own = of_backend(&peer.cert)
-        || runtime
-            .workspace_authority
-            .as_ref()
-            .and_then(|authority| Some((authority.workspaces()?, authority.workspace())))
-            .is_some_and(|(workspaces, workspace)| {
-                workspaces.owns(&peer.user_public_key, workspace)
-            });
-    if own {
-        Ownership::Owner
-    } else {
-        Ownership::Guest
-    }
-}
 
 /// Whether `ws` keeps no more of `peer`'s writes: it is a person's own
 /// workspace and keeps as much as they may
@@ -241,10 +187,6 @@ async fn admit_commit(
         return refused(Refusal::Invalid(
             "author does not match authenticated device".into(),
         ));
-    }
-    let ownership = change_ownership(peer, &*ws.lock().await);
-    if let Some(limited) = over_change_limit(peer, session, ownership) {
-        return refused(limited.refusal());
     }
     if over_storage(peer, session, &ws).await {
         return refused(Refusal::Full);

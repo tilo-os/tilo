@@ -58,9 +58,6 @@ pub struct Options {
     /// Serve the web routes as plain HTTP on loopback too, as a client that
     /// trusts no development certificate reaches them.
     pub plain: bool,
-    /// The per-person change budgets of a host whose workspaces admit the
-    /// public; `None` limits nobody.
-    pub member_limits: Option<tilo_server::member_limits::MemberLimitsConfig>,
 }
 
 impl Default for Options {
@@ -74,7 +71,6 @@ impl Default for Options {
             shell: None,
             browsers: None,
             plain: false,
-            member_limits: None,
         }
     }
 }
@@ -105,7 +101,6 @@ pub async fn start(root: &SigningKey, host: &Device, state: &Path, options: Opti
     let cfg = tilo_server::ServerConfig {
         state_root: state.join("server"),
         web_entry: options.web_entry,
-        member_limits: options.member_limits,
         // The host's own packet relay, on this machine: devices reach it here, as
         // the test's devices do, and no test depends on the public relays.
         packet_relay: Some((std::net::Ipv4Addr::LOCALHOST, 0).into()),

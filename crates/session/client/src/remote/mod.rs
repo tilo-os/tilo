@@ -235,13 +235,10 @@ fn unavailable(reason: impl Into<String>) -> ActionCallError {
 }
 
 /// What a caller is answered for a request the host would not carry: typed
-/// where the caller can act on it (wait, or ask again once the workspace is
-/// ready), the host's words otherwise.
+/// where the caller can act on it (ask again once the workspace is ready, or
+/// ask for access), the host's words otherwise.
 fn refused(refusal: &Refusal) -> ActionCallError {
     match refusal {
-        Refusal::TooFast { wait_ms } => ActionCallError::Busy {
-            retry_after_ms: *wait_ms,
-        },
         Refusal::NotReady | Refusal::Superseded => ActionCallError::NotReady,
         Refusal::NotAMember(_) | Refusal::NotAdmitted | Refusal::NotGranted(_) => {
             ActionCallError::NotPermitted

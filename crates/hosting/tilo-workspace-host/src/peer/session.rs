@@ -153,7 +153,6 @@ where
         environments,
         positions,
         compactor,
-        member_limits,
     } = ctx;
     let resumes = std::sync::Mutex::new(HashMap::new());
     let agent = std::sync::OnceLock::new();
@@ -205,7 +204,6 @@ where
         environments: &environments,
         positions,
         compactor: compactor.as_ref(),
-        member_limits: member_limits.as_deref(),
         resumes: &resumes,
         agent: &agent,
         channel_reader: &channel_reader,

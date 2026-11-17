@@ -280,7 +280,6 @@ tilo_test_env::scenario! {
             work: WorkSetting::own_person(),
             services: ServiceCapabilities::home_peer(),
             web_entry: None,
-            member_limits: None,
             max_workspace_grants: None,
         };
         let encoded = r#"identity_root = "/var/lib/tilo"

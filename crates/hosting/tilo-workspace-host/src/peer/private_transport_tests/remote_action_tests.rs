@@ -1,5 +1,5 @@
 //! A remote action is refused once its device, member or agent may no
-//! longer act, and an allowed one spends its member's change budget.
+//! longer act.
 
 use super::*;
 use tilo_server_protocol::WorkspaceId;
@@ -72,7 +72,6 @@ async fn invalidated_device_remote_action_is_refused(remove_membership: bool) {
         environments: Box::leak(Box::default()),
         positions: None,
         compactor: None,
-        member_limits: None,
         resumes: Box::leak(Box::default()),
         agent: Box::leak(Box::default()),
         channel_reader: Box::leak(Box::default()),
@@ -146,169 +145,6 @@ async fn invalidated_device_remote_action_is_refused(remove_membership: bool) {
         1,
         "an invalidated device never reaches the app action server"
     );
-}
-
-/// An action the host runs for a member spends that member's change
-/// budget, as a change they send does; reading the catalogue spends none.
-#[tokio::test]
-async fn a_members_actions_served_by_the_host_spend_their_change_budget() {
-    let (root, user) = UserIdentity::generate("alice", 1);
-    let (host, _) = certified_device(&root, user.public_key, "host");
-    // A guest: another person than the host's, whose budget applies.
-    let (guest_root, guest) = UserIdentity::generate("guest", 1);
-    let (a, _) = certified_device(&guest_root, guest.public_key, "a");
-    let id = WorkspaceId::from_u128(12);
-    let tmp = tempfile::tempdir().unwrap();
-    let mut wr = crate::workspace::WorkspaceRuntime::open(
-        tmp.path(),
-        id,
-        true,
-        crate::workspace::Membership::default(),
-    )
-    .unwrap();
-    wr.admit_device(a.device_public_key).unwrap();
-    let (atx, _arx) = mpsc::channel(2);
-    let (disconnect, _disconnect_rx) = mpsc::channel(1);
-    wr.add_subscriber(Subscriber {
-        device_public_key: a.device_public_key,
-        tx: atx.clone(),
-        disconnect: disconnect.clone(),
-        content_waiting: Arc::default(),
-    });
-    let registry = Arc::new(AsyncMutex::new(HashMap::from([(
-        id,
-        Arc::new(AsyncMutex::new(wr)),
-    )])));
-    let trust = Arc::new(std::sync::RwLock::new(crate::policy::TrustPolicy::AllowAny));
-    let revocations = Arc::new(std::sync::RwLock::new(RevocationList::new()));
-    let metrics = Arc::new(crate::metrics::Metrics::default());
-    let counting = Arc::new(CountingServer::default());
-    let server: Arc<dyn crate::app_serving::AppActionServer> = counting.clone();
-    let limits =
-        crate::member_limits::MemberLimits::new(crate::member_limits::MemberLimitsConfig {
-            changes_per_window: 1,
-            window_secs: 3600,
-            burst: 2,
-            ..crate::member_limits::MemberLimitsConfig::default()
-        });
-    let session = SessionCtx {
-        workspaces: &registry,
-        autobind: None,
-        outbound: &atx,
-        content: Box::leak(Box::default()),
-        state_outbound: None,
-        connection_live: None,
-        own_user_public_key: &user.public_key,
-        own_device_public_key: &host.cert.device_public_key,
-        app_serving: Some(&server),
-        metrics: &metrics,
-        trust_policy: &trust,
-        disconnect: &disconnect,
-        stop: None,
-        presence: None,
-        revocations: &revocations,
-        carried_calls: None,
-        admin: None,
-        fetch: None,
-        agents: Box::leak(Box::default()),
-        environments: Box::leak(Box::default()),
-        positions: None,
-        compactor: None,
-        member_limits: Some(&limits),
-        resumes: Box::leak(Box::default()),
-        agent: Box::leak(Box::default()),
-        channel_reader: Box::leak(Box::default()),
-        execution: Box::leak(Box::new(tilo_actions::remote::ExecutionLease::mint())),
-        lag: Box::leak(Box::default()),
-    };
-    let encode = |message| {
-        tilo_actions::remote::RemoteActionFrame::new(message)
-            .encode()
-            .unwrap()
-    };
-    let invoke = || {
-        encode(tilo_actions::remote::RemoteActionMessage::Invoke(
-            tilo_actions::remote::InvokeRequest {
-                on_behalf_of: None,
-                invocation: tilo_actions::InvocationId::new(),
-                target: tilo_actions::remote::RemoteActionTarget {
-                    provider: "record:so.tilo.discord:".into(),
-                    address: tilo_actions::ActionAddress::new("", "link-account"),
-                },
-                argument: tilo_actions::remote::InvokeArgument::None,
-                context: None,
-                confirmation: None,
-                revision: None,
-                wait_ms: None,
-                appearance: None,
-            },
-        ))
-    };
-    let route = || RemoteActionRoute {
-        workspace_id: id,
-        version: crate::transport::REMOTE_ACTION_ENVELOPE_VERSION,
-        to: host.device_public_key,
-    };
-    let served = || counting.0.load(std::sync::atomic::Ordering::SeqCst);
-    for _ in 0..2 {
-        assert_eq!(
-            handle_remote_action(&a, &session, &[id], route(), invoke()).await,
-            None
-        );
-    }
-    assert_eq!(served(), 2, "within the burst, the host runs them");
-    let refused = handle_remote_action(&a, &session, &[id], route(), invoke()).await;
-    let Some(Envelope::RemoteActionUndeliverable { refusal, .. }) = refused else {
-        panic!("a spent budget is refused, got {refused:?}");
-    };
-    // One change per hour: the refusal says the next comes in about an hour.
-    let wait = refusal.wait().unwrap();
-    assert!(
-        matches!(
-            refusal,
-            tilo_server_protocol::refusal::Refusal::TooFast { .. }
-        ) && (3500..=3600).contains(&wait.as_secs()),
-        "the refusal says when to ask again: {refusal}"
-    );
-    assert_eq!(served(), 2, "a refused action never reaches the host");
-    // The same person's server key (its certificate says so) spends the
-    // owner budget, which the guest budget never paces.
-    let mut server_key = a.clone();
-    server_key.cert.capabilities = tilo_user_identity::DeviceCapabilities::server_key_grant();
-    assert_eq!(
-        handle_remote_action(&server_key, &session, &[id], route(), invoke()).await,
-        None
-    );
-    assert_eq!(
-        served(),
-        3,
-        "a server key's action runs past a guest's budget"
-    );
-    // So does a key that server key minted for one workspace (its
-    // certificate names the server key as its issuer): a backend's agent for
-    // one of its customers, whose changes are the backend's.
-    let mut minted = a.clone();
-    minted.cert.issuer = Some(Box::new(server_key.cert.clone()));
-    assert_eq!(
-        handle_remote_action(&minted, &session, &[id], route(), invoke()).await,
-        None
-    );
-    assert_eq!(
-        served(),
-        4,
-        "a key a server key minted runs past a guest's budget"
-    );
-    let catalogue = encode(
-        tilo_actions::remote::RemoteActionMessage::CatalogueRequest {
-            correlation: 1,
-            query: tilo_actions::remote::CatalogueQuery::default(),
-        },
-    );
-    assert_eq!(
-        handle_remote_action(&a, &session, &[id], route(), catalogue).await,
-        None
-    );
-    assert_eq!(served(), 5, "reading spends no change budget");
 }
 
 /// An app action server that leaves every request unanswered (`None`), or answers each
@@ -425,7 +261,6 @@ async fn requests_the_server_does_not_answer_are_refused() {
         environments: Box::leak(Box::default()),
         positions: None,
         compactor: None,
-        member_limits: None,
         resumes: Box::leak(Box::default()),
         agent: Box::leak(Box::default()),
         channel_reader: Box::leak(Box::default()),

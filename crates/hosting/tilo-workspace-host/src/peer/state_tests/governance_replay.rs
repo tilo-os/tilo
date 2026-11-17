@@ -44,7 +44,7 @@ fn welcome(fixture: &Fixture, authored_at_ns: u64, added: [u8; 32]) -> Envelope 
 /// when `reader`.
 async fn replayed(fixture: &Fixture, reader: bool) -> Vec<Envelope> {
     let (state_tx, _state_rx) = mpsc::channel(32);
-    let session = fixture.ctx(Side::Recipient, Some(&state_tx), None, None);
+    let session = fixture.ctx(Side::Recipient, Some(&state_tx));
     let mut wire = Vec::new();
     let mut subscribed = Vec::new();
     if reader {

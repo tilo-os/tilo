@@ -85,29 +85,16 @@ impl OnServer {
 
 /// The API server at `issuer` before a server serving its app workers.
 pub async fn api_on_server(issuer: &str) -> OnServer {
-    api_on_server_limiting(issuer, None).await
-}
-
-/// [`api_on_server`], its server keeping each person to `member_limits`, as a
-/// server whose workspaces admit the public does.
-pub async fn api_on_server_limiting(
-    issuer: &str,
-    member_limits: Option<tilo_server::member_limits::MemberLimitsConfig>,
-) -> OnServer {
-    start(issuer, member_limits, false).await
+    start(issuer, false).await
 }
 
 /// [`api_on_server`], its server running its workspaces' Terminal sessions
 /// itself (ush's own commands, no VM): what a key's `terminal#run` runs on.
 pub async fn api_on_server_shelled(issuer: &str) -> OnServer {
-    start(issuer, None, true).await
+    start(issuer, true).await
 }
 
-async fn start(
-    issuer: &str,
-    member_limits: Option<tilo_server::member_limits::MemberLimitsConfig>,
-    shelled: bool,
-) -> OnServer {
+async fn start(issuer: &str, shelled: bool) -> OnServer {
     // The site the action API and the server hand people's links out under: its
     // `entry.json` names the home workspace's entry once the server made it.
     let entry = Arc::new(std::sync::OnceLock::<String>::new());
@@ -152,7 +139,6 @@ async fn start(
         state.path(),
         Options {
             plain: true,
-            member_limits,
             shell: shells.as_ref().map(|shells| {
                 tilo_server::agents::host_shells(shells.path().join("shells")).unwrap()
             }),

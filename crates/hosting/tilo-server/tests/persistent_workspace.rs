@@ -85,7 +85,7 @@ fn spawn_workspace(
         .arg(root_file)
         .arg("--workspace-id-file")
         .arg(state.join("workspace-id"))
-        .args(["--seed-app", "so.tilo.chat", "--member-limits"])
+        .args(["--seed-app", "so.tilo.chat"])
         .args(extra)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())

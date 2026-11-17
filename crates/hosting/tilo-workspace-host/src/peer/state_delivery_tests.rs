@@ -94,7 +94,6 @@ async fn a_fanned_delivery_skips_the_workspaces_lock_until_authority_moves() {
         environments: Box::leak(Box::default()),
         positions: None,
         compactor: None,
-        member_limits: None,
         resumes: Box::leak(Box::default()),
         agent: Box::leak(Box::default()),
         channel_reader: Box::leak(Box::default()),

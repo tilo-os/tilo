@@ -108,8 +108,6 @@ mod place_workspace;
 mod plain_http;
 #[path = "recovery.rs"]
 mod recovery;
-#[path = "refused_commit.rs"]
-mod refused_commit;
 #[path = "rename.rs"]
 mod rename;
 #[path = "resume.rs"]

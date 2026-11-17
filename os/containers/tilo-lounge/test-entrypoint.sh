@@ -64,7 +64,6 @@ lounge
 --root-file
 /run/secrets/workspace-root-lounge
 --workspace-id-file
---member-limits
 --workspace-documents
 --public-avatars
 --public-avatars-url

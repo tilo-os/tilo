@@ -6,8 +6,7 @@
 use super::{
     AgentRegistry, Arc, AuthenticatedPeer, Envelope, HashMap, PeerError, ReplayCatchup,
     ReplayPendingTarget, ServerTrust, SessionCtx, SharedWorkspace, WorkspaceOperation,
-    current_session, enqueue_state, lost_session, mpsc, over_change_limit,
-    trace_native_publication, workspace_access,
+    current_session, enqueue_state, lost_session, mpsc, trace_native_publication, workspace_access,
 };
 use tilo_lock::MutexRecover as _;
 use tilo_server_protocol::WorkspaceId;
@@ -436,15 +435,9 @@ pub(super) async fn handle_delta(
             "author does not match authenticated device".into(),
         ));
     }
-    let ownership = super::change_ownership(peer, &*ws.lock().await);
-    if let Some(limited) = over_change_limit(peer, session, ownership) {
+    if super::over_storage(peer, session, &ws).await {
         // Neither kept nor forwarded, and the session stays, as for a
         // refused change below.
-        tracing::warn!(%limited, device = %hex::encode(peer.device_public_key), "refused a change over the member limit");
-        return Ok(None);
-    }
-    if super::over_storage(peer, session, &ws).await {
-        // Neither kept nor forwarded, as above.
         tracing::warn!(device = %hex::encode(peer.device_public_key), "refused a change to a full workspace");
         return Ok(None);
     }

@@ -196,20 +196,6 @@ pub async fn start_host_admitting(
     plain_listen: Option<SocketAddr>,
     guests: &[[u8; 32]],
 ) -> TestHost {
-    start_host_limiting(root, host, state, web_listen, plain_listen, guests, None).await
-}
-
-/// [`start_host_admitting`], holding workspace guests to the change and content
-/// budgets `limits`, as a public host does.
-pub async fn start_host_limiting(
-    root: &SigningKey,
-    host: &Device,
-    state: &Path,
-    web_listen: SocketAddr,
-    plain_listen: Option<SocketAddr>,
-    guests: &[[u8; 32]],
-    limits: Option<tilo_server::member_limits::MemberLimitsConfig>,
-) -> TestHost {
     start_host_serving(
         root,
         host,
@@ -218,7 +204,6 @@ pub async fn start_host_limiting(
         HostSettings {
             plain_listen,
             guests,
-            limits,
             fetch_proxy: None,
             ..HostSettings::default()
         },
@@ -257,8 +242,6 @@ pub struct HostSettings<'a> {
     pub plain_listen: Option<SocketAddr>,
     /// People (user roots) its operator trust policy lets connect.
     pub guests: &'a [[u8; 32]],
-    /// The change and content budgets workspace guests are held to.
-    pub limits: Option<tilo_server::member_limits::MemberLimitsConfig>,
     /// The fetch proxy it serves its pages.
     pub fetch_proxy: Option<tilo_server::web::FetchProxySetup>,
     /// Reached through this machine's loopback packet relay, as a host
@@ -280,14 +263,12 @@ pub async fn start_host_serving(
     let HostSettings {
         plain_listen,
         guests,
-        limits,
         fetch_proxy,
         relayed,
     } = settings;
     let user = root.verifying_key().to_bytes();
     let mut cfg = tilo_server::ServerConfig {
         state_root: state.to_path_buf(),
-        member_limits: limits,
         ..Default::default()
     };
     if !guests.is_empty() {

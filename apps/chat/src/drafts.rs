@@ -2,8 +2,8 @@
 //! the conversation, kept in the workspace Chat is open in.
 //!
 //! A draft is never part of the conversation's record: keystrokes never
-//! spend the conversation's change budget. Sending a message is what puts
-//! words in the conversation.
+//! become changes of the conversation. Sending a message is what puts words
+//! in the conversation.
 
 use std::collections::BTreeMap;
 

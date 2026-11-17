@@ -17,7 +17,7 @@ use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_session_client::{Cmd, Outbox as _};
 use tilo_user_identity::{DeviceCapabilities, UserIdentity};
 
-use crate::support::{WORKSPACE, enrol, enter, entry_grant, route, start_host_limiting, workspace};
+use crate::support::{WORKSPACE, enrol, enter, entry_grant, route, start_host_plain, workspace};
 
 /// More writes than a record's sealed history holds (4096) before it is compacted.
 const CHANGES: usize = 4200;
@@ -29,13 +29,11 @@ async fn a_device_handed_its_keys_compacts_a_full_history_and_its_writes_go_out(
     let (bob, _) = UserIdentity::generate("Bob", 1);
     let actions = enrol(&bob, "actions", DeviceCapabilities::member());
     let state = tempfile::tempdir().unwrap();
-    let host = start_host_limiting(
+    let host = start_host_plain(
         &alice,
         &host_device,
         state.path(),
         "127.0.0.1:0".parse().unwrap(),
-        None,
-        &[],
         None,
     )
     .await;

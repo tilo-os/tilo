@@ -5,7 +5,7 @@
 //! person's workspace, is answered there by the server's app workers with no
 //! tab of anyone's open, mints a key that reaches that one workspace and
 //! nothing else, and revoking it ends both.
-use super::api_on_server::{api_on_server, api_on_server_limiting, approved_key, headers, json_of};
+use super::api_on_server::{api_on_server, approved_key, headers, json_of};
 use super::hosted_documents::{application_pdf, content_in, json_in};
 use super::*;
 use base64::Engine as _;
@@ -90,30 +90,6 @@ impl Mcp<'_> {
             .await;
         assert_eq!(status, 200, "{reply}");
         reply
-    }
-
-    /// What `tilo_do` of `path` with `args` answered once it ran, asked
-    /// again after each wait a busy host said, as the SDKs do; and how many
-    /// times it was told to wait.
-    async fn did_patiently(&mut self, path: &str, args: Value) -> (Value, u32) {
-        let mut waits = 0;
-        loop {
-            let reply = self.tilo_do(json!({"path": path, "args": args})).await;
-            let answer = &reply["result"]["structuredContent"];
-            if answer["status"] == "ok" {
-                return (answer["result"].clone(), waits);
-            }
-            assert_eq!(answer["error"]["code"], "rate_limited", "{reply}");
-            let wait = answer["error"]["retry_after_ms"]
-                .as_u64()
-                .unwrap_or_else(|| panic!("a busy answer says when to ask again: {reply}"));
-            assert!(
-                (1..=1000).contains(&wait),
-                "ten changes a second: the next within a second, {wait} ms"
-            );
-            waits = waits.saturating_add(1);
-            tokio::time::sleep(Duration::from_millis(wait)).await;
-        }
     }
 
     /// What `tilo_do` of `path` with `args` answered, which it ran.
@@ -479,67 +455,6 @@ async fn a_key_works_through_the_api_on_the_server_and_ends_when_revoked() {
     assert_eq!(api.session_count(), 0);
 }
 
-/// A backend making workspaces faster than its person's budget refills is
-/// answered `rate_limited`, with when to ask again, and nothing ran: asking
-/// again then makes each one once.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_backend_past_its_budget_is_told_when_to_ask_again() {
-    const BURST: u32 = 3;
-    let on_server = api_on_server_limiting(
-        ISSUER,
-        Some(tilo_server::member_limits::MemberLimitsConfig {
-            owner_burst: BURST,
-            owner_changes_per_window: 10,
-            window_secs: 1,
-            ..Default::default()
-        }),
-    )
-    .await;
-    let api = Arc::clone(&on_server.api);
-    let (ada, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
-    let page = enrol(&ada, "Ada's browser", DeviceCapabilities::member());
-    let key = approved_key(&on_server, &ada, &page, "Customer backend").await;
-    let mut account = Mcp {
-        api: &api,
-        path: "/mcp".into(),
-        token: key,
-        session: None,
-    };
-    let (status, init) = account.initialize().await;
-    assert_eq!(status, 200, "{init}");
-    let wanted = BURST * 3;
-    let mut refusals = 0_u32;
-    let began = Instant::now();
-    for customer in 0..wanted {
-        let (_, waits) = account
-            .did_patiently(
-                "account/workspaces#create",
-                json!({"name": format!("Customer {customer}")}),
-            )
-            .await;
-        refusals = refusals.saturating_add(waits);
-    }
-    eprintln!(
-        "{wanted} workspaces past a burst of {BURST} in {:?}, {refusals} times told to wait",
-        began.elapsed()
-    );
-    assert!(refusals > 0, "past the burst, the budget paced it");
-    let (listed, _) = account
-        .did_patiently("account/workspaces#list", json!({}))
-        .await;
-    let owned = listed["workspaces"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .filter(|row| row["role"] == "owner")
-        .count();
-    assert_eq!(
-        owned,
-        usize::try_from(wanted).unwrap(),
-        "a refused create made nothing: {listed}"
-    );
-}
-
 /// Workspaces a backend makes for its customers with one key, here.
 const CUSTOMERS: usize = 500;
 
@@ -562,13 +477,7 @@ fn quantile(durations: &[Duration], quantile: f64) -> Duration {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn one_key_makes_and_works_in_hundreds_of_workspaces_at_once() {
-    // The server keeps each person to the budgets a public one does; a
-    // person's server key spends the owner budget, which guests never reach.
-    let on_server = api_on_server_limiting(
-        ISSUER,
-        Some(tilo_server::member_limits::MemberLimitsConfig::default()),
-    )
-    .await;
+    let on_server = api_on_server(ISSUER).await;
     let api = Arc::clone(&on_server.api);
     // A startup's backend, whose person is not the server's operator, makes a
     // workspace per customer with its one key, as fast as it answers: none
@@ -867,11 +776,7 @@ const MADE_MEANWHILE: usize = 200;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn workspaces_joined_at_once_each_answer_their_first_catalogue() {
-    let on_server = api_on_server_limiting(
-        ISSUER,
-        Some(tilo_server::member_limits::MemberLimitsConfig::default()),
-    )
-    .await;
+    let on_server = api_on_server(ISSUER).await;
     let api = Arc::clone(&on_server.api);
     let (ada, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
     let page = enrol(&ada, "Ada's browser", DeviceCapabilities::member());

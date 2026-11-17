@@ -253,9 +253,9 @@ struct Held {
 }
 
 /// How long writes of a record the host refused wait before the next goes out. A refusal says
-/// the host takes changes slower than this device made them, or not at all as they were:
-/// waiting coalesces what is made meanwhile into one write, and each refusal in a row doubles
-/// the wait, up to [`MOST_REFUSED_WAIT`]; a write that lands ends the run.
+/// the host does not take the changes as they were (the workspace is full, or a grant is
+/// missing): waiting coalesces what is made meanwhile into one write, and each refusal in a row
+/// doubles the wait, up to [`MOST_REFUSED_WAIT`]; a write that lands ends the run.
 #[derive(Debug, Default)]
 struct Refusals {
     /// The wait the last refusal set; zero when the last write landed.
@@ -264,31 +264,21 @@ struct Refusals {
     until: Option<Instant>,
 }
 
-/// How long the host said to wait before it takes the next write, when it said.
-fn host_wait(refusal: &tilo_server_protocol::refusal::Refusal) -> Option<Duration> {
-    use tilo_server_protocol::refusal::Refusal;
-    match refusal {
-        Refusal::TooFast { wait_ms } => Some(Duration::from_millis(*wait_ms)),
-        _ => None,
-    }
-}
-
 /// The first wait after a refusal.
 const FIRST_REFUSED_WAIT: Duration = Duration::from_secs(1);
 /// The longest wait after refusals in a row.
 const MOST_REFUSED_WAIT: Duration = Duration::from_secs(30);
 
 impl Refusals {
-    /// A write was refused at `now`: the next waits as long as the host said, or else twice
-    /// as long as the last. Whether it is the first of a run.
-    fn refused(&mut self, now: Instant, said: Option<Duration>) -> bool {
+    /// A write was refused at `now`: the next waits twice as long as the last. Whether it is
+    /// the first of a run.
+    fn refused(&mut self, now: Instant) -> bool {
         let first = self.wait.is_zero();
-        let doubled = if first {
+        self.wait = if first {
             FIRST_REFUSED_WAIT
         } else {
             self.wait.saturating_mul(2).min(MOST_REFUSED_WAIT)
         };
-        self.wait = said.unwrap_or(doubled).max(FIRST_REFUSED_WAIT);
         self.until = now.checked_add(self.wait);
         first
     }
@@ -445,7 +435,7 @@ impl Sync {
                         .flatten()
                         .map(|hash| automerge::ChangeHash(*hash))
                         .collect();
-                    if held.refused.refused(Instant::now(), host_wait(&refusal)) {
+                    if held.refused.refused(Instant::now()) {
                         tracing::warn!(%refusal, workspace = %self.workspace, record = %route.document, "the workspace refused a change to its files; it goes again after a wait");
                     }
                 }
@@ -844,12 +834,12 @@ mod tests {
             "nothing refused: writes go out"
         );
         assert!(
-            refusals.refused(start, None),
+            refusals.refused(start),
             "the first refusal of a run is said"
         );
         assert_eq!(refusals.held_until(start), Some(start + FIRST_REFUSED_WAIT));
         assert!(
-            !refusals.refused(start, None),
+            !refusals.refused(start),
             "the rest of the run is not said again"
         );
         assert_eq!(
@@ -857,7 +847,7 @@ mod tests {
             Some(start + FIRST_REFUSED_WAIT * 2)
         );
         for _ in 0..10 {
-            refusals.refused(start, None);
+            refusals.refused(start);
         }
         assert_eq!(refusals.held_until(start), Some(start + MOST_REFUSED_WAIT));
         assert_eq!(
@@ -866,22 +856,8 @@ mod tests {
             "the wait ends"
         );
         refusals.landed();
-        assert!(
-            refusals.refused(start, None),
-            "a write that landed ends the run"
-        );
+        assert!(refusals.refused(start), "a write that landed ends the run");
         assert_eq!(refusals.held_until(start), Some(start + FIRST_REFUSED_WAIT));
-        let said = std::time::Duration::from_secs(7);
-        refusals.refused(start, Some(said));
-        assert_eq!(
-            refusals.held_until(start),
-            Some(start + said),
-            "a wait the host said is the wait"
-        );
-        assert_eq!(
-            super::host_wait(&tilo_server_protocol::refusal::Refusal::TooFast { wait_ms: 7000 }),
-            Some(said)
-        );
     }
 
     #[test]

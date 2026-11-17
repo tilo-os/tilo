@@ -37,12 +37,9 @@ impl Workspace {
         let laptop = alice.enrol("alice-laptop", DeviceCapabilities::primary());
         let phone = bob.enrol("bob-browser", DeviceCapabilities::member());
         let state = tempfile::tempdir().unwrap();
-        // A public host: every visitor has the member budgets.
-        let budgets = tilo_server::member_limits::MemberLimitsConfig::default();
         let server = crate::common::start_server(
             ServerConfig {
                 state_root: state.path().to_path_buf(),
-                member_limits: Some(budgets),
                 ..ServerConfig::default()
             },
             tilo_server::daemon::ServerIdentity {

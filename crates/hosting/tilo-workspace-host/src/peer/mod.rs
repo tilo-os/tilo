@@ -74,10 +74,7 @@ use access::{
 use actions::{RemoteActionRoute, handle_host_action, handle_remote_action};
 use admin::handle_workspaces;
 use agent_session::handle_agent_session;
-use commit::{
-    change_ownership, commit_run_key, handle_commit, handle_commit_run, of_backend,
-    over_change_limit, over_storage,
-};
+use commit::{commit_run_key, handle_commit, handle_commit_run, over_storage};
 use compaction::handle_compaction;
 #[cfg(test)]
 use dispatch::handle_inbound_frame;
@@ -209,8 +206,6 @@ pub struct PeerContext {
     /// Keeps retained document channels short; `None` never compacts and
     /// refuses compaction volunteers.
     pub compactor: Option<crate::compaction::Compactor>,
-    /// Per-person limits of a public host; `None` limits nobody.
-    pub member_limits: Option<Arc<crate::member_limits::MemberLimits>>,
     /// The workspaces whose calls this host carries: a workspace a person owns
     /// (synced across their devices through this host) holds its calls
     /// there. `None` holds no carried call.
@@ -260,7 +255,6 @@ struct SessionCtx<'a> {
     environments: &'a crate::environment::EnvironmentRegistry,
     positions: Option<crate::position::PositionIssuer>,
     compactor: Option<&'a crate::compaction::Compactor>,
-    member_limits: Option<&'a crate::member_limits::MemberLimits>,
     /// This connection's resume log per resumed workspace.
     resumes: &'a std::sync::Mutex<HashMap<WorkspaceId, ResumeLog>>,
     /// The agent this connection is a run of, once its device said so

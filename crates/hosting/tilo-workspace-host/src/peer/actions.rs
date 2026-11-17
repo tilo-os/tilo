@@ -116,7 +116,6 @@ pub(super) async fn handle_remote_action(
                 route,
             );
         }
-        let ownership = super::change_ownership(peer, &wr);
         // Never hold the workspace across the app action server: it may take its time.
         drop(wr);
         let Some(server) = session.app_serving else {
@@ -125,7 +124,6 @@ pub(super) async fn handle_remote_action(
         let local = Local {
             server: server.as_ref(),
             workspace_id,
-            ownership,
         };
         return serve_locally(peer, session, &local, &frame).unwrap_or_else(refuse);
     }
@@ -352,33 +350,6 @@ pub(super) fn handle_host_action(
             reason: "this host serves no host operations".into(),
         });
     };
-    // One of the host's own operations changes what it keeps for a person as
-    // theirs: it spends their change budget, as a change in one of their
-    // workspaces does, and is refused before it runs, saying when the budget
-    // admits the next one. Only a person's own devices and keys are answered
-    // here, so their backend (a server key, or a key it minted) spends the
-    // owner budget and any other device the guest's, as a workspace's change
-    // standing sees them.
-    if matches!(
-        request.message,
-        tilo_actions::remote::RemoteActionMessage::Invoke(_)
-    ) && let Some(crate::member_limits::Limited::Changes { retry_after }) =
-        super::over_change_limit(
-            peer,
-            session,
-            if super::of_backend(&peer.cert) {
-                crate::member_limits::Ownership::Owner
-            } else {
-                crate::member_limits::Ownership::Guest
-            },
-        )
-    {
-        return refused(ActionCallError::Busy {
-            retry_after_ms: u64::try_from(retry_after.as_millis())
-                .unwrap_or(u64::MAX)
-                .max(1),
-        });
-    }
     let caller = match session_caller(peer, session) {
         Ok(caller) => caller,
         Err(refusal) => {
@@ -456,11 +427,10 @@ fn answer_later(
 }
 
 /// Where [`serve_locally`] answers: the server's app action server, in one
-/// workspace, for a caller of the ownership the change budget sees there.
+/// workspace.
 struct Local<'a> {
     server: &'a dyn crate::app_serving::AppActionServer,
     workspace_id: WorkspaceId,
-    ownership: crate::member_limits::Ownership,
 }
 
 /// Answer a frame addressed to this server through its app action server,
@@ -479,25 +449,12 @@ fn serve_locally(
     let Local {
         server,
         workspace_id,
-        ownership,
     } = *local;
     let request = RemoteActionFrame::decode(frame)
         .map_err(|_| Refusal::Invalid("malformed remote action frame".into()))?;
     let caller = session_caller(peer, session)?;
     if !server.answers(&caller, &request.message) {
         return Err(Refusal::Other("this host does not serve apps".into()));
-    }
-    // An action the host runs for a member (a comment, linking their own
-    // account) changes a record as theirs: it spends their change budget,
-    // as a change they send does. It is refused before it runs, saying when
-    // the budget admits the next one, so the asker may simply ask again.
-    if matches!(
-        request.message,
-        tilo_actions::remote::RemoteActionMessage::Invoke(_)
-    ) && let Some(crate::member_limits::Limited::Changes { retry_after }) =
-        super::over_change_limit(peer, session, ownership)
-    {
-        return Err(Refusal::too_fast(retry_after));
     }
     let abandoned = tilo_actions::remote::refuse(
         &request.message,

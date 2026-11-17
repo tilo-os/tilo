@@ -686,7 +686,6 @@ async fn a_members_session_marks_its_key_online_as_it_starts() {
         environments: crate::environment::EnvironmentRegistry::default(),
         positions: None,
         compactor: None,
-        member_limits: None,
     };
     let (_client, end) = tokio::io::duplex(65_536);
     let (read, write) = tokio::io::split(end);

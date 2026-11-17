@@ -102,9 +102,6 @@ pub struct PersistentArgs {
     /// Where the workspace's UUID is kept across restarts.
     #[arg(long = "workspace-id-file", value_name = "PATH")]
     pub workspace_id_file: Option<PathBuf>,
-    /// Apply per-person change and content budgets to members.
-    #[arg(long = "member-limits")]
-    pub member_limits: bool,
     /// Where the host's own endpoint (iroh, UDP) listens: devices of the
     /// operator that dial it, such as the members that take its workspaces'
     /// work, name this port. Without it the machine picks one at each start.
@@ -1311,7 +1308,6 @@ pub(crate) async fn run(
     let config = tilo_server::ServerConfig {
         state_root: tilo_server_protocol::metrics::workspace_server_root(&state),
         identity_root: state.join("identity"),
-        member_limits: persistent.member_limits.then(Default::default),
         iroh_listen: persistent
             .iroh_listen
             .unwrap_or_else(|| tilo_server::ServerConfig::default().iroh_listen),

@@ -164,7 +164,6 @@ set -- workspace \
   --persistent "$name" \
   --root-file "$root" \
   --workspace-id-file "$dir/workspace-id" \
-  --member-limits \
   --workspace-documents \
   --public-avatars "$dir/avatars" \
   --public-avatars-url "$origin/avatars" \

@@ -595,7 +595,6 @@ impl Server {
                 state_root: cfg.state_root.clone(),
                 work: cfg.work.clone(),
                 trust_policy: cfg.trust_policy.clone(),
-                member_limits: cfg.member_limits,
                 max_workspace_grants: cfg.max_workspace_grants,
                 apps: app_serving.clone(),
                 shell_payloads,

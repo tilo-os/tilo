@@ -103,11 +103,6 @@ pub struct ServerConfig {
     /// This is a navigation destination, not an admission or content-access grant.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub web_entry: Option<String>,
-    /// Per-person change budgets, for a host whose workspaces admit the
-    /// public. `None` limits nobody. Content is not budgeted: a member's
-    /// upload is bounded by what the host keeps for the workspace.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub member_limits: Option<MemberLimitsConfig>,
     /// Pre-admissions a governed workspace keeps, spent ones included. A
     /// public workspace that pre-admits every visitor raises it. `None` keeps
     /// 1024. It keeps the key `max_workspace_grants` in `server.toml`.
@@ -163,53 +158,7 @@ impl Default for ServerConfig {
             work: default_work(),
             services: default_services(),
             web_entry: None,
-            member_limits: None,
             max_workspace_grants: None,
-        }
-    }
-}
-
-/// Per-person limits a public host applies to members' traffic.
-///
-/// A guest (a person acting in a workspace that is not theirs, such as a
-/// public lounge) spends the guest budget (`changes_per_window`, `burst`). A
-/// person acting in a workspace of their own, or through their server key
-/// anywhere, spends the owner budget (`owner_changes_per_window`,
-/// `owner_burst`) instead: a backend making a workspace per customer runs at
-/// full speed while guests stay paced.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct MemberLimitsConfig {
-    /// A guest's changes refilled per window.
-    pub changes_per_window: u32,
-    /// The window, in seconds, of both change budgets.
-    pub window_secs: u32,
-    /// Changes a guest may send at once.
-    pub burst: u32,
-    /// An owner's changes refilled per window.
-    #[serde(default = "default_owner_changes_per_window")]
-    pub owner_changes_per_window: u32,
-    /// Changes an owner may send at once.
-    #[serde(default = "default_owner_burst")]
-    pub owner_burst: u32,
-}
-
-const fn default_owner_changes_per_window() -> u32 {
-    1000
-}
-
-const fn default_owner_burst() -> u32 {
-    1000
-}
-
-impl Default for MemberLimitsConfig {
-    fn default() -> Self {
-        Self {
-            changes_per_window: 20,
-            window_secs: 10,
-            burst: 40,
-            owner_changes_per_window: default_owner_changes_per_window(),
-            owner_burst: default_owner_burst(),
         }
     }
 }

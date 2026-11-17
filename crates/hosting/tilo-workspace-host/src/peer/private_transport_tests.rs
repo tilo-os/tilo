@@ -30,7 +30,6 @@ fn peer_context(workspaces: WorkspaceRegistry, user: [u8; 32], own: &DeviceCert)
         environments: crate::environment::EnvironmentRegistry::default(),
         positions: None,
         compactor: None,
-        member_limits: None,
     }
 }
 
@@ -119,7 +118,6 @@ impl Holds {
             environments: Box::leak(Box::default()),
             positions: None,
             compactor: None,
-            member_limits: None,
             resumes: Box::leak(Box::default()),
             agent: Box::leak(Box::default()),
             channel_reader: Box::leak(Box::default()),

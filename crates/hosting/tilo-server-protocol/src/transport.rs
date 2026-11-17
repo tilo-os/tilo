@@ -928,7 +928,7 @@ mod tests {
                         workspace_id: WorkspaceId::from_u128(7),
                         refusal: crate::refusal::Refusal::NotAMember("no".into()),
                     },
-                    [vec![5], id(7), vec![5, 2, 110, 111]].concat(),
+                    [vec![5], id(7), vec![4, 2, 110, 111]].concat(),
                 ),
                 (Envelope::Ping, vec![6]),
                 (Envelope::Pong, vec![7]),

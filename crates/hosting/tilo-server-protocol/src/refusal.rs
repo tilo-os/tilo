@@ -4,12 +4,11 @@
 //! [`crate::transport::Envelope::NotAuthorised`],
 //! [`crate::transport::Envelope::RemoteActionUndeliverable`]) carries one
 //! [`Refusal`]. A device decides what to do by its variant: wait for the
-//! workspace to be ready, wait the time it says, ask the person, or give up.
+//! workspace to be ready, ask the person, or give up.
 //! A person reads [`Refusal::plain`]; a log reads its [`Display`](std::fmt::Display).
 
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
-use std::time::Duration;
 
 /// Why a host turned a change, a subscription or an action away.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -19,9 +18,6 @@ pub enum Refusal {
     /// its admission was not installed. The same thing goes through once the
     /// host says the workspace is ready ([`crate::transport::Envelope::Ready`]).
     NotReady,
-    /// The member change budget is spent: the next change is taken after
-    /// `wait_ms`.
-    TooFast { wait_ms: u64 },
     /// The person's own workspaces keep as much as the host keeps for them:
     /// the change was not kept.
     Full,
@@ -52,8 +48,6 @@ pub enum Refusal {
     Other(String),
 }
 
-/// Sending too fast: the change budget refused it.
-pub const PLAIN_TOO_FAST: &str = "You're sending too fast; slow down a moment.";
 /// A person's own workspace keeps as much as the host keeps for them, so the
 /// change was not kept: make room, then send it again.
 pub const PLAIN_FULL: &str = "Your workspace is full, so this change wasn't kept. Remove something to make room, then try again.";
@@ -71,25 +65,6 @@ pub const PLAIN_DELETED: &str = "This workspace was deleted.";
 pub const PLAIN_REFUSED: &str = "The workspace didn't accept this change.";
 
 impl Refusal {
-    /// The refusal of a change budget that admits the next change after
-    /// `wait`.
-    #[must_use]
-    pub fn too_fast(wait: Duration) -> Self {
-        Self::TooFast {
-            wait_ms: millis(wait),
-        }
-    }
-
-    /// How long to wait before the same thing goes through, when the
-    /// refusal says.
-    #[must_use]
-    pub const fn wait(&self) -> Option<Duration> {
-        match self {
-            Self::TooFast { wait_ms } => Some(Duration::from_millis(*wait_ms)),
-            _ => None,
-        }
-    }
-
     /// Whether the same thing goes through once the workspace is ready on
     /// the host ([`Self::NotReady`]) or once another connection carries it
     /// ([`Self::Superseded`]): nothing is wrong with it.
@@ -104,7 +79,6 @@ impl Refusal {
     pub const fn code(&self) -> &'static str {
         match self {
             Self::NotReady => "not_ready",
-            Self::TooFast { .. } => "rate_limited",
             Self::Full => "storage_full",
             Self::NotGranted(_) => "not_granted",
             Self::NotAllowed(_) => "not_allowed",
@@ -123,7 +97,6 @@ impl Refusal {
     #[must_use]
     pub fn plain(&self) -> Cow<'static, str> {
         match self {
-            Self::TooFast { .. } => PLAIN_TOO_FAST.into(),
             Self::Full => PLAIN_FULL.into(),
             Self::NotGranted(_) => PLAIN_NOT_GRANTED.into(),
             Self::NotAllowed(_) => PLAIN_NOT_ALLOWED.into(),
@@ -143,9 +116,6 @@ impl std::fmt::Display for Refusal {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::NotReady => f.write_str("the workspace is not ready on this host yet"),
-            Self::TooFast { wait_ms } => {
-                write!(f, "too many changes; slow down; retry in {wait_ms} ms")
-            }
             Self::Full => f.write_str("the account's storage is full"),
             Self::NotGranted(detail) => write!(f, "not granted: {detail}"),
             Self::NotAllowed(detail) => write!(f, "not allowed: {detail}"),
@@ -161,10 +131,6 @@ impl std::fmt::Display for Refusal {
     }
 }
 
-fn millis(wait: Duration) -> u64 {
-    u64::try_from(wait.as_millis()).unwrap_or(u64::MAX).max(1)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -172,20 +138,11 @@ mod tests {
     tilo_test_env::scenario! {
         fn refusals_read_as_what_the_reader_should_do;
 
-        phase budgets_say_their_wait;
-        {
-            let fast = Refusal::too_fast(Duration::from_millis(480));
-            assert_eq!(fast.wait(), Some(Duration::from_millis(480)));
-            assert_eq!(fast.code(), "rate_limited");
-            assert_eq!(fast.plain(), PLAIN_TOO_FAST);
-        }
-
         phase only_a_host_that_was_not_ready_passes_later;
         {
             assert!(Refusal::NotReady.passes_once_ready());
             assert!(Refusal::Superseded.passes_once_ready());
             assert!(!Refusal::Conflict.passes_once_ready());
-            assert!(!Refusal::too_fast(Duration::from_secs(1)).passes_once_ready());
         }
 
         phase a_person_reads_what_to_do;
@@ -201,7 +158,6 @@ mod tests {
         {
             for refusal in [
                 Refusal::NotReady,
-                Refusal::too_fast(Duration::from_millis(3)),
                 Refusal::NotGranted("the author is not granted Undoable".into()),
                 Refusal::Other("something".into()),
             ] {

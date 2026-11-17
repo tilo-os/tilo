@@ -293,7 +293,6 @@ impl Holds {
             environments: &self.environments,
             positions: None,
             compactor: None,
-            member_limits: None,
             resumes: &self.resumes,
             agent: &self.agent,
             channel_reader: &self.channel_reader,

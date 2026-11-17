@@ -46,8 +46,6 @@ pub struct HostConfig {
     /// Who the handshake admits besides the person's own devices and the
     /// workspaces' members.
     pub trust_policy: TrustPolicy,
-    /// The change and content budgets guests are held to.
-    pub member_limits: Option<crate::member_limits::MemberLimitsConfig>,
     /// Pre-admissions each workspace keeps, spent ones included.
     pub max_workspace_grants: Option<usize>,
     /// Answers remote actions addressed to this host beyond its own
@@ -76,7 +74,6 @@ impl HostConfig {
             state_root,
             work,
             trust_policy: TrustPolicy::AllowMatchingUser,
-            member_limits: None,
             max_workspace_grants: None,
             apps: None,
             shell_payloads: crate::payloads::neighbour(),
@@ -224,9 +221,6 @@ impl HostSessions {
                 identity.device_cert.clone(),
                 cfg.shell_payloads.clone(),
             ),
-            member_limits: cfg
-                .member_limits
-                .map(|limits| Arc::new(crate::member_limits::MemberLimits::new(limits))),
             arrivals: crate::attach::Arrivals::default(),
             holds_for_others: cfg.work.from.takes_others(),
         };
@@ -1099,7 +1093,6 @@ pub struct ServerProtocol {
     /// [`crate::environment`].
     pub environments: crate::environment::EnvironmentRegistry,
     pub compactor: crate::compaction::Compactor,
-    pub(crate) member_limits: Option<Arc<crate::member_limits::MemberLimits>>,
     /// Told each device whose session here authenticated
     /// ([`crate::attach::Arrivals`]).
     pub(crate) arrivals: crate::attach::Arrivals,
@@ -1155,7 +1148,6 @@ impl ServerProtocol {
                 &self.identity.signing_key.to_bytes(),
             )),
             compactor: Some(self.compactor.clone()),
-            member_limits: self.member_limits.clone(),
         }
     }
 }
