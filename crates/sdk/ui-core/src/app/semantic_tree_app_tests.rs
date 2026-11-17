@@ -681,7 +681,7 @@ fn published_delivery_on_disabled_transport_refuses_before_document_handler() {
         "test.counter".into(),
         "bump".into(),
         None,
-        &tilo_actions::Actor::Member(tilo_actions::MemberId::person("remote:original")),
+        &tilo_actions::Actor::Member(tilo_actions::MemberId::person("remote-original")),
         None,
     );
     assert_eq!(counter(&app), 0);
@@ -1981,7 +1981,7 @@ fn broker_invocation_uuid_collision_preserves_original_operation_route() {
             "test.counter".into(),
             "async-bump".into(),
             None,
-            &tilo_actions::Actor::Member(tilo_actions::MemberId::person("device:first")),
+            &tilo_actions::Actor::Member(tilo_actions::MemberId::person("device-first")),
             None,
         );
         // A conflicting caller must never replace the active operation's
@@ -1992,7 +1992,7 @@ fn broker_invocation_uuid_collision_preserves_original_operation_route() {
             "test.counter".into(),
             conflicting_action.into(),
             None,
-            &tilo_actions::Actor::Member(tilo_actions::MemberId::person("device:second")),
+            &tilo_actions::Actor::Member(tilo_actions::MemberId::person("device-second")),
             None,
         );
         assert_eq!(

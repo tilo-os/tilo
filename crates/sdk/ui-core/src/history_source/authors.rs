@@ -123,16 +123,16 @@ impl AuthorDirectory {
                     directory.register_member(id, author_for_identity(name.to_owned(), key));
                     directory.register_device(key, name.to_owned());
                 }
-                MemberId::Agent(agent) | MemberId::Bot(agent) => {
-                    let (red, green, blue) = crate::presence::user_color(agent);
+                MemberId::Agent(_) | MemberId::Bot(_) => {
+                    let (red, green, blue) = crate::presence::member_color(id);
                     let person = presence
                         .acting_for(id)
                         .and_then(MemberId::person_id)
                         .unwrap_or_default()
                         .to_owned();
-                    directory.register_device(agent, name.to_owned());
+                    directory.register_device(id.id(), name.to_owned());
                     directory.register_agent(
-                        agent,
+                        id.id(),
                         HistoryAgent {
                             agent: id.clone(),
                             label: name.to_owned(),
@@ -254,7 +254,7 @@ impl AuthorDirectory {
                     .then(|| person(&name))
                     .flatten()
                     .unwrap_or_else(|| {
-                        let rgb = crate::presence::user_color(&name);
+                        let rgb = identity_colour(&name);
                         (name, rgb)
                     });
                 self.register(actor, author_coloured(shown, short_id(&identity), rgb));
@@ -629,13 +629,13 @@ impl AuthorDirectory {
         self.color_overrides.insert(identity, rgb);
     }
 
-    /// The colour history paints `identity` in: the person's own colour
-    /// when one was seeded, otherwise the shared palette slot.
+    /// The colour history paints `identity` in: the member's own colour
+    /// when one was seeded, otherwise the one presence paints that identity in.
     pub fn colour_for(&self, identity: &str) -> (u8, u8, u8) {
         self.color_overrides
             .get(identity)
             .copied()
-            .unwrap_or_else(|| crate::presence::user_color(identity))
+            .unwrap_or_else(|| identity_colour(identity))
     }
 
     fn author_from_identity(
@@ -870,15 +870,23 @@ pub fn local_identity_author() -> Option<HistoryAuthor> {
     ))
 }
 
-/// History row for `identity`: the shared palette slot, same RGB
-/// [`crate::presence::user_color`] / [`crate::presence::PresenceCtx::color_for`]
-/// pick when no override is set.
+/// History row for `identity`: the colour presence paints that identity in
+/// when no override is set.
 pub fn author_for_identity(name: impl Into<String>, identity: &str) -> HistoryAuthor {
-    author_coloured(
-        name,
-        short_id(identity),
-        crate::presence::user_color(identity),
-    )
+    author_coloured(name, short_id(identity), identity_colour(identity))
+}
+
+/// The colour the identity `identity` wears with no choice of its own: the
+/// member it spells, painted as presence paints it
+/// ([`crate::presence::member_color`]), or else the palette slot the string
+/// hashes to. A person's key and an actor nobody named keep their slot; an
+/// agent's change wears what the agent is, never the slot its `agent:<id>`
+/// spelling would hash to.
+fn identity_colour(identity: &str) -> (u8, u8, u8) {
+    match tilo_actions::MemberId::parse(identity) {
+        Some(member) => crate::presence::member_color(&member),
+        None => crate::presence::user_color(identity),
+    }
 }
 
 #[cfg(test)]
@@ -1019,16 +1027,10 @@ mod tests {
             use crate::permissions::MemberId;
             use crate::presence::{PresenceCtx, user_color};
 
-            for id in [
-                "alice",
-                "bob",
-                "carol",
-                "agent:scribe",
-                "unknown-person-xyz",
-            ] {
+            for id in ["alice", "bob", "carol", "unknown-person-xyz"] {
                 let hex = automerge::ActorId::from(id.as_bytes()).to_hex_string();
                 let history = AuthorDirectory::new().resolve(&hex);
-                let presence = PresenceCtx::default().color_for(&MemberId::person(id.to_string()));
+                let presence = PresenceCtx::default().color_for(&MemberId::person(id));
                 assert_eq!(
                     history.rgb(),
                     presence,
@@ -1040,6 +1042,25 @@ mod tests {
                     "unoverridden identity must land on the shared palette slot for {id}"
                 );
             }
+
+            // An agent's handle names the agent, not the string with its prefix: an agent's
+            // change wears the colour of who it is, as its face does, never one a spelling of
+            // the same agent would hash to.
+            let agent = "agent:scribe";
+            let member = MemberId::parse(agent).expect("an agent's key");
+            let hex = automerge::ActorId::from(agent.as_bytes()).to_hex_string();
+            let history = AuthorDirectory::new().resolve(&hex);
+            assert_eq!(
+                history.rgb(),
+                PresenceCtx::default().color_for(&member),
+                "an agent's change and its face show one colour"
+            );
+            assert_eq!(history.rgb(), crate::presence::member_color(&member));
+            assert_ne!(
+                history.rgb(),
+                user_color(agent),
+                "an agent keeps the palette slot of what it is, not of its prefixed spelling"
+            );
 
             let unknown = "ff00ff00ff00ff00";
             let history = AuthorDirectory::new().resolve(unknown);

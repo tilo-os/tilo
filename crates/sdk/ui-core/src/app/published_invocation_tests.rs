@@ -9,7 +9,7 @@ fn remote_request(
         invocation: tilo_actions::InvocationId(uuid::Uuid::from_u128(u128::from(wire_id) + 1000)),
         address: tilo_actions::ActionAddress::new("test.counter", action),
         argument: None,
-        actor: tilo_actions::Actor::Member(tilo_actions::MemberId::person("remote:original")),
+        actor: tilo_actions::Actor::Member(tilo_actions::MemberId::person("remote-original")),
         presence: None,
     }
 }
@@ -30,7 +30,7 @@ fn original_remote_grant(
     now: std::sync::Arc<std::sync::atomic::AtomicU64>,
 ) -> crate::permissions::PermissionContext {
     crate::permissions::PermissionContext::granted(
-        &crate::permissions::MemberId::person("remote:original"),
+        &crate::permissions::MemberId::person("remote-original"),
         &crate::permissions::TreePath::root().app("test.counter"),
         crate::permissions::policy::KindSet::ALL,
         Some(100),
@@ -151,7 +151,7 @@ tilo_test_env::scenario! {
             match case {
                 1 => delivered.wire_id += 1,
                 2 => delivered.invocation = tilo_actions::InvocationId::new(),
-                3 => delivered.actor = tilo_actions::Actor::Member(tilo_actions::MemberId::person("remote:other")),
+                3 => delivered.actor = tilo_actions::Actor::Member(tilo_actions::MemberId::person("remote-other")),
                 4 => delivered.argument = Some("altered".into()),
                 _ => {}
             }
