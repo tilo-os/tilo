@@ -2939,6 +2939,23 @@ requires = ["arch=x86_64"]
 timeout_secs = 1800
 on = ["idle"]
 
+# The web desktop driven in a real browser, as a person presses it: a secondary click, a Mac's
+# Control-click, the Menu key and Shift+F10 open the text's menu in the word processor and never the
+# browser's own (crates/browser/tilo-web-desktop/scripts/context-menu.mjs), and Mail's link to Settings
+# goes to the Settings window that is open, opening one only when none is (app-link.mjs). Both
+# always run, and each keeps a picture of what it saw.
+[[check]]
+name = "web-desktop-menus-and-links"
+# dnf installs from Fedora's mirrors, which are no fixed host list.
+egress = { to = ["0.0.0.0/0", "::/0"] }
+run = "set -euo pipefail\nbash tools/ci/ensure-browser-dependencies.sh\nnpx --yes @puppeteer/browsers@2 install chrome@stable --path \"$TMPDIR/chrome\" | tee \"$TMPDIR/chrome.txt\"\nexport CHROME=$(awk '{print $2}' \"$TMPDIR/chrome.txt\" | tail -n 1)\nfailed=0\nfor page in context-menu app-link; do\n  node crates/browser/tilo-web-desktop/scripts/$page.mjs /target/publish/web-desktop-gate/bundle /target/web-desktop-pages || failed=1\ndone\nexit $failed\n"
+needs = ["web-desktop-gate-bundle"]
+env = { npm_config_cache = "/tmp/npm-cache" }
+requires = ["arch=x86_64"]
+outputs = ["/target/web-desktop-pages/**"]
+timeout_secs = 1800
+on = ["idle"]
+
 # The tilolang apps laid out headlessly at the standard window sizes: 320x568 and 390x844, a
 # phone's, and 1280x800, a laptop's. What `tilolang layout-check` finds is the check's verdict (a
 # finding the allow-list does not name, a line it names that no longer shows, a view no scenario

@@ -222,6 +222,20 @@ node --test crates/browser/tilo-browser-runtime/web/*.test.mjs
 tools/ci/check-wasm.sh
 ```
 
+A built desktop bundle is driven in headless Chrome by the scripts in
+`crates/browser/tilo-web-desktop/scripts/`, each taking the bundle's
+directory and exiting non-zero on the first thing a person would not have
+seen: `window-focus.mjs` (choosing and closing windows), `context-menu.mjs`
+(a secondary click, a Mac's Control-click, the Menu key and Shift+F10 open
+the text's menu in the word processor, and never the browser's own) and
+`app-link.mjs` (Mail's link to Settings goes to the Settings window that is
+open, and opens one only when none is).
+
+```sh
+node crates/browser/tilo-web-desktop/scripts/context-menu.mjs /abs/bundle
+node crates/browser/tilo-web-desktop/scripts/app-link.mjs /abs/bundle
+```
+
 The page reaches the module as `import * as runtime from
 './pkg/tilo_browser_runtime.js'`, and nothing on either side of that boundary
 sees the other's names: the `pkg/*.d.ts` exists only after a build, and a test
