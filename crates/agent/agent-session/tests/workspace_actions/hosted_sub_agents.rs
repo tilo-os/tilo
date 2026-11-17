@@ -9,6 +9,10 @@ use tilo_server::workspaces::Workspaces;
 use ui::tilo_resource::{Invoke, NonBlank, Replica};
 use ui::tilo_workspace_agent::{Agent, NewSubAgent, Stands, workspace_agents};
 
+/// A coding agent: a sub-agent whose work a coding program does in the workspace's machine.
+#[path = "hosted_coding_agents.rs"]
+mod hosted_coding_agents;
+
 /// A model whose answer to each call is `play`'s. Every call is kept, in the order asked.
 struct Plays {
     play: Arc<dyn Fn(&ModelRequest) -> ModelResponse + Send + Sync>,

@@ -16,7 +16,7 @@ path = "src/lib.rs"
 # Test-only hooks and helpers: the checkpoint-prefix fault marker, the store's
 # test barriers, and the replay and staging entry points the host's tests
 # drive the store through.
-test-support = ["tilo-workspace-host/test-support"]
+test-support = ["tilo-workspace-host/test-support", "dep:tilo-test-env", "dep:tempfile"]
 # Agents on the host: `dev --agents` / `run --agents` run an agent supervisor
 # (tilo-agent-session, which links every web app) as the app-serving
 # protocol. Needs the browser listener for steering from pages.
@@ -218,6 +218,10 @@ tilo-session-client = { path = "../../session/client", optional = true }
 tilo-app-id = { version = "0.1.0", path = "../../platform/tilo-app-id" }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# What the coding agents' tests are built on, offered to the tests of whatever joins coding
+# agents to a workspace (`coding_agents::testing`, with `test-support`).
+tilo-test-env = { path = "../../dev/test-env", optional = true }
+tempfile = { workspace = true, optional = true }
 # The host keeps its workspaces' content in directories, one per workspace.
 tilo-content = { path = "../../system/content", features = ["dir"] }
 bounded-command = { path = "../../system/bounded-command" }

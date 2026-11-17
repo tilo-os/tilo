@@ -119,6 +119,18 @@ platform = { host = 'cfg(target_os = "linux")' }
 filter = "package(tilo-server) and test(coding_agents::)"
 setup = "machine-siblings"
 
+# So do the agent session's tests of a coding agent on a person's server, which start it
+# through that server's own keeper of coding agents.
+[[profile.default.scripts]]
+platform = { host = 'cfg(target_os = "linux")' }
+filter = "package(tilo-agent-session) and test(hosted_coding_agents::)"
+setup = "machine-siblings"
+
+[[profile.ci.scripts]]
+platform = { host = 'cfg(target_os = "linux")' }
+filter = "package(tilo-agent-session) and test(hosted_coding_agents::)"
+setup = "machine-siblings"
+
 # The browser peer's Lounge test starts the same workspace service the deployment
 # runs, so it is built the same way: a program of another package, with the
 # feature `agents` that gives it the `workspace` subcommand.
