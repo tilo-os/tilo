@@ -268,8 +268,9 @@ pub(super) async fn subscribe(
 /// The admission half of [`handle_subscribe`]: the agent's delegation, the
 /// workspace's binding (autobinding it for the server owner's own devices), and
 /// the workspace's decision under a fresh membership read, enrolling the device
-/// when the workspace says so. A connection whose own authorization changed
-/// meanwhile ends.
+/// when the workspace says so. A device the server does not admit is refused
+/// as not admitted; a connection whose own authorization changed meanwhile
+/// ends.
 async fn admit_subscription(
     peer: &AuthenticatedPeer,
     session: &SessionCtx<'_>,
@@ -321,7 +322,10 @@ async fn admit_subscription(
         }));
     };
     let mut wr = crate::workspace_io::fresh_membership(&ws).await?;
-    if !session_peer_authorized(peer, session) {
+    // The certificate passed when this session first subscribed: failing now
+    // is a change mid-session. A first subscribe that fails it is refused
+    // below, with no workspace data.
+    if !subscribed.is_empty() && !session_peer_authorized(peer, session) {
         return Err(PeerError::Protocol(
             "subscriber authorization changed".into(),
         ));

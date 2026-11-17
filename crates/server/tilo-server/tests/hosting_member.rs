@@ -681,8 +681,10 @@ async fn another_persons_host_holds_a_workspace_its_governor_grants_it() {
 
 /// A host that keeps workspaces for the people it lets in takes a workspace
 /// another host governs for an owner of it it let in, and for nobody else:
-/// asked before it let the owner in, it refuses and says why; asked after, it
-/// holds the workspace and a member's change through it reaches the governor.
+/// asked before it let the owner in, it refuses and says why, and answers her
+/// device's subscribe with `NotAdmitted` and nothing else (no workspace data,
+/// members or keys); asked after, it holds the workspace and a member's change
+/// through it reaches the governor.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[expect(
     clippy::significant_drop_tightening,
@@ -731,6 +733,24 @@ async fn a_host_holds_a_workspace_for_an_owner_it_let_in() {
         workspaces.hosts(&workspace.workspace).await.unwrap().len(),
         1
     );
+    let outside = session_at(&phone, &site, &server, &holder).await;
+    outside
+        .send(Envelope::Subscribe {
+            workspace_id: home.workspace_id,
+        })
+        .unwrap();
+    assert_eq!(
+        tilo_test_env::within("the site answers", outside.recv()).await,
+        Some(Envelope::NotAuthorised {
+            workspace_id: home.workspace_id,
+            refusal: tilo_server_protocol::refusal::Refusal::NotAdmitted,
+        })
+    );
+    let after = tokio::time::timeout(IDLE_WINDOW, outside.recv()).await;
+    assert!(
+        matches!(after, Err(_) | Ok(None)),
+        "a device the site never let in heard more: {after:?}"
+    );
 
     // The site lets Alice in, as an owner of its home; now it takes hers.
     at_site
@@ -766,7 +786,7 @@ async fn a_host_holds_a_workspace_for_an_owner_it_let_in() {
         phone.device_pubkey()
     );
 
-    drop((on_holder, local));
+    drop((on_holder, local, outside));
     holder.stop().await;
     governor.stop().await;
 }
