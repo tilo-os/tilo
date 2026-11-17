@@ -13,10 +13,11 @@ from __future__ import annotations
 
 import time
 
-from ..core import CheckFailed, Unobservable, check, expect
-from ..vm import VmError, wait_until
-from .apps import AREA, _procs
-from .daily_apps import ALACRITTY, DailyApp, _frame, _home_file, _open, _require_installed, _token
+from ..core import CheckFailed, check, expect
+from ..vm import wait_until
+from .apps import AREA, _app_procs, _procs
+from .daily_apps import (ALACRITTY, FIRST_FRAME_S, DailyApp, _frame, _home_file, _open,
+                         _require_installed, _token)
 
 FOOT = DailyApp("A18-foot", "foot", "foot", "foot", "foot", ("foot",), x11=False, fractional=True)
 KEPT_APPS = (ALACRITTY, FOOT)
@@ -95,6 +96,26 @@ def _type_runs(ctx, app_id: str, name: str) -> bool:
     return bool(wait_until(lambda: _home_file(ctx, name), 8, 1.0))
 
 
+def _open_beside(ctx, app: DailyApp):
+    """Open `app` without closing what is open; its group, window and processes."""
+    surfaces0 = {f["window"] for f in ctx.vm.windows()}
+    before = _procs(ctx)
+    group, _ = ctx.open_app(app.desktop_id, "applications")
+
+    def presented():
+        return next((f for f in ctx.vm.windows() if f["window"] not in surfaces0
+                     and f.get("frames", 0) > 0 and f.get("rect")), None)
+
+    frame = wait_until(presented, FIRST_FRAME_S, 0.5)
+    if frame is None:
+        ctx.shot(f"{app.label}-no-frame")
+        raise CheckFailed(f"{app.name} never drew a first frame within {FIRST_FRAME_S} s")
+    _, procs, _ = _app_procs(ctx, before, app.desktop_id)
+    expect(any(app.program in c.cmd for c in procs.values()),
+           f"no {app.program} process observed ({[c.cmd for c in procs.values()][:4]})")
+    return group["id"], frame["window"], procs
+
+
 @check("A18", AREA, "Host apps (alacritty on the GPU, foot on shared memory) stay open through an "
                     "in-place desktop restart: same processes, windows back, input reaches them, "
                     "and a logout ends them")
@@ -104,8 +125,9 @@ def kept_through_restart(ctx, res):
     token = _token()
     ticks = f"acc-{token}-ticks"
     opened = {}
-    for app in KEPT_APPS:
-        gid, sid, procs = _open(ctx, res, app)
+    for n, app in enumerate(KEPT_APPS):
+        # The first opens on a desktop of its own; the next ones beside it.
+        gid, sid, procs = _open(ctx, res, app) if n == 0 else _open_beside(ctx, app)
         frame = _frame(ctx, sid)
         opened[app.label] = {"app_id": frame.get("app_id"), "pids": sorted(procs)}
         # Work that is saved nowhere: a loop that keeps writing (and drawing) through the restart.
