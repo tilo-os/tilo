@@ -213,9 +213,11 @@ public struct Wording: Sendable {
         lines(facts.places.map { "\($0.name), \($0.detail)" })
     }
 
+    /// The workspaces the source says the assistant works in. Under one stands that it works
+    /// there. Nothing is said of any other workspace, and of several nothing is promised.
     public func workspaces(_ facts: Supervision) -> Line {
         guard !facts.workspaces.isEmpty else { return Line(first: W.none.said, second: nil) }
-        return Line(first: joined(facts.workspaces), second: W.yoursInEach.said)
+        return Line(first: joined(facts.workspaces), second: facts.workspaces.count == 1 ? W.worksInThis.said : nil)
     }
 
     /// The first thing on the line, the second under it, and how many more there are.

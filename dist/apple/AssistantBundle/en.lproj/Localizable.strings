@@ -139,7 +139,8 @@
 "has-learned" = "It has learned";
 "where-it-works" = "Where it works";
 "workspaces" = "Workspaces";
-"yours-in-each" = "It is yours in each. Nobody else can instruct it.";
+"works-in-this" = "Your assistant works in this workspace.";
+"own-workspace" = "Your own workspace";
 "none" = "Nothing yet";
 "forget" = "Forget";
 "sign-out" = "Sign out of this device";

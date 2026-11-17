@@ -1130,6 +1130,8 @@ public final class TiloSource: AssistantSource {
             if now != .records { await surveyServer(&seen) }
             seen.learned = learnedOnHost + learnedInChat
             seen.learnedCount = max(seen.learned.count, seen.learnedCount)
+            // The one workspace the assistant works in. Nothing is said of any other of the person's.
+            seen.workspaces = worksIn
             supervisionNow.set(seen)
             next = surveyAgain
         }
@@ -1249,6 +1251,15 @@ public final class TiloSource: AssistantSource {
     }
 
     private var noAssistant: SourceProblem { .refused("You have no assistant in this workspace yet") }
+
+    /// The workspace the person's assistant works in, as the assistant view names it: the one
+    /// this page stands in once the assistant was found there, by its own name, or as the
+    /// person's own where their server said so and the page gives it no name.
+    private var worksIn: [String] {
+        guard assistant != nil else { return [] }
+        if let name = person?.workspace, !name.isEmpty { return [name] }
+        return standsInOwn ? [AssistantWords.ownWorkspace.said] : []
+    }
 
     // MARK: Plumbing
 

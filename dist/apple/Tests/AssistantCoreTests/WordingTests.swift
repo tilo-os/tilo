@@ -73,8 +73,13 @@ final class WordingTests: XCTestCase {
                                                     second: "Dima at Mento is an investor · 46 more"))
         XCTAssertEqual(wording.places(facts), Line(first: "The cloud machine, always",
                                                    second: "This Mac, in ~/dev/tilo and ~/Documents/Fundraising"))
-        XCTAssertEqual(wording.workspaces(facts), Line(first: "Personal · Tilo team · Northwind data room",
-                                                       second: "It is yours in each. Nobody else can instruct it."))
+        // Of several workspaces the row promises nothing. Under the one the assistant works in, it says so.
+        XCTAssertEqual(wording.workspaces(facts), Line(first: "Personal · Tilo team · Northwind data room", second: nil))
+        var one = facts
+        one.workspaces = ["Personal"]
+        XCTAssertEqual(wording.workspaces(one), Line(first: "Personal", second: "Your assistant works in this workspace."))
+        one.workspaces = []
+        XCTAssertEqual(wording.workspaces(one), Line(first: "Nothing yet", second: nil))
     }
 
     func testAnAssistantThatHasNothingYetSaysSo() {

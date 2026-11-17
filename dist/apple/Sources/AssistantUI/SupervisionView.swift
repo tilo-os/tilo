@@ -201,7 +201,7 @@ private struct DetailSheet: View {
                         ForEach(facts.places, id: \.name) { row("\($0.name), \($0.detail)") }
                     case .workspaces:
                         ForEach(facts.workspaces, id: \.self) { row($0) }
-                        Fine(words: AssistantWords.yoursInEach.said).padding(.top, 10)
+                        if facts.workspaces.count == 1 { Fine(words: AssistantWords.worksInThis.said).padding(.top, 10) }
                     }
                     if isEmpty(facts) { Fine(words: AssistantWords.none.said) }
                 }
