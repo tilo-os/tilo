@@ -263,6 +263,12 @@ final class DictationPanel: NSObject, NSWindowDelegate {
             self?.heard.textColor = .labelColor
             self?.insert.isEnabled = true
         }
+        // Listening ended by itself. What was heard stays to be inserted; with nothing heard
+        // there is nothing to wait for.
+        dictation.ended = { [weak self] in
+            guard let self, self.dictation.words.isEmpty else { return }
+            self.finish(with: nil)
+        }
         Task {
             do throws(Dictation.Problem) {
                 try await dictation.start()

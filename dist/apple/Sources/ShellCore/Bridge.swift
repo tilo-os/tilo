@@ -249,8 +249,9 @@ public enum Bridge {
       const compose = words => {
         if (typeof words !== 'string' || !words) return 'nothing';
         const el = document.activeElement;
-        if (takesWords(el) && put(el, words)) { waiting = null; return 'inserted'; }
-        waiting = words;
+        if (takesWords(el) && put(el, words)) return 'inserted';
+        // Nothing has the caret. Whatever waits already keeps its place in front.
+        waiting = waiting === null ? words : `${waiting}\n${words}`;
         return 'waiting';
       };
       document.addEventListener('focusin', event => {

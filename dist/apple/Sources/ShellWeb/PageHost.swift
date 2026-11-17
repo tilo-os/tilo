@@ -27,6 +27,7 @@ public final class PageHost: NSObject {
 
     private let door = Door()
     private var permission: NoticePermission
+    private var lastEnd: Date?
     private var titleWatch: NSKeyValueObservation?
 
     /// - Parameters:
@@ -69,13 +70,40 @@ public final class PageHost: NSObject {
 
     /// Open the app the settings name.
     public func open() {
-        view.load(URLRequest(url: settings.start))
+        go(to: settings.start)
     }
 
     /// Open a link into the site: an invitation, a pairing link, a document.
     public func open(_ link: URL) {
         guard policy.destination(of: link) == .inside else { return }
-        view.load(URLRequest(url: link))
+        go(to: link)
+    }
+
+    /// Load the page that is shown again, from the site.
+    public func reload() {
+        if view.url == nil { open() } else { view.reload() }
+    }
+
+    /// An address that differs from the one shown only after its `#` would leave the page as
+    /// it is: a web view then moves within the document, and Tilo's page reads what a link
+    /// carries only as it loads. So the page is taken there and loaded afresh.
+    private func go(to address: URL) {
+        guard let shown = view.url, PageHost.sameDocument(shown, address) else {
+            view.load(URLRequest(url: address))
+            return
+        }
+        view.callAsyncJavaScript("location.replace(address); location.reload();",
+                                 arguments: ["address": address.absoluteString], in: nil, in: .page,
+                                 completionHandler: nil)
+    }
+
+    static func sameDocument(_ one: URL, _ other: URL) -> Bool {
+        let bare = { (url: URL) -> String? in
+            var parts = URLComponents(url: url, resolvingAgainstBaseURL: false)
+            parts?.fragment = nil
+            return parts?.string
+        }
+        return bare(one) != nil && bare(one) == bare(other)
     }
 
     /// Put `words` where the person writes.
@@ -164,6 +192,11 @@ public final class PageHost: NSObject {
     }
 }
 
+/// The page's process ended twice in a row.
+struct PageStopped: LocalizedError {
+    var errorDescription: String? { Words.pageStopped.said }
+}
+
 /// The message handler holds its target weakly: a content controller keeps its handlers.
 private final class Door: NSObject, WKScriptMessageHandler {
     weak var host: PageHost?
@@ -228,8 +261,15 @@ extension PageHost: WKNavigationDelegate {
     }
 
     public func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
-        // The page's process ended (memory, a crash). Its records are on the host: open again.
-        open()
+        // The page's process ended (memory, a crash). Its records are on the host, so it is
+        // loaded again; one that ends as soon as it loads is said instead of tried forever.
+        let now = Date()
+        defer { lastEnd = now }
+        if let lastEnd, now.timeIntervalSince(lastEnd) < 10 {
+            delegate?.page(self, failed: PageStopped())
+        } else {
+            reload()
+        }
     }
 }
 

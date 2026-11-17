@@ -48,9 +48,10 @@
 "share-nothing" = "Nothing here can go into a message.";
 "share-failed" = "Tilo Assistant could not take this.";
 "done" = "Done";
-"way-in-mac" = "To pair this Mac, paste the link from a device where you are signed in.";
-"way-in-phone" = "To pair this iPhone, scan the code or paste the link from a device where you are signed in.";
+"way-in-mac" = "Paste an invitation link, or the link that “Pair a new device” gives on a device where you are signed in.";
+"way-in-phone" = "Scan the code or paste the link that “Pair a new device” gives on a device where you are signed in, or paste an invitation link.";
 "paste-link" = "Paste link";
 "scan-code" = "Scan code";
 "code-no-link" = "That code is no link to this Tilo site.";
 "camera-not-allowed" = "Allow the camera for Tilo in the system's settings to scan a code.";
+"page-stopped" = "The page stopped while it loaded.";

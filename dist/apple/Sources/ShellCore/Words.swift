@@ -21,7 +21,7 @@ public enum Words: String, CaseIterable, Sendable {
     case notificationsLabel = "notifications-label", openNotificationSettings = "open-notification-settings"
     case shareAdded = "share-added", shareNothing = "share-nothing", shareFailed = "share-failed", done
     case wayInMac = "way-in-mac", wayInPhone = "way-in-phone", pasteLink = "paste-link", scanCode = "scan-code"
-    case codeNoLink = "code-no-link", cameraNotAllowed = "camera-not-allowed"
+    case codeNoLink = "code-no-link", cameraNotAllowed = "camera-not-allowed", pageStopped = "page-stopped"
 
     public var english: String {
         switch self {
@@ -73,12 +73,13 @@ public enum Words: String, CaseIterable, Sendable {
         case .shareNothing: "Nothing here can go into a message."
         case .shareFailed: "Tilo Assistant could not take this."
         case .done: "Done"
-        case .wayInMac: "To pair this Mac, paste the link from a device where you are signed in."
-        case .wayInPhone: "To pair this iPhone, scan the code or paste the link from a device where you are signed in."
+        case .wayInMac: "Paste an invitation link, or the link that “Pair a new device” gives on a device where you are signed in."
+        case .wayInPhone: "Scan the code or paste the link that “Pair a new device” gives on a device where you are signed in, or paste an invitation link."
         case .pasteLink: "Paste link"
         case .scanCode: "Scan code"
         case .codeNoLink: "That code is no link to this Tilo site."
         case .cameraNotAllowed: "Allow the camera for Tilo in the system's settings to scan a code."
+        case .pageStopped: "The page stopped while it loaded."
         }
     }
 

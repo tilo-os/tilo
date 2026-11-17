@@ -21,6 +21,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     private var hint: HintView?
     private var wayIn: WayInBar?
     private var pageBottom: NSLayoutConstraint?
+    /// The person is following a link from the door, and belongs in the assistant once in.
+    private var returnsToStart = false
     private var settings: SettingsWindow?
     private var dictation: DictationPanel?
 
@@ -59,10 +61,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         if item.action == #selector(toggleOpenAtLogin(_:)) {
             item.state = SMAppService.mainApp.status == .enabled ? .on : .off
         }
-        if item.action == #selector(reload(_:)) || item.action == #selector(dictate(_:))
-            || item.action == #selector(openLinkFromClipboard(_:)) {
+        if item.action == #selector(reload(_:)) || item.action == #selector(openLinkFromClipboard(_:)) {
             return host != nil
         }
+        // Words need a page to go to.
+        if item.action == #selector(dictate(_:)) { return arrived }
         return true
     }
 
@@ -84,6 +87,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
             host.delegate = self
             self.host = host
             place(host.view, in: window)
+            window.makeFirstResponder(host.view)
             show(nil)
             host.open()
         case .failure(let why):
@@ -173,16 +177,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
 
     @objc func reload(_ sender: Any?) {
         show(nil)
-        host?.open()
+        host?.reload()
     }
 
     @objc func openLinkFromClipboard(_ sender: Any?) {
         guard let host, let text = NSPasteboard.general.string(forType: .string),
               let link = host.policy.link(in: text)
         else { return say(Words.noLink.said) }
+        follow(link)
+    }
+
+    /// Open a link into the site. From the door it is the way in, and the person belongs in
+    /// the assistant afterwards; from anywhere else it is what they asked to see.
+    private func follow(_ link: URL) {
+        returnsToStart = wayIn != nil
         showWindow(nil)
         show(nil)
-        host.open(link)
+        host?.open(link)
     }
 
     private func say(_ words: String) {
@@ -195,14 +206,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     // MARK: Words into the message field
 
     /// Put `words` where the person writes; where nothing has the caret, say how to place it.
-    private func compose(_ words: String) async {
-        guard let host, arrived, !words.isEmpty else { return }
-        if await host.compose(words) == .waiting, let content = window?.contentView {
+    @discardableResult
+    private func compose(_ words: String) async -> ComposeOutcome {
+        guard let host, arrived, !words.isEmpty else { return .noBridge }
+        let outcome = await host.compose(words)
+        if outcome == .waiting, let content = window?.contentView {
             hint?.removeFromSuperview()
             let hint = HintView(Words.wordsWaiting.said)
             hint.place(in: content)
             self.hint = hint
         }
+        return outcome
     }
 
     /// What the share sheet left since the app was last in front.
@@ -211,9 +225,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         for item in items {
             // A link into this site is something to open. Anything else is something to say.
             if item.text == nil, let link = item.link.flatMap(host.policy.link(in:)) {
-                host.open(link)
-            } else if let words = item.words {
-                await compose(words)
+                follow(link)
+            } else if let words = item.words, await compose(words) == .noBridge {
+                // The page was not there to take them: they wait for the next time.
+                try? place.leave(item)
             }
         }
     }
@@ -318,6 +333,13 @@ extension AppDelegate: PageHostDelegate {
             hint = nil
         case .entry(let entry):
             offerWayIn(entry.wantsWayIn)
+            guard entry.state == "open", returnsToStart else { return }
+            returnsToStart = false
+            Task {
+                // In. A moment for the page to put away what the link gave it, then the assistant.
+                try? await Task.sleep(for: .seconds(1.5))
+                host.open()
+            }
         }
     }
 

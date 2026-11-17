@@ -35,6 +35,7 @@
     </dict>
   </dict>
   <key>NSCameraUsageDescription</key><string>Tilo uses the camera to scan a pairing code, and shows it to the people in a call you join.</string>
+  <key>NSLocalNetworkUsageDescription</key><string>Tilo opens a Tilo site on your own network when you name one as its site.</string>
   <key>NSMicrophoneUsageDescription</key><string>Tilo listens when you dictate a message or join a call.</string>
   <key>NSSpeechRecognitionUsageDescription</key><string>Tilo turns what you dictate into words on this iPhone.</string>
   <key>TiloApp</key><string>so.tilo.chat</string>

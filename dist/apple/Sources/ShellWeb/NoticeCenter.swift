@@ -118,32 +118,50 @@ public final class NoticeCenter: NSObject {
     }
 }
 
+// The system calls these on a thread of its choosing, and wants to be told on the main thread
+// that an answer was taken. So they are tied to no actor, read what they need where they are
+// called, and go to the main thread themselves.
 extension NoticeCenter: UNUserNotificationCenterDelegate {
     public nonisolated func userNotificationCenter(
-        _ center: UNUserNotificationCenter, willPresent notification: UNNotification
-    ) async -> UNNotificationPresentationOptions {
+        _ center: UNUserNotificationCenter, willPresent notification: UNNotification,
+        withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void
+    ) {
         // The page asks only while it is out of view, so what arrives is shown.
-        [.banner, .list, .sound]
+        completionHandler([.banner, .list, .sound])
     }
 
     public nonisolated func userNotificationCenter(
-        _ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse
-    ) async {
-        guard let id = response.notification.request.content.userInfo[Names.notice] as? String else { return }
-        let typed = (response as? UNTextInputNotificationResponse)?.userText
-        let answer: NoticeAnswer
-        switch response.actionIdentifier {
-        case UNNotificationDefaultActionIdentifier:
-            answer = .opened
-        case UNNotificationDismissActionIdentifier:
-            answer = .dismissed
-        case Names.reply:
-            answer = .reply(typed ?? "")
-        case let chosen where chosen.hasPrefix(Names.page):
-            answer = .action(String(chosen.dropFirst(Names.page.count)), reply: typed)
-        default:
-            return
+        _ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse,
+        withCompletionHandler completionHandler: @escaping () -> Void
+    ) {
+        let taken = Taken(completionHandler)
+        let id = response.notification.request.content.userInfo[Names.notice] as? String
+        let answer = NoticeCenter.answer(to: response.actionIdentifier,
+                                         typed: (response as? UNTextInputNotificationResponse)?.userText)
+        DispatchQueue.main.async {
+            if let id, let answer {
+                MainActor.assumeIsolated { self.answered?(id, answer) }
+            }
+            taken.tell()
         }
-        await MainActor.run { self.answered?(id, answer) }
+    }
+
+    private nonisolated static func answer(to chosen: String, typed: String?) -> NoticeAnswer? {
+        switch chosen {
+        case UNNotificationDefaultActionIdentifier: .opened
+        case UNNotificationDismissActionIdentifier: .dismissed
+        case Names.reply: .reply(typed ?? "")
+        case let chosen where chosen.hasPrefix(Names.page): .action(String(chosen.dropFirst(Names.page.count)), reply: typed)
+        default: nil
+        }
+    }
+}
+
+/// The system's own block, carried to the main thread to be called there once.
+private final class Taken: @unchecked Sendable {
+    let tell: () -> Void
+
+    init(_ tell: @escaping () -> Void) {
+        self.tell = tell
     }
 }

@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 # Build the Mac and the iPhone app from the Swift package beside this script, as signed app
-# bundles under target/apple/. README.md says what the apps are and what each part is for.
+# bundles under target/apple.noindex/, where Spotlight does not look: a build is offered to a
+# person as an app only once someone puts it where apps go. README.md says what the apps are.
 #
 #   dist/apple/build.sh test                    the package's tests; they open no window
-#   dist/apple/build.sh mac [--check [--live]]  target/apple/mac/Tilo Assistant.app, and, asked
+#   dist/apple/build.sh mac [--check [--live]]  target/apple.noindex/mac/Tilo Assistant.app, and, asked
 #                                               to, what it can tell of itself with no window
-#   dist/apple/build.sh iphone [--install]      target/apple/iphone/Tilo Assistant.app, and,
+#   dist/apple/build.sh iphone [--install]      target/apple.noindex/iphone/Tilo Assistant.app, and,
 #                                               asked to, onto the one iPhone that is reachable
 #   dist/apple/build.sh simulator [--live]      the iPhone app in a simulator that shows no
 #                                               window, asked what it can tell of itself
@@ -27,7 +28,7 @@ set -euo pipefail
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 here="$repo/dist/apple"
 bundle="$here/Bundle"
-out="$repo/target/apple"
+out="$repo/target/apple.noindex"
 name="Tilo Assistant"
 # The oldest system whose web view can show Tilo's page; Package.swift says why.
 minimum=26.4
@@ -43,7 +44,7 @@ identity="${TILO_APPLE_SIGNING_IDENTITY:--}"
 site="${TILO_SHELL_SITE:-https://tilo.sh}"
 shown="${TILO_SHELL_APP:-so.tilo.chat}"
 version="${TILO_VERSION:-$(cat "$repo/dist/VERSION")}"
-mark="$repo/crates/browser/tilo-browser-runtime/web/icon.svg"
+mark="$bundle/AppIcon.svg"
 
 [[ "$site" =~ ^https://[a-z0-9.-]+(:[0-9]+)?$ \
   || "$site" =~ ^http://(localhost|[a-z0-9.-]+\.localhost|127\.[0-9]+\.[0-9]+\.[0-9]+)(:[0-9]+)?$ ]] \
@@ -78,6 +79,14 @@ products() {
   (cd "$here" && xcrun swift build "${flags[@]}" >&2 && xcrun swift build "${flags[@]}" --show-bin-path)
 }
 
+# Whether someone has the app bundle open. A bundle in use is theirs: it is never replaced
+# under them.
+running() {
+  local programs
+  programs="$(ps -axo command=)"
+  grep -qF -- "$1/Contents/MacOS/" <<<"$programs"
+}
+
 # Write what a build knows into a bundle's Info.plist: the version and the signing team, and
 # for an app the site it opens and the app it shows.
 stamp() {
@@ -89,12 +98,13 @@ stamp() {
 # An entitlements file with the signing team written in.
 entitle() { sed "s/__TEAM__/$team/g" "$1" > "$2"; }
 
-# The page's own mark at so many pixels. No picture is kept in the repository: the page's
-# SVG is drawn when a bundle is made.
+# Tilo's mark at so many pixels. No picture is kept in the repository: the one drawing in
+# Bundle/ is drawn at each size when a bundle is made.
 draw() { sips -s format png -z "$2" "$2" "$mark" --out "$1" >/dev/null; }
 
 build_mac() {
   local bin app="$out/mac/$name.app" size
+  ! running "$app" || die "$app is open: quit it first, or it would be replaced under whoever uses it"
   bin="$(products mac)"
   local contents="$app/Contents" icons="$out/mac/AppIcon.iconset" rights="$out/mac/app.entitlements"
   rm -rf "$out/mac"

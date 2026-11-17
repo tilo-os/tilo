@@ -118,6 +118,28 @@ final class PageHostTests: XCTestCase {
         XCTAssertEqual(nothing, .nothing)
     }
 
+    func testSeveralThingsThatWaitAllArriveInTheOrderTheyCame() async throws {
+        let first = await host.compose("First shared")
+        let second = await host.compose("Second shared")
+        XCTAssertEqual([first, second], [.waiting, .waiting])
+        try await run("document.getElementById('plain').focus()")
+        try await until("the words are put in") { self.seen.inserted == 1 }
+        try await expect("document.getElementById('plain').value", "First shared\nSecond shared")
+    }
+
+    func testALinkThatDiffersOnlyAfterTheHashLoadsThePageAfresh() async throws {
+        XCTAssertTrue(PageHost.sameDocument(URL(string: "https://tilo.test/app/#/me/so.tilo.chat")!,
+                                            URL(string: "https://tilo.test/app/#/@host/w/ws?pair=abc")!))
+        XCTAssertFalse(PageHost.sameDocument(URL(string: "https://tilo.test/app/#/me")!, URL(string: "https://tilo.test/#/me")!))
+        XCTAssertFalse(PageHost.sameDocument(URL(string: "https://tilo.test/app/?a=1#x")!, URL(string: "https://tilo.test/app/#x")!))
+        // Tilo's page reads what a link carries only as it loads, so moving within the
+        // document would leave a pairing link unread. The page here was given as text, so
+        // loading it afresh asks the site, which does not exist: the load is asked for and fails.
+        try await run("window.kept = true")
+        host.open(try XCTUnwrap(URL(string: "\(Self.site)/app/#/@host/w/ws?pair=abc")))
+        try await until("a fresh load is asked for") { self.seen.arrivals + self.seen.failures.count == 2 }
+    }
+
     func testWordsWaitForAFieldAndNeverGoIntoAPassword() async throws {
         try await run("document.getElementById('secret').focus()")
         let outcome = await host.compose("Dictated words")

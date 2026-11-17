@@ -198,8 +198,10 @@ final class WordsTests: XCTestCase {
         for words in Words.allCases {
             let english = words.english
             XCTAssertEqual(english.first?.isUppercase, true, english)
-            // Sentence case: after the first word only a name is capitalised.
-            let later = english.split(separator: " ").dropFirst().filter { $0.first?.isUppercase == true }
+            // Sentence case: after the first word only a name is capitalised. What stands in
+            // quotes is another control's own name, as that control writes it.
+            let unquoted = english.replacing(/“[^”]*”/, with: "")
+            let later = unquoted.split(separator: " ").dropFirst().filter { $0.first?.isUppercase == true }
                 .map { $0.trimmingCharacters(in: .punctuationCharacters) }
             XCTAssertTrue(later.allSatisfy { ["Tilo", "Assistant", "Mac"].contains($0) }, english)
             // No facts joined by a dot or a dash, nothing shouted.

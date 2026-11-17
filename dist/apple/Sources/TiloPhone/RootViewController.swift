@@ -19,6 +19,8 @@ final class RootViewController: UIViewController {
     private var hint: UIView?
     private var wayIn: UIView?
     private var pageBottom: NSLayoutConstraint?
+    /// The person is following a link from the door, and belongs in the assistant once in.
+    private var returnsToStart = false
     /// Asked for from the app's icon before the page was there.
     private var asked: QuickAction?
 
@@ -69,6 +71,8 @@ final class RootViewController: UIViewController {
     /// Open `text` when it is a link into the site, and say `refusal` when it is not.
     private func follow(_ text: String?, else refusal: Words) {
         guard let host, let link = text.flatMap(host.policy.link(in:)) else { return say(refusal.said) }
+        // From the door a link is the way in; from anywhere else it is what they asked to see.
+        returnsToStart = wayIn != nil
         show(nil)
         host.open(link)
     }
@@ -250,9 +254,11 @@ final class RootViewController: UIViewController {
 
     // MARK: Words into the message field
 
-    private func compose(_ words: String) async {
-        guard let host, arrived, !words.isEmpty else { return }
-        guard await host.compose(words) == .waiting else { return }
+    @discardableResult
+    private func compose(_ words: String) async -> ComposeOutcome {
+        guard let host, arrived, !words.isEmpty else { return .noBridge }
+        let outcome = await host.compose(words)
+        guard outcome == .waiting else { return outcome }
         hint?.removeFromSuperview()
         var said = UIButton.Configuration.gray()
         said.title = Words.wordsWaiting.said
@@ -272,17 +278,19 @@ final class RootViewController: UIViewController {
             try? await Task.sleep(for: .seconds(12))
             line?.removeFromSuperview()
         }
+        return outcome
     }
 
     /// What the share sheet left since the app was last in front.
     private func takeShared() async {
-        guard let host, arrived, let place = SharedPlace.handOver(), let items = try? place.take() else { return }
+        guard host != nil, arrived, let place = SharedPlace.handOver(), let items = try? place.take() else { return }
         for item in items {
             // A link into this site is something to open. Anything else is something to say.
-            if item.text == nil, let link = item.link.flatMap(host.policy.link(in:)) {
-                host.open(link)
-            } else if let words = item.words {
-                await compose(words)
+            if item.text == nil, let link = item.link {
+                follow(link, else: .noLink)
+            } else if let words = item.words, await compose(words) == .noBridge {
+                // The page was not there to take them: they wait for the next time.
+                try? place.leave(item)
             }
         }
     }
@@ -354,6 +362,13 @@ extension RootViewController: PageHostDelegate {
             hint = nil
         case .entry(let entry):
             offerWayIn(entry.wantsWayIn)
+            guard entry.state == "open", returnsToStart else { return }
+            returnsToStart = false
+            Task {
+                // In. A moment for the page to put away what the link gave it, then the assistant.
+                try? await Task.sleep(for: .seconds(1.5))
+                host.open()
+            }
         }
     }
 
@@ -377,7 +392,7 @@ extension RootViewController: PageHostDelegate {
                          body: "\(Words.unreachableBody.said)\n\(error.localizedDescription)",
                          button: Words.tryAgain.said) { [weak self] in
             self?.show(nil)
-            self?.host?.open()
+            self?.host?.reload()
         })
     }
 
@@ -460,6 +475,12 @@ final class DictationSheet: UIViewController {
             self?.heard.text = words
             self?.heard.textColor = .label
             self?.insert.isEnabled = true
+        }
+        // Listening ended by itself. What was heard stays to be inserted; with nothing heard
+        // there is nothing to wait for.
+        dictation.ended = { [weak self] in
+            guard let self, self.dictation.words.isEmpty else { return }
+            self.finish(inserting: false)
         }
         Task {
             do throws(Dictation.Problem) {

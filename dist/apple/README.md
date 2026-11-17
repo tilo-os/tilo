@@ -108,16 +108,20 @@ dist/apple/build.sh test                    # the package's tests; they open no 
 dist/apple/build.sh mac --check --live      # build, sign, and ask the app what it can tell
 dist/apple/build.sh simulator --live        # the iPhone app, asked in a simulator with no window
 dist/apple/build.sh iphone --install        # build, sign, and put it on the one reachable iPhone
-open "target/apple/mac/Tilo Assistant.app"  # start the Mac app
+open "target/apple.noindex/mac/Tilo Assistant.app"  # start the Mac app
 ```
+
+Builds land in `target/apple.noindex/`, where Spotlight does not look: a build is offered to a
+person as an app only once someone puts it where apps go. A bundle that is open is never
+replaced; quit it first.
 
 `build.sh` reads who signs from `TILO_APPLE_SIGNING_IDENTITY`, the iPhone app's provisioning
 profile from `TILO_APPLE_PROFILE`, the site from `TILO_SHELL_SITE` (default `https://tilo.sh`)
 and the app from `TILO_SHELL_APP` (default `so.tilo.chat`); its head lists the rest. The
 signing team is read from the identity and written into the bundles, never into the sources.
 Without an identity the Mac app is signed by nobody: it runs on the Mac that built it, a later
-build cannot read the keys it kept, and it has no share extension. The icon is drawn from the
-page's own mark when a bundle is made.
+build cannot read the keys it kept, and it has no share extension. The icon is one drawing,
+`Bundle/AppIcon.svg`, drawn at every size a bundle carries when the bundle is made.
 
 `--check` runs the app with nothing on screen and prints one line per fact: who signed it,
 whether it is sandboxed, whether the web view offers a secure context, WebGPU with an adapter,

@@ -40,7 +40,7 @@ public final class Dictation {
         #if os(iOS)
         do {
             let session = AVAudioSession.sharedInstance()
-            try session.setCategory(.record, mode: .measurement, options: .duckOthers)
+            try session.setCategory(.record, mode: .measurement)
             try session.setActive(true, options: .notifyOthersOnDeactivation)
         } catch {
             throw .unavailable
