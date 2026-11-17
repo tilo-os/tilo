@@ -57,7 +57,7 @@ class PythonSdkReferenceTests(unittest.TestCase):
         page = self.page()
         self.assertTrue(page.startswith("# Python SDK\n"))
         self.assertEqual(page.count("\n# "), 0, "one H1 only")
-        for section in ("Client", "Workspaces", "Resources", "Runs", "Files", "Keys", "Members", "Errors"):
+        for section in ("Client", "Workspaces", "Resources", "Invocations", "Files", "Keys", "Members", "Errors"):
             self.assertIn(f"## {section}\n", page)
         self.assertIn("### AsyncTilo\n", page)
         self.assertIn("class AsyncTilo\nAsyncTilo(key: str | None = None", page)

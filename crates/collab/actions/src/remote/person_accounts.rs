@@ -73,6 +73,16 @@ pub const SAVE_DRAFT: &str = "save-draft";
 /// from the first time it is asked, the host watches the person's inboxes
 /// for as long as it runs, with no window open anywhere.
 pub const ARRIVED: &str = "arrived";
+/// Say whether an agent of the person's may read, search and draft through
+/// one of their accounts ([`AssistantAccess`]), answering who may now
+/// ([`AccountAssistants`]). Only the person says so, on a device of theirs,
+/// and the agent is named in the workspace the request comes through: its
+/// id means something among that workspace's agents alone.
+pub const ASSISTANT: &str = "assistant";
+/// The agents of the workspace the request comes through that may read,
+/// search and draft through one of the person's accounts (`account`), as an
+/// [`AccountAssistants`]. Only the person reads it.
+pub const ASSISTANTS: &str = "assistants";
 
 /// The target of action `action` of [`RESOURCE`].
 #[must_use]
@@ -438,6 +448,33 @@ impl MailArrival {
             _ => serde_json::Map::new(),
         }
     }
+}
+
+/// Whether one agent of the person's may read, search and draft through one
+/// of their accounts. What it may then ask of the host is [`LIST`],
+/// [`FETCH`], [`READ`], [`SEARCH`], [`ARRIVED`], and a message begun
+/// ([`BEGIN_SEND`], [`SEND_PIECE`]) and kept as a draft ([`SAVE_DRAFT`]),
+/// each for the accounts it was named for alone. A message it would send
+/// ([`SEND`]) is put to its person first.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AssistantAccess {
+    /// The account's id, as [`LIST`] names it.
+    pub account: String,
+    /// The agent, by the id it acts under in the workspace this is said in.
+    pub agent: String,
+    /// Whether it may, from now on.
+    pub may: bool,
+}
+
+/// The agents of the person's that may read, search and draft through one
+/// account, by the ids they act under.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AccountAssistants {
+    /// The account's id, as [`LIST`] names it.
+    pub account: String,
+    pub agents: Vec<String>,
 }
 
 /// Ask what arrived after a place in the person's arrival log: everything

@@ -137,8 +137,7 @@ pub fn stream(mut watch: Watch, invocation: Option<String>) -> crate::Body {
             for (index, event) in events.into_iter().enumerate() {
                 let theirs = invocation.as_deref().is_none_or(|invocation| {
                     event.kind == "invocation"
-                        && event.data.get("invocation").and_then(Value::as_str)
-                            == Some(invocation)
+                        && event.data.get("invocation").and_then(Value::as_str) == Some(invocation)
                 });
                 if !theirs {
                     continue;

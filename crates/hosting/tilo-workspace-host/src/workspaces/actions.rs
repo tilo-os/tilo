@@ -72,6 +72,8 @@ use tilo_user_identity::DeviceCert;
 use tokio::sync::Mutex as AsyncMutex;
 
 pub(super) mod host;
+#[cfg(not(target_arch = "wasm32"))]
+mod mail;
 
 use super::authority::WorkspaceOp;
 use super::{
@@ -1106,6 +1108,15 @@ impl Workspaces {
             && let Some(asking) = asks_host(caller, certificate)
         {
             offer.add(host::HOST, "", self.host_rows(certificate, asking));
+        }
+        // An agent its person named for a mail account finds what it may
+        // do with that mail here. A page asks the host directly, and is
+        // offered no row.
+        #[cfg(not(target_arch = "wasm32"))]
+        if wants(person_accounts::PROVIDER)
+            && self.reads_mail_as_assistant(caller, certificate, workspace_id)
+        {
+            offer.add(mail::MAIL, "", mail::assistant_rows());
         }
         offer.page(query)
     }
