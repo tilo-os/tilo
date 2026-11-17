@@ -2133,13 +2133,9 @@ impl AgentMember {
             .get_mut(route)
             .ok_or_else(|| Refusal::Agent("that record is not open".into()))?;
         // A document operation is named without mounting the record's
-        // component; only an effect's name needs it.
-        let named = |descriptors: Vec<ActionDescriptor>| {
-            descriptors
-                .into_iter()
-                .find(|descriptor| descriptor.address == *address)
-        };
-        let descriptor = named(app.survey());
+        // component; only an effect's name needs it. Naming it lays no frame
+        // out: whoever looks at the document lays out what the last action did.
+        let descriptor = app.descriptor(address);
         let label = descriptor.as_ref().map(|descriptor| {
             format!(
                 "{} · {}",

@@ -706,14 +706,23 @@ impl AttachedView {
                 .into_iter()
                 .find(|descriptor| descriptor.address == *address)
         };
-        if let Some(descriptor) = self.found(own) {
-            return Some(descriptor);
+        let in_tree = |resources: &[tilo_actions::ResourceSpec]| {
+            tilo_actions::api::survey(resources)
+                .into_iter()
+                .find(|descriptor| descriptor.address == *address)
+        };
+        // As the view stands: naming one operation costs the tree, not a frame of everything the
+        // document shows. A resource only a frame publishes yet is found by laying it out, as
+        // before: something a change just made, named before anyone looked.
+        let as_is = own(&self.frame_as_is()).or_else(|| {
+            let resources = self.published_without_layout();
+            in_tree(resources.as_ref())
+        });
+        if as_is.is_some() || !self.unsettled.get() {
+            return as_is;
         }
-        // A resource only the whole tree names (an accessibility or search
-        // surface) is answered as it always was.
-        tilo_actions::api::survey(&self.published())
-            .into_iter()
-            .find(|descriptor| descriptor.address == *address)
+        self.found(own)
+            .or_else(|| in_tree(self.published().as_ref()))
     }
 
     /// Every document operation the member may perform through the

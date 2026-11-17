@@ -289,6 +289,14 @@ impl Sheet {
         self.cells.cell(row, column)
     }
 
+    /// The cell where a read names it, by where its row and column stand in the sheet, never by
+    /// laying the sheet out: what reading a few cells costs then is those cells.
+    pub fn cell_at_place(&self, (col, row): Addr) -> Option<&Cell> {
+        let row = self.cells.rows().nth(usize::try_from(row).ok()?)?;
+        let column = self.cells.columns().nth(usize::try_from(col).ok()?)?;
+        self.cells.cell(row, column)
+    }
+
     /// Add the rows and columns `addr` needs, under the ids every device derives.
     pub fn reach(&mut self, addr: Addr) {
         let (rows, columns) = self.layout().missing(addr);
@@ -304,26 +312,72 @@ impl Sheet {
 
     /// Write `cell` at `addr`, clearing it when blank, and add what it needs.
     pub fn write(&mut self, addr: Addr, cell: Cell) {
-        if cell.is_blank() {
-            let layout = self.layout();
-            if let Some((row, column)) = layout.ids(addr) {
-                self.cells.set_cell(row, column, None);
-            }
-            return;
-        }
-        self.reach(addr);
-        let layout = self.layout();
-        if let Some((row, column)) = layout.ids(addr) {
-            self.cells.set_cell(row, column, Some(cell));
-        }
+        self.write_all([(addr, cell)]);
     }
 
     /// Change the cell at `addr` with `change`.
     pub fn update(&mut self, addr: Addr, change: impl FnOnce(&mut Cell)) {
+        self.update_all([(addr, change)]);
+    }
+
+    /// Write each cell at its address, clearing the blank ones and adding the rows and columns
+    /// they need: the sheet is laid out once for all of them, so a write of many cells costs
+    /// what one costs per cell, not what a layout of the sheet costs each.
+    pub fn write_all(&mut self, cells: impl IntoIterator<Item = (Addr, Cell)>) {
+        self.update_all(
+            cells
+                .into_iter()
+                .map(|(addr, cell)| (addr, move |held: &mut Cell| *held = cell)),
+        );
+    }
+
+    /// [`Self::write_all`] with each cell changed by its own `change`, in order: a change reads
+    /// what the changes before it left.
+    pub fn update_all<F: FnOnce(&mut Cell)>(
+        &mut self,
+        updates: impl IntoIterator<Item = (Addr, F)>,
+    ) {
+        let mut edited: HashMap<Addr, Cell> = HashMap::new();
         let layout = self.layout();
-        let mut cell = self.cell_at(&layout, addr).cloned().unwrap_or_default();
-        change(&mut cell);
-        self.write(addr, cell);
+        for (addr, change) in updates {
+            let mut cell = edited
+                .get(&addr)
+                .cloned()
+                .unwrap_or_else(|| self.cell_at(&layout, addr).cloned().unwrap_or_default());
+            change(&mut cell);
+            edited.insert(addr, cell);
+        }
+        // A cell that has something to keep reaches as far as it is; one that is cleared adds
+        // nothing, as writing a blank cell at a place the sheet has not reached never did.
+        let most = edited
+            .iter()
+            .filter(|(_, cell)| !cell.is_blank())
+            .map(|(&addr, _)| addr)
+            .fold(None, |most: Option<Addr>, addr| {
+                Some(most.map_or(addr, |most| (most.0.max(addr.0), most.1.max(addr.1))))
+            });
+        let mut layout = layout;
+        if let Some(most) = most {
+            let (rows, columns) = layout.missing(most);
+            if !rows.is_empty() || !columns.is_empty() {
+                for id in rows {
+                    let at = self.cells.rows().len();
+                    self.cells.insert_row(at, id);
+                }
+                for id in columns {
+                    let at = self.cells.columns().len();
+                    self.cells.insert_column(at, id);
+                }
+                layout = self.layout();
+            }
+        }
+        for (addr, cell) in edited {
+            let Some((row, column)) = layout.ids(addr) else {
+                continue;
+            };
+            let value = (!cell.is_blank()).then_some(cell);
+            self.cells.set_cell(row, column, value);
+        }
     }
 
     /// The area of `start..=end`, adding what it needs.

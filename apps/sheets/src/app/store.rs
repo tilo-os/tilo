@@ -105,17 +105,24 @@ impl Store {
                 let id = workbook
                     .sheet_key(&Id::from_raw(sheet))
                     .map_err(|refusal| refusal.reason().to_owned())?;
-                let snapshot = workbook
-                    .snapshot_of(&id)
-                    .ok_or_else(|| "no such sheet".to_owned())?;
-                crate::cell_actions::read(&snapshot, range.as_deref(), from, shown.unwrap_or(false))
-                    .map(|mut read| {
-                        if let Some(fields) = read.as_object_mut() {
-                            fields.insert("item".into(), id.as_str().into());
-                            fields.insert("seen".into(), workbook.seen().into());
-                        }
-                        Effected::value(read)
-                    })
+                // The range reads the cells it names alone: the sheet's size is no part of what
+                // one of its actions costs.
+                ui::tilo_resource::profiling::measure("sheets.read_cells", || {
+                    crate::cell_actions::read(
+                        &workbook,
+                        &id,
+                        range.as_deref(),
+                        from,
+                        shown.unwrap_or(false),
+                    )
+                })
+                .map(|mut read| {
+                    if let Some(fields) = read.as_object_mut() {
+                        fields.insert("item".into(), id.as_str().into());
+                        fields.insert("seen".into(), workbook.seen().into());
+                    }
+                    Effected::value(read)
+                })
             }
             E::ImportXlsxContent { content, title } => {
                 self.import_xlsx_content(&content, title, cx)

@@ -286,12 +286,14 @@ fn write_into(sheet: &mut Sheet, cells: &[CellWrite]) -> Result<Vec<Addr>, Refus
         .iter()
         .map(|write| cell_of(&write.cell))
         .collect::<Result<Vec<_>, _>>()?;
-    let mut typed = Vec::new();
-    for (addr, write) in addrs.into_iter().zip(cells) {
-        if write.input.is_some() {
-            typed.push(addr);
-        }
-        sheet.update(addr, |cell| {
+    let typed = addrs
+        .iter()
+        .zip(cells)
+        .filter(|(_, write)| write.input.is_some())
+        .map(|(addr, _)| *addr)
+        .collect();
+    sheet.update_all(addrs.into_iter().zip(cells).map(|(addr, write)| {
+        (addr, move |cell: &mut crate::workbook::Cell| {
             if let Some(input) = &write.input {
                 cell.raw = Input::typed(input.clone());
             }
@@ -301,8 +303,8 @@ fn write_into(sheet: &mut Sheet, cells: &[CellWrite]) -> Result<Vec<Addr>, Refus
             if let Some(bold) = write.bold {
                 cell.bold = bold;
             }
-        });
-    }
+        })
+    }));
     Ok(typed)
 }
 
@@ -1437,29 +1439,52 @@ impl Workbook {
                 **id == sheet_key || sheet.name.0.eq_ignore_ascii_case(sheet_part.trim())
             })
             .ok_or_else(|| format!("no sheet `{sheet_part}`; read with no item for the sheets"))?;
-        let snap = self
-            .snapshot_of(id)
-            .ok_or_else(|| format!("no sheet `{sheet_part}`"))?;
-        let cells = crate::cell_actions::shown_cells_and_spills(&snap);
-        let (top_left, bottom_right) = match range {
-            Some(range) => read_range(range)?,
-            None => cells
+        let (top_left, bottom_right, cells) = if let Some(range) = range {
+            // A range reads the cells it names alone: the sheet's size is no part of its cost.
+            let (start, end) = read_range(range)?;
+            let width = usize::try_from(end.0 - start.0 + 1).unwrap_or(usize::MAX);
+            let most_rows = u32::try_from((MAX_READ_CELLS / width.max(1)).max(1)).unwrap_or(1);
+            let last_row = end.1.min(start.1.saturating_add(most_rows - 1));
+            let (snap, values) = crate::cell_actions::cells_of(self, id, start, (end.0, last_row));
+            let cells =
+                crate::cell_actions::cells_between(&snap, &values, start, (end.0, last_row));
+            (start, end, cells)
+        } else {
+            let snap = self
+                .snapshot_of(id)
+                .ok_or_else(|| format!("no sheet `{sheet_part}`"))?;
+            let cells = crate::cell_actions::shown_cells_and_spills(&snap);
+            if cells.is_empty() {
+                return Ok(serde_json::json!({
+                    "sheet": sheet.name.0,
+                    "item": id.as_str(),
+                    "rows": [],
+                    "seen": self.seen(),
+                }));
+            }
+            let bounds = cells
                 .iter()
                 .fold(((u32::MAX, u32::MAX), (0, 0)), |(lo, hi), cell| {
                     (
                         (lo.0.min(cell.col), lo.1.min(cell.row)),
                         (hi.0.max(cell.col), hi.1.max(cell.row)),
                     )
-                }),
+                });
+            (bounds.0, bounds.1, cells)
         };
-        if cells.is_empty() && range.is_none() {
-            return Ok(serde_json::json!({
-                "sheet": sheet.name.0,
-                "item": id.as_str(),
-                "rows": [],
-                "seen": self.seen(),
-            }));
-        }
+        Ok(self.cells_answer(id, sheet, top_left, bottom_right, &cells))
+    }
+
+    /// The cells of sheet `sheet` from `top_left` to `bottom_right`, as a read answers them: at
+    /// most [`MAX_READ_CELLS`], `next` naming the rest.
+    fn cells_answer(
+        &self,
+        id: &Id,
+        sheet: &Sheet,
+        top_left: Addr,
+        bottom_right: Addr,
+        cells: &[crate::cell_actions::SearchableCell],
+    ) -> serde_json::Value {
         let width = usize::try_from(bottom_right.0 - top_left.0 + 1).unwrap_or(usize::MAX);
         let most_rows = u32::try_from((MAX_READ_CELLS / width.max(1)).max(1)).unwrap_or(1);
         let last_row = bottom_right.1.min(top_left.1.saturating_add(most_rows - 1));
@@ -1468,7 +1493,7 @@ impl Workbook {
             usize::try_from(last_row - top_left.1 + 1).unwrap_or(0)
         ];
         let mut formulas = serde_json::Map::new();
-        for cell in &cells {
+        for cell in cells {
             if cell.col < top_left.0
                 || cell.col > bottom_right.0
                 || cell.row < top_left.1
@@ -1515,7 +1540,7 @@ impl Workbook {
                 .into(),
             );
         }
-        Ok(answer)
+        answer
     }
 }
 
