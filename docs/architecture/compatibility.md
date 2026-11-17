@@ -113,7 +113,7 @@ because it boots the staged deployment that holds them.
 |---|---|---|---|
 | App ↔ shell (shell-ui) | `ui::floating_surface::FLOATING_SURFACE_PROTOCOL_VERSION` | `crates/sdk/ui-core/interface.toml` | the app's first frame on its shell-ui connection; the launcher, from the manifest |
 | App ↔ runtime (the session services the launcher connects) | `runtime_portal::RUNTIME_INTERFACE_VERSION` | `crates/runtime/runtime-portal/interface.toml` | the launcher, before it connects any service |
-| Device ↔ device (handshake, relay frames, peer-sync messages) | `neighbour_wire::PEER_PROTOCOL_VERSION` | `crates/collab/neighbour-wire/interface.toml` | the first field of the certified handshake's `Hello` and `HelloAck` (server sessions, compute, environments, the HTTPS carrier), and of the `IdentityHello` a device announces on a workspace, whose index never moves |
+| Device ↔ device (handshake, relay frames, peer-sync messages) | `neighbour_wire::PEER_PROTOCOL_VERSION`, working with the versions `neighbour_wire::works_with_peer_version` names (below) | `crates/collab/neighbour-wire/interface.toml` | the first field of the certified handshake's `Hello` and `HelloAck` (server sessions, compute, environments, the HTTPS carrier), and of the `IdentityHello` a device announces on a workspace, whose index never moves |
 | Session ↔ app keeper (the control socket of a kept app) | `tilo_app_keeper::wire::INTERFACE_VERSION` | `crates/session/app-keeper/interface.toml` | the session's `Hello`, the first message on every connection: a keeper at another version (one started by an older session build, still running its app) answers `VersionMismatch`, then `"holding"`, keeps displaying, and holds its app while that connection stays open (the unversioned part, never changed) |
 | Host CLI ↔ guest daemon (`tilo-vm` and `tilo-vmd`, over `ssh <vm> tilo-vmd rpc`) | `tilo_vm_protocol::PROTOCOL_VERSION` | `crates/dev/tilo-vm-protocol/interface.toml` | the harness's `Hello`, the first call on every connection: a daemon at another version answers with its own and refuses every other method, and the client updates the daemon with the VM's image (`tilo-vm vm upgrade`) |
 | Store package format (`.tapp`, its manifest, and the registry's snapshots, version indexes and channel authorizations) | `registry_types::PACKAGE_FORMAT_VERSION` (`tilo_app_package::TAPP_FORMAT_VERSION` is it) | `crates/packaging/tilo-app-package/interface.toml` | the archive header, when a package is read; a snapshot's `protocol`, when the catalogue is verified |
@@ -178,10 +178,11 @@ one that is ahead, and exits 75 when the update is not there yet:
 - An app whose shell-ui hello names another version than its manifest is
   answered with the session's version and closed, and the side behind updates.
 
-Between devices (`neighbour_wire::PEER_PROTOCOL_VERSION`), a device at another peer
-version is answered with this one's and admitted to nothing, so nothing it
-sends arrives half-applied; each device keeps its own changes, and sync
-resumes by itself once both speak the same version:
+Between devices (`neighbour_wire::PEER_PROTOCOL_VERSION`), a device at a peer
+version this one does not work with (below, "Two versions at once") is
+answered with this one's and admitted to nothing, so nothing it sends arrives
+half-applied; each device keeps its own changes, and sync resumes by itself
+once both speak versions that work together:
 
 - **A member is behind**: "Ana needs to update to keep working
   together".
@@ -197,6 +198,45 @@ behind an empty frame, which no handshake answer is: a device built before
 refuses that frame and reads the refusal as it always read one, a hello nobody
 answered, and a server built before sends none, which a newer device reads the
 same way.
+
+## Two versions at once
+
+A person's servers update one at a time (each restarts into an update only
+while it holds its person's admin workspace's update lease,
+`tilo_server::rollout`), so while an update rolls out some of them are on it and
+some on the build before, and their devices and the other people's servers
+talk to both. Between devices this is the one place two versions work together, and
+the window is exactly one peer version wide:
+
+- A device works with a peer at its own version, at the next one, and at the
+  one before while it still speaks that one's main flows
+  (`neighbour_wire::works_with_peer_version`,
+  `neighbour_wire::OLDEST_PEER_PROTOCOL_VERSION`). Every handshake and
+  identity announcement checks that window and nothing else.
+- The main flows are frozen at the oldest version a build works with:
+  a server holding a workspace (the handshake, the workspaces each server
+  announces, a subscription and its answer), sync (a delta, anti-entropy's
+  ask and answer), a governance change committed to a server, a lease claim,
+  the identity announcement, and the connection protocols a server is dialled
+  on. Their frames are kept in
+  `crates/collab/neighbour-wire/previous-peer-frames.txt`;
+  `tilo-server-protocol`'s `tests/previous_peer_version.rs` and
+  tilo-peer-state's lease tests read each with today's types, write it back,
+  and fail on any byte that differs, so each side reads what the other sends.
+- A version bump keeps the window when the frozen frames still pass: write the
+  frames of the version being left into the file first (with its number), then
+  move `PEER_PROTOCOL_VERSION`, and set `OLDEST_PEER_PROTOCOL_VERSION` to the
+  version left. A change the frozen frames cannot pass breaks the window: it
+  sets `OLDEST_PEER_PROTOCOL_VERSION` to the new version and the frames to its
+  own, and the servers running the build before it are told to update, as any
+  device behind is. A rollout across it then serves each server's workspaces
+  from the person's other servers only once those updated too.
+- Neither side sends the other what the older one cannot read: what a version
+  adds stays within messages the older one ignores or never receives (a new
+  frame only answers a request only the newer side sends).
+- No reader of anything older is kept, and none of a stored layout: a resource
+  migrated by the newer build is refused by the older one, as a migrated
+  document always is ("Stored data"), until that server updates in its turn.
 
 ## Stored data
 
