@@ -764,8 +764,7 @@ tilo_test_env::scenario! {
             );
         }
 
-        let mut registry = ActionRegistry::new();
-        PhotoLibrary::register(&mut registry);
+        let registry = ActionRegistry::with(ui::tilo_resource::group::register::<PhotoLibrary>);
         let spec = photo
             .actions
             .iter()
@@ -839,8 +838,7 @@ tilo_test_env::scenario! {
             )
             .expect("the region binds");
 
-        let mut registry = ActionRegistry::new();
-        PhotoLibrary::register(&mut registry);
+        let registry = ActionRegistry::with(ui::tilo_resource::group::register::<PhotoLibrary>);
         registry
             .decode(&encoded)
             .expect("the envelope decodes")
