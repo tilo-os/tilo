@@ -1446,6 +1446,7 @@ impl Widget for EmojiPicker {
             multiline: false,
             placeholder: None,
             look,
+            inset: [0.0, 0.0],
         });
         for (index, (group, rect)) in self.groups.iter().zip(&self.geometry.tabs).enumerate() {
             if rect.width() <= 0.0 || rect.height() <= 0.0 {

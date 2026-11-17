@@ -1042,45 +1042,43 @@ impl Widget for Chip {
     fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
         use crate::composition::{Face, TextLook, rgba8};
         cx.element("button");
+        // Set as the canvas paints its pill: its role's type, its style's colours on the
+        // window's ground, its content from the inset.
         let theme = cx.theme();
-        let colors = &theme.tokens.colors;
-        let ink = colors.text_primary;
+        let metrics = PillMetrics::of(theme, TextRole::Label);
+        let colors = self.style.colors(
+            theme,
+            theme.tokens.colors.surfaces.content,
+            self.shows_chosen(),
+            false,
+        );
         let leader = match self.lead {
-            ChipLead::Glyph(icon) => crate::composition::glyph(icon, 14.0, ink, false),
+            ChipLead::Glyph(icon) => {
+                crate::composition::glyph(icon, metrics.glyph, colors.lead, false)
+            }
             _ => None,
+        };
+        let trailing = if self.removable {
+            Some(crate::icons::Icon::X)
+        } else {
+            self.menu.then_some(crate::icons::Icon::ChevronDown)
         };
         cx.face(Face {
             icon: leader,
-            label: Some(
-                TextLook::new(
-                    self.label.clone(),
-                    &theme.text(crate::tokens::TextRole::Body),
-                    Some(ink),
-                )
-                .with_max_lines(Some(1)),
-            ),
+            label: (!self.label.is_empty()).then(|| {
+                TextLook::new(self.label.clone(), &metrics.label, Some(colors.ink))
+                    .with_max_lines(Some(1))
+            }),
             detail: None,
-            trailing: self
-                .menu
-                .then(|| {
-                    crate::composition::glyph(
-                        crate::icons::Icon::ChevronDown,
-                        14.0,
-                        colors.text_dim,
-                        false,
-                    )
-                })
-                .flatten(),
-            fill: Some(rgba8(if self.selected {
-                colors.intent.accent
-            } else {
-                colors.surfaces.raised
-            })),
-            edge: Some(rgba8(colors.border_standard)),
-            radius: self.metrics.height / 2.0,
-            pad: self.metrics.pad_x,
-            gap: 6.0,
-            spread: false,
+            trailing: trailing.and_then(|icon| {
+                crate::composition::glyph(icon, metrics.glyph, colors.lead, false)
+            }),
+            fill: Some(rgba8(colors.fill)),
+            edge: colors.edge.map(rgba8),
+            radius: f64::from(theme.tokens.radii.full).min(self.rect.height() / 2.0),
+            pad: metrics.pad_x.min(self.rect.width() / 4.0),
+            gap: metrics.gap,
+            spread: trailing.is_some(),
         });
     }
 

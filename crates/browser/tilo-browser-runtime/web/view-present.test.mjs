@@ -329,3 +329,55 @@ test('a secret entry shows its mask and never holds its characters in the page',
   assert.equal(input.value, '••••••');
   assert.equal(input.dataset.tiloAct, undefined, 'the page never types the secret');
 });
+
+test('words the layout set on one line never wrap, and cut-short words get a little slack', () => {
+  const layer = new Node('div');
+  const presenter = createViewPresenter(layer);
+  const look = (text, extra = {}) => ({kind: 'text', text, size: 20, line_height: 1.25, weight: 600, italic: false, color: null, align: 'start', max_lines: null, mono: false, ...extra});
+  show(presenter, widget('Column[0]', [0, 0, 400, 300], {children: [
+    widget('Column[0]/Heading[0]', [0, 0, 111.5, 25], {tag: 'h2', own: look('Collections')}),
+    widget('Column[0]/Text[0]', [0, 30, 120, 75], {tag: 'p', own: look('A paragraph the layout set over three lines')}),
+    widget('Column[0]/Text[1]', [0, 110, 80, 25], {own: look('Choices and more', {max_lines: 1})}),
+  ]}));
+  const heading = byPath(layer, 'Column[0]/Heading[0]').style.cssText;
+  assert.match(heading, /white-space:pre;/);
+  assert.doesNotMatch(heading, /overflow-wrap|pre-wrap/);
+  // Several lines wrap where the page's words run out, never inside a word that fits a line.
+  const paragraph = byPath(layer, 'Column[0]/Text[0]').style.cssText;
+  assert.match(paragraph, /white-space:pre-wrap;overflow-wrap:break-word;/);
+  assert.doesNotMatch(paragraph, /anywhere/);
+  const cut = byPath(layer, 'Column[0]/Text[1]').style.cssText;
+  assert.match(cut, /text-overflow:ellipsis;width:max-content;min-width:80px;max-width:84px;/);
+});
+
+test('a box, a switch or a radio the widget draws itself says whether it is on', () => {
+  const layer = new Node('div');
+  const presenter = createViewPresenter(layer);
+  const frame = (checked, mixed = false) => widget('Row[0]', [0, 0, 400, 300], {children: [
+    widget('Row[0]/Target[0]', [0, 0, 20, 20], {tag: 'button', semantics: {role: 'Checkbox', name: 'Done', state: {checked, mixed}}}),
+    widget('Row[0]/Target[1]', [30, 0, 40, 20], {tag: 'button', semantics: {role: 'Switch', name: 'Wi-Fi', state: {checked: !checked}}}),
+    widget('Row[0]/Target[2]', [80, 0, 40, 20], {tag: 'button', semantics: {role: 'Button', name: 'Save', state: {checked: null}}}),
+  ]});
+  show(presenter, frame(true));
+  assert.equal(byPath(layer, 'Row[0]/Target[0]').getAttribute('aria-checked'), 'true');
+  assert.equal(byPath(layer, 'Row[0]/Target[0]').getAttribute('role'), 'checkbox');
+  assert.equal(byPath(layer, 'Row[0]/Target[1]').getAttribute('aria-checked'), 'false');
+  assert.equal(byPath(layer, 'Row[0]/Target[2]').getAttribute('aria-checked'), null);
+  show(presenter, frame(false, true));
+  assert.equal(byPath(layer, 'Row[0]/Target[0]').getAttribute('aria-checked'), 'mixed');
+});
+
+test('a flex item keeps the margin its layout node gives it, and a slot centres its one line', () => {
+  const layer = new Node('div');
+  const presenter = createViewPresenter(layer);
+  const look = {kind: 'text', text: '1204', size: 12, line_height: 1.35, weight: 400, italic: false, color: null, align: 'end', max_lines: 1, mono: false};
+  show(presenter, widget('Section[0]', [0, 0, 400, 300], {flows: true, layout: 'display:flex;flex-direction:column;', children: [
+    widget('Section[0]/Text[0]', [0, 0, 400, 20], {layout: 'display:flex;margin:12px 0px 0px 0px;', own: {...look, text: 'Files'}}),
+    widget('Section[0]/Table[0]', [0, 32, 400, 28], {children: [widget('Section[0]/Table[0]#td:0', [8, 32, 60, 28], {tag: 'td', own: look})]}),
+  ]}));
+  assert.match(byPath(layer, 'Section[0]/Text[0]').style.cssText, /margin:12px 0px 0px 0px;/);
+  // A cell's line stands in the middle of its row, as the table paints it.
+  const cell = byPath(layer, 'Section[0]/Table[0]#td:0').style.cssText;
+  assert.match(cell, /line-height:28px;/);
+  assert.match(cell, /text-align:end;/);
+});

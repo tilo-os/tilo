@@ -494,30 +494,65 @@ fn draw_line(
 impl Widget for QuoteLines {
     /// The words it quotes over who said them.
     fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
-        use crate::composition::TextLook;
+        use crate::composition::{Ground, TextLook, rgba8};
         let theme = cx.theme();
         cx.element("blockquote");
-        let caption = theme.text(TextRole::Caption);
-        let body = theme.text(TextRole::Body);
-        let mut y = self.rect.y0;
+        let rect = self.rect;
+        if rect.width() <= 0.0 || rect.height() <= 0.0 {
+            return;
+        }
+        // Laid out as it is painted: its rule, then who is quoted over or before the words.
+        let colors = &theme.tokens.colors;
+        let (height, line, head_w) = crate::text_render::with_layout_renderer(theme, |text| {
+            let head_w = self.head().map_or(0.0, |head| {
+                f64::from(text.measure_style(&head, None, &Self::styles(theme).0).0)
+            });
+            (self.height(text, theme), Self::line(text, theme), head_w)
+        });
+        let top = rect.y0 + (rect.height() - height) / 2.0;
+        let rule = cx.part(
+            "rule",
+            "QuoteRule",
+            Rect::new(rect.x0, top, rect.x0 + Self::rule(theme), top + height),
+        );
+        rule.ground = Some(Ground {
+            fill: Some(rgba8(colors.text_tertiary)),
+            edge: None,
+            radius: Self::rule(theme) / 2.0,
+        });
+        let (strong, plain) = Self::styles(theme);
+        let x = rect.x0 + Self::inset(theme);
+        let excerpt_ink = if self.interaction.hovered || self.interaction.pressed {
+            colors.text_primary
+        } else {
+            colors.text_dim
+        };
+        let mut at = (x, top);
         if let Some(head) = self.head() {
-            let height = f64::from(caption.line_height_px());
-            let look = TextLook::new(head, &caption, Some(theme.text_dim)).with_max_lines(Some(1));
+            let look =
+                TextLook::new(head, &strong, Some(colors.text_primary)).with_max_lines(Some(1));
             cx.words(
                 "head",
                 "footer",
-                Rect::new(self.rect.x0, y, self.rect.x1, y + height),
+                Rect::new(x, top, rect.x1, top + line),
                 look,
             );
-            y += height + Self::gap(theme);
+            at = if self.stacked() {
+                (x, top + line + Self::gap(theme))
+            } else {
+                (x + head_w + Self::gap(theme), top)
+            };
         }
-        let look = TextLook::new(self.excerpt.clone(), &body, Some(theme.text_primary));
-        cx.words(
-            "excerpt",
-            "p",
-            Rect::new(self.rect.x0, y, self.rect.x1, self.rect.y1),
-            look,
-        );
+        if at.0 < rect.x1 {
+            let look = TextLook::new(self.excerpt.clone(), &plain, Some(excerpt_ink))
+                .with_max_lines(Some(1));
+            cx.words(
+                "excerpt",
+                "p",
+                Rect::new(at.0, at.1, rect.x1, at.1 + line),
+                look,
+            );
+        }
     }
 
     fn build_layout(

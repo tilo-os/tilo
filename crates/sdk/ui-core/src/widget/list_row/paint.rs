@@ -17,6 +17,23 @@ use crate::theme::Theme;
 use crate::tokens::colors::{NON_TEXT_MIN_CONTRAST, SMALL_TEXT_MIN_CONTRAST};
 use crate::widget::{BadgeFace, MediaArt, Tone};
 
+/// Where a row's words stand ([`ListRowFace::text_frame`]).
+pub(super) struct TextFrame {
+    pub(super) geo: RowGeometry,
+    /// It shows lines under its title.
+    pub(super) extra: bool,
+    pub(super) title_style: crate::text_render::TextStyle,
+    pub(super) title_line: f64,
+    /// Where the title's words start, past the quiet word before them.
+    pub(super) title_x: f64,
+    /// The title as the lines it takes, the last cut short when it does not fit.
+    pub(super) lines: Vec<String>,
+    pub(super) text_top: f64,
+    pub(super) title_cy: f64,
+    /// The line the value, the meta and the marks are centred on.
+    pub(super) facts_cy: f64,
+}
+
 pub(super) fn paint_badge(ctx: &mut PaintCtx<'_>, _m: &RowMetrics, column: Rect, badge: &str) {
     paint_code_badge(ctx.scene, ctx.transform, ctx.text, ctx.theme, column, badge);
 }
@@ -159,23 +176,17 @@ impl ListRowFace<'_> {
             (ground, under)
         };
 
-        let geo = self.geometry(row, &m, ctx.text, theme);
-        let extra = self.extra_lines() > 0;
-        let TitleLayout {
-            style: title_style,
-            line: title_line,
+        let TextFrame {
+            geo,
+            extra,
+            title_style,
+            title_line,
+            title_x,
             lines,
-            top: text_top,
-            x: title_x,
-        } = self.title_layout(row, &m, &geo, ctx.text, theme);
-        let title_cy = text_top + title_line / 2.0;
-        let facts_cy = if self.card {
-            geo.facts_cy
-        } else if extra {
-            title_cy
-        } else {
-            row.center().y
-        };
+            text_top,
+            title_cy,
+            facts_cy,
+        } = self.text_frame(row, &m, ctx.text, theme);
 
         self.paint_leading(ctx, &m, geo.leading, under);
 
@@ -491,6 +502,39 @@ impl ListRowFace<'_> {
             lines,
             top,
             x,
+        }
+    }
+
+    /// Where the row's words stand in `row`: its columns, its title's lines and the line its
+    /// facts are centred on, as the canvas paints them and a page composes them.
+    pub(super) fn text_frame(
+        &self,
+        row: Rect,
+        m: &RowMetrics,
+        text: &mut TextRenderer,
+        theme: &Theme,
+    ) -> TextFrame {
+        let geo = self.geometry(row, m, text, theme);
+        let extra = self.extra_lines() > 0;
+        let title = self.title_layout(row, m, &geo, text, theme);
+        let title_cy = title.top + title.line / 2.0;
+        let facts_cy = if self.card {
+            geo.facts_cy
+        } else if extra {
+            title_cy
+        } else {
+            row.center().y
+        };
+        TextFrame {
+            geo,
+            extra,
+            title_style: title.style,
+            title_line: title.line,
+            title_x: title.x,
+            lines: title.lines,
+            text_top: title.top,
+            title_cy,
+            facts_cy,
         }
     }
 

@@ -532,8 +532,9 @@ impl Widget for CountPill {
             edge: Some(rgba8(crate::surface::edge_on(raised))),
             radius: self.rect.height() / 2.0,
         });
-        let look = TextLook::new(self.label.clone(), &m.count, Some(theme.text_dim))
+        let mut look = TextLook::new(self.label.clone(), &m.count, Some(theme.text_dim))
             .with_max_lines(Some(1));
+        look.align = "center";
         cx.text(look);
     }
 

@@ -1510,6 +1510,7 @@ impl Widget for WindowSearch {
                 multiline: false,
                 placeholder: Some(tr("window-search-placeholder")),
                 look,
+                inset: [0.0, 0.0],
             });
             part.semantics = self.field.accessibility().map(|node| {
                 node.with_name(tr("window-search-placeholder"))

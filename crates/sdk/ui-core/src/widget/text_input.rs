@@ -4902,6 +4902,22 @@ impl Widget for TextInput {
         let look = crate::composition::TextLook::new(value.clone(), &style, None);
         let placeholder = (!self.placeholder.is_empty()).then(|| self.placeholder.clone());
         cx.field(value, self.multiline, placeholder, look);
+        let theme = cx.theme();
+        if self.multiline {
+            cx.field_inset(self.ml_left(), self.multiline_padding_y());
+        } else {
+            cx.field_inset(self.text_inset_x(theme), 0.0);
+        }
+        if !self.plain {
+            // Its well, as the canvas paints it at rest: the raised fill, no edge.
+            cx.ground(crate::composition::Ground {
+                fill: Some(crate::composition::rgba8(
+                    theme.tokens.colors.surfaces.raised,
+                )),
+                edge: None,
+                radius: f64::from(theme.tokens.radii.control),
+            });
+        }
     }
 
     fn take_focus_request(&mut self) -> Option<String> {

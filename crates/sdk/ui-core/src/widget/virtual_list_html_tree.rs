@@ -13,7 +13,6 @@ use crate::composition::{Composed, Own};
 use crate::i18n::widget_text;
 use crate::icons::Icon;
 use crate::theme::Theme;
-use crate::widget::Button;
 
 impl<M: ListModel + 'static> VirtualList<M> {
     /// The list's rows as elements: a flat list where the list is not a tree, and otherwise
@@ -87,9 +86,22 @@ impl<M: ListModel + 'static> VirtualList<M> {
         );
         part.tag = Some("button");
         part.focusable = true;
-        part.own = Button::icon_only("", icon, &name)
-            .composed_face(theme)
-            .map(Own::Face);
+        // The chevron alone, centred where it is painted, at the size of a small icon.
+        let side = f64::from(theme.tokens.metrics.icon_sm).min(rect.width().min(rect.height()));
+        part.own = crate::composition::glyph(icon, side, theme.text_dim, false).map(|glyph| {
+            Own::Face(crate::composition::Face {
+                icon: Some(glyph),
+                label: None,
+                detail: None,
+                trailing: None,
+                fill: None,
+                edge: None,
+                radius: f64::from(theme.tokens.radii.control),
+                pad: 0.0,
+                gap: 0.0,
+                spread: false,
+            })
+        });
         let mut node = AccessNode::new(Role::Button)
             .with_name(name)
             .with_state(AccessState::new().expanded(!folded));

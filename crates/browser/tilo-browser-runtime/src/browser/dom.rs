@@ -267,7 +267,8 @@ impl Mount {
                 unsettled = frame.resize(viewport.logical_size()).err();
                 Ok::<_, String>(())
             })?;
-        let mut host_changed = replica;
+        let width = f64::from(self.viewport.requested().logical_size().0);
+        let mut host_changed = self.follow_desktop(width, None) || replica;
         if theme_changed {
             self.theme_seen = crate::page_theme::generation();
             self.frame.set_theme(crate::page_theme::current());
@@ -321,6 +322,9 @@ impl Mount {
         if let Some(peer) = self.peer {
             crate::replicated::follow_answers(peer);
         }
+        // What the desktop asked for (an app to open, a component's wake)
+        // is drawn as on the canvas.
+        self.pending |= Self::desktop_wants_frame(self.desktop.as_ref());
         let asked = self.pending;
         let mut reasons = Vec::new();
         if self.metrics.borrow().enabled() {

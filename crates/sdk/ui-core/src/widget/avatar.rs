@@ -894,10 +894,12 @@ impl Widget for Avatar {
         }
         // The mark is a tinted disc with the initials on it; the initials are its picture, not
         // its name, so a reader hears the person.
-        let fill = theme.tokens.colors.surfaces.raised;
+        let face = self.face();
+        let fill = face.colour(theme);
+        let neutral = face.tint == Tint::Neutral;
         cx.ground(Ground {
             fill: Some(crate::composition::rgba8(fill)),
-            edge: None,
+            edge: neutral.then(|| crate::composition::rgba8(crate::surface::edge_on(fill))),
             radius: if self.square {
                 f64::from(theme.tokens.radii.control)
             } else {
@@ -905,9 +907,16 @@ impl Widget for Avatar {
             },
         });
         let style = initials_style(theme, self.side);
-        let ink = initials_fill(fill, theme);
-        let look =
+        let ink = if neutral {
+            theme.text_primary
+        } else {
+            initial_ink(fill, theme)
+        };
+        let mut look =
             crate::composition::TextLook::new(initials, &style, Some(ink)).with_max_lines(Some(1));
+        // Centred on the disc, as the canvas sets them.
+        look.align = "center";
+        look.line_height = crate::num::f32_of_f64(rect.height() / f64::from(look.size));
         let part = cx.words("initials", "span", rect, look);
         part.attrs.push(("aria-hidden", "true".into()));
     }

@@ -23,6 +23,7 @@ pub struct HtmlCode {
         vello::peniko::Color,
     ) -> Option<Face>,
     pub(crate) glyph: fn(crate::icons::Icon, f64, vello::peniko::Color, bool) -> Option<Glyph>,
+    pub(crate) list_row: fn(&crate::widget::ListRow, &mut HtmlCx<'_>),
 }
 
 /// The code this build links; only the HTML presenter names it.
@@ -33,6 +34,7 @@ pub fn builtin_html() -> HtmlCode {
         bar_control: |face, theme, ground| face.composed(theme, ground),
         bar_chip: |face, theme, ground| face.composed(theme, ground),
         glyph: |icon, size, color, filled| icon.glyph(size, color, filled),
+        list_row: crate::widget::ListRow::compose_html,
     }
 }
 
@@ -90,6 +92,8 @@ pub enum Own {
         multiline: bool,
         placeholder: Option<String>,
         look: TextLook,
+        /// From its edges to its text, logical pixels: `[inline, block]`.
+        inset: [f64; 2],
     },
     /// A document of blocks, each edited through the semantic targets its widget publishes for it
     /// (`block-text:` + its id).
@@ -497,6 +501,13 @@ impl TextLook {
         }
     }
 
+    /// Set to `align`: `start`, `center` or `end`.
+    #[must_use]
+    pub fn aligned(mut self, align: &'static str) -> Self {
+        self.align = align;
+        self
+    }
+
     #[must_use]
     pub fn with_max_lines(mut self, lines: Option<u32>) -> Self {
         self.max_lines = lines;
@@ -824,6 +835,12 @@ impl<'a> HtmlCx<'a> {
         self.composed.flows = flows;
     }
 
+    /// The widget places its children ([`Self::children`]) at their rects itself, among parts
+    /// it places there too ([`Self::part`]), rather than as its layout node flows them.
+    pub fn place_children(&mut self) {
+        self.composed.flows = false;
+    }
+
     /// The widget lays the theme's `surface` (`sidebar`, `inspector`) under its children over `rect`,
     /// in window coordinates.
     pub fn surface(&mut self, rect: vello::kurbo::Rect, surface: &'static str) {
@@ -929,7 +946,16 @@ impl<'a> HtmlCx<'a> {
             multiline,
             placeholder,
             look,
+            inset: [0.0, 0.0],
         });
+    }
+
+    /// The field ([`Self::field`]) keeps its text `x` from its sides and `y` from its top and
+    /// bottom, as its chrome does.
+    pub fn field_inset(&mut self, x: f64, y: f64) {
+        if let Some(Own::Field { inset, .. }) = &mut self.composed.own {
+            *inset = [x, y];
+        }
     }
 
     /// The widget is a document of `blocks`, its text standing at `edges`.
@@ -1208,6 +1234,82 @@ mod tests {
         };
         assert_eq!(href.as_deref(), Some("https://tilo.coffee"));
         assert_eq!(label.text, "Tilo");
+    }
+
+    #[test]
+    fn a_list_row_carries_its_icon_its_title_and_the_line_under_it() {
+        let host = FrameHarness::new(
+            crate::State::new(),
+            Box::new(
+                crate::widget::ListRow::new("basics", "Basics")
+                    .secondary("Type, buttons, chips, cards and empty states")
+                    .value("12")
+                    .icon(crate::icons::Icon::LayoutGrid),
+            ),
+            (640, 80),
+        );
+        let composition = host.composition();
+        let row = find(&composition.root, "ListRow").expect("the row is composed");
+        assert_eq!(row.tag, Some("li"));
+        assert!(!row.flows, "its parts stand where the canvas paints them");
+        let part = |key: &str| {
+            row.children
+                .iter()
+                .find(|part| part.path.ends_with(&format!("#{key}")))
+                .unwrap_or_else(|| panic!("no {key} part in {:?}", row.children))
+        };
+        let words = |key: &str| match &part(key).own {
+            Some(Own::Text(look)) => look.clone(),
+            other => panic!("{key} shows {other:?}"),
+        };
+        assert_eq!(words("title").text, "Basics");
+        assert_eq!(
+            words("secondary").text,
+            "Type, buttons, chips, cards and empty states"
+        );
+        assert_eq!(words("value").text, "12");
+        assert!(matches!(&part("leading").own, Some(Own::Face(face)) if face.icon.is_some()));
+        // The line under the title stands under it, both after the icon.
+        let (title, secondary, icon) = (
+            part("title").rect,
+            part("secondary").rect,
+            part("leading").rect,
+        );
+        assert!(
+            secondary[1] >= title[1] + title[3] - 0.5,
+            "{title:?} {secondary:?}"
+        );
+        assert!(title[0] >= icon[0] + icon[2], "{icon:?} {title:?}");
+        assert!((title[0] - secondary[0]).abs() < 0.5);
+    }
+
+    #[test]
+    fn a_list_rows_box_is_a_checkbox_the_page_toggles() {
+        let checked = std::rc::Rc::new(std::cell::Cell::new(false));
+        let seen = checked.clone();
+        let mut host = FrameHarness::new(
+            crate::State::new(),
+            Box::new(
+                crate::widget::ListRow::new("milk", "Milk")
+                    .checkbox_view(false, move |on| seen.set(on)),
+            ),
+            (400, 60),
+        );
+        let composition = host.composition();
+        let row = find(&composition.root, "ListRow").expect("the row is composed");
+        let check = find(row, "ListRowCheck").expect("its box is composed");
+        assert!(matches!(
+            controls(check),
+            [Control::Check { checked: false, .. }]
+        ));
+        let target = check
+            .semantics
+            .as_ref()
+            .and_then(|node| node.action_target.clone())
+            .expect("the box names its target");
+        host.perform_semantic_named(&row.path, Some(&target), &Action::ToggleCheck)
+            .expect("the box takes the toggle");
+        assert!(checked.get(), "the press reached the row's box");
     }
 
     #[test]

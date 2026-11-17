@@ -57,7 +57,13 @@ struct Walk<'a> {
 impl Walk<'_> {
     fn flows(&self, node: NodeId, origin: (f64, f64), children: &[Composed]) -> bool {
         let nodes = self.taffy.children(node).unwrap_or_default();
-        !children.is_empty()
+        // A page lays out a flex container's children the way the layout did; a grid's tracks
+        // are the layout's own, so its children stand at their rects.
+        let flex = self
+            .taffy
+            .style(node)
+            .is_ok_and(|style| style.display == taffy::Display::Flex);
+        flex && !children.is_empty()
             && nodes.iter().zip(children).all(|(&child, composed)| {
                 self.taffy
                     .style(child)
@@ -291,10 +297,14 @@ impl FrameHarness {
         if path == super::part_row::WINDOW_PARTS {
             return self.paint_part_row(scale);
         }
-        let (widget_path, part) = match path.split_once('#') {
-            Some((widget, _)) => (widget, Some(self.composed_rect(path)?)),
-            None => (path, None),
-        };
+        let composed = self.composed_node(path)?;
+        let [x, y, width, height] = composed.rect;
+        let part = path
+            .contains('#')
+            .then(|| Rect::new(x, y, x + width, y + height));
+        // Words the page sets over the picture are left out of it.
+        let words_on_top = composed.children.iter().any(shows_words);
+        let widget_path = path.split_once('#').map_or(path, |(widget, _)| widget);
         let node = *self.named_target_nodes().get(widget_path)?;
         let text = &mut self.text;
         let theme = &self.theme;
@@ -310,9 +320,16 @@ impl FrameHarness {
                     let rect = part.unwrap_or_else(|| widget.get_rect());
                     let mut scene = Scene::new();
                     let transform = Affine::scale(scale) * Affine::translate((-rect.x0, -rect.y0));
-                    crate::widget::DrawChild::draw_child(
-                        widget, &mut scene, transform, text, theme, presence,
-                    );
+                    let mut paint = || {
+                        crate::widget::DrawChild::draw_child(
+                            widget, &mut scene, transform, text, theme, presence,
+                        );
+                    };
+                    if words_on_top {
+                        crate::text_render::without_words(paint);
+                    } else {
+                        paint();
+                    }
                     (scene, [rect.x0, rect.y0, rect.width(), rect.height()])
                 },
             )
@@ -320,18 +337,20 @@ impl FrameHarness {
         .ok()
     }
 
-    fn composed_rect(&self, path: &str) -> Option<Rect> {
-        fn find(node: &Composed, path: &str) -> Option<[f64; 4]> {
+    /// The composed widget or part at `path`.
+    fn composed_node(&self, path: &str) -> Option<Composed> {
+        fn find(node: Composed, path: &str) -> Option<Composed> {
             if node.path == path {
-                return Some(node.rect);
+                return Some(node);
             }
-            node.children.iter().find_map(|child| find(child, path))
+            node.children
+                .into_iter()
+                .find_map(|child| find(child, path))
         }
         let composition = self.composition();
-        let [x, y, width, height] = std::iter::once(&composition.root)
-            .chain(&composition.layers)
-            .find_map(|root| find(root, path))?;
-        Some(Rect::new(x, y, x + width, y + height))
+        std::iter::once(composition.root)
+            .chain(composition.layers)
+            .find_map(|root| find(root, path))
     }
 
     /// Scroll the widget at `path` to `offset` logical pixels, as a host whose own scroller the person
@@ -360,4 +379,15 @@ impl FrameHarness {
                 | crate::widget::scrollbar::PrimaryScrollResult::Unchanged(_))
         )
     }
+}
+
+/// Whether `node` or a part of it shows words of its own on a page.
+fn shows_words(node: &Composed) -> bool {
+    use crate::composition::Own;
+    matches!(
+        node.own,
+        Some(
+            Own::Text(_) | Own::Field { .. } | Own::Blocks { .. } | Own::Face(_) | Own::Control(_)
+        )
+    ) || node.children.iter().any(shows_words)
 }

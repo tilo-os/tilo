@@ -6,6 +6,9 @@
 // usage: node tools/web/html-renderer/tilolang-check.mjs BUNDLE_DIR OUT_DIR [--package tl/<id>/]
 //                                                       [--scenario all|NAME,...] [--open ROW]
 //                                                       [--width N] [--height N]
+//                                                       [--pages ROW,ROW,...]
+// With --pages, each named row is opened in a page of its own, in both themes and both
+// renderers, and shot as `<render>-<theme>-<row>.png`, before the interaction checks.
 import {mkdirSync, writeFileSync} from 'node:fs';
 import {join, resolve} from 'node:path';
 import {serve} from '../chrome.mjs';
@@ -20,6 +23,7 @@ const scenario = option('--scenario') ?? 'all';
 const opens = option('--open') ?? 'Controls';
 const width = Number(option('--width')) || 1280;
 const height = Number(option('--height')) || 800;
+const pages = (option('--pages') ?? '').split(',').filter(Boolean);
 const TEXT = 'Hello web';
 mkdirSync(out, {recursive: true});
 
@@ -30,7 +34,10 @@ const FIND = `((what) => {
   const selector = what === 'field'
     ? 'input:not([type=checkbox]):not([type=radio]), textarea, [contenteditable=true], [role=textbox]'
     : 'input[type=checkbox], [role=switch], [role=checkbox]';
+  // As HTML, the page's own elements; the accessibility mirror over them is not what a press reaches.
+  const dom = Boolean(root.querySelector('[data-path]'));
   for (const element of root.querySelectorAll(selector)) {
+    if (dom && !element.closest('[data-path]')) continue;
     const box = element.getBoundingClientRect();
     if (box.width < 4 || box.height < 4) continue;
     if (box.bottom < 0 || box.top > innerHeight) continue;
@@ -44,7 +51,10 @@ const FIND = `((what) => {
 // The smallest element of the mount that reads `name`, as the page shows it.
 const NAMED = `((name) => {
   let best = null;
-  for (const element of document.getElementById('app').querySelectorAll('*')) {
+  const root = document.getElementById('app');
+  const dom = Boolean(root.querySelector('[data-path]'));
+  for (const element of root.querySelectorAll('*')) {
+    if (dom && !element.closest('[data-path]')) continue;
     const said = (element.getAttribute('aria-label') ?? element.textContent ?? '').trim();
     if (said !== name) continue;
     const box = element.getBoundingClientRect();
@@ -71,8 +81,41 @@ async function press(tab, at) {
 }
 
 const server = await serve(bundle);
-const report = {package: pkg, renders: {}};
+const report = {package: pkg, renders: {}, pages: {}};
 try {
+  for (const page of pages) {
+    for (const theme of ['light', 'dark']) {
+      for (const render of ['gpu', 'dom']) {
+        const opened = await open({engine: 'chromium', width, height});
+        const tab = opened.tab;
+        const result = report.pages[`${render}-${theme}-${page}`] = {};
+        try {
+          await tab.colourScheme(theme);
+          await tab.navigate(`${server.url}/app.html?package=${encodeURIComponent(pkg)}&scenario=${scenario}&render=${render}&theme=${theme}`);
+          await tab.waitFor('window.renderMarks.presented.length > 0', {timeout: 120000});
+          await settle(tab);
+          // The row is pressed until its page shows: a press that lands
+          // while the window is still settling can go unanswered.
+          for (let tries = 0; tries < 3; tries++) {
+            const at = JSON.parse(await tab.evaluate(`${NAMED}(${JSON.stringify(page)})`));
+            if (!at || (result.opened && tries && Math.abs(at.y - result.opened.y) > 1)) break;
+            result.opened = at;
+            result.presses = tries + 1;
+            await sleep(500);
+            await press(tab, at);
+            await settle(tab);
+          }
+          writeFileSync(join(out, `${render}-${theme}-${page.toLowerCase()}.png`), await tab.screenshot());
+          if (render === 'dom' && theme === 'light') writeFileSync(join(out, `dom-${page.toLowerCase()}.html`), await tab.evaluate(`document.getElementById('app').outerHTML`));
+        } catch (error) {
+          result.error = String(error?.stack ?? error);
+        } finally {
+          result.log = tab.log.filter(line => /^(EXC|ERROR|WARN)|panic|failed/i.test(line)).slice(-12);
+          await opened.close();
+        }
+      }
+    }
+  }
   for (const theme of ['light', 'dark']) {
     for (const render of ['gpu', 'dom']) {
       const opened = await open({engine: 'chromium', width, height});
@@ -86,8 +129,10 @@ try {
         await settle(tab);
         writeFileSync(join(out, `${render}-${theme}.png`), await tab.screenshot());
         if (theme !== 'light') continue;
+        if (render === 'dom') writeFileSync(join(out, 'dom.html'), await tab.evaluate(`document.getElementById('app').outerHTML`));
         result.opened = JSON.parse(await tab.evaluate(`${NAMED}(${JSON.stringify(opens)})`));
         if (result.opened) {
+          await sleep(500);
           await press(tab, result.opened);
           await settle(tab);
           writeFileSync(join(out, `${render}-opened.png`), await tab.screenshot());

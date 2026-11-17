@@ -2538,27 +2538,14 @@ impl Mount {
             }
             reasons
         });
-        if self
-            .desktop
-            .as_ref()
-            .is_some_and(Desktop::open_requested_apps)
-        {
-            self.pending = true;
-        }
         // Host wakes are consumed only after acquiring a surface. A skipped
         // acquisition must retain them for the next redraw.
-        let desktop_woken = self.desktop.as_ref().is_some_and(|desktop| {
-            desktop
-                .shared
-                .woken
-                .load(std::sync::atomic::Ordering::Acquire)
-        });
+        self.pending |= Self::desktop_wants_frame(self.desktop.as_ref());
         if let Some(peer) = self.peer {
             crate::replicated::follow_answers(peer);
         }
-        self.pending |= desktop_woken
-            || self.replica_changed.get()
-            || self.theme_seen != crate::page_theme::generation();
+        self.pending |=
+            self.replica_changed.get() || self.theme_seen != crate::page_theme::generation();
         let frame = self.frame.frame_schedule();
         let due = frame
             .next_wake_deadline
@@ -2709,38 +2696,8 @@ impl Mount {
             self.window.request_redraw();
             return Ok(());
         };
-        let held = self.desktop.as_ref().is_some_and(|desktop| {
-            desktop
-                .handle
-                .set_viewport_width(f64::from(viewport.logical_size().0));
-            desktop.announce_agents_finished();
-            desktop.offer_uploads(false);
-            desktop.follow_notice_choices();
-            desktop.tell_mentions();
-            desktop.serve_activity();
-            let named = desktop.project_governance(self.peer);
-            desktop.follow_search();
-            let holders = desktop.refresh_holders(self.peer.is_some());
-            named || holders
-        });
-        // Desktop commands and peer changes need an update even when the
-        // harness itself is idle. Let a scheduled poll consume them first:
-        // eagerly relayouting here and then polling animated widgets runs
-        // the same frame pipeline twice before one presentation.
-        let mut host_changed = held;
-        if let Some(desktop) = self.desktop.as_ref().filter(|d| d.shared.take_wake()) {
-            let wakers = desktop.shared.take_wakers();
-            if let Some(reasons) = &mut reasons {
-                if wakers.is_empty() {
-                    reasons.push("desktop wake".into());
-                }
-                reasons.extend(wakers.iter().map(|app| format!("wake: {app}")));
-            }
-            if desktop.shared.take_arrived() {
-                desktop.shared.retry_waiting(&desktop.handle);
-            }
-            host_changed = true;
-        }
+        let mut host_changed =
+            self.follow_desktop(f64::from(viewport.logical_size().0), reasons.as_mut());
         // The person's settings or their browser's preferences changed
         // what the theme is: every window draws in the new one.
         if self.theme_seen != crate::page_theme::generation() {
@@ -3465,6 +3422,7 @@ mod carry_out;
 use app_window::AppPage;
 use app_window::present_component;
 mod desktop_exports;
+mod desktop_frame;
 mod dom;
 mod prepare;
 pub(crate) use dom::draw_dom_frame;

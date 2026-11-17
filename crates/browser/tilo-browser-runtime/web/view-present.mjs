@@ -32,6 +32,9 @@ const ARIA_ROLES = {
   ProgressBar: 'progressbar', Tooltip: 'tooltip', Image: 'img', Group: 'group', Dialog: 'dialog',
 };
 
+// The roles that are on or off.
+const CHECKABLE_ROLES = new Set(['Checkbox', 'Switch', 'RadioButton']);
+
 // The roles whose value is a number on a range.
 const RANGED_ROLES = new Set(['Slider', 'Separator', 'ProgressBar', 'SpinButton']);
 
@@ -58,6 +61,10 @@ function byteToUnit(text, byte) {
 function unitToByte(text, unit) {
   return new TextEncoder().encode(text.slice(0, unit)).length;
 }
+
+// How much wider than the layout measured them the page may set words before
+// it cuts them short: its glyph metrics differ from the layout's by less.
+const SLACK = 4;
 
 const rgba = color => color ? `rgba(${color[0]},${color[1]},${color[2]},${(color[3] / 255).toFixed(3)})` : '';
 
@@ -202,6 +209,9 @@ export function createViewPresenter(layer, {onScroll, picture, semantic, onFrame
     if (inFlow) {
       // A flex item of its parent, at the size the shared layout gave it.
       css += `position:relative;flex:none;width:${w}px;height:${h}px;`;
+      // The room it keeps from its siblings, as its layout node keeps it.
+      const margin = /(?:^|;)margin:([^;]*)/.exec(node.layout ?? '')?.[1];
+      if (margin) css += `margin:${margin};`;
     } else {
       const ox = outer ? outer.rect[0] : 0;
       const oy = outer ? outer.rect[1] - (scrolledBy ?? 0) : 0;
@@ -220,10 +230,24 @@ export function createViewPresenter(layer, {onScroll, picture, semantic, onFrame
       if (edge) css += `box-shadow:inset 0 0 0 1px ${rgba(edge)};`;
       if (radius) css += `border-radius:${radius}px;`;
     }
-    if (node.own?.kind === 'text') css += element.localName === 'li' ? textStyle(node.own) : textCss(node.own);
-    else if (node.own?.kind === 'face') css += faceCss(node.own);
+    if (node.own?.kind === 'text') {
+      css += element.localName === 'li' ? textStyle(node.own) : textCss(node.own, w, h);
+      // One line of words in a slot taller than the line (a count on its ground, a table's
+      // cell, a part a widget lays out itself) stands in the slot's middle, as painted.
+      const line = node.own.size * node.own.line_height;
+      if ((node.ground || node.path.includes('#')) && !node.children?.length && h > line + 0.5 && h < 2 * line) css += `line-height:${h}px;`;
+    }
+    else if (node.own?.kind === 'face') {
+      css += faceCss(node.own);
+      // A face that hugs its words grows a little rather than cutting them short.
+      if (!node.own.spread && node.own.label) css += slack(w, SLACK * 2);
+    }
     else if (node.own?.kind === 'control') css += 'display:flex;align-items:center;flex-wrap:wrap;gap:8px;min-width:0;';
-    else if (node.own?.kind === 'field') css += textStyle(node.own.look) + 'margin:0;padding:0;border:0;outline:none;background:transparent;font-family:inherit;';
+    else if (node.own?.kind === 'field') {
+      const [ix, iy] = node.own.inset ?? [0, 0];
+      css += textStyle(node.own.look) + `margin:0;padding:${iy}px ${ix}px;border:0;outline:none;font-family:inherit;resize:none;`;
+      if (!node.ground) css += 'background:transparent;';
+    }
     write(element, 'css', css);
     // What it is, for assistive technology and for the page's own find,
     // selection and focus.
@@ -262,6 +286,11 @@ export function createViewPresenter(layer, {onScroll, picture, semantic, onFrame
     // A control's own element carries its role (a box, a range, a chooser's
     // list): the wrapper around it is no control of its own.
     if (node.own?.kind === 'control') write(element, '@role', null);
+    // A box, a switch or a radio the widget draws itself says
+    // whether it is on, as an <input> of its own would.
+    const checks = role && CHECKABLE_ROLES.has(role.name) && node.own?.kind !== 'control';
+    const checked = semantics?.state?.mixed ? 'mixed' : semantics?.state?.checked;
+    write(element, '@aria-checked', checks && checked !== undefined && checked !== null ? String(checked) : null);
     // What only its own kind of element carries (an <img>'s source, a <progress>'s value).
     const attrs = new Set();
     for (const [name, value] of node.attrs ?? []) {
@@ -328,12 +357,31 @@ export function createViewPresenter(layer, {onScroll, picture, semantic, onFrame
     return css;
   }
 
-  function textCss(look) {
-    const clamp = look.max_lines ? (look.max_lines === 1
-      ? 'white-space:pre;overflow:hidden;text-overflow:ellipsis;'
-      : `display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:${look.max_lines};overflow:hidden;white-space:pre-wrap;`)
-      : 'white-space:pre-wrap;';
-    return textStyle(look) + clamp + 'margin:0;overflow-wrap:anywhere;';
+  // Words in the box the shared layout measured for them. The page's
+  // glyphs come out a hair wider or narrower than the layout's, so the box
+  // never decides a line break on its own: words the layout set on one line
+  // stay on one (spilling a pixel rather than wrapping a word in two), and
+  // words it cut short get a few pixels of slack before the ellipsis.
+  function textCss(look, w, h) {
+    const line = look.size * look.line_height;
+    const lines = look.max_lines ?? Math.max(1, Math.floor((h + 0.5) / line));
+    let fit;
+    if (lines === 1) {
+      fit = look.max_lines === 1
+        ? `white-space:pre;overflow:hidden;text-overflow:ellipsis;${slack(w)}`
+        : 'white-space:pre;';
+    } else {
+      fit = look.max_lines
+        ? `display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:${look.max_lines};overflow:hidden;white-space:pre-wrap;overflow-wrap:break-word;`
+        : 'white-space:pre-wrap;overflow-wrap:break-word;';
+    }
+    return textStyle(look) + fit;
+  }
+
+  // A one-line run that may be cut short: as wide as its words up to a few
+  // pixels past the width the layout measured, never narrower.
+  function slack(w, by = SLACK) {
+    return `width:max-content;min-width:${w}px;max-width:${w + by}px;`;
   }
 
   function showText(element, look) {
@@ -819,6 +867,8 @@ export function createViewPresenter(layer, {onScroll, picture, semantic, onFrame
 // document's blocks, the caret, the page's own selection. Colours and sizes
 // come from the theme's variables the runtime publishes on the layer.
 export const VIEW_CSS = `
+/* Every size the composition gives is the layout's, which counts padding in. */
+.tilo-view,.tilo-view *{box-sizing:border-box;}
 .tilo-view{font-family:var(--tilo-faces,"Tilo Sans",system-ui,sans-serif);color:var(--tilo-text,#1d1d1f);--tilo-mono:ui-monospace,"SF Mono",Menlo,monospace;font-synthesis:none;-webkit-font-smoothing:antialiased;}
 .tilo-view button{all:unset;box-sizing:border-box;display:block;cursor:default;}
 .tilo-link{color:var(--tilo-accent,#2f6fed);text-decoration:underline;text-underline-offset:2px;cursor:pointer;}
@@ -843,9 +893,12 @@ export const VIEW_CSS = `
 .tilo-view li[aria-selected=true]{background:var(--tilo-raised);}
 .tilo-view li:hover{background:color-mix(in srgb,var(--tilo-raised) 70%,transparent);}
 .tilo-words{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:pre;}
-.tilo-view h1,.tilo-view h2,.tilo-view h3,.tilo-view h4,.tilo-view p,.tilo-view blockquote,.tilo-view pre{margin:0;}
+.tilo-view h1,.tilo-view h2,.tilo-view h3,.tilo-view h4,.tilo-view h5,.tilo-view h6,.tilo-view p,.tilo-view blockquote,.tilo-view pre{margin:0;}
 .tilo-view hr{border:0;border-top:1px solid var(--tilo-border,rgba(127,127,127,.25));margin:0;align-self:stretch;}
 .tilo-view dl,.tilo-view dd{margin:0;}
+/* A table's head stands over a rule, and its chosen row on the selection's tint, as painted. */
+.tilo-view thead{box-shadow:inset 0 -1px 0 var(--tilo-border,rgba(127,127,127,.25));}
+.tilo-view tr[aria-selected=true]{background:color-mix(in srgb,var(--tilo-accent,#2f6fed) 10%,transparent);border-radius:var(--tilo-radius,8px);}
 .tilo-view progress{accent-color:var(--tilo-accent,#2f6fed);}
 .tilo-view [data-widget=Spinner]{box-sizing:border-box;border-radius:50%;border:2px solid color-mix(in srgb,var(--tilo-text-dim,#6e6e73) 28%,transparent);border-top-color:var(--tilo-text-dim,#6e6e73);animation:tilo-spin .8s linear infinite;}
 .tilo-view [data-widget=Skeleton]{background:var(--tilo-raised,rgba(127,127,127,.1));border-radius:6px;overflow:hidden;position:relative;}
