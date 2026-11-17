@@ -517,17 +517,48 @@ pub enum ResultSpec {
 
 read_through_json_value!(ResultSpec);
 
+/// The fields a write adds beside the answer it declared: the ids it minted
+/// (`minted`) and each item it made, with the item's id and the address it is
+/// published under (`made`). What a create answers its caller, whether or not
+/// its action declares a result.
+pub const MADE_FIELDS: [&str; 2] = ["made", "minted"];
+
+impl crate::ActionOutput {
+    /// The answer the action declared, without what a write adds beside it
+    /// ([`MADE_FIELDS`]): `None` when it declared nothing.
+    #[must_use]
+    pub fn declared(&self) -> Option<serde_json::Value> {
+        let value = self.value.as_ref()?;
+        let Some(fields) = value.as_object() else {
+            return Some(value.clone());
+        };
+        let kept: serde_json::Map<String, serde_json::Value> = fields
+            .iter()
+            .filter(|(key, _)| !MADE_FIELDS.contains(&key.as_str()))
+            .map(|(key, value)| (key.clone(), value.clone()))
+            .collect();
+        if fields.is_empty() {
+            // An empty answer is the empty result it always was.
+            return Some(serde_json::Value::Object(kept));
+        }
+        // An answer holding only what the write made declared nothing.
+        (!kept.is_empty()).then_some(serde_json::Value::Object(kept))
+    }
+}
+
 impl ResultSpec {
     /// Check that a completed action returned the shape it advertised.
     pub fn validate(&self, output: &crate::ActionOutput) -> Result<(), String> {
+        // What the write made rides beside whatever it declared, so an action
+        // with no result may still answer what it created.
+        let declared = output.declared();
         match self {
-            // An action with no result may still name what it created.
-            Self::None | Self::Job if output.value.is_none() => Ok(()),
+            Self::None | Self::Job if declared.is_none() => Ok(()),
             Self::None => Err("action declared no result but returned one".into()),
             // An absent value is `null`: a result its schema lets be null may be
             // left out by an executor with nothing to report.
-            Self::Json { schema } => match output.value.as_ref() {
-                Some(value) => crate::params::validate_schema(value, schema),
+            Self::Json { schema } => match declared {
+                Some(value) => crate::params::validate_schema(&value, schema),
                 None => crate::params::validate_schema(&serde_json::Value::Null, schema)
                     .map_err(|_| "action did not return its declared JSON result".to_string()),
             },
@@ -1223,6 +1254,41 @@ mod tests {
                     resources: Vec::new(),
                 })
                 .is_err()
+        );
+    }
+
+    /// A write answers what it made beside whatever it declared, so an
+    /// action that declares no result may still say which items it created —
+    /// and one that declares a result is judged on that result alone.
+    #[test]
+    fn what_a_write_made_rides_beside_the_result_it_declared() {
+        let made = crate::ActionOutput {
+            value: Some(serde_json::json!({
+                "made": [{"id": "a1", "address": "notes.page/pages/a1"}],
+                "minted": ["a1"],
+            })),
+            resources: vec!["notes.page/pages/a1".into()],
+        };
+        assert!(ResultSpec::None.validate(&made).is_ok());
+        assert!(ResultSpec::Job.validate(&made).is_ok());
+        let schema = serde_json::json!({"type": "object", "required": ["count"],
+            "properties": {"count": {"type": "integer"}}});
+        let with_count = crate::ActionOutput {
+            value: Some(serde_json::json!({
+                "count": 2,
+                "made": [{"id": "a1", "address": "notes.page/pages/a1"}],
+            })),
+            resources: Vec::new(),
+        };
+        assert!(ResultSpec::Json { schema }.validate(&with_count).is_ok());
+        assert!(
+            ResultSpec::None
+                .validate(&crate::ActionOutput {
+                    value: Some(serde_json::json!({"count": 2})),
+                    resources: Vec::new(),
+                })
+                .is_err(),
+            "a result an action did not declare is still refused"
         );
     }
 

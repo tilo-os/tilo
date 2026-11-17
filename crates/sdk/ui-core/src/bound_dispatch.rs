@@ -2439,12 +2439,21 @@ pub(crate) fn control_draft_identity(
 /// that its change stored as keys of a collection, in minting order. Read
 /// from the action changes since `before`, never a diff of the whole
 /// document, so an edit costs the same however large the record is.
+/// The item resources the action in `envelope` created, each with its id and
+/// the address it is published under, in minting order: what a write answers
+/// its caller, so nothing reads an id out of a rendered address. `minted`
+/// are the ids the action logged as it applied — every member of a group's
+/// together ([`tilo_resource::take_minted`]) — read from the action changes
+/// since `before`, never a diff of the whole document, so an edit costs the
+/// same however large the record is. An action applied outside this
+/// process's thread logs nothing, and its ids are read from its seed.
 pub fn minted_items(
     doc: &mut AutoCommit,
     kind: &str,
+    minted: &[String],
     envelope: &tilo_actions::ActionEnvelope,
     before: &[ChangeHash],
-) -> Vec<String> {
+) -> Vec<(String, String)> {
     let mut stored = std::collections::HashMap::new();
     for change in doc.get_changes(before) {
         for op in change.decode().operations {
@@ -2456,22 +2465,70 @@ pub fn minted_items(
     if stored.is_empty() {
         return Vec::new();
     }
-    tilo_resource::minted_keys(envelope)
-        .map_while(|keys| {
-            let (id, obj) = keys
-                .into_iter()
-                .find_map(|id| stored.get(id.as_str()).map(|obj| (id, obj.to_string())))?;
-            let obj = doc.import_obj(&obj).ok()?;
+    let ids: Vec<String> = if minted.is_empty() {
+        let mut found = Vec::new();
+        for keys in tilo_resource::minted_keys(envelope) {
+            let Some(id) = keys.into_iter().find(|id| stored.contains_key(id.as_str())) else {
+                break;
+            };
+            found.push(id);
+        }
+        found
+    } else {
+        minted.to_vec()
+    };
+    ids.into_iter()
+        .filter_map(|id| {
+            let obj = doc.import_obj(&stored.get(id.as_str())?.to_string()).ok()?;
             automerge::ReadDoc::get(&*doc, &obj, id.as_str())
                 .ok()
                 .flatten()?;
-            let field = automerge::ReadDoc::parents(&*doc, &obj).ok()?.next()?.prop;
-            match field {
-                automerge::Prop::Map(field) => Some(format!("{kind}/{field}/{id}")),
+            let parent = automerge::ReadDoc::parents(&*doc, &obj).ok()?.next()?;
+            // Only the record's own collections publish items: a field
+            // inside an item (an issue's body blocks) is part of the item the
+            // write made, not a second thing it made.
+            if parent.obj != automerge::ROOT {
+                return None;
+            }
+            match parent.prop {
+                automerge::Prop::Map(field) => Some((id.clone(), format!("{kind}/{field}/{id}"))),
                 automerge::Prop::Seq(_) => None,
             }
         })
         .collect()
+}
+
+/// `value` beside what the write made: the ids it minted, and per item its
+/// id and the address it is published under (`made`). A create thus answers
+/// what it made on every surface, and a bulk of them answers each.
+fn with_made(
+    value: Option<serde_json::Value>,
+    minted: &[String],
+    items: &[(String, String)],
+) -> Option<serde_json::Value> {
+    if minted.is_empty() && items.is_empty() {
+        return value;
+    }
+    let made: Vec<serde_json::Value> = items
+        .iter()
+        .map(|(id, address)| serde_json::json!({"id": id, "address": address}))
+        .collect();
+    let mut fields = match value {
+        Some(serde_json::Value::Object(fields)) => fields,
+        None | Some(serde_json::Value::Null) => serde_json::Map::new(),
+        // An answer that is not an object (an editor's summary naming the
+        // blocks it made) already says what it made; it is kept as it is.
+        Some(other) => return Some(other),
+    };
+    if !minted.is_empty() {
+        fields
+            .entry("minted")
+            .or_insert_with(|| serde_json::json!(minted));
+    }
+    if !made.is_empty() {
+        fields.insert("made".into(), serde_json::Value::Array(made));
+    }
+    Some(serde_json::Value::Object(fields))
 }
 
 /// Canonical Document executor, retaining its actual envelope for owned bookkeeping.
@@ -2799,12 +2856,18 @@ pub(crate) fn execute_resource_operation(
             if indexed {
                 doc.reset_diff_cursor();
             }
-            let resources = match (applied.as_ref(), before.as_ref()) {
+            // What the action minted, taken before it answers: the answer
+            // carries it beside what the action itself said, and a group's
+            // members' ids are here together.
+            let minted = tilo_resource::take_minted();
+            let made = match (applied.as_ref(), before.as_ref()) {
                 (Some(envelope), Some(before)) => {
-                    minted_items(doc, &resource.kind, envelope, before)
+                    minted_items(doc, &resource.kind, &minted, envelope, before)
                 }
                 _ => Vec::new(),
             };
+            let value = with_made(value, &minted, &made);
+            let resources = made.into_iter().map(|(_, address)| address).collect();
             let output = tilo_actions::ActionOutput { value, resources };
             if !matches!(
                 spec.contract.execution,

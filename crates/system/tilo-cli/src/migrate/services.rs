@@ -815,21 +815,18 @@ fn already_imported(error: &anyhow::Error) -> bool {
 /// The id Tasks answered for the issue it made, as the record its answer names
 /// (`tasks.issues/issues/<id>`) or the id in its value.
 fn created_id(answer: &super::workspace::Answer) -> Option<String> {
-    for resource in answer.resources() {
-        if let Some((_, after)) = resource
-            .split_once("/issues/")
-            .or_else(|| resource.split_once("/areas/"))
-        {
-            let id: String = after
-                .chars()
-                .take_while(|c| c.is_ascii_alphanumeric() || *c == '-')
-                .collect();
-            if !id.is_empty() {
-                return Some(id);
-            }
-        }
-    }
     let value = answer.result()?;
+    // What the write made, per item: its id and the address it is published
+    // under. Nothing reads an id out of what the answer says it touched.
+    if let Some(id) = value
+        .get("made")
+        .and_then(Value::as_array)
+        .and_then(|made| made.first())
+        .and_then(|item| item.get("id"))
+        .and_then(Value::as_str)
+    {
+        return Some(id.to_owned());
+    }
     for key in ["id", "issue"] {
         if let Some(id) = value.get(key).and_then(Value::as_str) {
             return Some(id.to_owned());
@@ -878,28 +875,21 @@ mod tests {
     #[test]
     fn tasks_answers_name_the_issue_they_made() {
         let id = "0f0e0d0c-0b0a-4908-8706-050403020100";
-        let answered = |value: Value| Answer::of(Some(value), Vec::new());
+        let answered = |value: Value| Answer::of(Some(value));
+        // The typed answer every write gives: per item, its id and the
+        // address it is published under.
+        assert_eq!(
+            created_id(&answered(json!({
+                "made": [{"id": id, "address": format!("tasks.issues/issues/{id}")}]
+            })))
+            .as_deref(),
+            Some(id)
+        );
         assert_eq!(
             created_id(&answered(json!({"id": id}))).as_deref(),
             Some(id)
         );
-        assert_eq!(
-            created_id(&Answer::of(
-                None,
-                vec![json!(format!("tasks.issues/issues/{id}"))]
-            ))
-            .as_deref(),
-            Some(id)
-        );
-        assert_eq!(
-            created_id(&Answer::of(
-                None,
-                vec![json!("tasks.issues/issues/f4055b9d9830a78c21b8")]
-            ))
-            .as_deref(),
-            Some("f4055b9d9830a78c21b8")
-        );
-        assert_eq!(created_id(&Answer::of(None, Vec::new())), None);
+        assert_eq!(created_id(&Answer::of(None)), None);
     }
 
     #[test]
