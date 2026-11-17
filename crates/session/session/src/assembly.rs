@@ -515,6 +515,9 @@ pub struct Session {
     /// to it, and a session that ends without doing so comes back locked.
     #[cfg(target_os = "linux")]
     pub(crate) recovery: Option<crate::recovery::Recovery>,
+    /// How the session ends ([`crate::Options::teardown`]).
+    #[cfg(target_os = "linux")]
+    pub(crate) teardown: Box<dyn Fn() -> tilo_app_launch::Teardown>,
     /// The login's record that this desktop is usable, published once every
     /// output draws and the windows are being restored; it is removed with
     /// the session that wrote it.

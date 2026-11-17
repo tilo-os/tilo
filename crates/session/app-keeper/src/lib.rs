@@ -138,6 +138,43 @@ impl Options {
             desktop_gone: DESKTOP_GONE,
         }
     }
+
+    /// The options a command line names, past the program's own name:
+    /// `--dir <private dir> --launch <name> [--app-id-prefix <prefix>] -- <command...>`.
+    ///
+    /// # Errors
+    /// An argument the keeper does not take, a missing directory or launch, or no command.
+    pub fn from_args(args: impl IntoIterator<Item = OsString>) -> Result<Self, String> {
+        let mut args = args.into_iter();
+        let mut dir = None;
+        let mut launch = None;
+        let mut prefix = None;
+        let mut command: Vec<OsString> = Vec::new();
+        while let Some(arg) = args.next() {
+            match arg.to_str() {
+                Some("--dir") => dir = args.next(),
+                Some("--launch") => launch = args.next().and_then(|value| value.into_string().ok()),
+                Some("--app-id-prefix") => {
+                    prefix = args.next().and_then(|value| value.into_string().ok());
+                }
+                Some("--") => command.extend(args.by_ref()),
+                _ => return Err(format!("unexpected argument {}", arg.to_string_lossy())),
+            }
+        }
+        let (Some(dir), Some(launch)) = (dir, launch) else {
+            return Err(
+                "usage: tilo-app-keeper --dir <private dir> --launch <name> [--app-id-prefix <prefix>] -- <command...>"
+                    .to_owned(),
+            );
+        };
+        if command.is_empty() {
+            return Err("no command after --".to_owned());
+        }
+        let mut options = Self::new(dir, launch);
+        options.app_id_prefix = prefix;
+        options.command = command;
+        Ok(options)
+    }
 }
 
 /// One keeper: its loop and everything it holds.

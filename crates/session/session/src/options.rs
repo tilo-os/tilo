@@ -96,6 +96,11 @@ pub struct Options {
     /// session left in force comes back with it, and the state this one ends in is published for
     /// the next.
     pub recovery: Option<crate::recovery::Recovery>,
+    /// How the session ends, asked once as it does: what its apps are left as. Every session but
+    /// the machine's own desktop ends its apps; that one asks whether its wrapper restarts it in
+    /// place ([`crate::restart::teardown`]).
+    #[cfg(target_os = "linux")]
+    pub teardown: Box<dyn Fn() -> tilo_app_launch::Teardown>,
     /// What the services were handed to wake the session's loop when something lands: the session
     /// binds it to its loop once started.
     pub wake: tilo_service::LoopWake,
@@ -404,6 +409,8 @@ impl Default for Options {
             earlier: Vec::new(),
             verifier: std::sync::Arc::new(unlock::Unavailable),
             recovery: None,
+            #[cfg(target_os = "linux")]
+            teardown: Box::new(|| tilo_app_launch::Teardown::Logout),
             wake: tilo_service::LoopWake::default(),
             captures: None,
             projector: None,

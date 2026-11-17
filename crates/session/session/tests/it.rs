@@ -129,6 +129,8 @@ mod invitations;
 mod invite;
 #[path = "join.rs"]
 mod join;
+#[path = "kept_apps.rs"]
+mod kept_apps;
 #[path = "launch.rs"]
 mod launch;
 #[path = "layout.rs"]

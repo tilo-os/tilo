@@ -755,6 +755,8 @@ fn start(
                 return ExitCode::FAILURE;
             }
         }
+        // Only the machine's own desktop is what the wrapper restarts in place.
+        options.teardown = Box::new(tilo_session::restart::teardown);
     }
     // The wrapper announces an in-place restart in the login's private channel before it stops
     // the compositor; the login's own desktop reads the marker once, so it knows it continues the

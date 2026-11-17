@@ -39,8 +39,8 @@ const RENAMED: &str = "Sketches";
 
 /// A device in a test's home: where it keeps its state, and the salt it numbers what it
 /// makes in.
-struct Device {
-    state: PathBuf,
+pub(crate) struct Device {
+    pub(crate) state: PathBuf,
     salt: u16,
 }
 
@@ -67,7 +67,10 @@ impl Device {
     /// wait here covers it: a test that reads the view starts the device first
     /// ([`Self::in_home`]) and saves the layout in the session after, where the keys are held
     /// from the start.
-    fn with_layout(home: &mut tilo_test_env::TestHome, tree: &Layout) -> (Self, Vec<WorkspaceId>) {
+    pub(crate) fn with_layout(
+        home: &mut tilo_test_env::TestHome,
+        tree: &Layout,
+    ) -> (Self, Vec<WorkspaceId>) {
         let state = crate::common::device_in(home);
         let (salt, workspace_ids) = save_layout(&state, tree);
         (Self { state, salt }, workspace_ids)
@@ -287,13 +290,13 @@ fn apps_at(home: &tilo_test_env::TestHome, launcher: Option<PathBuf>) -> Rc<Apps
 }
 
 /// Run frames until `done` holds.
-fn until(session: &mut Session, what: &str, mut done: impl FnMut(&Session) -> bool) {
+pub(crate) fn until(session: &mut Session, what: &str, mut done: impl FnMut(&Session) -> bool) {
     crate::common::wait_for(session, what, |session| done(session).then_some(()));
 }
 
 /// Every tab of the layout, with the group it sits in: what a second window or a second tab of a
 /// restored one would change.
-fn tabs(session: &Session) -> Vec<(TabId, GroupId)> {
+pub(crate) fn tabs(session: &Session) -> Vec<(TabId, GroupId)> {
     session.handle().read(|tree| {
         tree.workspaces
             .iter()
@@ -305,7 +308,7 @@ fn tabs(session: &Session) -> Vec<(TabId, GroupId)> {
 }
 
 /// What the tab `id` holds.
-fn tile_of(session: &Session, id: u64) -> Option<TileContent> {
+pub(crate) fn tile_of(session: &Session, id: u64) -> Option<TileContent> {
     session.handle().read(|tree| {
         tree.workspaces
             .iter()

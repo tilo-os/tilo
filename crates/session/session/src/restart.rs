@@ -34,6 +34,17 @@ pub fn restarting() -> bool {
     marker().is_some_and(|path| trusted(&path).is_ok())
 }
 
+/// How the machine's own desktop ends now: an in-place restart when the wrapper asked for one,
+/// else the login ends ([`crate::Options::teardown`]).
+#[must_use]
+pub fn teardown() -> tilo_app_launch::Teardown {
+    if restarting() {
+        tilo_app_launch::Teardown::InPlaceRestart
+    } else {
+        tilo_app_launch::Teardown::Logout
+    }
+}
+
 /// The login's restart marker, from the channel the wrapper names in the environment. `None` when
 /// no wrapper started this process, or the channel is not this person's private directory.
 fn marker() -> Option<PathBuf> {

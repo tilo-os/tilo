@@ -1822,6 +1822,10 @@ impl Session {
             lock_view: lock_view.map(crate::lock_screen::LockView::new),
             lock_shown: crate::lock_screen::LockShown::App,
             recovery: options.recovery.take(),
+            teardown: std::mem::replace(
+                &mut options.teardown,
+                Box::new(|| tilo_app_launch::Teardown::Logout),
+            ),
             ready,
             update_finish: crate::update_finish::Finish::for_session(options.desktop.as_deref()),
             captures: options.captures,
@@ -2886,10 +2890,10 @@ impl Session {
 
 impl Drop for Session {
     fn drop(&mut self) {
-        // One SIGTERM is both a logout and an in-place restart; the wrapper's marker in the
-        // login's private channel is what tells them apart, and the flight record keeps it. Only
-        // the machine's own desktop is what the wrapper restarts.
-        let restarting = self.recovery.is_some() && crate::restart::restarting();
+        // One SIGTERM is both a logout and an in-place restart: what the session was started with
+        // tells them apart, and the flight record keeps it.
+        let teardown = (self.teardown)();
+        let restarting = teardown == tilo_app_launch::Teardown::InPlaceRestart;
         tracing::info!(
             restarting,
             "{}",
@@ -2912,11 +2916,7 @@ impl Drop for Session {
         // in-place restart leaves the apps kept behind a keeper running, for
         // the run that follows to take back.
         if let Some(launch) = &self.shared.launch {
-            launch.end_running(if restarting {
-                tilo_app_launch::Teardown::InPlaceRestart
-            } else {
-                tilo_app_launch::Teardown::Logout
-            });
+            launch.end_running(teardown);
         }
     }
 }

@@ -511,7 +511,7 @@ impl Spawner {
         };
         let mut adopted = Vec::new();
         for dir in crate::kept::dirs(&keeping.root) {
-            match crate::kept::greet(&dir) {
+            match crate::kept::greet(&dir, crate::kept::ANSWER) {
                 Ok(greeted) => {
                     if let Some(taken) = self.adopt_one(&dir, greeted) {
                         adopted.push(taken);
@@ -695,7 +695,7 @@ fn watch_started(kept: Arc<crate::kept::Kept>, launcher: u32, desktop: crate::ke
             if !crate::kept::wait_for_control(&kept.dir, &pidfd) {
                 return;
             }
-            match crate::kept::greet(&kept.dir) {
+            match crate::kept::greet(&kept.dir, crate::kept::ANSWER) {
                 Ok(greeted) => {
                     if let Err(error) = kept.greeted(&greeted.control, greeted.keeper) {
                         tracing::warn!(%error, "a kept app's keeper cannot be written to");
@@ -785,12 +785,12 @@ impl App {
     }
 
     /// The keeper of a launch `teardown` leaves running: only an in-place restart, and only a launch
-    /// whose keeper answered in this run. Everything else ends.
+    /// whose keeper answered in this run and still answers. Everything else ends.
     #[cfg(target_os = "linux")]
     fn stays_for(&self, teardown: Teardown) -> Option<&Arc<crate::kept::Kept>> {
         match teardown {
             Teardown::Logout => None,
-            Teardown::InPlaceRestart => self.kept.as_ref().filter(|kept| kept.answered()),
+            Teardown::InPlaceRestart => self.kept.as_ref().filter(|kept| kept.answers()),
         }
     }
 

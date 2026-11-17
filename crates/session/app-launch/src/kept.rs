@@ -81,6 +81,18 @@ impl KeptLaunch {
     }
 }
 
+#[cfg(any(test, feature = "test-support"))]
+pub mod testing;
+
+/// How long a keeper may take to answer a session that greets it: one in the middle of a restart
+/// answers in milliseconds.
+pub(crate) const ANSWER: Duration = Duration::from_secs(5);
+
+/// How long a keeper may take to answer when the desktop ends for an in-place restart: one that
+/// does not answer by then is not trusted to hold its app until the next run, so the app ends with
+/// this one. Short, as the person waits for the desktop to come back.
+const ANSWER_AT_RESTART: Duration = Duration::from_millis(500);
+
 /// Where the keepers of the person's session keep their directories.
 #[must_use]
 pub fn root() -> PathBuf {
@@ -190,9 +202,13 @@ impl Kept {
         })
     }
 
-    /// Whether this run may leave the launch running through an in-place restart.
-    pub(crate) fn answered(&self) -> bool {
-        self.described.load(Ordering::Acquire) && self.control.lock_recover().is_some()
+    /// Whether this run may leave the launch running through an in-place restart: its keeper
+    /// answered in this run, and answers now. A keeper that stopped answering since (stopped,
+    /// hung) would hold the app with nobody to take it back, so it ends instead.
+    pub(crate) fn answers(&self) -> bool {
+        self.described.load(Ordering::Acquire)
+            && self.control.lock_recover().is_some()
+            && greet(&self.dir, ANSWER_AT_RESTART).is_ok()
     }
 
     /// The keeper's process, once connected (0 before).
@@ -310,8 +326,9 @@ pub(crate) struct Greeted {
     pub(crate) inbox: Inbox,
 }
 
-/// Connect to the keeper in `dir`, greet it, and read what it holds.
-pub(crate) fn greet(dir: &Path) -> Result<Greeted, Refused> {
+/// Connect to the keeper in `dir`, greet it, and read what it holds, waiting at most `answer`
+/// for each of its replies.
+pub(crate) fn greet(dir: &Path, answer: Duration) -> Result<Greeted, Refused> {
     let control = match UnixStream::connect(dir.join("control")) {
         Ok(control) => control,
         Err(error)
@@ -324,9 +341,7 @@ pub(crate) fn greet(dir: &Path) -> Result<Greeted, Refused> {
         }
         Err(error) => return Err(error.into()),
     };
-    // Never waits on a keeper that stopped answering for long: one in the middle of a restart
-    // answers in milliseconds.
-    control.set_read_timeout(Some(Duration::from_secs(5)))?;
+    control.set_read_timeout(Some(answer))?;
     let keeper = peer_pid(&control)?;
     send(
         &control,
@@ -625,33 +640,10 @@ mod tests {
     use crate::plan::{Kind, Planned};
     use crate::spawner::{Event, Spawner, Teardown};
 
-    /// What makes this test binary a keeper: its arguments, one per line.
-    const KEEPER_ARGS: &str = "TILO_TEST_KEEPER_ARGS";
-
     /// Not a test: the keeper process the others start, as `tilo-app-keeper` would run.
     #[test]
     fn keeper_process() {
-        let Ok(args) = std::env::var(KEEPER_ARGS) else {
-            return;
-        };
-        let args: Vec<&str> = args.lines().collect();
-        let value = |flag: &str| {
-            args.iter()
-                .position(|arg| *arg == flag)
-                .and_then(|at| args.get(at + 1))
-                .map(|value| (*value).to_owned())
-                .unwrap_or_default()
-        };
-        let mut options = tilo_app_keeper::Options::new(value("--dir"), value("--launch"));
-        options.command = args
-            .iter()
-            .skip_while(|arg| **arg != "--")
-            .skip(1)
-            .map(Into::into)
-            .collect();
-        options.grace = Duration::from_secs(5);
-        let ran = tilo_app_keeper::Keeper::new(options).and_then(tilo_app_keeper::Keeper::run);
-        ran.expect("the keeper ran");
+        testing::serve_keeper().expect("the keeper ran");
     }
 
     /// A desktop on a thread of its own, for as long as the value lives.
@@ -725,25 +717,13 @@ mod tests {
     impl Rig {
         fn new() -> Self {
             let dir = tempfile::tempdir().expect("a directory");
-            let keeper = dir.path().join("keeper");
-            std::fs::write(
-                &keeper,
-                format!(
-                    "#!/bin/sh\n{KEEPER_ARGS}=\"$(printf '%s\\n' \"$@\")\" exec '{}' --exact kept::tests::keeper_process --nocapture\n",
-                    std::env::current_exe().expect("this test").display()
-                ),
-            )
-            .expect("the keeper");
-            let launcher = dir.path().join("launcher");
-            std::fs::write(
-                &launcher,
-                "#!/bin/sh\nwhile [ $# -gt 0 ]; do case \"$1\" in --keeper) k=$2; shift;; --keep-in) d=$2; shift;; --keep-as) l=$2; shift;; esac; shift; done\nexec \"$k\" --dir \"$d\" --launch \"$l\" -- /bin/sh -c 'exec sleep 1000'\n",
+            testing::keeper_program(&dir.path().join("keeper"), "kept::tests::keeper_process")
+                .expect("the keeper");
+            testing::launcher_program(
+                &dir.path().join("launcher"),
+                &["/bin/sh".into(), "-c".into(), "exec sleep 1000".into()],
             )
             .expect("the launcher");
-            for script in [&keeper, &launcher] {
-                std::fs::set_permissions(script, std::fs::Permissions::from_mode(0o755))
-                    .expect("runnable");
-            }
             Self { dir }
         }
 
@@ -793,11 +773,9 @@ mod tests {
         fn shown(&self) -> (u32, u64) {
             let started = Instant::now();
             loop {
-                if let Some(dir) = dirs(&self.root()).first()
-                    && let Ok(greeted) = greet(dir)
-                    && greeted.description.attached
-                    && let (Some(pid), Some(at)) =
-                        (greeted.description.app_pid, greeted.description.started_at)
+                if let Some((_, description)) = testing::described(&self.root()).first()
+                    && description.attached
+                    && let (Some(pid), Some(at)) = (description.app_pid, description.started_at)
                 {
                     return (pid, at);
                 }
@@ -929,6 +907,10 @@ mod tests {
             let listener = std::os::unix::net::UnixListener::bind(dir.join("control")).expect("bound");
             let answering = std::thread::spawn(move || {
                 let (stream, _) = listener.accept().expect("the session connects");
+                // Heard before it is answered, as a keeper does: a reply to a hello not yet sent
+                // closes the connection under the session, which reads as a keeper gone.
+                let mut hello = [0u8; 1];
+                (&stream).read_exact(&mut hello).expect("the session says hello");
                 let frame = wire::encode(&FromKeeper::VersionMismatch { version: 0 }).expect("a frame");
                 (&stream).write_all(&frame).expect("answered");
             });
