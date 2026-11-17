@@ -343,6 +343,53 @@ async fn anthropic_is_asked_at_its_messages_api() {
     assert!(sent.to_string().contains("You work for Ada."), "{sent}");
 }
 
+/// A turn in which Anthropic's `model` calls the lookup tool, as its stream
+/// writes it.
+fn anthropic_calling(model: &str) -> Vec<Value> {
+    vec![
+        json!({"type": "message_start", "message": {"id": "msg_1", "type": "message",
+            "role": "assistant", "model": model, "content": [], "stop_reason": null,
+            "stop_sequence": null, "usage": {"input_tokens": 10, "output_tokens": 1}}}),
+        json!({"type": "content_block_start", "index": 0,
+            "content_block": {"type": "tool_use", "id": "toolu_1", "name": "lookup", "input": {}}}),
+        json!({"type": "content_block_delta", "index": 0,
+            "delta": {"type": "input_json_delta", "partial_json": "{\"count\": 2}"}}),
+        json!({"type": "content_block_stop", "index": 0}),
+        json!({"type": "message_delta",
+            "delta": {"stop_reason": "tool_use", "stop_sequence": null},
+            "usage": {"output_tokens": 20}}),
+        json!({"type": "message_stop"}),
+    ]
+}
+
+/// Anthropic's newest models refuse a request that says they must call a
+/// tool, which an agent's loop says on every turn that offers tools. Asked
+/// of one of them the choice is left to the model, so it can work at all;
+/// an earlier model is still told it must call one.
+#[tokio::test]
+async fn a_claude_model_that_refuses_a_forced_tool_call_is_left_to_choose() {
+    for (model, choice) in [("claude-opus-5-5", "auto"), ("claude-sonnet-4-6", "any")] {
+        let served = Responder::start(vec![anthropic_stream(&anthropic_calling(model))]);
+        let (_dir, relay) = linked(
+            ("Anthropic", ProviderProtocol::Anthropic),
+            &served.url(),
+            model,
+        )
+        .await;
+        let mut request = asking("Look it up", vec![lookup()]);
+        request.tool_choice = ToolChoice::Required;
+        let answer = relay
+            .workspaces()
+            .person_model(ADA, Interaction::Task)
+            .answer(&request, soon(), &mut |_| {})
+            .await
+            .unwrap();
+        assert_eq!(answer.response.tool_calls().unwrap().len(), 1, "{model}");
+        let sent = body_of(&served.next_request());
+        assert_eq!(sent["tool_choice"]["type"], choice, "{model}: {sent}");
+    }
+}
+
 /// Google's Gemini is asked through its OpenAI-compatible endpoint, and the
 /// signature it puts on a tool call goes back with that call on the next
 /// turn, without which it refuses the turn.

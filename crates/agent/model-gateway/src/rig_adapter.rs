@@ -772,6 +772,15 @@ async fn execute(
         })
         .collect::<Result<_, ProviderFailure>>()?;
     let budget = transport.budget;
+    if transport.profile.protocol == ProviderProtocol::Anthropic
+        && matches!(request.tool_choice, Some(message::ToolChoice::Required))
+        && refuses_forced_tools(&transport.model)
+    {
+        // Told it must call a tool, such a model answers with an error: it
+        // is left to choose, and a turn that calls none is its caller's to
+        // ask again, as it is for every model.
+        request.tool_choice = Some(message::ToolChoice::Auto);
+    }
     let api_responses = bind_history(&transport, &mut request);
     let result = async {
         let model = transport.model.clone();
@@ -849,6 +858,21 @@ async fn execute(
         Ok(Ok(response)) => Ok(response),
         other => Err(execution_failure(&other, &transport)),
     }
+}
+
+/// Whether Anthropic's model `id` refuses a request that forces a tool call
+/// (a tool choice of `any`, or of one tool by name): its newest models do,
+/// and take `auto` alone.
+fn refuses_forced_tools(id: &str) -> bool {
+    let id = id.to_ascii_lowercase();
+    [
+        "claude-fable-5-1",
+        "claude-mythos-5-1",
+        "claude-opus-5-5",
+        "claude-sonnet-5-5",
+    ]
+    .iter()
+    .any(|family| id.contains(family))
 }
 
 fn execution_failure(
