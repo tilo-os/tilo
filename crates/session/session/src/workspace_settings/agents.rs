@@ -241,7 +241,7 @@ impl Agents {
         let manage = may.manage;
         let config = agent_provider_config::ProviderConfig::load();
         let agents: Vec<sheet::Agent> = state
-            .active()
+            .made_by_people()
             .map(|agent| {
                 let mine = agent.keeper == me.id();
                 sheet::Agent {

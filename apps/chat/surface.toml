@@ -1426,6 +1426,21 @@ fields = [
   { path = "agents.*.state", type = { named = "AgentState" } },
   { path = "agents.*.created_at", type = "int" },
   { path = "agents.*.instruction", type = { option = "text" } },
+  { path = "agents.*.sub", type = { option = { named = "Sub" } }, stored = "record" },
+  { path = "agents.*.sub.started_by", type = "text" },
+  { path = "agents.*.sub.job", type = "text" },
+  { path = "agents.*.sub.role", type = "text" },
+  { path = "agents.*.sub.kind", type = "text" },
+  { path = "agents.*.sub.runs", type = "text" },
+  { path = "agents.*.sub.depth", type = "int" },
+  { path = "agents.*.sub.task", type = { option = "text" } },
+  { path = "agents.*.sub.conversation", type = "text" },
+  { path = "agents.*.sub.stands", type = { named = "Stands" } },
+  { path = "agents.*.sub.since", type = "int" },
+  { path = "agents.*.sub.line", type = "text" },
+  { path = "agents.*.sub.notes", type = { list = { named = "Note" } } },
+  { path = "agents.*.sub_depth", type = { option = "int" } },
+  { path = "agents.*.sub_at_once", type = { option = "int" } },
 ]
 
 [[resources.verbs]]
@@ -1512,6 +1527,53 @@ params = [
   { name = "agent", type = "text", required = true, schema = { type = "string" } },
 ]
 
+[[resources.verbs]]
+id = "start-sub-agent"
+kind = "undoable"
+params = [
+  { name = "name", type = "text", required = true, schema = { type = "string" } },
+  { name = "job", type = "text", required = true, schema = { type = "string" } },
+  { name = "role", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
+  { name = "instruction", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
+  { name = "kind", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
+  { name = "model", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
+  { name = "task", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
+  { name = "id", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
+]
+
+[[resources.verbs]]
+id = "note-sub-agent"
+kind = "undoable"
+params = [
+  { name = "agent", type = "text", required = true, schema = { type = "string" } },
+  { name = "text", type = "text", required = true, schema = { type = "string", minLength = 1, pattern = "\\S" } },
+]
+
+[[resources.verbs]]
+id = "stop-sub-agent"
+kind = "undoable"
+params = [
+  { name = "agent", type = "text", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "sub-agent-stands"
+kind = "undoable"
+params = [
+  { name = "agent", type = "text", required = true, schema = { type = "string" } },
+  { name = "stands", type = { named = "Stands" }, required = true, schema = { oneOf = [{ type = "string", const = "working" }, { type = "string", const = "needs_person" }, { type = "string", const = "done" }, { type = "string", const = "failed" }, { type = "string", const = "stopped" }] } },
+  { name = "line", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
+]
+
+[[resources.verbs]]
+id = "set-sub-agent-limits"
+kind = "undoable"
+params = [
+  { name = "agent", type = "text", required = true, schema = { type = "string" } },
+  { name = "depth", type = { option = "int" }, required = false, schema = { type = ["integer", "null"], maximum = 255, minimum = 0 } },
+  { name = "at_once", type = { option = "int" }, required = false, schema = { type = ["integer", "null"], maximum = 4294967295, minimum = 0 } },
+]
+
 [[resources.types]]
 name = "Agent"
 fields = [
@@ -1528,6 +1590,9 @@ fields = [
   { name = "state", type = { named = "AgentState" } },
   { name = "created_at", type = "int" },
   { name = "instruction", type = { option = "text" } },
+  { name = "sub", type = { option = { named = "Sub" } } },
+  { name = "sub_depth", type = { option = "int" } },
+  { name = "sub_at_once", type = { option = "int" } },
 ]
 
 [[resources.types]]
@@ -1546,9 +1611,58 @@ fields = [
 ]
 
 [[resources.types]]
+name = "NewSubAgent"
+fields = [
+  { name = "name", type = "text" },
+  { name = "job", type = "text" },
+  { name = "role", type = { option = "text" } },
+  { name = "instruction", type = { option = "text" } },
+  { name = "kind", type = { option = "text" } },
+  { name = "model", type = { option = "text" } },
+  { name = "task", type = { option = "text" } },
+  { name = "id", type = { option = "text" } },
+]
+
+[[resources.types]]
+name = "Note"
+fields = [
+  { name = "id", type = "text" },
+  { name = "by", type = "text" },
+  { name = "text", type = "text" },
+  { name = "at", type = "int" },
+]
+
+[[resources.types]]
 name = "Spent"
 fields = [
   { name = "day", type = "text" },
   { name = "cost_micros", type = "int" },
+]
+
+[[resources.types]]
+name = "Stands"
+cases = [
+  { name = "working" },
+  { name = "needs_person" },
+  { name = "done" },
+  { name = "failed" },
+  { name = "stopped" },
+]
+
+[[resources.types]]
+name = "Sub"
+fields = [
+  { name = "started_by", type = "text" },
+  { name = "job", type = "text" },
+  { name = "role", type = "text" },
+  { name = "kind", type = "text" },
+  { name = "runs", type = "text" },
+  { name = "depth", type = "int" },
+  { name = "task", type = { option = "text" } },
+  { name = "conversation", type = "text" },
+  { name = "stands", type = { named = "Stands" } },
+  { name = "since", type = "int" },
+  { name = "line", type = "text" },
+  { name = "notes", type = { list = { named = "Note" } } },
 ]
 

@@ -10873,6 +10873,159 @@
         ],
         "description": ""
       },
+      "chat.agent.start-sub-agent.Arguments": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "job": {
+            "type": "string"
+          },
+          "role": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "instruction": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "kind": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "model": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "task": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "name",
+          "job"
+        ],
+        "description": ""
+      },
+      "chat.agent.note-sub-agent.Arguments": {
+        "type": "object",
+        "properties": {
+          "agent": {
+            "type": "string"
+          },
+          "text": {
+            "minLength": 1,
+            "pattern": "\\S",
+            "type": "string"
+          }
+        },
+        "required": [
+          "agent",
+          "text"
+        ],
+        "description": ""
+      },
+      "chat.agent.stop-sub-agent.Arguments": {
+        "type": "object",
+        "properties": {
+          "agent": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "agent"
+        ],
+        "description": ""
+      },
+      "chat.agent.sub-agent-stands.Arguments": {
+        "type": "object",
+        "properties": {
+          "agent": {
+            "type": "string"
+          },
+          "stands": {
+            "oneOf": [
+              {
+                "const": "working",
+                "type": "string"
+              },
+              {
+                "const": "needs_person",
+                "type": "string"
+              },
+              {
+                "const": "done",
+                "type": "string"
+              },
+              {
+                "const": "failed",
+                "type": "string"
+              },
+              {
+                "const": "stopped",
+                "type": "string"
+              }
+            ]
+          },
+          "line": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "agent",
+          "stands"
+        ],
+        "description": ""
+      },
+      "chat.agent.set-sub-agent-limits.Arguments": {
+        "type": "object",
+        "properties": {
+          "agent": {
+            "type": "string"
+          },
+          "depth": {
+            "maximum": 255,
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "at_once": {
+            "maximum": 4294967295,
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "agent"
+        ],
+        "description": ""
+      },
       "chip_design.project.import-report.Arguments": {
         "type": "object",
         "properties": {
@@ -30032,6 +30185,36 @@
       "resource": "chat.agent",
       "action": "retire-agent",
       "arguments": "#/components/schemas/chat.agent.retire-agent.Arguments"
+    },
+    {
+      "app": "so.tilo.chat",
+      "resource": "chat.agent",
+      "action": "start-sub-agent",
+      "arguments": "#/components/schemas/chat.agent.start-sub-agent.Arguments"
+    },
+    {
+      "app": "so.tilo.chat",
+      "resource": "chat.agent",
+      "action": "note-sub-agent",
+      "arguments": "#/components/schemas/chat.agent.note-sub-agent.Arguments"
+    },
+    {
+      "app": "so.tilo.chat",
+      "resource": "chat.agent",
+      "action": "stop-sub-agent",
+      "arguments": "#/components/schemas/chat.agent.stop-sub-agent.Arguments"
+    },
+    {
+      "app": "so.tilo.chat",
+      "resource": "chat.agent",
+      "action": "sub-agent-stands",
+      "arguments": "#/components/schemas/chat.agent.sub-agent-stands.Arguments"
+    },
+    {
+      "app": "so.tilo.chat",
+      "resource": "chat.agent",
+      "action": "set-sub-agent-limits",
+      "arguments": "#/components/schemas/chat.agent.set-sub-agent-limits.Arguments"
     },
     {
       "app": "so.tilo.chip-design",

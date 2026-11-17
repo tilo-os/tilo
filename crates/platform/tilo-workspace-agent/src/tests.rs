@@ -591,7 +591,10 @@ const GOLDEN: &str = r#"{
       "spent": null,
       "state": "active",
       "created_at": 1700000000000,
-      "instruction": null
+      "instruction": null,
+      "sub": null,
+      "sub_depth": null,
+      "sub_at_once": null
     }
   ]
 }"#;
