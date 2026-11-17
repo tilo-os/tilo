@@ -286,6 +286,9 @@ impl Mount {
     pub(super) fn reveal_opened(&mut self) {
         self.answer_ended_calls();
         let Some(desktop) = &self.desktop else {
+            // A mount of one app answers what its window reads of other apps' documents, with
+            // code the peer's module holds.
+            crate::replicated::answer_reads_alone(self);
             return;
         };
         // What a window reads of another app's records, and each read held for a write that

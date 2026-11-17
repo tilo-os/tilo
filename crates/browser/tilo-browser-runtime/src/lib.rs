@@ -301,6 +301,16 @@ mod sign_in_page;
 // The person's own records each window holds: its tests run on the host too.
 #[cfg(any(target_arch = "wasm32", test))]
 mod person_resources;
+// Who may read what a page holds of another app's documents: its tests are built natively too.
+#[cfg(any(target_arch = "wasm32", test))]
+#[cfg_attr(
+    not(target_arch = "wasm32"),
+    allow(
+        dead_code,
+        reason = "only the browser page answers a window's reads; natively only its tests do"
+    )
+)]
+mod read_bounds;
 // What a page times of the members' presence itself: its tests run on the
 // host too.
 #[cfg(any(target_arch = "wasm32", test))]

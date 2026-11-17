@@ -98,11 +98,16 @@ pub(crate) struct Alone {
     answers: Asked<Answer>,
     /// How tall everything shown is, as last drawn.
     height: f64,
+    /// The session client the view asks through. The window hands on what it asked and takes
+    /// the answers in ([`Self::take_requests`], [`Self::answered`]), so a holder that serves
+    /// its windows through their own asks serves the view too.
+    api: ui::RemoteActions,
 }
 
 impl Alone {
     fn of(message: &str) -> Self {
         Self {
+            api: ui::RemoteActions::current(),
             message: message.to_owned(),
             stands: Stands::Waiting,
             placed: None,
@@ -114,6 +119,18 @@ impl Alone {
             answers: Rc::default(),
             height: 0.0,
         }
+    }
+}
+
+impl Alone {
+    /// What the view asked of the session since the last call.
+    pub(crate) fn take_requests(&mut self) -> Vec<ui::collaboration::CollabRequest> {
+        ui::widget::Collaborative::take_collab_requests(&mut self.api)
+    }
+
+    /// Hand the view's client `event`, which may answer something it asked.
+    pub(crate) fn answered(&mut self, event: &ui::collaboration::CollabEvent) {
+        ui::widget::Collaborative::handle_collab_event(&mut self.api, event);
     }
 }
 
@@ -278,7 +295,7 @@ impl ChatApp {
                                 viewer: viewer.clone(),
                                 reads: view.reads.clone(),
                             };
-                            match written_view::place(&written, &ui::RemoteActions::current()) {
+                            match written_view::place(&written, &alone.api) {
                                 written_view::Placed::Shown(shown) => {
                                     alone.view = Some(Placed::new(
                                         Column::new()

@@ -84,6 +84,7 @@ pub(crate) fn install() {
         resource_document,
         record_since,
         record_heads,
+        reads_alone: crate::browser::Mount::answer_reads_alone,
         content,
         permit,
         host_then,
@@ -417,6 +418,25 @@ pub(crate) fn record_heads(
             .map(ui::automerge::ChangeHash)
             .collect(),
     )
+}
+
+/// The role the workspace last answered the person of peer `id` holds, as
+/// [`crate::desktop::SharedRole::code`] counts it: 0 until it has, and for a page that joined
+/// no workspace.
+pub(crate) fn role_code(id: u32) -> u8 {
+    replica_of(id).map_or(0, |joined| joined.borrow().role.code())
+}
+
+/// Who mount `mount` of peer `id` shows its workspace to, and what the workspace lets them do
+/// there: what the mount attached with. `None` for a mount this replication does not hold.
+pub(crate) fn reader(id: u32, mount: u64) -> Option<(String, ui::permissions::SharedPermissions)> {
+    let joined = replica_of(id)?;
+    let joined = joined.borrow();
+    let mounted = joined.mounts.get(&mount)?;
+    Some((
+        mounted.attachment.author.clone(),
+        mounted.attachment.permissions.clone(),
+    ))
 }
 
 /// The name the workspace in front is called on peer `id`: its governance's, which every device
