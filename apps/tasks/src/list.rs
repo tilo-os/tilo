@@ -104,6 +104,17 @@ fn shape(
     }
 }
 
+/// Rows read: each row's issue number, its parent's, and the blocks they
+/// stand in ([`IssueRows::blocks`]).
+type RowsRead = (Vec<u64>, Vec<Option<u64>>, Vec<(u64, usize)>);
+
+/// One block of rows as they are read again: kept from the rows held (where
+/// it starts there, and how many rows), or read anew.
+enum Block {
+    Kept(usize, usize),
+    Read(Vec<u64>, Vec<Option<u64>>),
+}
+
 /// The rows the list shows, by issue number, in the order the tree reads:
 /// each issue followed by its sub-issues, only what the filter shows and the
 /// issues above it so the tree stays whole. Read again from the window's
@@ -115,6 +126,11 @@ struct IssueRows {
     rows: Vec<u64>,
     parents: Vec<Option<u64>>,
     at: HashMap<u64, usize>,
+    /// The rows in blocks, one for each top-level issue in the tracker's
+    /// order: its number, and how many rows it and what shows under it hold
+    /// (none when the filter shows nothing of it). A change reads again only
+    /// the blocks of the top-level issues it touches.
+    blocks: Vec<(u64, usize)>,
     /// The window state's revision and the issues' revision last read.
     read: (u64, u64),
     changes: Vec<ListModelChange<u64>>,
@@ -129,6 +145,7 @@ impl IssueRows {
             rows: Vec::new(),
             parents: Vec::new(),
             at: HashMap::new(),
+            blocks: Vec::new(),
             read: (u64::MAX, u64::MAX),
             changes: Vec::new(),
         };
@@ -151,22 +168,16 @@ impl IssueRows {
         if before.1 == revision && !self.rows.is_empty() {
             return;
         }
-        let mut rows = Vec::with_capacity(self.rows.len().saturating_add(1));
-        let mut parents = Vec::with_capacity(rows.capacity());
-        walk(
-            &issues,
-            &self.filter,
-            self.me.as_ref(),
-            None,
-            None,
-            &mut rows,
-            &mut parents,
-        );
         let touched = if before.0 == u64::MAX {
             None
         } else {
             issues.touched_since(before.1)
         };
+        let (rows, parents, blocks) = touched
+            .as_ref()
+            .and_then(|touched| self.read_touched(&issues, touched))
+            .unwrap_or_else(|| self.read_all(&issues));
+        self.blocks = blocks;
         drop(issues);
         let Some(touched) = touched else {
             self.rows = rows;
@@ -176,6 +187,138 @@ impl IssueRows {
             return;
         };
         self.take_rows(rows, parents, touched);
+    }
+
+    /// Every row, read block by block from the top-level issues.
+    fn read_all(&self, issues: &Issues) -> RowsRead {
+        let mut rows = Vec::with_capacity(self.rows.len().saturating_add(1));
+        let mut parents = Vec::with_capacity(rows.capacity());
+        let mut blocks = Vec::new();
+        for (id, issue) in issues.children(None) {
+            let start = rows.len();
+            self.read_block(issues, id, issue, &mut rows, &mut parents);
+            blocks.push((issue.number, rows.len().saturating_sub(start)));
+        }
+        (rows, parents, blocks)
+    }
+
+    /// The rows of the top-level issue `id`: it and what shows under it.
+    fn read_block(
+        &self,
+        issues: &Issues,
+        id: &Id,
+        issue: &Issue,
+        rows: &mut Vec<u64>,
+        parents: &mut Vec<Option<u64>>,
+    ) {
+        let at = rows.len();
+        rows.push(issue.number);
+        parents.push(None);
+        let below = walk(
+            issues,
+            &self.filter,
+            self.me.as_ref(),
+            Some(id),
+            Some(issue.number),
+            rows,
+            parents,
+        );
+        if !(below
+            || matches!(self.filter, Filter::All)
+            || self.filter.matches(issue, self.me.as_ref()))
+        {
+            rows.truncate(at);
+            parents.truncate(at);
+        }
+    }
+
+    /// The rows held with only the blocks the `touched` issues stand in read
+    /// again: the block each stood in, and the block it stands in now, put
+    /// where its top-level issue stands in the tracker's order. `None` when
+    /// the blocks cannot be placed, and every row is read instead.
+    fn read_touched(&self, issues: &Issues, touched: &[u64]) -> Option<RowsRead> {
+        let mut starts = Vec::with_capacity(self.blocks.len());
+        let mut at = 0_usize;
+        for (_, len) in &self.blocks {
+            starts.push(at);
+            at = at.saturating_add(*len);
+        }
+        let tops: HashMap<u64, usize> = self
+            .blocks
+            .iter()
+            .enumerate()
+            .map(|(index, (top, _))| (*top, index))
+            .collect();
+        let mut stale = std::collections::HashSet::new();
+        let mut fresh = Vec::new();
+        for number in touched {
+            if let Some(&row) = self.at.get(number)
+                && let Some(block) = starts.partition_point(|start| *start <= row).checked_sub(1)
+                && let Some((top, _)) = self.blocks.get(block)
+            {
+                stale.insert(*top);
+            }
+            if tops.contains_key(number) {
+                stale.insert(*number);
+            }
+            if let Some(top) = issues.top_of(*number) {
+                stale.insert(top);
+                if !fresh.contains(&top) {
+                    fresh.push(top);
+                }
+            }
+        }
+        // The blocks no change reached keep their rows; each fresh block is
+        // read again and stands before the top-level issue after it.
+        let mut blocks: Vec<(u64, Block)> = self
+            .blocks
+            .iter()
+            .zip(&starts)
+            .filter(|((top, _), _)| !stale.contains(top))
+            .map(|((top, len), start)| (*top, Block::Kept(*start, *len)))
+            .collect();
+        let mut pending: Vec<u64> = fresh;
+        while !pending.is_empty() {
+            let before = pending.len();
+            pending.retain(|top| {
+                let next = issues.top_after(*top);
+                let place = match next {
+                    None => Some(blocks.len()),
+                    Some(next) => blocks.iter().position(|(held, _)| *held == next),
+                };
+                let Some(place) = place else {
+                    return true;
+                };
+                let (mut rows, mut parents) = (Vec::new(), Vec::new());
+                if let Some((id, issue)) = issues.by_number(*top) {
+                    self.read_block(issues, id, issue, &mut rows, &mut parents);
+                }
+                blocks.insert(place, (*top, Block::Read(rows, parents)));
+                false
+            });
+            if pending.len() == before {
+                return None;
+            }
+        }
+        let mut rows = Vec::with_capacity(self.rows.len().saturating_add(1));
+        let mut parents = Vec::with_capacity(rows.capacity());
+        let mut held = Vec::with_capacity(blocks.len());
+        for (top, block) in blocks {
+            let start = rows.len();
+            match block {
+                Block::Kept(from, len) => {
+                    let to = from.saturating_add(len);
+                    rows.extend_from_slice(self.rows.get(from..to)?);
+                    parents.extend_from_slice(self.parents.get(from..to)?);
+                }
+                Block::Read(read, under) => {
+                    rows.extend(read);
+                    parents.extend(under);
+                }
+            }
+            held.push((top, rows.len().saturating_sub(start)));
+        }
+        Some((rows, parents, held))
     }
 
     /// Hold `rows` under `parents` in place of the rows held, and note the
@@ -567,4 +710,118 @@ fn row_menu_chosen(nav: &Nav, window: &Window, issue: Id, index: usize) {
         _ => return,
     };
     change_status(window, issue, status);
+}
+
+#[cfg(test)]
+mod tests {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    use ui::prelude::*;
+
+    use super::IssueRows;
+    use crate::part::tests::Board;
+    use crate::part::{IssuePart, Issues, issue_part};
+    use crate::{Filter, Tasks};
+
+    /// The window's state as `board`'s parts hold it now, read through `index`.
+    fn tasks(board: &Board, index: &Rc<RefCell<Issues>>) -> Tasks {
+        Tasks {
+            tracker: Rc::new(board.tracker.state().unwrap()),
+            parts: board.states().into(),
+            index: Rc::clone(index),
+        }
+    }
+
+    /// Read `model`'s issues again and check the rows it built block by block
+    /// against the rows read from every issue.
+    fn follow(model: &mut IssueRows, board: &Board, index: &Rc<RefCell<Issues>>, after: &str) {
+        model.tasks.set(tasks(board, index));
+        model.refresh();
+        assert!(
+            !model
+                .changes
+                .iter()
+                .any(|change| matches!(change, ListModelChange::Reset)),
+            "{after}: read from the issues it touched, not anew"
+        );
+        model.changes.clear();
+        let state = model.tasks.get();
+        let issues = state.issues();
+        let (rows, parents, blocks) = model.read_all(&issues);
+        assert_eq!(model.rows, rows, "{after}: the rows read whole");
+        assert_eq!(
+            model.parents, parents,
+            "{after}: under the parents read whole"
+        );
+        assert_eq!(model.blocks, blocks, "{after}: in the blocks read whole");
+    }
+
+    #[test]
+    fn the_rows_read_block_by_block_are_the_rows_read_whole() {
+        for filter in [Filter::All, Filter::Todo] {
+            let mut board = Board::new("ada");
+            // Sixty issues, every tenth a parent of the nine after it.
+            let mut ids = Vec::new();
+            let mut parent = None;
+            for number in 1..=60_u64 {
+                let first = number % 10 == 1;
+                let id = board.create(
+                    &format!("Issue {number}"),
+                    if first { None } else { parent.clone() },
+                );
+                if first {
+                    parent = Some(id.clone());
+                }
+                ids.push(id);
+            }
+            let index = Rc::new(RefCell::new(Issues::default()));
+            let mut model =
+                IssueRows::new(LocalState::new(tasks(&board, &index)), filter.clone(), None);
+            model.changes.clear();
+
+            board.create("A new top", None);
+            follow(&mut model, &board, &index, "a top-level issue made");
+            board.create("A new sub-issue", Some(ids[20].clone()));
+            follow(&mut model, &board, &index, "a sub-issue made");
+            board
+                .apply(IssuePart::PLACE.with(issue_part::Place {
+                    issue: ids[4].clone(),
+                    status: crate::model::Status::Done,
+                    before: None,
+                    rank: None,
+                }))
+                .unwrap();
+            follow(&mut model, &board, &index, "a sub-issue done");
+            board
+                .apply(IssuePart::PLACE.with(issue_part::Place {
+                    issue: ids[30].clone(),
+                    status: crate::model::Status::Done,
+                    before: Some(ui::tilo_resource::items::Ref::from(&ids[0])),
+                    rank: None,
+                }))
+                .unwrap();
+            follow(&mut model, &board, &index, "a parent done and moved first");
+            board
+                .apply(IssuePart::MOVE_UNDER.with(issue_part::MoveUnder {
+                    issue: ids[40].clone(),
+                    parent: Some(ui::tilo_resource::items::Ref::from(&ids[50])),
+                }))
+                .unwrap();
+            follow(&mut model, &board, &index, "a parent moved under another");
+            board
+                .apply(IssuePart::DELETE.with(issue_part::Delete {
+                    issue: ids[10].clone(),
+                }))
+                .unwrap();
+            follow(&mut model, &board, &index, "a parent deleted");
+            board
+                .apply(IssuePart::MOVE_UNDER.with(issue_part::MoveUnder {
+                    issue: ids[45].clone(),
+                    parent: None,
+                }))
+                .unwrap();
+            follow(&mut model, &board, &index, "a sub-issue moved to the top");
+        }
+    }
 }

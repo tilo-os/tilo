@@ -1150,10 +1150,12 @@ impl Issues {
                 self.top.insert(place.clone());
             }
         }
-        // Its own sub-issues stood at the top while it was not held.
+        // Its own sub-issues stood at the top while it was not held: they move
+        // under it.
         if let Some(under) = self.named.get(id) {
             for child in under {
                 self.top.remove(child);
+                self.touching.push(child.number);
             }
         }
         self.by_number.insert(issue.number, id.clone());
@@ -1215,9 +1217,10 @@ impl Issues {
             self.by_number.remove(&place.number);
         }
         self.touch(place.number, parent.as_ref());
-        // Its sub-issues stand at the top while it is gone.
+        // Its sub-issues stand at the top while it is gone: they moved too.
         if let Some(under) = self.named.get(id) {
             self.top.extend(under.iter().cloned());
+            self.touching.extend(under.iter().map(|place| place.number));
         }
         // An older part keeping it too is read again.
         let older = self
@@ -1282,6 +1285,41 @@ impl Issues {
     pub fn by_number(&self, number: u64) -> Option<(&Id, &Issue)> {
         let id = self.by_number.get(&number)?;
         Some((id, self.get(id)?))
+    }
+
+    /// The top-level issue the issue numbered `number` stands under, itself
+    /// when it stands at the top: read up its parents, not across the tracker.
+    #[must_use]
+    pub fn top_of(&self, number: u64) -> Option<u64> {
+        let mut id = self.by_number.get(&number)?;
+        // An issue stands at the top, or under the held parent it names; the
+        // bound keeps a cycle the parts were written into from looping.
+        for _ in 0..=self.held.len() {
+            let filed = self.held.get(id)?;
+            if self.top.contains(&filed.place) {
+                return Some(filed.place.number);
+            }
+            id = self
+                .held
+                .get_key_value(filed.parent.as_ref()?)
+                .map(|(parent, _)| parent)?;
+        }
+        None
+    }
+
+    /// The top-level issue after the top-level issue numbered `number`, in
+    /// the tracker's order; `None` after the last, or when `number` is not
+    /// at the top.
+    #[must_use]
+    pub fn top_after(&self, number: u64) -> Option<u64> {
+        let place = &self.held.get(self.by_number.get(&number)?)?.place;
+        if !self.top.contains(place) {
+            return None;
+        }
+        self.top
+            .range((std::ops::Bound::Excluded(place), std::ops::Bound::Unbounded))
+            .next()
+            .map(|place| place.number)
     }
 
     /// The parent `issue` stands under: the one it names, while that one is
@@ -1784,7 +1822,7 @@ mod listing;
 mod many;
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
 
 /// The chain the parts belong to, beside the tracker's own document.
 #[must_use]
