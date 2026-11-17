@@ -284,6 +284,18 @@ class PrePushLintTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertFalse(self.log.exists(), f"a push to {ref} compiled something")
 
+    def test_a_push_that_would_rewrite_integration_is_refused(self):
+        # Integration holds everyone's unfinished work; a forced push that does not contain its
+        # head drops the commits after it.
+        self.write("native/src/lib.rs", LIB.format(answer=63))
+        self.commit("feat: answer 63")
+        result = self.push(remote_oid="1" * 40, ref="refs/heads/integration")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("would drop the commits after it", result.stderr)
+        self.assertEqual(self.calls(), [])
+        self.assertEqual(self.push(ref="refs/heads/integration").returncode, 0,
+                         "a push that fast-forwards integration goes through")
+
     def test_a_push_main_has_moved_past_is_refused_before_anything_is_compiled(self):
         # The remote reports main's head when the push begins; a push that does not contain it
         # is refused after the lint whatever the lint says, so the lint would only load the builder.

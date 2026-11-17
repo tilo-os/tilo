@@ -104,6 +104,9 @@ ZERO_OID = {"0"}
 # (tools/integrate.sh). A push to main that is not a fast-forward is a race already lost:
 # nobody force-pushes main, so the remote refuses it after any lint.
 MAIN_REF = "refs/heads/main"
+# Where work in progress lands. It is pushed unlinted, but never rewritten: a push that drops
+# commits from it drops someone else's work, so the one check on it is that it fast-forwards.
+INTEGRATION_REF = "refs/heads/integration"
 # How many passing lint keys a clone keeps.
 KEPT_PASSES = 256
 # Identifiers of the language itself, and words every crate uses, say nothing
@@ -178,6 +181,8 @@ class Push(NamedTuple):
     # Pushes to main that main's own head, as the remote reported it when the push began, is not
     # part of: the remote refuses them whatever the lint says.
     behind: list[str] = []
+    # Pushes that would rewrite integration: its head on the remote is not part of what is sent.
+    rewrites: list[str] = []
 
 
 def git(root: Path, *args: str) -> subprocess.CompletedProcess:
@@ -216,11 +221,16 @@ def pushed(root: Path, lines: Iterable[str]) -> Push:
     tips: list[str] = []
     unnamed: list[str] = []
     behind: list[str] = []
+    rewrites: list[str] = []
     for line in lines:
         parts = line.split()
         if len(parts) != 4:
             continue
         ref, head, remote_ref, remote_oid = parts
+        if (remote_ref == INTEGRATION_REF and set(remote_oid) != ZERO_OID
+                and not contains(root, head, remote_oid)):
+            rewrites.append(remote_oid)
+            continue
         if remote_ref != MAIN_REF or set(head) == ZERO_OID:
             continue  # work in progress, or a deleted ref, which changes nothing that is built
         if set(remote_oid) != ZERO_OID and not contains(root, head, remote_oid):
@@ -236,7 +246,7 @@ def pushed(root: Path, lines: Iterable[str]) -> Push:
         comparisons.append((start, head))
         tips.append(head)
         files |= changed
-    return Push(files, comparisons, tips, unnamed, behind)
+    return Push(files, comparisons, tips, unnamed, behind, rewrites)
 
 
 def rust_changes(files: set[str]) -> set[str]:
@@ -726,6 +736,11 @@ def main(argv: list[str]) -> int:
         push = Push(diff(root, base, head), [(base, head)], [head], [])
     else:
         push = pushed(root, options.stdin)
+    if push.rewrites:
+        say(f"pre-push: integration is at {push.rewrites[0][:12]}, which this push does not contain, "
+            "so it would drop the commits after it, which are other people's work. Fetch, rebase "
+            "or merge onto origin/integration, and push again")
+        return 1
     if push.behind:
         say(f"pre-push: main is at {push.behind[0][:12]} now, which this push does not contain, so "
             "the remote refuses it whatever a lint says; nothing was linted. Rebase onto it "
