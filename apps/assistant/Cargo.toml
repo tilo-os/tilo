@@ -29,7 +29,6 @@ runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 serde_json.workspace = true
 # Whether this build is a page, which runs no agent: an assistant made there works on the
 # workspace's host.
-tilo-platform-caps = { path = "../../crates/platform/tilo-platform-caps" }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 
 [dev-dependencies]
