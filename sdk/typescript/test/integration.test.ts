@@ -1,7 +1,7 @@
 /**
  * Against a real API server: `TILO_TEST_API_URL` and `TILO_TEST_KEY` name one.
  *
- * The server is the local harness (`api-on-relay`); the key reaches every
+ * The server is the local harness (`api-on-server`); the key reaches every
  * workspace of its person. Nothing here fakes the wire.
  */
 

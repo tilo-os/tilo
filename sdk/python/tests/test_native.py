@@ -1,5 +1,5 @@
 """The native part against a real Tilo host: `TILO_KEY_FILE` names a key file of
-a device of the person (the `api-on-relay` harness writes one).
+a device of the person (the `api-on-server` harness writes one).
 
 Nothing stands between the test and the host: `tilo._native` is the API in
 process with the device's own key, dialling the relay as the person's devices
