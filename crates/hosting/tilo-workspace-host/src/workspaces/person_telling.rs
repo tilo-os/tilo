@@ -1,0 +1,516 @@
+//! What may interrupt a person, kept where their workspace runs.
+//!
+//! A person says in their own words what is important to them, with the
+//! situations those words depend on ([`person_telling::Importance`]). The
+//! host keeps it in the person's own store, beside their models and their
+//! arriving mail, and not in a record of theirs a workspace carries: a
+//! person's own record is sealed for their devices, and it is the host
+//! that reads the rule and tells while every device of theirs is off.
+//!
+//! It is the person's alone. The host answers the person on a device of
+//! theirs, and an agent acting for them over such a device, which is what
+//! the caller of a turn this host runs for them is. The agent reads the
+//! rule wherever it works for them and changes it, when its person tells
+//! it to, only in a workspace that person owns. What a device does with a
+//! notification (whether a kind breaks do-not-disturb, whether a
+//! workspace's words leave the host in a push) only the person says.
+//! Everybody else is told what a caller asking for something that does not
+//! exist is told.
+
+use std::fmt::Write as _;
+use std::path::{Path, PathBuf};
+use std::sync::Mutex;
+
+use serde_json::Value;
+use tilo_actions::remote::person_telling::{
+    self, Fact, ForgetFact, Importance, Insisting, KeepOnHost, LetThrough, Line,
+    MAX_FACT_NAME_BYTES, MAX_FACT_VALUE_BYTES, MAX_FACTS, MAX_LINE_BYTES, MAX_LINES, Say, SetFact,
+    Unsay,
+};
+use tilo_actions::remote::{ActionHostError, Caller, InvokeRequest};
+use tilo_lock::MutexRecover as _;
+use tilo_user_identity::DeviceCert;
+
+use super::Workspaces;
+use super::person_settings::{AskingAboutMail, answer, argument};
+
+/// The longest id of a workspace a person names, in bytes.
+const MAX_WORKSPACE_BYTES: usize = 128;
+
+/// What this host holds for its people's tellings beside their stores.
+pub(super) struct Telling {
+    /// One writer at a time of anybody's rule.
+    writing: Mutex<()>,
+    /// Moves whenever anybody's rule changed.
+    moved: tokio::sync::watch::Sender<u64>,
+}
+
+impl Default for Telling {
+    fn default() -> Self {
+        Self {
+            writing: Mutex::default(),
+            moved: tokio::sync::watch::channel(0).0,
+        }
+    }
+}
+
+/// Who asks about a person's rule.
+enum Asking {
+    /// The person, on a device of theirs.
+    Person([u8; 32]),
+    /// An agent acting for the person over a device of theirs.
+    Agent {
+        person: [u8; 32],
+        /// The name its person knows it under.
+        name: String,
+        /// Whether it asks through a workspace its person owns.
+        own: bool,
+    },
+}
+
+impl Asking {
+    const fn person(&self) -> &[u8; 32] {
+        match self {
+            Self::Person(person) | Self::Agent { person, .. } => person,
+        }
+    }
+
+    /// The name a change is written down under: none for the person.
+    fn by(&self) -> &str {
+        match self {
+            Self::Person(_) => "",
+            Self::Agent { name, .. } => name,
+        }
+    }
+
+    /// Whether `action` of the rule is this asker's to take. The person
+    /// takes each. Their agent reads wherever it works for them, changes
+    /// the rule only in a workspace of theirs, and never says what a
+    /// device does with a notification.
+    fn may(&self, action: &str) -> bool {
+        match self {
+            Self::Person(_) => true,
+            Self::Agent { own, .. } => match action {
+                person_telling::READ => true,
+                person_telling::LET_THROUGH | person_telling::KEEP_ON_HOST => false,
+                _ => *own,
+            },
+        }
+    }
+}
+
+/// One change to a person's rule.
+enum Change {
+    Say(Say),
+    Unsay(Unsay),
+    SetFact(SetFact),
+    ForgetFact(ForgetFact),
+    SetInsisting(Insisting),
+    LetThrough(LetThrough),
+    KeepOnHost(KeepOnHost),
+}
+
+impl Change {
+    /// The change `request` asks for.
+    fn of(request: &InvokeRequest) -> Result<Self, ActionHostError> {
+        Ok(match request.target.address.action.as_str() {
+            person_telling::SAY => Self::Say(argument(request, "a line and its words")?),
+            person_telling::UNSAY => Self::Unsay(argument(request, "a line by its id")?),
+            person_telling::SET_FACT => {
+                Self::SetFact(argument(request, "a situation and how it stands")?)
+            }
+            person_telling::FORGET_FACT => {
+                Self::ForgetFact(argument(request, "a situation by its name")?)
+            }
+            person_telling::SET_INSISTING => {
+                Self::SetInsisting(argument(request, "how often and how many times")?)
+            }
+            person_telling::LET_THROUGH => {
+                Self::LetThrough(argument(request, "a kind and whether it may")?)
+            }
+            person_telling::KEEP_ON_HOST => {
+                Self::KeepOnHost(argument(request, "a workspace and whether it is kept")?)
+            }
+            _ => return Err(ActionHostError::UnknownAction),
+        })
+    }
+
+    /// Make this change to `rule`, written down as `by`'s at `now_ms`.
+    fn apply(self, rule: &mut Importance, by: &str, now_ms: u64) -> Result<(), String> {
+        match self {
+            Self::Say(saying) => say(rule, saying, by, now_ms),
+            Self::Unsay(unsaying) => {
+                let before = rule.lines.len();
+                rule.lines.retain(|line| line.id != unsaying.line);
+                if rule.lines.len() == before {
+                    return Err("No line has that id".to_owned());
+                }
+                Ok(())
+            }
+            Self::SetFact(setting) => set_fact(rule, &setting, by, now_ms),
+            Self::ForgetFact(forgetting) => {
+                let Some(name) = rule.fact(&forgetting.name).map(|fact| fact.name.clone()) else {
+                    return Err("No situation has that name".to_owned());
+                };
+                let waited_on = rule.lines.iter().any(|line| {
+                    line.only_while.as_ref().is_some_and(|holds| {
+                        rule.fact(&holds.fact).is_some_and(|fact| fact.name == name)
+                    })
+                });
+                if waited_on {
+                    return Err("A line still depends on that situation".to_owned());
+                }
+                rule.facts.retain(|fact| fact.name != name);
+                Ok(())
+            }
+            Self::SetInsisting(insisting) => {
+                rule.insists = insisting.checked()?;
+                Ok(())
+            }
+            Self::LetThrough(letting) => {
+                rule.through_quiet.retain(|kind| *kind != letting.kind);
+                if letting.may {
+                    rule.through_quiet.push(letting.kind);
+                }
+                Ok(())
+            }
+            Self::KeepOnHost(keeping) => {
+                let workspace = keeping.workspace.trim();
+                if workspace.is_empty() || workspace.len() > MAX_WORKSPACE_BYTES {
+                    return Err("A workspace is named by its id".to_owned());
+                }
+                rule.kept_on_host.retain(|kept| kept != workspace);
+                if keeping.kept {
+                    rule.kept_on_host.push(workspace.to_owned());
+                }
+                Ok(())
+            }
+        }
+    }
+}
+
+/// Whether two names a person wrote are the same.
+fn same(left: &str, right: &str) -> bool {
+    left.trim().to_lowercase() == right.trim().to_lowercase()
+}
+
+/// Add `saying` to `rule` as one line. The same words said again are the
+/// same line, with what it waits on as said now.
+fn say(rule: &mut Importance, saying: Say, by: &str, now_ms: u64) -> Result<(), String> {
+    let words = saying.words.trim();
+    if words.is_empty() {
+        return Err("A line needs words".to_owned());
+    }
+    if words.len() > MAX_LINE_BYTES {
+        return Err("That is longer than a line may be".to_owned());
+    }
+    let only_while = match saying.only_while {
+        None => None,
+        Some(holds) => {
+            let (fact, is) = (holds.fact.trim(), holds.is.trim());
+            if fact.is_empty()
+                || is.is_empty()
+                || fact.len() > MAX_FACT_NAME_BYTES
+                || is.len() > MAX_FACT_VALUE_BYTES
+            {
+                return Err(
+                    "A line that depends on a situation names it and how it stands".to_owned(),
+                );
+            }
+            Some(person_telling::Holds {
+                fact: fact.to_owned(),
+                is: is.to_owned(),
+            })
+        }
+    };
+    if let Some(line) = rule.lines.iter_mut().find(|line| same(&line.words, words)) {
+        line.only_while = only_while;
+        by.clone_into(&mut line.by);
+        line.at_ms = now_ms;
+        return Ok(());
+    }
+    if rule.lines.len() >= MAX_LINES {
+        return Err("The rule holds no more lines".to_owned());
+    }
+    rule.lines.push(Line {
+        id: format!("line-{}", rule.revision.saturating_add(1)),
+        words: words.to_owned(),
+        only_while,
+        by: by.to_owned(),
+        at_ms: now_ms,
+    });
+    Ok(())
+}
+
+/// Set the situation `setting` names, adding it when the rule has none of
+/// that name.
+fn set_fact(rule: &mut Importance, setting: &SetFact, by: &str, now_ms: u64) -> Result<(), String> {
+    let (name, value) = (setting.name.trim(), setting.value.trim());
+    if name.is_empty() || value.is_empty() {
+        return Err("A situation has a name and says how it stands".to_owned());
+    }
+    if name.len() > MAX_FACT_NAME_BYTES || value.len() > MAX_FACT_VALUE_BYTES {
+        return Err("That is longer than a situation may be".to_owned());
+    }
+    if let Some(fact) = rule.facts.iter_mut().find(|fact| same(&fact.name, name)) {
+        value.clone_into(&mut fact.value);
+        by.clone_into(&mut fact.by);
+        fact.at_ms = now_ms;
+        return Ok(());
+    }
+    if rule.facts.len() >= MAX_FACTS {
+        return Err("The rule holds no more situations".to_owned());
+    }
+    rule.facts.push(Fact {
+        name: name.to_owned(),
+        value: value.to_owned(),
+        by: by.to_owned(),
+        at_ms: now_ms,
+    });
+    Ok(())
+}
+
+fn rule_at(root: &Path) -> PathBuf {
+    root.join("telling").join("importance.json")
+}
+
+/// The rule kept under `root`: nothing said where none is kept. One that
+/// does not read is nothing said, and says so in the host's log: nothing
+/// is important by a rule nobody can read.
+fn read_rule(root: &Path) -> Importance {
+    let bytes = match std::fs::read(rule_at(root)) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Importance::default(),
+        Err(error) => {
+            tracing::warn!(%error, "telling: a person's rule could not be read");
+            return Importance::default();
+        }
+    };
+    serde_json::from_slice(&bytes).unwrap_or_else(|error| {
+        tracing::warn!(%error, "telling: a person's rule does not read");
+        Importance::default()
+    })
+}
+
+/// Keep `rule` under `root`, for its owner alone to read.
+fn write_rule(root: &Path, rule: &Importance) -> Result<(), String> {
+    let bytes = serde_json::to_vec(rule).map_err(|error| error.to_string())?;
+    tilo_files::native::atomic::write_creating_parent_with_mode(&rule_at(root), &bytes, 0o600)
+        .map_err(|error| error.to_string())
+}
+
+/// What `rule` is told to its person's assistant before every turn: the
+/// lines as the person said them, how the situations stand, and how a
+/// change the person asks for is written down.
+#[must_use]
+pub fn told_in_a_turn(rule: &Importance) -> String {
+    let mut told = String::new();
+    if rule.lines.is_empty() {
+        told.push_str("Your person has not said what is important to them.");
+    } else {
+        told.push_str("What your person calls important, in their own words:");
+        for line in &rule.lines {
+            told.push_str("\n- ");
+            told.push_str(&line.words);
+            if let Some(holds) = &line.only_while {
+                let _ = write!(
+                    told,
+                    " (counts only while `{}` is `{}`)",
+                    holds.fact, holds.is
+                );
+            }
+        }
+    }
+    if !rule.facts.is_empty() {
+        told.push_str("\nHow the situations stand now:");
+        for fact in &rule.facts {
+            let _ = write!(told, "\n- {}: {}", fact.name, fact.value);
+        }
+    }
+    told.push_str(
+        "\nWhen they tell you that something is or is not important to them, or that a \
+         situation changed, write it down with the actions of `tilo.telling` on `importance` \
+         (`say` with their own words, and `onlyWhile` when the line depends on a situation; \
+         `unsay`; `set-fact`; `forget-fact`). You never decide what is important and you never \
+         notify: what you write for them is marked by their rule and told for you.",
+    );
+    told
+}
+
+impl Workspaces {
+    /// Who `caller` is to a person's rule: the person on a device of
+    /// theirs, or an agent acting for them over one, as the transport
+    /// certified. Nobody else is anybody here.
+    fn asking_about_telling(
+        &self,
+        caller: &Caller,
+        certificate: Option<&DeviceCert>,
+        workspace_id: Option<collab_types::WorkspaceId>,
+    ) -> Result<Asking, ActionHostError> {
+        match Self::asking_about_mail(caller, certificate, workspace_id)? {
+            AskingAboutMail::Person(person) => Ok(Asking::Person(person)),
+            AskingAboutMail::Assistant {
+                person,
+                agent,
+                workspace,
+            } => Ok(Asking::Agent {
+                own: self.owns(&person, &workspace),
+                name: caller.agent_name().map_or(agent, str::to_owned),
+                person,
+            }),
+        }
+    }
+
+    /// Whether `caller` is an agent of a person's that the rule's actions
+    /// are offered to, and if so whether it asks through a workspace that
+    /// person owns: what the catalogue offers them by.
+    pub(super) fn tells_as_agent(
+        &self,
+        caller: &Caller,
+        certificate: Option<&DeviceCert>,
+        workspace_id: Option<collab_types::WorkspaceId>,
+    ) -> Option<bool> {
+        match self.asking_about_telling(caller, certificate, workspace_id) {
+            Ok(Asking::Agent { own, .. }) => Some(own),
+            _ => None,
+        }
+    }
+
+    /// Answer a [`person_telling::PROVIDER`] request.
+    pub(super) fn person_telling_invoke(
+        &self,
+        workspace_id: Option<collab_types::WorkspaceId>,
+        caller: &Caller,
+        certificate: Option<&DeviceCert>,
+        request: &InvokeRequest,
+    ) -> Result<Value, ActionHostError> {
+        let asking = self.asking_about_telling(caller, certificate, workspace_id)?;
+        match request.target.address.resource.as_str() {
+            person_telling::IMPORTANCE => self.importance_invoke(&asking, request),
+            _ => Err(ActionHostError::UnknownAction),
+        }
+    }
+
+    /// Answer a request about a person's rule.
+    fn importance_invoke(
+        &self,
+        asking: &Asking,
+        request: &InvokeRequest,
+    ) -> Result<Value, ActionHostError> {
+        let action = request.target.address.action.as_str();
+        // Unknown and forbidden are the same answer, given before the
+        // request is read.
+        if !asking.may(action) {
+            return Err(ActionHostError::UnknownAction);
+        }
+        if action == person_telling::READ {
+            return answer(&Ok::<_, String>(self.importance_of(asking.person())));
+        }
+        let change = Change::of(request)?;
+        answer(&self.change_importance(asking.person(), change, asking.by()))
+    }
+
+    /// Make `change` to `person`'s rule and answer the rule as it stands
+    /// after.
+    fn change_importance(
+        &self,
+        person: &[u8; 32],
+        change: Change,
+        by: &str,
+    ) -> Result<Importance, String> {
+        let root = self.person_settings_root(person);
+        let rule = {
+            let _writing = self.inner.telling.writing.lock_recover();
+            let mut rule = read_rule(&root);
+            change.apply(&mut rule, by, tilo_clock::unix_now_ms())?;
+            rule.revision = rule.revision.saturating_add(1);
+            write_rule(&root, &rule)?;
+            rule
+        };
+        self.inner
+            .telling
+            .moved
+            .send_modify(|count| *count = count.wrapping_add(1));
+        Ok(rule)
+    }
+
+    /// What `person` calls important, as this host keeps it: nothing said
+    /// for a person who said nothing.
+    #[must_use]
+    pub fn importance_of(&self, person: &[u8; 32]) -> Importance {
+        let _writing = self.inner.telling.writing.lock_recover();
+        read_rule(&self.person_settings_root(person))
+    }
+
+    /// What `person`'s assistant is told about their rule before every
+    /// turn ([`told_in_a_turn`]).
+    #[must_use]
+    pub fn importance_told(&self, person: &[u8; 32]) -> String {
+        told_in_a_turn(&self.importance_of(person))
+    }
+
+    /// Moves whenever anybody's rule changed.
+    #[must_use]
+    pub fn importance_changes(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.inner.telling.moved.subscribe()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use tilo_actions::remote::person_telling::Holds;
+
+    use super::*;
+
+    /// The assistant is told the rule in the person's own words, how the
+    /// situations stand, and how to write a change down; a person who said
+    /// nothing is not told a rule they do not have.
+    #[test]
+    fn a_turn_is_told_the_rule_as_its_person_said_it() {
+        let nothing = told_in_a_turn(&Importance::default());
+        assert!(nothing.starts_with("Your person has not said what is important to them."));
+        assert!(nothing.contains("`tilo.telling`"), "{nothing}");
+
+        let rule = Importance {
+            lines: vec![
+                Line {
+                    id: "line-1".into(),
+                    words: "My landlord is always important".into(),
+                    ..Line::default()
+                },
+                Line {
+                    id: "line-2".into(),
+                    words: "A new customer is important only while we are hiring".into(),
+                    only_while: Some(Holds {
+                        fact: "hiring".into(),
+                        is: "yes".into(),
+                    }),
+                    ..Line::default()
+                },
+            ],
+            facts: vec![Fact {
+                name: "Hiring".into(),
+                value: "no".into(),
+                ..Fact::default()
+            }],
+            ..Importance::default()
+        };
+        let told = told_in_a_turn(&rule);
+        assert!(
+            told.contains("\n- My landlord is always important\n"),
+            "{told}"
+        );
+        assert!(
+            told.contains(
+                "\n- A new customer is important only while we are hiring (counts only while \
+                 `hiring` is `yes`)"
+            ),
+            "{told}"
+        );
+        assert!(told.contains("\n- Hiring: no"), "{told}");
+        assert!(
+            told.contains("You never decide what is important"),
+            "{told}"
+        );
+    }
+}

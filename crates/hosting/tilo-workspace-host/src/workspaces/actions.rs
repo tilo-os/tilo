@@ -59,7 +59,7 @@ use tilo_actions::remote::{
     CatalogueResource, CatalogueRow, InvocationLedger, InvocationReceipt, InvocationState,
     InvokeArgument, InvokeRequest, Pending, RemoteActionMessage, WORKSPACE_GOVERNANCE_KIND,
     WORKSPACE_GOVERNANCE_PROVIDER, host_account, mcp_server, person_accounts, person_models,
-    person_vault, workspace_governance_resource,
+    person_telling, person_vault, workspace_governance_resource,
 };
 use tilo_actions::{
     ActionAddress, ActionContract, ActionDescriptor, ActionKind, ActionOutput, ActionParam,
@@ -74,6 +74,8 @@ use tokio::sync::Mutex as AsyncMutex;
 pub(super) mod host;
 #[cfg(not(target_arch = "wasm32"))]
 mod mail;
+#[cfg(not(target_arch = "wasm32"))]
+mod telling;
 
 use super::authority::WorkspaceOp;
 use super::{
@@ -1173,6 +1175,15 @@ impl Workspaces {
         {
             offer.add(mail::MAIL, "", mail::assistant_rows());
         }
+        // An agent of a person's finds that person's rule for what is
+        // important here: to read wherever it works for them, to change
+        // in a workspace of theirs.
+        #[cfg(not(target_arch = "wasm32"))]
+        if wants(person_telling::PROVIDER)
+            && let Some(own) = self.tells_as_agent(caller, certificate, workspace_id)
+        {
+            offer.add(telling::TELLING, "", telling::agent_rows(own));
+        }
         offer.page(query)
     }
 
@@ -1264,6 +1275,12 @@ impl Workspaces {
             #[cfg(not(target_arch = "wasm32"))]
             (person_vault::PROVIDER, _) => {
                 self.person_vault_invoke(workspace_id, caller, certificate, request)
+            }
+            // What the person calls important, and what may interrupt
+            // them: theirs, and their own agent's to read and to keep.
+            #[cfg(not(target_arch = "wasm32"))]
+            (person_telling::PROVIDER, _) => {
+                self.person_telling_invoke(workspace_id, caller, certificate, request)
             }
             (host_account::PROVIDER, _)
                 if request.target == host_account::target(host_account::ACCOUNT) =>
@@ -2468,7 +2485,7 @@ fn mcp_value(workspaces: &Workspaces) -> Value {
 }
 
 /// The providers a relay that governs workspaces answers itself.
-const PROVIDERS: [&str; 6] = [
+const PROVIDERS: [&str; 7] = [
     WORKSPACE_GOVERNANCE_PROVIDER,
     HOST_ACTIONS_PROVIDER,
     mcp_server::PROVIDER,
@@ -2478,6 +2495,8 @@ const PROVIDERS: [&str; 6] = [
     person_models::PROVIDER,
     // What the person keeps to sign in with, in the same vault.
     person_vault::PROVIDER,
+    // What the person calls important, and what may interrupt them.
+    person_telling::PROVIDER,
 ];
 
 /// What a relay that governs workspaces answers remote actions addressed to it

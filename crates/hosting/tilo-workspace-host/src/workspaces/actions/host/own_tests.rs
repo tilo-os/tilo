@@ -52,7 +52,7 @@ async fn invoke(
     }
 }
 
-async fn create_own(
+pub(super) async fn create_own(
     host: &HostWorkspaceActions,
     device: &DeviceCert,
     argument: Value,
@@ -72,7 +72,7 @@ async fn home_of(workspaces: &Workspaces) -> String {
 
 /// A host keeping workspaces of people's own for the people its home
 /// workspace lets in: returns the home.
-async fn open(workspaces: &Workspaces) -> String {
+pub(super) async fn open(workspaces: &Workspaces) -> String {
     workspaces
         .offer_own_workspaces(OwnWorkspaceOffer::free("tilo.test"))
         .unwrap();
@@ -81,7 +81,7 @@ async fn open(workspaces: &Workspaces) -> String {
 
 /// Let `person` in as the site does for someone it invites: an invitation
 /// into `home` names them.
-async fn let_in(workspaces: &Workspaces, home: &str, person: [u8; 32]) -> Vec<u8> {
+pub(super) async fn let_in(workspaces: &Workspaces, home: &str, person: [u8; 32]) -> Vec<u8> {
     workspaces
         .issue(
             home,
