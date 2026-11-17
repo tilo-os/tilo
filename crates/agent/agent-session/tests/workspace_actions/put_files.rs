@@ -287,8 +287,7 @@ async fn a_folder_put_is_one_run_and_one_write_per_chunk() {
         SessionActions::new(&agent.peer, agent.workspace, device.cert.device_public_key),
         WORKSPACE.into(),
         person,
-    )
-    .with_surface(Surface::Agent);
+    );
 
     // A folder large enough to fill more than one chunk of the tree, put in
     // an open whose list a small part of it carries beside the file's own
