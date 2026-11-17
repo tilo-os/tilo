@@ -48,9 +48,8 @@ fn service() -> (ResourceService, tilolang_runtime::Meta) {
     let (mut ada, packages) = Replica::new("ada", AutoCommit::new(), &[DISCUSSION, NOTES]);
     ada.host.root_of(APP).unwrap();
     ada.commit();
-    let Replica { host, .. } = ada;
     (
-        ResourceService::new(host, "ada"),
+        ada.into_service("ada"),
         packages.last().unwrap().meta.clone(),
     )
 }
@@ -304,8 +303,7 @@ fn tasks() -> (ResourceService, std::rc::Rc<std::cell::RefCell<String>>) {
     });
     ada.host.root_of(TASKS_APP).unwrap();
     ada.commit();
-    let Replica { host, .. } = ada;
-    let mut service = ResourceService::new(host, "ada");
+    let mut service = ada.into_service("ada");
     service.set_clock({
         let clock = std::rc::Rc::clone(&clock);
         move || clock.borrow().clone()
@@ -580,8 +578,7 @@ fn reopened_service(
     store: &tilo_content::ContentStore,
 ) -> ResourceService {
     let (replica, _) = Replica::new("ada", doc.clone(), &[DISCUSSION, NOTES]);
-    let Replica { host, .. } = replica;
-    let mut service = ResourceService::new(host, "ada");
+    let mut service = replica.into_service("ada");
     service.provide_content(APP, store.clone());
     service.settle();
     service
@@ -605,4 +602,74 @@ fn an_action_that_writes_what_is_there_is_done() {
         assert!(matches!(started, Started::Done(_)), "{started:?}");
         service.settle();
     }
+}
+
+const MAIL: (&str, &str) = (
+    include_str!("../../../../apps/tl/mail/app.tl"),
+    include_str!("../../../../apps/tl/mail/app.ids"),
+);
+const MAIL_APP: &str = "so.tilo.lang.mail";
+
+/// Ada's workspace with Mail's inbox a week in, as the session keeps it: a `ResourceService`
+/// over the document, and its first conversation's published id.
+fn mail_inbox() -> (ResourceService, String) {
+    let (mut ada, loaded) = Replica::new("ada", AutoCommit::new(), &[MAIL]);
+    let meta = loaded.last().unwrap().meta.clone();
+    ada.host.root_of(MAIL_APP).unwrap();
+    ada.commit();
+    let scenario = meta
+        .scenarios
+        .iter()
+        .find(|scenario| scenario.name == "a busy inbox")
+        .expect("Mail stages an inbox")
+        .action
+        .clone();
+    let made = ada
+        .host
+        .runtime()
+        .invoke_action(
+            &Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada")),
+            (scenario.as_str(), vec![]),
+        )
+        .unwrap();
+    ada.commit();
+    let tilolang_runtime::InvokeOutcome::Done(Value::Ref(conversation)) = made else {
+        panic!("Mail's inbox stages a conversation");
+    };
+    let mut service = ada.into_service("ada");
+    service.settle();
+    (
+        service,
+        resource_id(MAIL_APP, &conversation.target.id_string()),
+    )
+}
+
+/// An action that answers with a resource it made answers that resource, even where the rest of
+/// its step waits on the person: `mail.answer(t, body)` writes the draft and then sends it, an
+/// outside effect the workspace asks about, so its answer is the draft the program goes on with.
+/// It answered nothing instead, and a program that named the draft it returned trapped with "the
+/// action ran but did not answer the Draft it returns".
+#[test]
+fn an_answers_draft_is_the_answer_of_the_action_that_made_it() {
+    let (mut service, conversation) = mail_inbox();
+    let invoker = tilo_actions::ActionInvoker::agent("task-1").acting_for("ada");
+    let started = service
+        .invoke_as(
+            &invoker,
+            &conversation,
+            "answer",
+            &args(json!({ "body": "Friday works for me." })),
+        )
+        .expect("answering writes the draft and asks about the send");
+    let Started::Done(output) = started else {
+        panic!("answering is done once its draft is written: {started:?}");
+    };
+    let made = output
+        .resources
+        .first()
+        .unwrap_or_else(|| panic!("the draft it made is its answer: {output:?}"));
+    assert!(
+        made.starts_with(&resource_id(MAIL_APP, "")),
+        "the draft it made is published under Mail, whose draft is what `answer` returns: {made}"
+    );
 }

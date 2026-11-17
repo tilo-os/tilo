@@ -258,6 +258,14 @@ impl Replica {
         let root = self.host.root_of(app).unwrap();
         self.host.store().record(&root.doc).unwrap()
     }
+
+    /// The document this replica holds, taken out for a `ResourceService` over it, which the
+    /// session keeps in the workspace: the app it publishes and the person it acts for named
+    /// as the service wants them.
+    pub fn into_service(self, person: &str) -> tilolang_tilo::resource_service::ResourceService {
+        let Self { host, .. } = self;
+        tilolang_tilo::resource_service::ResourceService::new(host, person)
+    }
 }
 
 /// The context `action` is recorded under for `app`: what it acts on, its kind, and the app whose

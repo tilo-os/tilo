@@ -176,9 +176,11 @@ pub(crate) struct HostInner {
     /// The resource the last action planned for the person at the window returned, with the
     /// action: what a window opens after its primary action made it.
     produced: RefCell<Option<(String, ResourceRef)>>,
-    /// The resource the last action planned returned, whoever invoked it, with the action:
-    /// what its invocation answers.
-    returned: RefCell<Option<(String, ResourceRef)>>,
+    /// The resource each action returned when its plan last happened, by the action: what its
+    /// invocation answers. Publishing a surface plans every action, so one place for the last
+    /// would answer one action with another's resource; each is kept by its action and taken
+    /// when that action's answer is asked for ([`Host::take_returned`]).
+    returned: RefCell<HashMap<String, ResourceRef>>,
     /// When the packages' triggers next have something to run.
     triggers: crate::triggers::Schedule,
     /// Whether the next plan is the run of an invocation the document applies next
@@ -621,13 +623,46 @@ impl HostInner {
     }
 
     /// What `action` returned, for its invocation's answer.
+    ///
+    /// The answer is the action's own: a plan the API made of some other action (publishing a
+    /// surface plans each action) writes that action's answer, never this one's, and an
+    /// invocation that changed nothing clears only its own. Each answer is taken once
+    /// ([`Host::take_returned`]), so one action's plan never answers another's invocation.
     fn returned_by(&self, action: &str, outcome: &InvokeOutcome) {
-        *self.returned.borrow_mut() = match outcome {
+        let mut returned = self.returned.borrow_mut();
+        match outcome {
             InvokeOutcome::Done(Value::Ref(made)) => {
-                Some((action.to_owned(), ResourceRef::clone(&made.target)))
+                returned.insert(action.to_owned(), ResourceRef::clone(&made.target));
             }
-            _ => None,
-        };
+            InvokeOutcome::Done(_) | InvokeOutcome::Denied => {
+                returned.remove(action);
+            }
+            InvokeOutcome::Suggested(_) => {}
+        }
+    }
+
+    /// The resource `action` returned its plan made when it stopped at a step a person must
+    /// answer first: the resource the plan makes of the type the action declares it returns,
+    /// when its plan made one. `None` for an action that returns no resource, or whose answer's
+    /// type its plan made nothing of.
+    fn made_by(
+        &self,
+        action: &DynAction,
+        declared: &tilolang_runtime::meta::Meta,
+    ) -> Option<ResourceRef> {
+        use crate::reading::Holdings as _;
+        let result = declared
+            .actions
+            .iter()
+            .find(|held| held.id == action.action_id)
+            .and_then(|held| held.result.clone())?;
+        let ty = declared.type_named(&result)?.id.clone();
+        action
+            .made()
+            .into_iter()
+            .filter(|made| made.kind == tilolang_runtime::store::VersionKind::Created)
+            .filter_map(|made| ResourceRef::parse_id(&made.resource, ty.clone()))
+            .find(|at| self.store.held(at).as_deref() == Some(ty.as_str()))
     }
 
     /// Whether the action `action` can run on the published resource `resource` now: whether it
@@ -760,6 +795,9 @@ impl HostInner {
             self.admit_agent(caller);
         }
         let mut committed = Vec::new();
+        // Whether the action stopped at a step a person must answer first: what it made before
+        // it stopped is still what it returns, and its invocation answers that resource.
+        let mut asked = false;
         let recorded = match self.planned_args(&package, action, request)? {
             Some((args, recorded)) => {
                 let first = self.store.next_ticket();
@@ -788,6 +826,7 @@ impl HostInner {
                     // An action that needs a person's approval is not refused: it is recorded as
                     // a suggested invocation, the answer an agent gets and a person decides.
                     InvokeOutcome::Suggested(suggestion) => {
+                        asked = true;
                         self.runtime
                             .record_suggestion(&invoker, request.action_id, args, &suggestion)
                             .map_err(|error| error.to_string())?;
@@ -830,6 +869,14 @@ impl HostInner {
                     edit
                 });
             }
+        }
+        // A plan that stopped at an ask wrote what the action made before it stopped: the
+        // resource it returns is still its answer, so a program naming it goes on with it once
+        // the person answered, and the origin answers the one resource it made.
+        if asked && let Some(made) = self.made_by(&planned, &package.meta) {
+            self.returned
+                .borrow_mut()
+                .insert(planned.action_id.clone(), made);
         }
         Ok(planned)
     }
@@ -1220,11 +1267,7 @@ impl Host {
     /// once: what its invocation answers.
     #[must_use]
     pub fn take_returned(&self, action: &str) -> Option<ResourceRef> {
-        let mut returned = self.inner.returned.borrow_mut();
-        match returned.as_ref() {
-            Some((made_by, _)) if made_by == action => returned.take().map(|(_, made)| made),
-            _ => None,
-        }
+        self.inner.returned.borrow_mut().remove(action)
     }
 
     #[must_use]
