@@ -254,7 +254,12 @@ fn line(message: &Message, agent: &MemberId) -> String {
     if text.len() < said.len() {
         text.push('…');
     }
-    let who = if message.author == *agent {
+    // What a reminder or an event asked is told as that: it is neither the agent's own earlier
+    // words nor something its person typed.
+    let started = message.cause.as_ref().and_then(crate::cause::said_by);
+    let who = if let Some(what) = started.as_deref() {
+        what
+    } else if message.author == *agent {
         "You"
     } else if message.author.is_person() {
         "Person"

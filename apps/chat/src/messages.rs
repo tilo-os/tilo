@@ -26,6 +26,7 @@ use ui::tilo_resource::{
     self, ActionCx, Atom, Id, JsonSchema, NonBlank, Refusal, SearchEntry, Segment,
 };
 
+use crate::cause::{Cause, Starting};
 use crate::parts::{self, ChatPart};
 use crate::question::{Choice, Question};
 use crate::record::{
@@ -188,6 +189,7 @@ impl ChatPart {
                 origin: posting.origin,
                 share: posting.share,
                 question: posting.question,
+                cause: posting.cause,
                 ..Message::new(channel.clone(), author, ts, posting.text)
             },
         );
@@ -891,6 +893,103 @@ impl ChatPart {
         self.question_of(message)?.settle(&outcome, detail, at)
     }
 
+    /// Ask an agent.
+    ///
+    /// Start a turn of the agents in a conversation with an instruction,
+    /// for the person you are or act for: a reminder that is due, an event
+    /// that fired, news of work started for them. The message says what
+    /// started it, and each agent answers it like a message its person
+    /// wrote, in its reply to it. One `key` is one message however often it
+    /// is asked, so asking again after a restart starts nothing.
+    // Not a message someone received: an automation that fires when a message
+    // arrives does not fire on what asks an agent (it would fire on its own
+    // ask), and a bridge does not carry an instruction out of the workspace.
+    #[action]
+    pub fn ask_agent(
+        &mut self,
+        cx: &mut ActionCx,
+        // Its words stand first: a verb whose first parameter is an id is read
+        // as naming one of the part's messages, and a conversation is none.
+        #[param("The instruction, in words")] text: NonBlank,
+        #[param("The conversation the answer goes to")] channel: Id,
+        #[param("What started it: its kind, what a person calls it, and your own key for it")]
+        cause: Starting,
+        #[param("Filled in where it is asked; leave it out")] members: Option<
+            Vec<ui::tilo_resource::MemberId>,
+        >,
+    ) -> Result<(), Refusal> {
+        let starter = crate::cause::starter(cx)?;
+        let cause = Cause::started(cause, &starter)?;
+        let asker = author(cx)?;
+        crate::cause::takes(
+            &channel,
+            members.as_deref().unwrap_or_default(),
+            &cause.person,
+            &asker,
+        )?;
+        let id = cause.message();
+        if let Some(held) = self.messages.get(&id) {
+            // Asked before under this key: the message stands, and nothing
+            // is started twice.
+            let same = held.channel == channel
+                && held
+                    .cause
+                    .as_ref()
+                    .is_some_and(|before| before.person == cause.person && before.key == cause.key);
+            return if same {
+                Ok(())
+            } else {
+                Err(Refusal::new(
+                    "another message already stands where this key's would",
+                ))
+            };
+        }
+        let ts = seconds(cx);
+        self.append(
+            cx,
+            id,
+            &channel,
+            ts,
+            Posting {
+                text: text.into_string(),
+                cause: Some(cause),
+                ..Posting::default()
+            },
+        )
+        .map(drop)
+    }
+
+    /// Stop an agent's work.
+    ///
+    /// Stops the turn a message asks for: the agent working on it ends its
+    /// work where it stands, and nothing answers the message until someone
+    /// asks again (`retry`). Whoever the turn is for stops it, themselves
+    /// or through what acts for them.
+    #[action(item = messages)]
+    pub fn stop_agent(&mut self, cx: &mut ActionCx, message: &Id) -> Result<(), Refusal> {
+        let starter = crate::cause::starter(cx)?;
+        let at = seconds(cx);
+        let row = self
+            .messages
+            .get_mut(message)
+            .ok_or_else(|| Refusal::new("there is no such message"))?;
+        let asked_for = crate::summons::asks_for(row);
+        if asked_for.is_none() || asked_for.as_deref() != starter.person.person_id() {
+            return Err(Refusal::new(
+                "only the person an agent works for stops its work",
+            ));
+        }
+        let attempt = row.attempts;
+        if row
+            .stopped
+            .as_ref()
+            .is_none_or(|stopped| stopped.attempt != attempt)
+        {
+            row.stopped = Some(crate::summons::Stopped { attempt, at });
+        }
+        Ok(())
+    }
+
     /// Carry the counts of the parts before.
     ///
     /// What a part keeps of the parts before it: for each, how many
@@ -1039,7 +1138,9 @@ impl Chained for ChatPart {
     }
 
     fn part_for(action: &Self::Action, parts: &[(u64, Rc<Self>)]) -> Result<u64, String> {
-        use chat_part::{Ask, DeliverMessage, EditMessage, Post, RecordWork, StreamOutput};
+        use chat_part::{
+            Ask, AskAgent, DeliverMessage, EditMessage, Post, RecordWork, StreamOutput,
+        };
         let holding = |message: &Id| {
             parts
                 .iter()
@@ -1075,6 +1176,21 @@ impl Chained for ChatPart {
                 ts: Some(ts),
             }) => holding(&crate::transcript::delivered_id(channel, author, *ts, body))
                 .or_else(|_| new()),
+            // An ask made before is where it was put: asking again under
+            // its key changes nothing.
+            ChatPartAction::AskAgent(AskAgent { channel, cause, .. }) => parts
+                .iter()
+                .rev()
+                .find(|(_, part)| {
+                    part.messages.iter().any(|(_, held)| {
+                        held.channel == *channel
+                            && held
+                                .cause
+                                .as_ref()
+                                .is_some_and(|before| before.key.0 == cause.key)
+                    })
+                })
+                .map_or_else(new, |(index, _)| Ok(*index)),
             ChatPartAction::Post(_)
             | ChatPartAction::Ask(_)
             | ChatPartAction::DeliverMessage(_)
@@ -1130,6 +1246,12 @@ impl Chained for ChatPart {
                     Some(chat.mentions(share.text.as_deref().unwrap_or_default(), &[]));
             }
             ChatPartAction::Ask(ask) => takes_posts(chat, &ask.channel)?,
+            ChatPartAction::AskAgent(ask) => {
+                takes_posts(chat, &ask.channel)?;
+                // Who the conversation is with, for the verb to check its
+                // asker and the person asked for against.
+                ask.members = Some(chat.conversation_members(&ask.channel));
+            }
             ChatPartAction::EditMessage(edit) => {
                 let body = edit.body.clone().unwrap_or_default();
                 edit.mentions = Some(resolved_mentions(
@@ -1159,6 +1281,7 @@ impl Chained for ChatPart {
             ChatPartAction::ShareResource(share) => &share.channel,
             ChatPartAction::ShareWindow(share) => &share.channel,
             ChatPartAction::Ask(ask) => &ask.channel,
+            ChatPartAction::AskAgent(ask) => &ask.channel,
             _ => return None,
         };
         let conversation = chat.conversation(channel)?;
@@ -1179,9 +1302,8 @@ impl ChatPart {
             | ChatPartAction::ShareOpen(chat_part::ShareOpen { message, .. })
             | ChatPartAction::AnswerQuestion(chat_part::AnswerQuestion { message, .. })
             | ChatPartAction::WithdrawQuestion(chat_part::WithdrawQuestion { message, .. })
-            | ChatPartAction::SettleQuestion(chat_part::SettleQuestion { message, .. }) => {
-                Some(message.clone())
-            }
+            | ChatPartAction::SettleQuestion(chat_part::SettleQuestion { message, .. })
+            | ChatPartAction::StopAgent(chat_part::StopAgent { message }) => Some(message.clone()),
             // A field edit of one message (a reaction) names it in its path.
             ChatPartAction::FieldEdit(edit) => match edit.path() {
                 [Segment::Field(field), Segment::Item(message), ..] if field == "messages" => {

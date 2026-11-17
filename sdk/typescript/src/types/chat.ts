@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.chat@8f97350030092d32";
+export const SURFACE = "so.tilo.chat@bcb2ea29e23d9546";
 
 export interface Category {
   name: string;
@@ -276,6 +276,13 @@ export interface Answered {
 /** One of resource, text, image, video, file: an object whose case the app tags it with. */
 export type Attached = Record<string, unknown>;
 
+export interface Cause {
+  kind: string;
+  label: string;
+  key: string;
+  person: string;
+}
+
 export interface Choice {
   id: string;
   label: string;
@@ -332,6 +339,8 @@ export interface Message {
   origin: Origin | null;
   share: WindowShare | null;
   question: Question | null;
+  cause: Cause | null;
+  stopped: Stopped | null;
   attempts: number;
 }
 
@@ -414,6 +423,12 @@ export interface ShownPersona {
   linked: string | null;
 }
 
+export interface Starting {
+  kind: string;
+  label: string;
+  key: string;
+}
+
 export interface Step {
   id: string;
   sequence: number;
@@ -429,6 +444,11 @@ export interface StepUpdate {
   label: string;
   outcome: string;
   why: string | null;
+}
+
+export interface Stopped {
+  attempt: number;
+  at: number;
 }
 
 export interface Transition {
@@ -786,6 +806,19 @@ export interface SettleQuestionArgs {
   message: string;
   outcome: string;
   detail?: string;
+}
+
+/** The arguments of `ask-agent`. */
+export interface AskAgentArgs {
+  text: string;
+  channel: string;
+  cause: Starting;
+  members?: unknown[];
+}
+
+/** The arguments of `stop-agent`. */
+export interface StopAgentArgs {
+  message: string;
 }
 
 /** The arguments of `carry-counts`. */
@@ -1220,6 +1253,19 @@ export interface Messages extends tilo.Resource {
   }): Promise<void>;
   /** Runs `settle-question` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   settleQuestionMany(items: SettleQuestionArgs[]): Promise<tilo.ActionAnswer[]>;
+  askAgent(args: {
+    text: string;
+    channel: string;
+    cause: Starting;
+    members?: unknown[];
+  }): Promise<void>;
+  /** Runs `ask-agent` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  askAgentMany(items: AskAgentArgs[]): Promise<tilo.ActionAnswer[]>;
+  stopAgent(args: {
+    message: string;
+  }): Promise<void>;
+  /** Runs `stop-agent` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  stopAgentMany(items: StopAgentArgs[]): Promise<tilo.ActionAnswer[]>;
   carryCounts(args: {
     earlier: Record<string, Record<string, number>>;
   }): Promise<void>;
@@ -1237,7 +1283,7 @@ export interface Messages extends tilo.Resource {
 
 /** The actions `Messages` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const MESSAGES_ACTIONS = ["post", "postMany", "postFile", "postFileMany", "shareResource", "shareResourceMany", "shareWindow", "shareWindowMany", "stopSharing", "stopSharingMany", "setShareAccess", "setShareAccessMany", "shareOpen", "shareOpenMany", "deliverMessage", "deliverMessageMany", "editMessage", "editMessageMany", "deleteMessage", "deleteMessageMany", "removeMessage", "removeMessageMany", "pin", "pinMany", "retry", "retryMany", "recordWork", "recordWorkMany", "ask", "askMany", "answerQuestion", "answerQuestionMany", "withdrawQuestion", "withdrawQuestionMany", "settleQuestion", "settleQuestionMany", "carryCounts", "carryCountsMany", "streamOutput", "streamOutputMany"] as const;
+export const MESSAGES_ACTIONS = ["post", "postMany", "postFile", "postFileMany", "shareResource", "shareResourceMany", "shareWindow", "shareWindowMany", "stopSharing", "stopSharingMany", "setShareAccess", "setShareAccessMany", "shareOpen", "shareOpenMany", "deliverMessage", "deliverMessageMany", "editMessage", "editMessageMany", "deleteMessage", "deleteMessageMany", "removeMessage", "removeMessageMany", "pin", "pinMany", "retry", "retryMany", "recordWork", "recordWorkMany", "ask", "askMany", "answerQuestion", "answerQuestionMany", "withdrawQuestion", "withdrawQuestionMany", "settleQuestion", "settleQuestionMany", "askAgent", "askAgentMany", "stopAgent", "stopAgentMany", "carryCounts", "carryCountsMany", "streamOutput", "streamOutputMany"] as const;
 
 /** The `chat.messages` kind at `path`. */
 export function messages(ws: tilo.Workspace, path: string): Messages {

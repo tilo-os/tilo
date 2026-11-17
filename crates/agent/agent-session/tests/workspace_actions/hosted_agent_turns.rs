@@ -1123,3 +1123,7 @@ async fn an_agent_on_the_host_keeps_the_summary_of_a_long_conversation() {
     }
     page.peer.close();
 }
+
+/// What starts a turn besides its person's typing, and what reaches a turn that is going.
+#[path = "hosted_agent_asks.rs"]
+mod asks;

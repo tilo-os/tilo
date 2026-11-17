@@ -475,6 +475,12 @@ chat-messages-ask = Ask your person
 chat-messages-answer-question = Answer a question
 chat-messages-withdraw-question = Withdraw a question
 chat-messages-settle-question = Say what came of an answer
+chat-messages-ask-agent = Ask an agent
+chat-messages-stop-agent = Stop an agent’s work
+# What started a turn nobody typed, named where an author’s name would stand.
+chat-cause-reminder = Reminder: { $label }
+chat-cause-event = Event: { $label }
+chat-cause-news = News: { $label }
 # The question a message asks one person: what an action that asks first would
 # do, its answers, and how it stands once it no longer waits.
 chat-question-on = On “{ $resource }”
