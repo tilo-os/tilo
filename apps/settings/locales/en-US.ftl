@@ -2819,6 +2819,7 @@ settings-access-approve = Approve
 settings-access-decline = Decline
 settings-access-asking-code = Shows the code { $code }
 settings-access-asking-via = Asked on { $device }
+settings-access-answer-yourself = Only you can let a device in. Compare the code it shows and approve it yourself.
 
 ## Window and accessibility copy
 settings-a11y-apple-password = Apple ID password

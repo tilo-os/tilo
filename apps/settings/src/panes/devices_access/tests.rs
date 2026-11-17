@@ -1227,6 +1227,10 @@ tilo_test_env::scenario! {
             let host = a_full_list(now());
             let mut app = window_on_a_full_list(&host);
             press(&mut app, &format!("settings.access.asking.{ASK}.{button}"));
+            if approve {
+                // Letting a device in asks its person first.
+                assert!(app.confirm_asked().is_some(), "approving asks first");
+            }
             assert_eq!(
                 asked_at_last(
                     &mut app,
@@ -1751,5 +1755,157 @@ tilo_test_env::scenario! {
             "the row shows what the list says"
         );
         assert_eq!(times_listed(&host), 1, "and the host is not asked again");
+    }
+}
+
+tilo_test_env::scenario! {
+    fn security_review_letting_a_device_in_wants_its_callers_confirmation;
+
+    phase a_call_that_confirms_nothing_lets_no_device_in;
+    {
+        // Security review, 17 November 2026. Taking a device back asks its
+        // caller to confirm (`without_its_confirmation_nothing_is_taken_back`).
+        // Letting one in is the larger act: the device becomes the person.
+        // Called as the search or an agent calls it, confirming nothing, it
+        // must be passed on no more than a taking back is. It was passed
+        // on, marked as confirmed by its person.
+        let devices = a_full_list(now());
+        let mut app = window_on_a_full_list(&devices);
+        let answer = device_pairing::target(device_pairing::ANSWER);
+        let called = app.call_on(
+            &asking_row_id(),
+            "answer-device",
+            serde_json::json!({"approve": true}),
+        );
+        // As long as a pressed button's call is given to be passed on.
+        for _ in 0..200 {
+            app.settle();
+            if !devices.asked_at(&answer).is_empty() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        let asked = devices.asked_at(&answer);
+        let confirmed: Vec<_> = devices
+            .asked()
+            .into_iter()
+            .filter(|request| request.target == answer)
+            .map(|request| request.confirmation)
+            .collect();
+        assert!(
+            asked.is_empty(),
+            "a call that confirmed nothing (answered {called:?}) was passed on to let the \
+             device in: {asked:?}, with the confirmation {confirmed:?}"
+        );
+    }
+}
+
+/// `passed_on` is given as long as a pressed button's call takes, and says
+/// that nothing was passed on.
+fn nothing_passed_on(app: &mut TestApp<SettingsShell>, passed_on: impl Fn() -> bool) -> bool {
+    for _ in 0..50 {
+        app.settle();
+        if passed_on() {
+            return false;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    true
+}
+
+tilo_test_env::scenario! {
+    fn letting_a_device_in_is_its_persons_own_act;
+
+    phase the_row_says_what_answering_asks_of_its_caller;
+    // Whoever reads the row's action knows before calling it: letting the
+    // device in wants a confirmation, declining wants none, and anyone
+    // acting for the person asks them first, whatever they were allowed.
+    {
+        let devices = a_full_list(now());
+        let mut app = window_on_a_full_list(&devices);
+        let row = published_row(&mut app, &asking_row_id()).unwrap();
+        let answer = offered(&row, "answer-device");
+        let approving = object(serde_json::json!({"approve": true}));
+        let declining = object(serde_json::json!({"approve": false}));
+        assert_eq!(
+            answer.confirmation_for_json(&approving),
+            ui::tilo_actions::ConfirmationPolicy::Confirm,
+            "letting a device in"
+        );
+        assert_eq!(
+            answer.confirmation_for_json(&declining),
+            ui::tilo_actions::ConfirmationPolicy::None,
+            "declining one"
+        );
+        let attended = ui::tilo_actions::ATTENDED_TAG;
+        assert!(
+            answer.contract.tags.iter().any(|tag| tag == attended),
+            "its person attends: {:?}",
+            answer.contract.tags
+        );
+    }
+
+    phase approve_asks_the_person_first_and_decline_does_not;
+    {
+        let answer = device_pairing::target(device_pairing::ANSWER);
+        let devices = a_full_list(now());
+        let mut app = window_on_a_full_list(&devices);
+        press(&mut app, &format!("settings.access.asking.{ASK}.approve"));
+        let (asked, _) = app.asking().expect("letting a device in asks first");
+        assert_eq!(
+            (asked.resource.clone(), asked.action.as_str()),
+            (asking_row_id(), "answer-device")
+        );
+        assert!(
+            nothing_passed_on(&mut app, || !devices.asked_at(&answer).is_empty()),
+            "nobody is let in before the person agreed"
+        );
+        assert_eq!(app.confirm_asked(), Some(asked));
+        assert_eq!(
+            asked_at_last(&mut app, &devices, &answer),
+            [object(serde_json::json!({"ask": ASK, "label": "Safari on iPad",
+                "approve": true, "confirm": true}))]
+        );
+
+        let devices = a_full_list(now());
+        let mut app = window_on_a_full_list(&devices);
+        press(&mut app, &format!("settings.access.asking.{ASK}.decline"));
+        assert_eq!(app.asking(), None, "declining asks nothing more");
+        assert_eq!(
+            asked_at_last(&mut app, &devices, &answer),
+            [object(serde_json::json!({"ask": ASK, "label": "Safari on iPad",
+                "approve": false, "confirm": true}))]
+        );
+    }
+
+    phase whoever_acts_for_the_person_lets_no_device_in;
+    // An agent, an automation and a bot each reach the action only as a
+    // call delivered for them. Even with a confirmation on it, such a call
+    // lets nobody in: Settings would pass it on to whoever keeps the
+    // person's devices as the person's own word.
+    {
+        let answer = device_pairing::target(device_pairing::ANSWER);
+        for acting in [
+            ui::tilo_actions::ActionInvoker::agent("scribe"),
+            ui::tilo_actions::ActionInvoker::automation("nightly"),
+            ui::tilo_actions::ActionInvoker::bot("helper"),
+        ] {
+            let devices = a_full_list(now());
+            let mut app = window_on_a_full_list(&devices);
+            let refused = {
+                let _for = ui::invocation_scope::InvokerScope::enter(acting.clone());
+                app.call_confirmed_on(
+                    &asking_row_id(),
+                    "answer-device",
+                    serde_json::json!({"approve": true}),
+                )
+            };
+            assert!(refused.is_err(), "{acting:?} was answered {refused:?}");
+            assert!(
+                nothing_passed_on(&mut app, || !devices.asked_at(&answer).is_empty()),
+                "{acting:?} had a device let in: {:?}",
+                devices.asked_at(&answer)
+            );
+        }
     }
 }
