@@ -479,7 +479,8 @@ mod tests {
         let binding_state = Rc::clone(&state);
         let bindings: Bindings = Rc::new(move |request| {
             let resource =
-                crate::browser_widget::personal::request_resource(&binding_state, request)?;
+                crate::browser_widget::personal::request_resource(&binding_state, request)?
+                    .into_resource();
             let action = resource.actions.first()?;
             ui::tilo_actions::ActionBinding::unit_for(&resource, &action.id).ok()
         });
@@ -551,7 +552,8 @@ mod tests {
                     id: item.into(),
                 },
             )
-            .unwrap();
+            .unwrap()
+            .into_resource();
             assert_eq!(resource.actions.first().unwrap().id, "open");
         }
         assert!(

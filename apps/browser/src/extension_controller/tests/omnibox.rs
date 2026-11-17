@@ -149,7 +149,7 @@ tilo_test_env::scenario! {
         let mut controller = ExtensionController::new(true);
         controller.infos = vec![info];
         controller.installed = vec![on.clone()];
-        let resource = controller.resources().remove(0);
+        let resource = controller.resources().remove(0).into_resource();
         let spec = resource
             .actions
             .iter()
@@ -173,6 +173,8 @@ tilo_test_env::scenario! {
         }];
         assert!(
             controller.resources()[0]
+                .clone()
+                .into_resource()
                 .actions
                 .iter()
                 .all(|spec| spec.id != "send-to-extension")

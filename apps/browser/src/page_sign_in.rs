@@ -23,7 +23,8 @@
 //! says so; a newer one takes the place of one still open.
 use std::sync::{Arc, Weak};
 
-use ui::tilo_actions::{ResourcePresentation, ResourceSpec};
+use ui::framework::LiveRow;
+use ui::tilo_actions::ResourcePresentation;
 use ui::webview::{
     HttpAuthChallenge, HttpAuthCredentials, SharedEngine, WebViewCommand, WebViewEngine,
     WebViewEvent,
@@ -225,17 +226,16 @@ impl PageSignIn {
     /// The sign-in as the window's row: who asks, what the server says of
     /// itself, and its two answers, each bound to this sign-in so an answer
     /// meant for it never reaches the next. Nothing typed is part of it.
-    pub fn resource(&self) -> Option<ResourceSpec> {
+    pub fn resource(&self) -> Option<LiveRow> {
         use ui::tilo_resource::Effect as _;
         let open = self.open.as_ref()?;
         let sign_in = open.challenge.id;
-        let mut row = ResourceSpec::new(ROW, ROW, open.title.clone()).with_presentation(
-            ResourcePresentation {
+        let mut row =
+            LiveRow::new(ROW, ROW, open.title.clone()).presentation(ResourcePresentation {
                 detail: None,
                 badge: None,
                 preview: Some(crate::page_dialogs::preview(&open.detail)),
-            },
-        );
+            });
         // Both credentials are asked of whoever answers here: what the
         // prompt's fields hold is the person's, and no action sends it.
         let mut answer = BrowserEffect::AnswerPageSignIn {
@@ -245,10 +245,10 @@ impl PageSignIn {
         }
         .bound_asking(&["username", "password"]);
         answer.type_mut().label = CATALOG.t("browser-page-sign-in-submit");
-        row.actions.push(answer);
+        row = row.operation(answer);
         let mut cancel = BrowserEffect::CancelPageSignIn { sign_in }.bound();
         cancel.type_mut().label = CATALOG.t("browser-page-dialog-cancel");
-        row.actions.push(cancel);
+        row = row.operation(cancel);
         Some(row)
     }
 }
@@ -385,9 +385,15 @@ mod tests {
             .collect()
     }
 
-    fn preview(sign_in: &PageSignIn) -> String {
+    /// The row the window publishes for the sign-in a request waits on.
+    fn published(sign_in: &PageSignIn) -> Option<ui::tilo_actions::ResourceSpec> {
         sign_in
             .resource()
+            .map(ui::framework::LiveRow::into_resource)
+    }
+
+    fn preview(sign_in: &PageSignIn) -> String {
+        published(sign_in)
             .and_then(|row| row.presentation)
             .and_then(|presentation| presentation.preview)
             .expect("the sign-in says who asks")
@@ -405,7 +411,7 @@ mod tests {
             assert!(engine.accepts_http_auth(), "the page's sign-ins come here");
             assert!(sign_in.apply(&asks(3, "https://staging.example.org", "Staff wiki"), &page));
 
-            let row = sign_in.resource().expect("the sign-in is a row");
+            let row = published(&sign_in).expect("the sign-in is a row");
             assert_eq!(row.label, "Sign in to staging.example.org");
             assert_eq!(
                 preview(&sign_in),
@@ -449,7 +455,7 @@ mod tests {
                 [(3, "https://staging.example.org".to_owned(), given())],
                 "the answer names the asker that was shown"
             );
-            assert!(sign_in.widget().is_none() && sign_in.resource().is_none());
+            assert!(sign_in.widget().is_none() && published(&sign_in).is_none());
             assert!(sign_in.answer(&page, 3, None).is_err(), "answered once");
 
             // The engine stops waiting by itself: the prompt goes.
@@ -492,7 +498,7 @@ mod tests {
                 ),
                 &page,
             );
-            assert_eq!(sign_in.resource().unwrap().label, "Sign in to evil.example");
+            assert_eq!(published(&sign_in).unwrap().label, "Sign in to evil.example");
             assert_eq!(
                 preview(&sign_in),
                 "https://evil.example asks for a user name and password. In its own words: \
@@ -503,7 +509,7 @@ mod tests {
             // No realm, no words of the server's.
             sign_in.apply(&asks(2, "https://example.org:8443", ""), &page);
             assert_eq!(
-                sign_in.resource().unwrap().label,
+                published(&sign_in).unwrap().label,
                 "Sign in to example.org:8443"
             );
             assert_eq!(
@@ -526,7 +532,7 @@ mod tests {
             proxy.proxy = true;
             sign_in.apply(&WebViewEvent::HttpAuth(proxy), &page);
             assert_eq!(
-                sign_in.resource().unwrap().label,
+                published(&sign_in).unwrap().label,
                 "Sign in to the proxy proxy.example:3128"
             );
             assert_eq!(
@@ -538,7 +544,7 @@ mod tests {
             // A name too long for a title is never cut: it stands in full below.
             let long = format!("https://{}.example.org", "a".repeat(80));
             sign_in.apply(&asks(6, &long, ""), &page);
-            assert_eq!(sign_in.resource().unwrap().label, "Sign in to this site");
+            assert_eq!(published(&sign_in).unwrap().label, "Sign in to this site");
             assert!(preview(&sign_in).starts_with(&long));
         }
 
@@ -555,7 +561,7 @@ mod tests {
                 (4, ""),
             ] {
                 assert!(!sign_in.apply(&asks(id, asker, "Staff"), &page), "{asker}");
-                assert!(sign_in.widget().is_none() && sign_in.resource().is_none());
+                assert!(sign_in.widget().is_none() && published(&sign_in).is_none());
                 assert_eq!(
                     answers(&engine).last(),
                     Some(&(id, asker.to_owned(), None)),
@@ -573,7 +579,7 @@ mod tests {
             sign_in.apply(&asks(1, "https://one.example", "First"), &page);
             sign_in.apply(&asks(2, "https://two.example", "Second"), &page);
             assert_eq!(sign_in.current().map(|challenge| challenge.id), Some(2));
-            assert_eq!(sign_in.resource().unwrap().label, "Sign in to two.example");
+            assert_eq!(published(&sign_in).unwrap().label, "Sign in to two.example");
             assert!(
                 sign_in
                     .answer(&page, 1, Some(HttpAuthCredentials::new("ada", PASSWORD)))

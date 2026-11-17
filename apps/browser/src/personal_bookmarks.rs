@@ -10,7 +10,6 @@
 use crate::continuity::{ImportBatch, ImportBundle, MAX_BUNDLE_ENTRIES, MAX_IMPORT_BYTES};
 use crate::continuity_library::{Bookmark, Bookmarks};
 use crate::imported_folders::{ImportedNode, ImportedTree, NodeKind};
-use ui::tilo_resource::Effect as _;
 use ui::tilo_resource::{self, ActionCx, Atom, Map, Model, ModelError, Refusal, Set, resource};
 
 pub const SCOPE: &str = "browser.bookmarks/personal";
@@ -416,63 +415,89 @@ pub fn node_id(source: &[u8; 32], id: &str) -> String {
         blake3::hash(id.as_bytes()).to_hex()
     )
 }
-pub(crate) fn node_resource(
-    tree: &ImportedTree,
-    node: &ImportedNode,
-) -> ui::tilo_actions::ResourceSpec {
-    let kind = match node.kind {
+/// What an id names in the person's bookmarks: one of their own, or a
+/// placement in an imported tree.
+pub(crate) enum Named<'a> {
+    Flat(&'a Bookmark),
+    Placement(&'a ImportedTree, &'a ImportedNode),
+}
+impl Named<'_> {
+    /// The resource kind the row is published under.
+    pub(crate) fn kind(&self) -> &'static str {
+        match self {
+            Self::Flat(_) => "browser.personal-bookmark",
+            Self::Placement(_, node) => node_kind(node),
+        }
+    }
+    /// The row's name: the bookmark's or the placement's title.
+    pub(crate) fn label(&self) -> &str {
+        match self {
+            Self::Flat(entry) => &entry.title,
+            Self::Placement(_, node) => &node.title,
+        }
+    }
+}
+fn node_kind(node: &ImportedNode) -> &'static str {
+    match node.kind {
         NodeKind::Folder => "browser.personal-bookmark-folder",
         NodeKind::Bookmark { .. } => "browser.personal-bookmark-placement",
         NodeKind::Separator => "browser.personal-bookmark-separator",
-    };
-    let mut resource =
-        ui::tilo_actions::ResourceSpec::new(node_id(&tree.source, &node.id), kind, &node.title);
-    resource = resource.with_action(
-        crate::effects::BrowserEffect::RemovePersonalImportedNode {
-            source: blake3::Hash::from(tree.source).to_hex().to_string(),
-            id: node.id.clone(),
+    }
+}
+/// What `id` names, when it names anything of the person's.
+pub(crate) fn named<'a>(state: &'a PersonalBookmarkState, id: &str) -> Option<Named<'a>> {
+    for entry in state.bookmarks.entries() {
+        if flat_id(&entry.url) == id {
+            return Some(Named::Flat(entry));
         }
-        .bound(),
+    }
+    for tree in &state.imported_trees {
+        for node in &tree.nodes {
+            if node_id(&tree.source, &node.id) == id {
+                return Some(Named::Placement(tree, node));
+            }
+        }
+    }
+    None
+}
+pub(crate) fn node_resource(tree: &ImportedTree, node: &ImportedNode) -> ui::framework::LiveRow {
+    let mut resource = ui::framework::LiveRow::new(
+        node_id(&tree.source, &node.id),
+        node_kind(node),
+        &node.title,
     );
+    resource = resource.effect(&crate::effects::BrowserEffect::RemovePersonalImportedNode {
+        source: blake3::Hash::from(tree.source).to_hex().to_string(),
+        id: node.id.clone(),
+    });
     match &node.kind {
         NodeKind::Folder => {
-            resource = resource.with_action(
-                crate::effects::BrowserEffect::ShowPersonalBookmarkFolder {
+            resource =
+                resource.effect(&crate::effects::BrowserEffect::ShowPersonalBookmarkFolder {
                     source: blake3::Hash::from(tree.source).to_hex().to_string(),
                     id: Some(node.id.clone()),
                     offset: 0,
-                }
-                .bound(),
-            );
+                });
         }
         NodeKind::Bookmark { url } => {
-            resource = resource
-                .with_action(crate::effects::BrowserEffect::Open { url: url.clone() }.bound());
+            resource = resource.effect(&crate::effects::BrowserEffect::Open { url: url.clone() });
         }
         NodeKind::Separator => {}
     }
     resource
 }
-pub(crate) fn flat_resource(
-    entry: &crate::continuity_library::Bookmark,
-) -> ui::tilo_actions::ResourceSpec {
-    ui::tilo_actions::ResourceSpec::new(
+pub(crate) fn flat_resource(entry: &crate::continuity_library::Bookmark) -> ui::framework::LiveRow {
+    ui::framework::LiveRow::new(
         flat_id(&entry.url),
         "browser.personal-bookmark",
         &entry.title,
     )
-    .with_action(
-        crate::effects::BrowserEffect::Open {
-            url: entry.url.clone(),
-        }
-        .bound(),
-    )
-    .with_action(
-        crate::effects::BrowserEffect::RemovePersonalBookmark {
-            url: entry.url.clone(),
-        }
-        .bound(),
-    )
+    .effect(&crate::effects::BrowserEffect::Open {
+        url: entry.url.clone(),
+    })
+    .effect(&crate::effects::BrowserEffect::RemovePersonalBookmark {
+        url: entry.url.clone(),
+    })
 }
 pub(crate) fn search(state: &PersonalBookmarkState) -> Vec<ui::tilo_resource::SearchEntry> {
     let mut entries = Vec::new();
@@ -509,23 +534,11 @@ pub(crate) fn search(state: &PersonalBookmarkState) -> Vec<ui::tilo_resource::Se
     }
     entries
 }
-pub(crate) fn resolve(
-    state: &PersonalBookmarkState,
-    id: &str,
-) -> Option<ui::tilo_actions::ResourceSpec> {
-    for entry in state.bookmarks.entries() {
-        if flat_id(&entry.url) == id {
-            return Some(flat_resource(entry));
-        }
+pub(crate) fn resolve(state: &PersonalBookmarkState, id: &str) -> Option<ui::framework::LiveRow> {
+    match named(state, id)? {
+        Named::Flat(entry) => Some(flat_resource(entry)),
+        Named::Placement(tree, node) => Some(node_resource(tree, node)),
     }
-    for tree in &state.imported_trees {
-        for node in &tree.nodes {
-            if node_id(&tree.source, &node.id) == id {
-                return Some(node_resource(tree, node));
-            }
-        }
-    }
-    None
 }
 
 #[cfg(test)]

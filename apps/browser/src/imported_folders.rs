@@ -110,8 +110,8 @@ mod tests {
                 .iter()
                 .find(|node| node.parent.as_deref() == Some(&children[1].id))
                 .unwrap();
-            let first = crate::personal_bookmarks::node_resource(captured, first);
-            let second = crate::personal_bookmarks::node_resource(captured, second);
+            let first = crate::personal_bookmarks::node_resource(captured, first).into_resource();
+            let second = crate::personal_bookmarks::node_resource(captured, second).into_resource();
             assert_eq!(first.label, "first");
             assert_eq!(second.label, "second");
             assert!(
@@ -247,7 +247,8 @@ mod tests {
                 .iter()
                 .find(|node| node.id == "placement")
                 .unwrap(),
-        );
+        )
+        .into_resource();
         app.call_on(
             &crate::personal_bookmarks::node_id(&source, "root"),
             "show-personal-bookmark-folder",

@@ -500,10 +500,10 @@ impl Capabilities {
     /// The site's request, published as part of the page it belongs to, with the same
     /// two answers the person's prompt offers. Refused here, the request is denied as
     /// its Block button denies it.
-    pub fn resource(&self) -> Option<ui::tilo_actions::ResourceSpec> {
+    pub fn resource(&self) -> Option<ui::framework::LiveRow> {
         use ui::tilo_resource::Effect as _;
         let (request, origin, rights) = self.pending()?;
-        let mut row = ui::tilo_actions::ResourceSpec::new(
+        let mut row = ui::framework::LiveRow::new(
             RESOURCE,
             RESOURCE,
             crate::CATALOG.t_args(
@@ -522,7 +522,7 @@ impl Capabilities {
             let mut action =
                 crate::effects::BrowserEffect::AnswerPermission { request, allow }.bound();
             action.type_mut().label = crate::CATALOG.t(key);
-            row.actions.push(action);
+            row = row.operation(action);
         }
         Some(row)
     }
@@ -854,7 +854,7 @@ mod tests {
                 origin: "https://site.test".into(),
                 permissions: "location".into(),
             });
-            let row = capabilities.resource().unwrap();
+            let row = capabilities.resource().unwrap().into_resource();
             assert_eq!(row.id.as_str(), RESOURCE);
             assert!(row.label.contains("https://site.test"), "{}", row.label);
             let names: Vec<&str> = row

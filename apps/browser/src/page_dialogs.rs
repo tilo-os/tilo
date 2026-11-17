@@ -9,7 +9,8 @@ use std::cell::Cell;
 use std::rc::Rc;
 use std::sync::{Arc, Weak};
 
-use ui::tilo_actions::{ResourcePresentation, ResourceSpec};
+use ui::framework::LiveRow;
+use ui::tilo_actions::ResourcePresentation;
 use ui::tokens::TextRole;
 use ui::webview::{
     MAX_PAGE_DIALOG_ANSWER, PageDialog, PageDialogKind, SharedEngine, WebViewCommand,
@@ -148,17 +149,16 @@ impl PageDialogs {
 
     /// The question as the window's row: who asks, the page's own words, and its answers,
     /// each bound to this question so an answer meant for it never reaches the next.
-    pub fn resource(&self) -> Option<ResourceSpec> {
+    pub fn resource(&self) -> Option<LiveRow> {
         use ui::tilo_resource::Effect as _;
         let open = self.open.as_ref()?;
         let dialog = &open.dialog;
-        let mut row = ResourceSpec::new(ROW, ROW, open.title.clone()).with_presentation(
-            ResourcePresentation {
+        let mut row =
+            LiveRow::new(ROW, ROW, open.title.clone()).presentation(ResourcePresentation {
                 detail: None,
                 badge: None,
                 preview: Some(preview(&open.body())),
-            },
-        );
+            });
         let prompt = dialog.kind == PageDialogKind::Prompt;
         // A prompt's answer is asked; absent, it is what the field holds, which starts as
         // the page's suggestion.
@@ -168,11 +168,11 @@ impl PageDialogs {
         }
         .bound_asking(if prompt { &["text"] } else { &[] });
         accept.type_mut().label.clone_from(&open.accept);
-        row.actions.push(accept);
+        row = row.operation(accept);
         if let Some(label) = &open.decline {
             let mut decline = BrowserEffect::DismissPageDialog { dialog: dialog.id }.bound();
             decline.type_mut().label.clone_from(label);
-            row.actions.push(decline);
+            row = row.operation(decline);
         }
         Some(row)
     }
@@ -343,7 +343,7 @@ mod tests {
                 "the page's questions come here"
             );
             assert!(dialogs.apply(&asks(PageDialogKind::Confirm, 3)));
-            let row = dialogs.resource().expect("the question is a row");
+            let row = dialogs.resource().expect("the question is a row").into_resource();
             assert_eq!(row.label, "shop.example asks");
             assert_eq!(
                 row.presentation.and_then(|p| p.preview).as_deref(),
@@ -383,7 +383,7 @@ mod tests {
             let mut dialogs = PageDialogs::default();
             dialogs.sync(&page);
             dialogs.apply(&asks(PageDialogKind::Prompt, 1));
-            let row = dialogs.resource().unwrap();
+            let row = dialogs.resource().unwrap().into_resource();
             let send = &row.actions[0];
             assert_eq!(send.label, "Send");
             assert_eq!(
@@ -424,7 +424,7 @@ mod tests {
             let mut dialogs = PageDialogs::default();
             dialogs.sync(&page);
             dialogs.apply(&asks(PageDialogKind::Leave { reload: false }, 1));
-            let row = dialogs.resource().unwrap();
+            let row = dialogs.resource().unwrap().into_resource();
             assert_eq!(row.label, "Leave this page?");
             assert_eq!(
                 row.presentation.and_then(|p| p.preview).as_deref(),
@@ -433,7 +433,7 @@ mod tests {
             let labels: Vec<_> = row.actions.iter().map(|a| a.label.as_str()).collect();
             assert_eq!(labels, ["Leave", "Cancel"]);
             dialogs.apply(&asks(PageDialogKind::Leave { reload: true }, 2));
-            assert_eq!(dialogs.resource().unwrap().label, "Reload this page?");
+            assert_eq!(dialogs.resource().unwrap().into_resource().label, "Reload this page?");
 
             let mut alert = PageDialog {
                 id: 3,
@@ -443,7 +443,7 @@ mod tests {
                 default_text: String::new(),
             };
             dialogs.apply(&WebViewEvent::PageDialog(alert.clone()));
-            let row = dialogs.resource().unwrap();
+            let row = dialogs.resource().unwrap().into_resource();
             assert_eq!(row.label, "Message from this page");
             assert_eq!(
                 row.actions
@@ -460,7 +460,7 @@ mod tests {
             alert.origin = "http://127.0.0.1:8080".into();
             dialogs.apply(&WebViewEvent::PageDialog(alert));
             assert_eq!(
-                dialogs.resource().unwrap().label,
+                dialogs.resource().unwrap().into_resource().label,
                 "Message from 127.0.0.1:8080"
             );
         }

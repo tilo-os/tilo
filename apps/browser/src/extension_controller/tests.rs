@@ -1,4 +1,5 @@
 use super::*;
+use ui::tilo_actions::ResourceSpec;
 
 mod access;
 mod omnibox;
@@ -513,8 +514,9 @@ tilo_test_env::scenario! {
         let actions = |controller: &ExtensionController| {
             let resources = controller.resources();
             assert_eq!(resources.len(), 1);
-            assert_eq!(resources[0].id.0, "browser.extension:lite");
-            resources[0]
+            let resource = resources[0].clone().into_resource();
+            assert_eq!(resource.id.0, "browser.extension:lite");
+            resource
                 .actions
                 .iter()
                 .map(|spec| spec.id.clone())
@@ -531,7 +533,7 @@ tilo_test_env::scenario! {
                 "remove-extension"
             ]
         );
-        let resource = controller.resources().remove(0);
+        let resource = controller.resources().remove(0).into_resource();
         for action in [
             "turn-off-extension",
             "use-extension",
@@ -560,7 +562,7 @@ tilo_test_env::scenario! {
             actions(&controller),
             ["show-extensions", "turn-on-extension", "remove-extension"]
         );
-        let off = controller.resources().remove(0);
+        let off = controller.resources().remove(0).into_resource();
         invoke(&mut controller, &off, "turn-on-extension").unwrap();
         assert_eq!(queued(&controller).last(), Some(&format!("Enable({id:?})")));
         assert!(

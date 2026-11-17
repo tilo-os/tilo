@@ -5006,7 +5006,6 @@ impl PagePublication {
         self.search_index
             .resource(id)
             .or_else(|| crate::personal_bookmarks::resolve(&self.personal_bookmarks, id))
-            .map(ui::framework::LiveRow::from_resource)
     }
 
     pub(crate) fn search_entries(&self) -> Vec<ui::tilo_resource::SearchEntry> {
@@ -5038,14 +5037,8 @@ impl BrowserWidget {
             rows: self.live_rows(),
             bound: self.page_declarations(),
             page_row: self.page_row_declarations(),
-            question: self
-                .page_dialogs
-                .resource()
-                .map(ui::framework::LiveRow::from_resource),
-            sign_in: self
-                .page_sign_in
-                .resource()
-                .map(ui::framework::LiveRow::from_resource),
+            question: self.page_dialogs.resource(),
+            sign_in: self.page_sign_in.resource(),
             search_index: self.search_index.clone(),
             personal_bookmarks: Rc::clone(&self.personal_bookmarks),
         }
@@ -5055,21 +5048,36 @@ impl BrowserWidget {
     /// history session, history, downloads, extensions and the library and
     /// settings presentations.
     pub(crate) fn live_rows(&self) -> Vec<ui::framework::LiveRow> {
-        self.published()
-            .children
-            .into_iter()
-            .map(ui::framework::LiveRow::from_resource)
-            .collect()
+        self.window_rows()
     }
 
     /// [`Self::live_rows`] beneath the root they join, which the window's own
     /// controls bind to.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "ResourceSpec definitions stay together so their action contracts remain discoverable."
-    )]
     pub(crate) fn published(&self) -> ResourceSpec {
         use crate::effects::BrowserEffect as E;
+        use ui::framework::LiveRow;
+        use ui::tilo_resource::Effect as _;
+        let mut browser = LiveRow::new(
+            crate::resource::Browser::KIND,
+            crate::resource::Browser::KIND,
+            crate::resource::CATALOG.t("browser-window-name"),
+        );
+        for spec in E::specs() {
+            browser = browser.operation(spec);
+        }
+        for row in self.window_rows() {
+            browser = browser.row(row);
+        }
+        browser.into_resource()
+    }
+
+    #[allow(
+        clippy::too_many_lines,
+        reason = "Rows stay together so their action contracts remain discoverable."
+    )]
+    fn window_rows(&self) -> Vec<ui::framework::LiveRow> {
+        use crate::effects::BrowserEffect as E;
+        use ui::framework::LiveRow;
         use ui::tilo_resource::Effect as _;
         const MATERIALIZED_LIMIT: usize = 100;
         // The page is named by its site, not its title, and from the moment
@@ -5084,7 +5092,7 @@ impl BrowserWidget {
         } else {
             &self.current_uri
         });
-        let mut page = ResourceSpec::new(
+        let mut page = LiveRow::new(
             "browser.page",
             "browser.page",
             if site.is_empty() {
@@ -5100,7 +5108,7 @@ impl BrowserWidget {
                 .bookmarks
                 .contains(&self.current_uri)
         {
-            page.actions.push(
+            page = page.operation(
                 E::BookmarkPersonalPage {
                     url: self.current_uri.clone(),
                     title: self.title.clone(),
@@ -5109,7 +5117,7 @@ impl BrowserWidget {
             );
         }
         let back = E::Back.bound();
-        page.actions.push(if self.can_go_back {
+        page = page.operation(if self.can_go_back {
             back
         } else {
             back.unavailable(
@@ -5118,21 +5126,20 @@ impl BrowserWidget {
             )
         });
         let forward = E::Forward.bound();
-        page.actions.push(if self.can_go_forward {
+        page = page.operation(if self.can_go_forward {
             forward
         } else {
             forward.unavailable("history_boundary", CATALOG.t("browser-action-no-next-page"))
         });
-        page.actions.push(E::Reload.bound());
+        page = page.operation(E::Reload.bound());
         let stop = E::Stop.bound();
-        page.actions.push(if self.progress < 1.0 {
+        page = page.operation(if self.progress < 1.0 {
             stop
         } else {
             stop.unavailable("history_boundary", CATALOG.t("browser-action-page-idle"))
         });
-        page.actions
-            .push(E::Navigate { url: String::new() }.bound_asking(&["url"]));
-        page.actions.push(
+        page = page.operation(E::Navigate { url: String::new() }.bound_asking(&["url"]));
+        page = page.operation(
             E::OpenTab {
                 url: String::new(),
                 background: None,
@@ -5143,27 +5150,31 @@ impl BrowserWidget {
         if self.active_pip {
             pip.type_mut().label = CATALOG.t("browser-action-close-picture-in-picture");
         }
-        page.actions.push(pip);
+        page = page.operation(pip);
         let web_page = is_supported_web_url(&self.current_uri);
         let mut reader = E::ReaderView.bound();
         if self.reader_view {
             reader.type_mut().label = CATALOG.t("browser-action-close-reader-view");
         }
-        page.actions.push(if web_page {
+        page = page.operation(if web_page {
             reader
         } else {
             reader.unavailable("no_web_page", CATALOG.t("browser-action-needs-page"))
         });
         let review = E::ReviewPage.bound();
-        page.actions.push(if web_page {
+        page = page.operation(if web_page {
             review
         } else {
             review.unavailable("no_web_page", CATALOG.t("browser-action-needs-page"))
         });
-        page.actions.extend(self.daily.zoom_actions());
+        for spec in self.daily.zoom_actions() {
+            page = page.operation(spec);
+        }
         // A permission the page waits on is one of the page's own actions, so a
         // reader answers it beside its other buttons.
-        page.actions.extend(self.capabilities.permission_answers());
+        for spec in self.capabilities.permission_answers() {
+            page = page.operation(spec);
+        }
         // A departure the page started on its own waits on the person: the
         // action states the number the window holds it under, one per hold
         // whatever the engine calls it, and the page it leaves from, what it
@@ -5192,12 +5203,12 @@ impl BrowserWidget {
                 "browser-action-let-leave",
                 &[("request", ui::i18n::ArgValue::Text(held.describing()))],
             );
-            page.actions.push(send);
+            page = page.operation(send);
             let mut keep = E::KeepHeldRequest { id }
                 .bound()
                 .stating_bound("id", "The held request's id");
             keep.type_mut().label = CATALOG.t("browser-action-keep-page");
-            page.actions.push(keep);
+            page = page.operation(keep);
         }
         let element = String::new();
         for (spec, asking) in [
@@ -5402,7 +5413,7 @@ impl BrowserWidget {
             if observes && !self.page_holds_sign_in() {
                 spec.type_mut().contract.kind = ui::tilo_actions::ActionKind::Read;
             }
-            page.actions.push(if web_page {
+            page = page.operation(if web_page {
                 spec
             } else {
                 spec.unavailable("no_web_page", CATALOG.t("browser-action-needs-page"))
@@ -5417,16 +5428,18 @@ impl BrowserWidget {
                 reason: None,
             }
             .bound_asking(&["element", "item", "reason"][..]);
-            page.actions.push(if web_page {
+            page = page.operation(if web_page {
                 spec
             } else {
                 spec.unavailable("no_web_page", CATALOG.t("browser-action-needs-page"))
             });
         }
         // Each form the page is known to ask is an action of its own.
-        page.actions.extend(self.form_actions());
+        for spec in self.form_actions() {
+            page = page.operation(spec);
+        }
 
-        let mut session = ResourceSpec::new(
+        let mut session = LiveRow::new(
             "browser.session",
             "browser.history-pause",
             if self.history_paused() {
@@ -5439,17 +5452,17 @@ impl BrowserWidget {
         if self.history_paused() {
             pause.type_mut().label = CATALOG.t("browser-action-resume-history");
         }
-        session.actions.push(pause);
+        session = session.operation(pause);
 
         // The Library's views are the Library row's: a view on these rows would
         // be their disclosure, and with it every action here.
-        let mut history = ResourceSpec::new(
+        let mut history = LiveRow::new(
             "browser.history",
             "browser.history",
             CATALOG.t("browser-resource-history"),
         );
         let clear = E::ClearHistory.bound();
-        history.actions.push(if self.history.is_empty() {
+        history = history.operation(if self.history.is_empty() {
             clear.unavailable("already_empty", CATALOG.t("browser-history-already-empty"))
         } else {
             clear
@@ -5465,12 +5478,12 @@ impl BrowserWidget {
             } else {
                 entry.title.as_str()
             };
-            let mut row = ResourceSpec::new(
+            let mut row = LiveRow::new(
                 history_resource_id(&entry.url),
                 "browser.history-entry",
                 title,
             )
-            .with_action(
+            .operation(
                 E::Open {
                     url: entry.url.clone(),
                 }
@@ -5478,36 +5491,36 @@ impl BrowserWidget {
             );
             // Only a window that keeps a resource offers the row its removal.
             if self.person_history.is_some() {
-                row = row.with_action(
+                row = row.operation(
                     E::ForgetVisit {
                         url: entry.url.clone(),
                     }
                     .bound(),
                 );
             }
-            history.children.push(row);
+            history = history.row(row);
         }
 
-        let mut bookmarks = ResourceSpec::new(
+        let mut bookmarks = LiveRow::new(
             "browser.bookmarks",
             "browser.bookmarks",
             CATALOG.t("browser-resource-bookmarks"),
         );
-        bookmarks.actions.push(E::ShowBookmarks.bound());
+        bookmarks = bookmarks.operation(E::ShowBookmarks.bound());
         // Each bookmark is an item of the document; this window adds opening its
         // page.
-        let bookmark_rows: Vec<ResourceSpec> = self
+        let bookmark_rows: Vec<LiveRow> = self
             .bookmarks
             .entries()
             .iter()
             .take(MATERIALIZED_LIMIT)
             .map(|entry| {
-                ResourceSpec::new(
+                LiveRow::new(
                     bookmark_resource_id(&entry.id),
                     "browser.bookmark",
                     entry.title.clone(),
                 )
-                .with_action(
+                .operation(
                     E::Open {
                         url: entry.url.clone(),
                     }
@@ -5516,14 +5529,13 @@ impl BrowserWidget {
             })
             .collect();
 
-        let mut downloads = ResourceSpec::new(
+        let mut downloads = LiveRow::new(
             "browser.downloads",
             "browser.downloads",
             CATALOG.t("browser-resource-downloads"),
         );
-        downloads
-            .actions
-            .push(E::StartDownload { url: String::new() }.bound_asking(&["url"]));
+        downloads =
+            downloads.operation(E::StartDownload { url: String::new() }.bound_asking(&["url"]));
         for entry in self
             .downloads
             .entries()
@@ -5534,7 +5546,7 @@ impl BrowserWidget {
             let id = entry.id.clone();
             // No show view: a search hit shows the download through its own
             // resource.
-            let mut child = ResourceSpec::new(
+            let mut child = LiveRow::new(
                 entry.resource_id(),
                 "browser.download",
                 entry.display_name(),
@@ -5544,40 +5556,44 @@ impl BrowserWidget {
                     // Save and Discard ride the download's own id, so an agent
                     // answers the question the person's prompt asks.
                     child = child
-                        .with_action(E::SaveDownload { id: id.clone() }.bound())
-                        .with_action(E::DiscardDownload { id }.bound());
+                        .operation(E::SaveDownload { id: id.clone() }.bound())
+                        .operation(E::DiscardDownload { id }.bound());
                 }
                 DownloadStatus::Downloading => {
-                    child = child.with_action(E::CancelDownload { id }.bound());
+                    child = child.operation(E::CancelDownload { id }.bound());
                 }
                 DownloadStatus::Failed | DownloadStatus::Cancelled => {
-                    child = child.with_action(E::RetryDownload { id }.bound());
+                    child = child.operation(E::RetryDownload { id }.bound());
                 }
                 DownloadStatus::Completed => {
                     child = child
-                        .with_action(E::ReadDownload { id: id.clone() }.bound())
-                        .with_action(E::OpenDownload { id: id.clone() }.bound())
-                        .with_action(E::RevealDownload { id }.bound());
+                        .operation(E::ReadDownload { id: id.clone() }.bound())
+                        .operation(E::OpenDownload { id: id.clone() }.bound())
+                        .operation(E::RevealDownload { id }.bound());
                 }
             }
-            downloads.children.push(child);
+            downloads = downloads.row(child);
         }
 
-        let mut extensions = ResourceSpec::new(
+        let mut extensions = LiveRow::new(
             "browser.extensions",
             "browser.extensions",
             CATALOG.t("browser-resource-extensions"),
         );
-        extensions.actions.push(E::ShowExtensions.bound());
-        extensions.actions.extend(self.extensions.add_action());
+        extensions = extensions.operation(E::ShowExtensions.bound());
+        if let Some(add) = self.extensions.add_action() {
+            extensions = extensions.operation(add);
+        }
         // Each installed extension with what its Library row offers, and no disk
         // read per publication.
-        extensions.children.extend(self.extensions.resources());
+        for resource in self.extensions.resources() {
+            extensions = extensions.row(resource);
+        }
 
         // Library is a presentation resource, not a collection of tabs, so
         // keyboard users, assistive technology, action search and agents use the
         // same section operations as the visible surface.
-        let mut library = ResourceSpec::new(
+        let mut library = LiveRow::new(
             "browser.library",
             "browser.library",
             CATALOG.t("browser-resource-library"),
@@ -5588,55 +5604,46 @@ impl BrowserWidget {
             E::ShowDownloads,
             E::ShowExtensions,
         ] {
-            library.actions.push(effect.bound());
+            library = library.operation(effect.bound());
         }
-        library.actions.push(
+        library = library.operation(
             E::SetLibraryFilter {
                 query: String::new(),
             }
             .bound_asking(&["query"]),
         );
         let clear_filter = E::ClearLibraryFilter.bound();
-        library
-            .actions
-            .push(if self.library_filter.get().trim().is_empty() {
-                clear_filter
-                    .unavailable("already_clear", CATALOG.t("browser-library-already-clear"))
-            } else {
-                clear_filter
-            });
+        library = library.operation(if self.library_filter.get().trim().is_empty() {
+            clear_filter.unavailable("already_clear", CATALOG.t("browser-library-already-clear"))
+        } else {
+            clear_filter
+        });
 
-        let mut settings = ResourceSpec::new(
+        let mut settings = LiveRow::new(
             "browser.settings",
             "browser.settings",
             CATALOG.t("browser-resource-settings"),
         );
-        settings.actions.push(E::RequestSiteDataClear.bound());
-        settings.actions.push(E::ReadAllRememberedForms.bound());
+        settings = settings.operation(E::RequestSiteDataClear.bound());
+        settings = settings.operation(E::ReadAllRememberedForms.bound());
 
-        let mut browser = ResourceSpec::new(
-            crate::resource::Browser::KIND,
-            crate::resource::Browser::KIND,
-            crate::resource::CATALOG.t("browser-window-name"),
-        );
-        browser.actions = E::specs();
-        browser.children = vec![
+        let mut rows = vec![
             page, session, history, bookmarks, downloads, extensions, library, settings,
         ];
-        browser.children.extend(bookmark_rows);
-        browser.children.extend(self.page_dialogs.resource());
-        browser.children.extend(self.page_sign_in.resource());
-        browser.children.extend(self.capabilities.resource());
+        rows.extend(bookmark_rows);
+        rows.extend(self.page_dialogs.resource());
+        rows.extend(self.page_sign_in.resource());
+        rows.extend(self.capabilities.resource());
         for selection in &self.service_selections {
-            browser.children.push(selection.resource());
+            rows.push(selection.resource());
         }
-        browser.children.push(
-            ResourceSpec::new(
+        rows.push(
+            LiveRow::new(
                 "browser.service-sessions",
                 "browser.service-sessions",
                 CATALOG.t("browser-resource-accounts"),
             )
-            .with_action({
+            .operation({
                 let list = E::ListServiceSessions.bound();
                 if self.browsing_mode.holds_account_credentials() {
                     list
@@ -5653,22 +5660,20 @@ impl BrowserWidget {
             || self.service_forget.is_some()
             || self.service_observation.is_some()
         {
-            browser.children.push(
-                ResourceSpec::new(
+            rows.push(
+                LiveRow::new(
                     "browser.service-status",
                     "browser.service-status",
                     CATALOG.t("browser-resource-account"),
                 )
-                .with_action(E::ReadServiceSession.bound()),
+                .operation(E::ReadServiceSession.bound()),
             );
         }
         if self.person_bookmarks.is_some() {
-            browser.children.push(self.personal_bookmark_resources());
+            rows.push(self.personal_bookmark_resources());
         }
-        if let Some(resource) = self.continuity_resource() {
-            browser.children.push(resource);
-        }
-        browser
+        rows.extend(self.continuity_resource());
+        rows
     }
 }
 
