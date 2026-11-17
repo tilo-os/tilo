@@ -296,7 +296,7 @@ class Resource:
             if answer.get("status") == "pending":
                 invocation = answer.get("invocation")
                 if isinstance(invocation, str) and invocation:
-                    answer = dict(await endpoint.wait(run))
+                    answer = dict(await endpoint.wait(invocation))
             answers.append(dict(answer))
         return answers
 

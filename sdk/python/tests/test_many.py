@@ -78,3 +78,13 @@ def test_the_sync_client_runs_a_bulk_call_too(api):
     assert len(calls) == 1
     assert len({call["headers"]["tilo-invocation"] for call in calls}) == 1
     assert answers[0]["result"] == {"applied": 2}
+
+
+async def test_a_bulk_call_answered_later_is_waited_for(workspace, api):
+    issues = await Issues(workspace, TASKS).load()
+    api.group_pending = True
+
+    answers = await issues.many("create", [{"title": "One"}])
+
+    assert len(answers) == 1
+    assert answers[0]["status"] != "pending"

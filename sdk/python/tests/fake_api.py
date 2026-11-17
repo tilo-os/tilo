@@ -150,6 +150,8 @@ class FakeApi:
         self.asks: dict[str, dict[str, Any]] = {}
         self.ask_answered = False
         self.append_pending = False
+        # Whether a bulk call is answered later, as a workspace that asks its person first does.
+        self.group_pending = False
         self.cancelled: list[str] = []
         self.undone: list[str] = []
         # Every invocation the workspace lists, oldest first, as its host keeps them.
@@ -564,6 +566,8 @@ class FakeApi:
                 at = f"{path}#{member.get('action')}"
                 self.ran[at] = self.ran.get(at, 0) + 1
             self.groups.append({"path": path, "actions": members})
+            if self.group_pending:
+                return self.pending(f"{path}#group")
             return self.done(
                 f"{path}#group", {"applied": len(members)}, [path], link_to(path)
             )
