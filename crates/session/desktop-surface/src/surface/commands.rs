@@ -76,6 +76,7 @@ impl DesktopSurface {
                         if let Some(group) = find_group(&mut shared.tree, ids.strip, ids.group) {
                             group.width = WindowWidth::Fraction(permille);
                             ops.push(RowOp::Width(ids.strip, ids.group, group.width));
+                            shared.followed = Some(ids.group);
                         }
                     }
                     Admitted::Maximize(ids, maximized) if live(&shared.tree, ids) => {

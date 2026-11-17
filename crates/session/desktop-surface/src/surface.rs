@@ -319,6 +319,8 @@ struct Shared {
     /// The window to bring into view without its focus once the person's hands rest
     /// ([`DesktopHandle::reveal_tab`]).
     revealing: reveals::Revealing,
+    /// The window the person just moved or resized: the strip pans to it once it stands where it went.
+    followed: Option<GroupId>,
     /// Pan, scroll, history and activity state, as last presented.
     presentation: Presentation,
     /// Bumped whenever `presentation` changes. Unlike `revision` it never asks a host to save or
@@ -2141,10 +2143,15 @@ impl Widget for DesktopSurface {
                 continue;
             };
             row.apply_layout(taffy, child, inner);
-            // The window the person works in stays whole on its display wherever a move or a width
-            // change put it.
-            let focused = self.shared.borrow().tree.active_group_for(*strip);
-            row.keep_in_view(focused, ui::motion::frame_now(), reveal_source());
+            let followed = self.shared.borrow().followed;
+            if let Some(group) = followed.filter(|&group| row.group_is_laid_out(group)) {
+                row.scroll_group_into_view_animated(
+                    group,
+                    ui::motion::frame_now(),
+                    reveal_source(),
+                );
+                self.shared.borrow_mut().followed = None;
+            }
             let Some((_, group)) = reveal.filter(|(reveal_strip, _)| reveal_strip == strip) else {
                 continue;
             };

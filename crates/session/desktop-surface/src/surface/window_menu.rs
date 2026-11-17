@@ -951,6 +951,7 @@ fn move_to_strip(
         // it in front, as dragging it there does.
         tree.active_strip.insert(ids.workspace, strip);
         tree.set_active_group(strip, ids.group);
+        shared.followed = Some(ids.group);
     }
     // The windows were rearranged, so the rows follow the tree they are in now rather than the one
     // they were built from.
@@ -1021,6 +1022,7 @@ pub(super) fn move_to_display(shared: &mut Shared, group: GroupId, display: u32)
     let moved = tree.outputs.move_group(&tree.workspaces, group, display);
     if moved {
         tree.external_revision = tree.external_revision.wrapping_add(1);
+        shared.followed = Some(group);
     }
     shared.replaced |= moved;
     moved
@@ -1037,6 +1039,7 @@ fn width_preset(
         Some(group) => {
             group.width = width;
             ops.push(super::row_op::RowOp::Width(ids.strip, ids.group, width));
+            shared.followed = Some(ids.group);
             true
         }
         None => false,
@@ -1067,6 +1070,7 @@ fn equalize(shared: &mut Shared, ids: RouteIds, ops: &mut Vec<super::row_op::Row
                     ));
                 }
             }
+            shared.followed = Some(ids.group);
             true
         }
         None => false,

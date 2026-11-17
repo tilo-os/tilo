@@ -116,6 +116,7 @@ impl Shared {
             personal_ask_revision: 0,
             arrivals: Vec::new(),
             revealing: super::reveals::Revealing::default(),
+            followed: None,
             presentation: Presentation::default(),
             presented: 0,
             artwork: std::collections::BTreeMap::new(),

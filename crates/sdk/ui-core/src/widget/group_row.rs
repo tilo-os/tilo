@@ -39,8 +39,6 @@ mod canvas;
 #[path = "group_row_floats.rs"]
 mod floats;
 pub use floats::{FLOAT_CARD_MARGIN, FLOAT_CARD_SIZE, FLOAT_SIZE, FloatAsk, keep_float_inside};
-#[path = "group_row_follow.rs"]
-mod follow;
 #[path = "group_row_scroll.rs"]
 mod scroll;
 pub use canvas::{CANVAS_ZOOM_MAX, CANVAS_ZOOM_MIN, CanvasView};
@@ -178,8 +176,6 @@ pub struct GroupRow {
     rect: Rect,
     node_ids: Vec<NodeId>,
     laid_group_ids: Vec<u64>,
-    /// The runs as [`GroupRow::keep_in_view`] last saw them laid out.
-    kept_runs: Vec<follow::RunPlace>,
     last_cursor: Point,
     structure_dirty: bool,
     /// Windows back in their strip whose width must stand where the strip
@@ -918,7 +914,6 @@ impl GroupRow {
             rect: Rect::ZERO,
             node_ids: Vec::new(),
             laid_group_ids: Vec::new(),
-            kept_runs: Vec::new(),
             last_cursor: Point::ZERO,
             structure_dirty: false,
             settle_widths: Vec::new(),
