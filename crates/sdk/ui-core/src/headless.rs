@@ -6822,7 +6822,9 @@ impl FrameHarness {
     }
 
     /// [`Self::start_bound_job_for`] within `ambient`: the task the invoker is carrying out (an agent's
-    /// run, its purpose), recorded with every edit the operation makes.
+    /// run, its purpose), recorded with every edit the operation makes. The operation runs under the
+    /// invocation id `ambient` names, the one its host admitted the call under, and its changes keep
+    /// that id in their history; a fresh id when it names none.
     pub fn start_bound_job_within(
         &mut self,
         invoker: Option<tilo_actions::ActionInvoker>,
@@ -6839,7 +6841,9 @@ impl FrameHarness {
     > {
         self.invalidate_local();
         self.pump_component_wakes();
-        let invocation = tilo_actions::InvocationId::new();
+        let invocation = ambient
+            .and_then(|ambient| ambient.source_invocation)
+            .unwrap_or_default();
         let delivered = invoker.map(|invoker| {
             let context = ambient
                 .cloned()
@@ -7202,7 +7206,10 @@ impl FrameHarness {
                 confirmed,
                 broker_admitted: false,
                 invocation,
-                source_invocation: None,
+                // The id the host admitted the call under, when the operation adopted it.
+                source_invocation: ambient
+                    .and_then(|ambient| ambient.source_invocation)
+                    .filter(|admitted| *admitted == invocation),
                 ambient,
                 scope: None,
                 route: None,

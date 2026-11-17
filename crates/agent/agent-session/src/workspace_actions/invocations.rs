@@ -324,17 +324,14 @@ struct Call {
 /// lists it.
 fn call_of(id: String, entry: &Entry) -> (Option<String>, Call) {
     let context = super::caller_context(&entry.caller, &entry.request);
-    let step = context.as_ref().and_then(|context| {
-        let gesture = context.gesture?;
+    let step = context.gesture.map(|gesture| {
         let run = context
             .group
             .as_ref()
             .map(|group| (group.kind.as_str(), group.id.as_str()));
-        Some(
-            tilo_actions::context::recorded_gesture(gesture, run)
-                .0
-                .to_string(),
-        )
+        tilo_actions::context::recorded_gesture(gesture, run)
+            .0
+            .to_string()
     });
     let caller = &entry.caller;
     let acting = caller.acting();

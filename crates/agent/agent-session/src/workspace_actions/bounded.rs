@@ -908,23 +908,18 @@ impl Worker {
         let binding = ApprovalBinding::of(workspace_id, caller, request);
         let confirmed = approved(&self.shared.approvals, given, &binding);
         let context = super::caller_context(caller, request);
-        let output = match app.invoke_in(
-            context.as_ref(),
-            None,
-            &target.address,
-            &arguments,
-            confirmed,
-        ) {
-            Ok(output) => output,
-            Err(tilo_actions::api::ApiError::ConfirmationRequired) if given.is_some() => {
-                return Err(Outcome::Rejected(own_word_refused()));
-            }
-            Err(tilo_actions::api::ApiError::ConfirmationRequired) => {
-                let about = self.about(workspace_id, route, &descriptor, arguments);
-                return Err(self.waits_for_person(request.invocation, about));
-            }
-            Err(error) => return Err(super::api_outcome(&error)),
-        };
+        let output =
+            match app.invoke_in(Some(&context), None, &target.address, &arguments, confirmed) {
+                Ok(output) => output,
+                Err(tilo_actions::api::ApiError::ConfirmationRequired) if given.is_some() => {
+                    return Err(Outcome::Rejected(own_word_refused()));
+                }
+                Err(tilo_actions::api::ApiError::ConfirmationRequired) => {
+                    let about = self.about(workspace_id, route, &descriptor, arguments);
+                    return Err(self.waits_for_person(request.invocation, about));
+                }
+                Err(error) => return Err(super::api_outcome(&error)),
+            };
         let left_at = app.presence().map(placed);
         let holder = key.0.clone();
         let taken = super::take_all(app, &holder)

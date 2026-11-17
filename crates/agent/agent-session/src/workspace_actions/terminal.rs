@@ -614,7 +614,7 @@ impl Worker {
             .app
             .invoke_with(
                 Some(&invoker),
-                context.as_ref(),
+                Some(&context),
                 &ActionAddress::new(&ended.request.target.address.resource, RECORD_COMMAND),
                 &finished,
                 true,

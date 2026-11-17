@@ -2515,7 +2515,7 @@ impl Worker {
         let output = mounted
             .app
             .invoke_in(
-                context.as_ref(),
+                Some(&context),
                 appearance.as_ref(),
                 &target.address,
                 &arguments,

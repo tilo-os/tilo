@@ -68,7 +68,7 @@ impl Worker {
                 .person
         };
         let opened_by = caller_context(caller, request)
-            .and_then(|context| context.group)
+            .group
             .filter(|group| group.kind == tilo_actions::context::AGENT_SESSION_GROUP)
             .map(|group| tilo_desktop_model::ownership::OpenedBy {
                 run: group.id,
