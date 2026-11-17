@@ -6,8 +6,8 @@ use tilo_actions::remote::{CatalogueProvider, workspace_provider};
 
 use super::{
     ActionHostError, ActionKind, Caller, CataloguePage, CatalogueQuery, CatalogueRow,
-    DEFAULT_DOCUMENTS, DocumentRoute, Worker, WorkspaceState, catalogue_keys, provider_workspace,
-    record_provider, resource_of,
+    DEFAULT_DOCUMENTS, DocumentRoute, Worker, WorkspaceState, catalogue_keys, is_part,
+    provider_workspace, record_provider, resource_of,
 };
 use tilo_relay_protocol::WorkspaceId;
 
@@ -111,7 +111,12 @@ impl Worker {
                     app_id: route.app_id.clone(),
                     workspace: cluster_id.clone(),
                     document_id: route.record.clone(),
-                    browsable: true,
+                    // A part of a chain is held with the record that keeps
+                    // it, never opened as one of its own: offered as one, it
+                    // was the app's newest record, which an agent's call
+                    // acted on and opened a window of (one that cannot open
+                    // it as the app's record), and whose link it answered.
+                    browsable: !is_part(&route.record),
                 })
                 .chain(std::iter::once(CatalogueProvider {
                     provider: own_provider,

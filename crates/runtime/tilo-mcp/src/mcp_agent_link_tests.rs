@@ -13,6 +13,9 @@ const APP: &str = "so.tilo.test";
 const PROVIDER: &str = "record:so.tilo.test:";
 const ROOT: &str = "test.note";
 const ITEM: &str = "test.note/items/42";
+/// The chain of parts beside the record that keeps the items, when they are
+/// kept so: what the app lists at its top level, the items beneath it.
+const CHAIN: &str = "test.notes";
 const WORKSPACE: &str = "6f1c2b9e-0d4a-4c1e-9b7a-2f3d1e5c8a90";
 const ENTRY: &str = "https://tilo.so/";
 
@@ -21,6 +24,9 @@ const ENTRY: &str = "https://tilo.so/";
 struct Tracker {
     /// Whether the item it makes offers a `share-link` of its own.
     linked_item: bool,
+    /// Whether the item is kept in a part of [`CHAIN`] rather than in the
+    /// record itself, so the app lists it a level down.
+    in_chain: bool,
     invoked: Arc<Mutex<Vec<InvokeRequest>>>,
 }
 
@@ -79,8 +85,15 @@ impl Tracker {
     fn new(linked_item: bool) -> Self {
         Self {
             linked_item,
+            in_chain: false,
             invoked: Arc::default(),
         }
+    }
+
+    /// An app keeping its items in parts beside its record.
+    fn in_chain(mut self) -> Self {
+        self.in_chain = true;
+        self
     }
 
     /// The rows the directory holds under `parent`: the record's own, and the
@@ -92,8 +105,17 @@ impl Tracker {
                 "",
                 Some(descriptor("", "create", OperationKind::Document)),
             )];
-            rows.push(row(ITEM, "", None));
+            if self.in_chain {
+                // Listed as a host lists a chain at the top level: not as a
+                // container, its items read a level further down.
+                rows.push(row(CHAIN, "", None));
+            } else {
+                rows.push(row(ITEM, "", None));
+            }
             return rows;
+        }
+        if self.in_chain && parent == CHAIN {
+            return vec![row(ITEM, CHAIN, None)];
         }
         let link = self.linked_item.then(|| {
             descriptor(
@@ -112,15 +134,19 @@ impl ActionHost for Tracker {
         _caller: &Caller,
         query: CatalogueQuery,
     ) -> Pending<Result<CataloguePage, ActionHostError>> {
-        let rows = match query.provider.as_deref() {
-            None => Vec::new(),
-            // An exact target is answered wherever it is published, as a host answers it.
-            Some(_) if query.target.is_some() => {
-                let mut rows = self.rows("");
-                rows.extend(self.rows(ITEM));
-                rows
-            }
-            Some(_) => self.rows(query.parent_resource.as_deref().unwrap_or("")),
+        let rows = match (query.provider.as_deref(), &query.target) {
+            (None, _) => Vec::new(),
+            // An exact address is answered at whatever level it stands.
+            (Some(_), Some(target)) => ["", CHAIN, ITEM]
+                .into_iter()
+                .flat_map(|parent| self.rows(parent))
+                .filter(|row| {
+                    row.action
+                        .as_ref()
+                        .is_some_and(|action| action.address == *target)
+                })
+                .collect(),
+            (Some(_), None) => self.rows(query.parent_resource.as_deref().unwrap_or("")),
         };
         let mut page = CataloguePage::from_rows("1".into(), rows, &query);
         page.providers = vec![CatalogueProvider {
@@ -253,6 +279,28 @@ tilo_test_env::scenario! {
             assert!(
                 asked.contains(&format!("{ITEM}#{}", tilo_actions::remote::SHARE_LINK_ACTION)),
                 "the item's own link was asked for, not the record's: {asked:?}"
+            );
+        });
+    }
+
+    phase a_create_answers_the_own_link_of_an_item_kept_in_a_part;
+    // An item kept in a part beside the record is listed under the chain of
+    // parts, which the record's top level does not list as a container; the
+    // link is asked of the item by its address and still names it.
+    {
+        let host = Tracker::new(true).in_chain();
+        run(async {
+            let (text, failed) = tool(
+                &agent(&host),
+                "tilo_do",
+                json!({"path": "test#create", "args": {"title": "First note"}}),
+            )
+            .await;
+            assert!(!failed, "{text}");
+            assert!(text.contains(&format!("-> {ITEM}")), "{text}");
+            assert!(
+                text.ends_with(&format!("link: {}", url(ITEM))),
+                "the link names the item kept in a part: {text}"
             );
         });
     }

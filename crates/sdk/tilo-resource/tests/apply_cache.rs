@@ -610,3 +610,63 @@ fn writing_one_cell_writes_only_that_cell() {
     });
     assert_eq!(stores, 1, "one cell written");
 }
+
+/// A group of many members runs on one copy of the record: it is read once, each member's
+/// verb changes it in turn, and it is written once at the end. The change it makes is still
+/// the one a replica with nothing kept makes replaying the group, after a collaborator's
+/// changes and raw writes merged in, and a group a member refuses writes nothing at all.
+#[test]
+fn a_group_reads_and_writes_its_record_once_and_replays_identically() {
+    let mut rng = Lcg(37);
+    let mut live = seeded(200);
+    let mut cold = live.fork();
+    let mut remote = live.fork();
+    for round in 0..6 {
+        if let Some(invoke) = random_invoke(&remote, &mut rng, 5_000 + round) {
+            remote.apply(invoke).unwrap();
+        }
+        raw_write(remote.doc_mut(), &mut rng);
+        live.doc_mut().merge_incoming(remote.doc_mut()).unwrap();
+        cold.doc_mut().merge_incoming(remote.doc_mut()).unwrap();
+        let state = live.state().unwrap();
+        let mut members: Vec<tilo_resource::Invoke<Checklist>> = (0..60)
+            .map(|n| Checklist::ADD.with(format!("bulk {round}-{n}")))
+            .collect();
+        for task in state.tasks.ids().take(5) {
+            members.push(Checklist::TOGGLE.with(task.clone()));
+        }
+        members.push(Checklist::TAG.with(format!("round {round}")));
+        follow(&mut live);
+        let (_, (loads, _)) =
+            counted(|| live.apply(tilo_resource::Invoke::group(members)).unwrap());
+        assert!(
+            loads <= 200 + 60 * (round + 1),
+            "round {round}: the group read its record {loads} titles' worth, not once"
+        );
+        let envelope = live.log().last().unwrap().clone();
+        forget_all();
+        cold.replay(&envelope).unwrap();
+        assert_eq!(
+            live.heads(),
+            cold.heads(),
+            "round {round}: the replayed group differs"
+        );
+        assert_eq!(live.state().unwrap(), cold.state().unwrap());
+    }
+    let before = live.heads();
+    let refused = tilo_resource::Invoke::group([
+        Checklist::ADD.with("kept?".to_owned()),
+        Checklist::REFUSE.invoke(),
+    ]);
+    assert!(live.apply(refused).is_err());
+    assert_eq!(live.heads(), before, "a refused group writes nothing");
+    assert!(
+        !live
+            .state()
+            .unwrap()
+            .tasks
+            .iter()
+            .any(|(_, task)| task.title.0 == "kept?"),
+        "nor does any member of it"
+    );
+}

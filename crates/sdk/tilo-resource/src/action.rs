@@ -1156,6 +1156,26 @@ impl<O: Operation> Performs for O {
     }
 }
 
+/// Apply the field edit `operation` to the document; a record that queues
+/// on its changes has its `queue` see the change the edit made.
+fn apply_edit_queued(
+    record: &'static ResourceOps,
+    operation: &dyn Performs,
+    doc: &mut Doc,
+    cx: &mut ActionCx,
+) -> Result<(), ActionError> {
+    if !operation.queues() {
+        return apply_edit(operation, doc, cx);
+    }
+    let before = (record.read)(doc).map_err(model_refused)?;
+    apply_edit(operation, doc, cx)?;
+    let mut after = (record.read)(doc).map_err(model_refused)?;
+    let minting = MintScope::enter(cx);
+    operation.queue(after.as_mut(), before.as_ref(), cx);
+    drop(minting);
+    (record.write)(after.as_ref(), doc).map_err(model_refused)
+}
+
 /// [`Stamped::apply`] of `operation`, of a record of the type `record`,
 /// encoded as `payload` at `now_ms`.
 ///
@@ -1187,19 +1207,18 @@ fn apply_operation(
         Ok::<(), ActionError>(())
     };
     let queues = operation.queues();
-    if operation.is_edit() {
-        if !queues {
-            apply_edit(operation, doc, &mut cx)?;
-            return index(doc);
+    // A member of a group whose record the group holds in memory runs on it there; a member
+    // that writes the document itself (a field edit, a change an outbox queues on) first
+    // writes what the group holds, so it starts from the document as the group left it.
+    let grouping = crate::group::grouping();
+    if grouping {
+        if !operation.is_edit() && !queues && held::holds(record) {
+            return held::perform(record, operation, &mut cx);
         }
-        // The record's `queue` sees the change the edit made.
-        let before = (record.read)(doc).map_err(model_refused)?;
-        apply_edit(operation, doc, &mut cx)?;
-        let mut after = (record.read)(doc).map_err(model_refused)?;
-        let minting = MintScope::enter(&cx);
-        operation.queue(after.as_mut(), before.as_ref(), &mut cx);
-        drop(minting);
-        (record.write)(after.as_ref(), doc).map_err(model_refused)?;
+        held::flush(record, doc)?;
+    }
+    if operation.is_edit() {
+        apply_edit_queued(record, operation, doc, &mut cx)?;
         return index(doc);
     }
     // An item method reads and writes its item alone; what it wrote is
@@ -1222,10 +1241,17 @@ fn apply_operation(
             Some((warm, dirty)) => (warm, Some(dirty)),
             None => ((record.read)(doc).map_err(model_refused)?, None),
         };
+    // A group's first member of a record that keeps no outbox starts the record the group
+    // holds: every member after it runs on it in memory, and the group writes it once.
+    if grouping && !queues {
+        // The group checks the record it holds once, as it writes it.
+        let base = operation.snapshot(current.as_ref());
+        held::start(record, current, base, dirty);
+        return held::perform(record, operation, &mut cx);
+    }
     // What it was: for the record's `queue`, to hold what the verb
-    // produced against its footprint, and, when it starts from a
-    // committed version, for the next action to start from.
-    let kept = if committed || queues || units {
+    // produced against its footprint, and for the next action to start from.
+    let kept = if committed || queues || units || dirty.is_some() {
         operation.snapshot(current.as_ref())
     } else {
         None
@@ -1246,7 +1272,7 @@ fn apply_operation(
     }
     drop(minting);
     performed.map_err(refusal_refused)?;
-    if crate::group::grouping() {
+    if grouping {
         // The group checks the record once, at its end.
         crate::group::check_or_defer(format!("{}@root", (record.name)()), doc, move |doc| {
             match (record.read)(doc) {
@@ -1271,13 +1297,210 @@ fn apply_operation(
     }
     .map_err(model_refused)?;
     index(doc)?;
-    // Kept once all it wrote is written: the next action finds this
-    // one's change by its size.
-    if let (Some(kept), true) = (kept, committed) {
-        crate::apply_cache::keep_any((record.kind)(), kept, doc, &started);
+    // Kept once all it wrote is written: the next action finds this one's
+    // change by its size, or, inside a transaction still open, starts from
+    // the record exactly as it was written.
+    if committed {
+        if let Some(kept) = kept {
+            crate::apply_cache::keep_any((record.kind)(), kept, doc, &started);
+        }
+    } else {
+        crate::apply_cache::keep_open((record.kind)(), current, doc);
     }
     Ok(())
 }
+
+/// The records a group holds in memory while its members run, one per record type: read
+/// once by the first member, changed by each member's verb in turn (each with its own
+/// arguments, ids and attribution), and written once when the group ends or a member needs
+/// the document itself. A thousand members of one record cost one read and one write of it,
+/// not a thousand.
+mod held {
+    use std::any::{Any, TypeId};
+    use std::cell::RefCell;
+
+    use tilo_actions::ActionError;
+
+    use super::{ActionCx, MintScope, Performs, ResourceOps, model_refused, refusal_refused};
+    use crate::footprint::Footprints;
+    use crate::model::Doc;
+
+    struct Held {
+        record: &'static ResourceOps,
+        /// The record as the members left it.
+        current: Box<dyn Any>,
+        /// The record as the document held it when the group took it; none when the record
+        /// keeps no copy, and the document is read again for it.
+        base: Option<Box<dyn Any>>,
+        /// What others wrote since the cached record was last written: written again whole.
+        /// `None` when the record was read whole, and is written whole.
+        dirty: Option<crate::Delta>,
+        /// Every unit the members declare.
+        footprints: Footprints,
+    }
+
+    thread_local! {
+        /// `None` outside a group.
+        static HELD: RefCell<Option<Vec<Held>>> = const { RefCell::new(None) };
+    }
+
+    /// Begin holding records, for the outermost group on this thread.
+    pub(crate) fn begin() {
+        HELD.with(|held| *held.borrow_mut() = Some(Vec::new()));
+    }
+
+    /// Stop holding records without writing them: the group refused.
+    pub(crate) fn end() {
+        HELD.with(|held| held.borrow_mut().take());
+    }
+
+    fn kind(record: &ResourceOps) -> TypeId {
+        (record.kind)()
+    }
+
+    /// Whether the group holds the record `record`.
+    pub(super) fn holds(record: &ResourceOps) -> bool {
+        HELD.with(|held| {
+            held.borrow()
+                .as_ref()
+                .is_some_and(|held| held.iter().any(|entry| kind(entry.record) == kind(record)))
+        })
+    }
+
+    /// Hold `current`, read from the document as `base` (with `dirty` written by others).
+    pub(super) fn start(
+        record: &'static ResourceOps,
+        current: Box<dyn Any>,
+        base: Option<Box<dyn Any>>,
+        dirty: Option<crate::Delta>,
+    ) {
+        HELD.with(|held| {
+            if let Some(held) = held.borrow_mut().as_mut() {
+                held.push(Held {
+                    record,
+                    current,
+                    base,
+                    dirty,
+                    footprints: Footprints::default(),
+                });
+            }
+        });
+    }
+
+    /// Run `operation`'s verb on the record the group holds.
+    pub(super) fn perform(
+        record: &'static ResourceOps,
+        operation: &dyn Performs,
+        cx: &mut ActionCx,
+    ) -> Result<(), ActionError> {
+        HELD.with(|held| {
+            let mut held = held.borrow_mut();
+            let entry = held
+                .as_mut()
+                .and_then(|held| {
+                    held.iter_mut()
+                        .find(|entry| kind(entry.record) == kind(record))
+                })
+                .ok_or_else(|| ActionError::Refused("the group does not hold the record".into()))?;
+            let minting = MintScope::enter(cx);
+            let performed = operation.perform(entry.current.as_mut(), cx);
+            drop(minting);
+            performed.map_err(refusal_refused)?;
+            entry.footprints.add(&operation.writes());
+            Ok(())
+        })
+    }
+
+    /// Write the record of `record`'s type the group holds, if it holds one, and stop holding
+    /// it: what its members did, checked against every unit they declare.
+    pub(super) fn flush(record: &ResourceOps, doc: &mut Doc) -> Result<(), ActionError> {
+        let taken = HELD.with(|held| {
+            let mut held = held.borrow_mut();
+            let held = held.as_mut()?;
+            let at = held
+                .iter()
+                .position(|entry| kind(entry.record) == kind(record))?;
+            Some(held.remove(at))
+        });
+        match taken {
+            Some(entry) => write(entry, doc, Checked::AtTheEnd),
+            None => Ok(()),
+        }
+    }
+
+    /// Write every record the group holds: the group's end.
+    pub(crate) fn flush_all(doc: &mut Doc) -> Result<(), ActionError> {
+        let taken = HELD.with(|held| held.borrow_mut().as_mut().map(std::mem::take));
+        for entry in taken.unwrap_or_default() {
+            write(entry, doc, Checked::Now)?;
+        }
+        Ok(())
+    }
+
+    /// When a held record written is checked.
+    #[derive(Clone, Copy)]
+    enum Checked {
+        /// As it is held: it is written at the group's end.
+        Now,
+        /// As the document holds it at the group's end: a later member may still mend it.
+        AtTheEnd,
+    }
+
+    fn write(entry: Held, doc: &mut Doc, checked: Checked) -> Result<(), ActionError> {
+        let Held {
+            record,
+            current,
+            base,
+            dirty,
+            footprints,
+        } = entry;
+        let units = crate::footprint::has_units(record.shape);
+        let read_base;
+        let before: Option<&dyn Any> = match (&base, units) {
+            (_, false) => None,
+            (Some(base), true) => Some(base.as_ref()),
+            (None, true) => {
+                read_base = (record.read)(doc).map_err(model_refused)?;
+                Some(read_base.as_ref())
+            }
+        };
+        // What the members made is a record that holds, whatever it passed through on the way.
+        match checked {
+            Checked::Now => (record.check)(current.as_ref()).map_err(refusal_refused)?,
+            Checked::AtTheEnd => {
+                crate::group::check_or_defer(
+                    format!("{}@root", (record.name)()),
+                    doc,
+                    move |doc| match (record.read)(doc) {
+                        Ok(read) => (record.check)(read.as_ref()),
+                        Err(error) => Err(crate::Refusal::new(error.to_string())),
+                    },
+                )
+                .map_err(refusal_refused)?;
+            }
+        }
+        if let Some(before) = before {
+            let edits = (record.diff)(before, current.as_ref());
+            crate::footprint::check_edits_of(record.shape, &edits, &footprints)
+                .map_err(refusal_refused)?;
+        }
+        match (&base, &dirty) {
+            (Some(base), Some(dirty)) => {
+                (record.write_changed)(current.as_ref(), base.as_ref(), doc, dirty)
+            }
+            _ => (record.write)(current.as_ref(), doc),
+        }
+        .map_err(model_refused)?;
+        if units {
+            crate::footprint::index(doc, record.shape).map_err(super::automerge_refused)?;
+        }
+        // The next action of its type in the same transaction starts from it as written.
+        crate::apply_cache::keep_open((record.kind)(), current, doc);
+        Ok(())
+    }
+}
+
+pub(crate) use held::{begin as hold_records, end as drop_held, flush_all as write_held};
 
 impl<O: Operation> tilo_actions::Action for Stamped<O> {
     /// Read the record, run the method, write back what changed

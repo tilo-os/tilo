@@ -293,35 +293,45 @@ pub(crate) fn item_open_spec(anchor: &str) -> tilo_actions::ActionSpec {
     .with_description("Show this item.")
 }
 
+/// Offer `open` on the item resource `resource`, with the view and the own
+/// `share-link` that go with it, unless it has an `open` already: what shows
+/// the item where the app's window shows it and lets a link name it. An item
+/// of the app's record and one kept in a part of a chain are offered alike,
+/// so a link to either opens the item and not the record.
+pub(crate) fn offer_item(resource: &mut ResourceSpec) {
+    if resource
+        .actions
+        .iter()
+        .any(|existing| existing.id == "open")
+    {
+        return;
+    }
+    resource.actions.push(item_open_spec(resource.id.as_str()));
+    // The opener is also a presentation binding, not just a verb in the
+    // catalogue. Keep an app's explicit views; otherwise advertise the
+    // item view that this exact bound opener actually shows. The view
+    // names what it shows, the item, and not which item: the item's own
+    // label is the resource's, published once with it. Every item's
+    // `open` is then one catalogue entry however many items there are,
+    // where a copy of the item's label made each item's `open`, and its
+    // whole action template, an entry of its own.
+    if resource.views.is_empty() {
+        resource.views.push(
+            tilo_actions::ResourceViewSpec::new("item", ITEM_VIEW_LABEL, "open").with_primary(true),
+        );
+        // A view is also what a link opens: with one, the item offers
+        // `share-link` of its own, which names the item rather than the
+        // record it is in.
+        tilo_resource::share::offer(resource);
+    }
+}
+
 /// Offer `open` on every item resource under `resource` (an item of the
 /// collections of the resource `item_of` knows the items of), bound to that
-/// item.
+/// item ([`offer_item`]).
 fn offer_item_open(item_of: fn(&str) -> bool, resource: &mut ResourceSpec) {
-    if item_of(resource.id.as_str())
-        && !resource
-            .actions
-            .iter()
-            .any(|existing| existing.id == "open")
-    {
-        resource.actions.push(item_open_spec(resource.id.as_str()));
-        // The opener is also a presentation binding, not just a verb in the
-        // catalogue. Keep an app's explicit views; otherwise advertise the
-        // item view that this exact bound opener actually shows. The view
-        // names what it shows, the item, and not which item: the item's own
-        // label is the resource's, published once with it. Every item's
-        // `open` is then one catalogue entry however many items there are,
-        // where a copy of the item's label made each item's `open`, and its
-        // whole action template, an entry of its own.
-        if resource.views.is_empty() {
-            resource.views.push(
-                tilo_actions::ResourceViewSpec::new("item", ITEM_VIEW_LABEL, "open")
-                    .with_primary(true),
-            );
-            // A view is also what a link opens: with one, the item offers
-            // `share-link` of its own, which names the item rather than the
-            // record it is in.
-            tilo_resource::share::offer(resource);
-        }
+    if item_of(resource.id.as_str()) {
+        offer_item(resource);
     }
     for child in &mut resource.children {
         offer_item_open(item_of, child);

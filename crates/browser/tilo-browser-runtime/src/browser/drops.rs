@@ -15,7 +15,7 @@ use fs_protocol::files::TreeChunk;
 use fs_protocol::tree::{FILES_APP, TREE_KIND, Tree, chunk_document_id};
 use ui::kurbo::{Point, Rect};
 use ui::resource::StoredResource;
-use ui::resource::workspace::WorkspaceRecords;
+use ui::resource::workspace::WorkspaceResources;
 use wasm_bindgen::prelude::*;
 
 use super::Desktop;
@@ -36,7 +36,14 @@ const READ_PIECE: u64 = 4 * 1024 * 1024;
 /// whole tree they hold.
 async fn tree_here(
     files: &WorkspaceFiles,
-) -> Result<(StoredResource, BTreeMap<TreeChunk, Rc<StoredResource>>, Tree), String> {
+) -> Result<
+    (
+        StoredResource,
+        BTreeMap<TreeChunk, Rc<StoredResource>>,
+        Tree,
+    ),
+    String,
+> {
     for _ in 0..TREE_WAITS {
         if let Some(opened) = files.tree_for_writing() {
             return Ok(opened);
@@ -49,7 +56,7 @@ async fn tree_here(
 /// The record of chunk `chunk`, waiting while the workspace's hosts answer whether they hold it:
 /// a chunk no device has yet is founded here, as the tree's own record is.
 async fn chunk_here(
-    records: &WorkspaceRecords,
+    records: &WorkspaceResources,
     chunk: TreeChunk,
 ) -> Result<Rc<StoredResource>, String> {
     for _ in 0..TREE_WAITS {
@@ -59,7 +66,10 @@ async fn chunk_here(
             TREE_KIND,
             &|_doc: &mut ui::automerge::AutoCommit| Ok(()),
         ) {
-            Err(ui::resource::ResourceOpenError::Arriving | ui::resource::ResourceOpenError::Opening) => {
+            Err(
+                ui::resource::ResourceOpenError::Arriving
+                | ui::resource::ResourceOpenError::Opening,
+            ) => {
                 super::frame_loop::sleep_ms(TREE_WAIT_MS).await;
             }
             opened => {
@@ -75,7 +85,7 @@ async fn chunk_here(
 /// Where a drop writes the workspace's tree: each chunk's record, opened as the drop needs it,
 /// and the tree's own record that lists the chunks it wrote into.
 struct Records<'a> {
-    workspace: &'a WorkspaceRecords,
+    workspace: &'a WorkspaceResources,
     index: &'a StoredResource,
     chunks: &'a mut BTreeMap<TreeChunk, Rc<StoredResource>>,
 }

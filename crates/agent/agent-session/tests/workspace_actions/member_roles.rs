@@ -414,6 +414,39 @@ async fn each_member_runs_what_their_standing_lets_them_and_nothing_else() {
         guest_device.cert.device_public_key,
     )
     .in_workspace(WORKSPACE);
+    // The part the issue went into is held with the tracker, never offered
+    // as a Tasks record of its own: what a caller opens, acts on and links
+    // to as Tasks is the tracker alone.
+    let offered = match served(
+        &actions,
+        workspace,
+        &member,
+        RemoteActionMessage::CatalogueRequest {
+            correlation: 1,
+            query: CatalogueQuery {
+                max_results: 1,
+                ..CatalogueQuery::default()
+            },
+        },
+    ) {
+        RemoteActionMessage::CatalogueResponse { result, .. } => result.unwrap().providers,
+        other => panic!("expected a catalogue, got {other:?}"),
+    };
+    let records = |browsable: bool| -> Vec<String> {
+        offered
+            .iter()
+            .filter(|provider| provider.app_id == TASKS && provider.browsable == browsable)
+            .map(|provider| provider.document_id.clone())
+            .collect()
+    };
+    assert_eq!(records(true), vec![tasks.record.clone()], "{offered:?}");
+    assert!(
+        records(false)
+            .iter()
+            .any(|record| ui::resource::DocumentId::parse(record)
+                .is_some_and(|id| id.chain_part().is_some())),
+        "the issue's part is listed, held with the tracker: {offered:?}"
+    );
     let new_note = |title: &str| {
         request(
             &notes_provider,

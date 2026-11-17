@@ -26,6 +26,7 @@ pub(super) const OWN_KINDS: &[(&str, &str)] = &[
     ("so.tilo.osk", "osk.learned"),
     ("so.tilo.pdf-viewer", "pdf.signature-profile"),
     ("so.tilo.settings", "settings.root"),
+    ("so.tilo.tasks", "tilo.chain-unsent"),
     ("so.tilo.terminal", "terminal.history"),
     ("so.tilo.terminal", "terminal.recent-environments"),
     ("so.tilo.tube", "tube.watch-history"),
