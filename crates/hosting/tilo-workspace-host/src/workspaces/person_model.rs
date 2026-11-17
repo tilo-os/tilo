@@ -254,6 +254,12 @@ pub(super) struct Models {
 }
 
 impl Models {
+    /// Whether this host calls providers on its own network
+    /// ([`Workspaces::call_private_model_addresses`]).
+    pub(super) fn private_addresses(&self) -> bool {
+        self.private_addresses.load(Ordering::Acquire)
+    }
+
     /// Models answered on the runtime this is called on.
     pub(super) fn new() -> Self {
         Self {

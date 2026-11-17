@@ -87,6 +87,10 @@ agent-provider-config = { path = "../../agent/provider-config" }
 settings-store = { path = "../../system/settings-store" }
 tilo-account-probe = { path = "../../platform/account-probe" }
 tilo-mail-session = { path = "../../platform/mail-session" }
+# The one request a person's model providers make from here: a provider's own
+# list of models, asked with the key the vault keeps, through the client the
+# fetch proxy guards its own requests with.
+tilo-net = { path = "../../platform/tilo-net", features = ["http", "proxy-host"] }
 
 [dev-dependencies]
 # A dispatcher that answers as an app's own host: what a device's plane asks
@@ -99,6 +103,8 @@ tilo-peer-state = { path = "../../collab/tilo-peer-state", features = ["test-sup
 tilo-automerge = { workspace = true, features = ["heap-probe"] }
 tokio = { workspace = true, features = ["test-util"] }
 tempfile.workspace = true
+# The model provider a person's key is shown to, on loopback.
+test-http = { path = "../../dev/test-http" }
 # `iroh-relay`: the loopback relay a fixture host's endpoint takes as its home, so a
 # host opens without waiting out the probe of an endpoint that reaches none.
 tilo-test-env = { path = "../../dev/test-env", features = ["iroh-relay"] }

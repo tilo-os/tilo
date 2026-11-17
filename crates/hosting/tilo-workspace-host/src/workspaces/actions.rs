@@ -1073,6 +1073,7 @@ impl Workspaces {
             #[cfg(not(target_arch = "wasm32"))]
             (person_models::PROVIDER, _) => {
                 self.person_models_invoke(workspace_id, caller, certificate, request)
+                    .await
             }
             (host_account::PROVIDER, _)
                 if request.target == host_account::target(host_account::ACCOUNT) =>
