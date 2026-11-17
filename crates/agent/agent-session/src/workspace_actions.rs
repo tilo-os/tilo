@@ -2555,11 +2555,7 @@ impl Worker {
         // action the record publishes never pays for that.
         let holder = self.holder_of(&route);
         let published_here = self.publishes(&holder, &target.address);
-        if !published_here
-            && let Some(output) = self
-                .try_registered_read(workspace_id, caller, request)
-                .map_err(|error| *error)?
-        {
+        if let Some(output) = self.source_read(workspace_id, caller, request, published_here)? {
             self.note_reads(request);
             return Ok((withheld.shown(output), None));
         }
@@ -2612,12 +2608,7 @@ impl Worker {
             self.note_reads(request);
         }
         let arguments = descriptor.bind_prompt_text(arguments);
-        let binding = bounded::ApprovalBinding::of(workspace_id, caller, request);
-        let confirmed = confirms(
-            &descriptor.contract.confirmation,
-            request.confirmation.as_ref(),
-            |token| self.shared.approvals.take(token, &binding),
-        );
+        let confirmed = self.confirmed_here(workspace_id, caller, request, &descriptor);
         let holder = self.holder_of(&route);
         let mounted = self.mounted.get_mut(&holder).ok_or_else(unknown_action)?;
         let context = caller_context(caller, request);
@@ -2645,6 +2636,42 @@ impl Worker {
             .map_err(|reason| commit_failed(reason, true))?;
         timing_done("action.commit", committing);
         Ok((withheld.shown(output), left_at))
+    }
+
+    /// The answer the committed source gives `request`, when what answers here
+    /// does not publish that action itself: one it publishes never pays to
+    /// open a worker for it.
+    fn source_read(
+        &mut self,
+        workspace_id: WorkspaceId,
+        caller: &Caller,
+        request: &InvokeRequest,
+        published_here: bool,
+    ) -> Result<Option<ActionOutput>, Outcome> {
+        if published_here {
+            return Ok(None);
+        }
+        Ok(self
+            .try_registered_read(workspace_id, caller, request)
+            .map_err(|error| *error)?)
+    }
+
+    /// Whether this call is confirmed as the action's own contract asks and
+    /// the caller answered: a token its person's device issued for this very
+    /// call, taken once.
+    fn confirmed_here(
+        &mut self,
+        workspace_id: WorkspaceId,
+        caller: &Caller,
+        request: &InvokeRequest,
+        descriptor: &tilo_actions::ActionDescriptor,
+    ) -> bool {
+        let binding = bounded::ApprovalBinding::of(workspace_id, caller, request);
+        confirms(
+            &descriptor.contract.confirmation,
+            request.confirmation.as_ref(),
+            |token| self.shared.approvals.take(token, &binding),
+        )
     }
 
     /// Open an app on a new record of the workspace `named`, as its
