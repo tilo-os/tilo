@@ -111,6 +111,23 @@ fn main() {
                 writeln!(out, "ERR {} {}", &args[2], e.kind_str()).unwrap()
             }
         }
+        // Start a tool shipped beside this binary; its exit code and error output say what it was
+        // refused.
+        Some("exec") => match std::process::Command::new(
+            std::env::current_exe().unwrap().with_file_name(&args[1]),
+        )
+        .args(&args[2..])
+        .output()
+        {
+            Ok(done) => writeln!(
+                out,
+                "EXIT {} {}",
+                done.status.code().unwrap_or(-1),
+                String::from_utf8_lossy(&done.stderr).trim()
+            )
+            .unwrap(),
+            Err(e) => writeln!(out, "ERR {} {}", &args[1], e.kind_str()).unwrap(),
+        },
         other => writeln!(out, "ERR unknown-command {other:?}").unwrap(),
     }
 }

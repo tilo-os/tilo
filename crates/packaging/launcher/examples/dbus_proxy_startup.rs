@@ -12,7 +12,12 @@ fn main() -> Result<(), Box<dyn Error>> {
     for sample in 0..40 {
         let socket = root.path().join(format!("proxy-{sample}.sock"));
         let started = Instant::now();
-        let guard = launcher::dbus_proxy::spawn_dbus_proxy(&binary, bus.address(), &socket)?;
+        let guard = launcher::dbus_proxy::spawn_filtered_proxy(
+            &binary,
+            bus.address(),
+            &socket,
+            &["--filter"],
+        )?;
         let ready_us = started.elapsed().as_micros();
         // Observe the real listener rather than accepting the helper's existence.
         let connection = UnixStream::connect(guard.socket_path())?;

@@ -66,6 +66,7 @@ mode = "host"
 
 [sandbox.portals]
 file-chooser = "via-host"
+notifications = "via-host"
 open-uri = "via-host"
 
 [sandbox.services]

@@ -688,8 +688,8 @@ pub struct Sandbox {
     /// `[sandbox.portals]` table — policy per freedesktop portal name
     /// (`file-chooser`, `screencast`, ...). Values are [`PortalPolicy`]:
     /// `via-host` (D-Bus socket plumbed in) or `deny`. An entry MUST exist
-    /// for every portal the app uses — absence means the launcher won't
-    /// proxy the bus, and the app's `ashpd` call surfaces `NotAvailable`.
+    /// for every portal the app uses: the launcher's bus proxy refuses every
+    /// other portal, and the app's `ashpd` call fails.
     #[serde(default)]
     pub portals: std::collections::BTreeMap<String, PortalPolicy>,
     #[serde(default)]

@@ -4256,8 +4256,7 @@ fn resolve_dbus_bind_at(
     media_player: Option<&str>,
     sockets: &ProxySockets,
 ) -> (Option<DBusBindPlan>, Vec<DBusProxyGuard>) {
-    let wants_portals = portals.values().any(|p| matches!(p, PortalPolicy::ViaHost));
-    if !wants_portals && !graphical && media_player.is_none() {
+    if dbus_proxy::portal_filter_args(portals).is_empty() && !graphical && media_player.is_none() {
         return (None, Vec::new());
     }
     let Ok(bus_addr) = std::env::var("DBUS_SESSION_BUS_ADDRESS") else {
@@ -4288,7 +4287,7 @@ fn resolve_dbus_bind_at(
                 spawn_atspi_proxy(&binary, &bus_addr, uid, sockets)
             })
         });
-        let filter = dbus_proxy::session_filter_args(wants_portals, graphical, media_player);
+        let filter = dbus_proxy::session_filter_args(portals, graphical, media_player);
         let filter = filter.iter().map(String::as_str).collect::<Vec<_>>();
         let session = dbus_proxy::spawn_filtered_proxy_within(
             &binary,

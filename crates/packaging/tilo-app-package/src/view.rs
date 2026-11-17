@@ -257,9 +257,8 @@ pub struct Sandbox {
     pub net: Net,
     pub fs: Fs,
     pub services: BTreeMap<String, ServiceReq>,
-    /// XDG portal policy per portal name. When at least one is `ViaHost`
-    /// the launcher bind-mounts the host session D-Bus socket and sets
-    /// `DBUS_SESSION_BUS_ADDRESS`; absent/empty means the bus is NOT exposed.
+    /// XDG portal policy per portal name. The launch's session-bus proxy
+    /// lets the app reach exactly the portals it allows.
     pub portals: BTreeMap<String, PortalPolicy>,
 }
 
