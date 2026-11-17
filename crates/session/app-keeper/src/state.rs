@@ -15,7 +15,9 @@ use smithay::reexports::wayland_server::{Client, DisplayHandle, Resource as _};
 use smithay::utils::Serial;
 use smithay::wayland::buffer::BufferHandler;
 use smithay::wayland::compositor::{CompositorClientState, CompositorHandler, CompositorState};
-use smithay::wayland::dmabuf::{DmabufGlobal, DmabufHandler, DmabufState, ImportNotifier};
+use smithay::wayland::dmabuf::{
+    DmabufFeedback, DmabufGlobal, DmabufHandler, DmabufState, ImportNotifier,
+};
 use smithay::wayland::output::{OutputHandler, OutputManagerState};
 use smithay::wayland::shell::xdg::{
     Configure, PopupSurface, PositionerState, ToplevelSurface, XdgShellHandler, XdgShellState,
@@ -58,6 +60,8 @@ pub struct State {
     smithay_seat: SeatState<Self>,
     dmabuf: DmabufState,
     pub(crate) dmabuf_global: Option<DmabufGlobal>,
+    /// What the desktop answered each surface's own feedback request, kept while it is away.
+    pub(crate) surface_feedback: crate::dmabuf::SurfaceFeedbacks,
     /// Every live surface of the app, by its id.
     pub(crate) surfaces: HashMap<smithay::reexports::wayland_server::backend::ObjectId, Kept>,
     pub(crate) next_seq: u64,
@@ -99,6 +103,7 @@ impl State {
             smithay_seat: SeatState::new(),
             dmabuf: DmabufState::new(),
             dmabuf_global: None,
+            surface_feedback: crate::dmabuf::SurfaceFeedbacks::default(),
             surfaces: HashMap::new(),
             next_seq: 0,
             buffers: Buffers::default(),
@@ -224,6 +229,19 @@ impl ShmHandler for State {
 impl DmabufHandler for State {
     fn dmabuf_state(&mut self) -> &mut DmabufState {
         &mut self.dmabuf
+    }
+
+    fn new_surface_feedback(
+        &mut self,
+        surface: &WlSurface,
+        _global: &DmabufGlobal,
+    ) -> Option<DmabufFeedback> {
+        // The request itself is the moment to ask the desktop too, when the surface is
+        // already shown; a surface shown earlier asked when it was made.
+        self.request_surface_feedback(&surface.id());
+        self.surface_feedback
+            .get(&surface.id())
+            .and_then(|entry| entry.built.clone())
     }
 
     fn dmabuf_imported(

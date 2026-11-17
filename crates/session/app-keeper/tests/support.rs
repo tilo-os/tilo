@@ -18,6 +18,10 @@ use wayland_client::protocol::{
     wl_surface::WlSurface,
 };
 use wayland_client::{Connection, Dispatch, EventQueue, QueueHandle, WEnum, delegate_noop};
+use wayland_protocols::wp::linux_dmabuf::zv1::client::{
+    zwp_linux_dmabuf_feedback_v1, zwp_linux_dmabuf_feedback_v1::ZwpLinuxDmabufFeedbackV1,
+    zwp_linux_dmabuf_v1, zwp_linux_dmabuf_v1::ZwpLinuxDmabufV1,
+};
 use wayland_protocols::xdg::shell::client::{
     xdg_popup, xdg_popup::XdgPopup, xdg_positioner::XdgPositioner, xdg_surface,
     xdg_surface::XdgSurface, xdg_toplevel, xdg_toplevel::XdgToplevel, xdg_wm_base,
@@ -250,6 +254,9 @@ pub struct Heard {
     pub outputs: Vec<WlOutput>,
     pub output_modes: Vec<(u32, i32, i32)>,
     pub globals_removed: Vec<u32>,
+    pub dmabuf: Option<ZwpLinuxDmabufV1>,
+    pub dmabuf_done: usize,
+    pub surface_feedback_done: usize,
     pub configures: Vec<(i32, i32, Vec<u32>)>,
     pub configured: usize,
     pub popup_configured: bool,
@@ -484,6 +491,11 @@ impl Dispatch<WlRegistry, ()> for Heard {
                 "wl_output" => heard
                     .outputs
                     .push(registry.bind(name, version.min(4), qh, name)),
+                "zwp_linux_dmabuf_v1" if version >= 4 => {
+                    let dmabuf: ZwpLinuxDmabufV1 = registry.bind(name, version.min(5), qh, ());
+                    dmabuf.get_default_feedback(qh, ());
+                    heard.dmabuf = Some(dmabuf);
+                }
                 _ => {}
             },
             wl_registry::Event::GlobalRemove { name } => heard.globals_removed.push(name),
@@ -684,6 +696,51 @@ impl Dispatch<WlBuffer, ()> for Heard {
         _: &QueueHandle<Self>,
     ) {
         heard.buffers_released += 1;
+    }
+}
+
+/// The user data marking a surface's own dma-buf feedback request.
+pub struct SurfaceFeedbackSeen;
+
+impl Dispatch<ZwpLinuxDmabufV1, ()> for Heard {
+    fn event(
+        _: &mut Self,
+        _: &ZwpLinuxDmabufV1,
+        _: zwp_linux_dmabuf_v1::Event,
+        (): &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+    }
+}
+
+impl Dispatch<ZwpLinuxDmabufFeedbackV1, ()> for Heard {
+    fn event(
+        heard: &mut Self,
+        _: &ZwpLinuxDmabufFeedbackV1,
+        event: zwp_linux_dmabuf_feedback_v1::Event,
+        (): &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        if matches!(event, zwp_linux_dmabuf_feedback_v1::Event::Done) {
+            heard.dmabuf_done = heard.dmabuf_done.saturating_add(1);
+        }
+    }
+}
+
+impl Dispatch<ZwpLinuxDmabufFeedbackV1, SurfaceFeedbackSeen> for Heard {
+    fn event(
+        heard: &mut Self,
+        _: &ZwpLinuxDmabufFeedbackV1,
+        event: zwp_linux_dmabuf_feedback_v1::Event,
+        _: &SurfaceFeedbackSeen,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        if matches!(event, zwp_linux_dmabuf_feedback_v1::Event::Done) {
+            heard.surface_feedback_done = heard.surface_feedback_done.saturating_add(1);
+        }
     }
 }
 

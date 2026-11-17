@@ -511,6 +511,19 @@ impl Dispatch<zwp_linux_dmabuf_v1::ZwpLinuxDmabufV1, ()> for State {
     }
 }
 
+impl Dispatch<zwp_linux_dmabuf_feedback_v1::ZwpLinuxDmabufFeedbackV1, SurfaceRef> for State {
+    fn event(
+        state: &mut Self,
+        _: &zwp_linux_dmabuf_feedback_v1::ZwpLinuxDmabufFeedbackV1,
+        event: zwp_linux_dmabuf_feedback_v1::Event,
+        surface: &SurfaceRef,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        state.desktop_surface_feedback(&surface.0, event);
+    }
+}
+
 impl Dispatch<zwp_linux_dmabuf_feedback_v1::ZwpLinuxDmabufFeedbackV1, ()> for State {
     fn event(
         state: &mut Self,

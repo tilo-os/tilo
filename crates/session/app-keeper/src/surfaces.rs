@@ -770,7 +770,34 @@ impl State {
             role,
             pushed,
         });
+        self.request_surface_feedback(id);
         true
+    }
+
+    /// A surface that asked for its own dma-buf feedback is answered by the desktop for the
+    /// desktop's surface that mirrors it. The answer is kept while no desktop is attached and
+    /// asked again on the next one.
+    pub(crate) fn request_surface_feedback(&mut self, id: &ObjectId) {
+        let Some(up) = self.up.as_ref() else {
+            return;
+        };
+        let Some(dmabuf) = up.dmabuf.clone() else {
+            return;
+        };
+        let Some(kept) = self.surfaces.get(id) else {
+            return;
+        };
+        let Some(surface) = kept.up.as_ref().map(|up| up.surface.clone()) else {
+            return;
+        };
+        let wanted = with_states(&kept.surface, |states| {
+            smithay::wayland::dmabuf::SurfaceDmabufFeedbackState::from_states(states).is_some()
+        });
+        if !wanted {
+            return;
+        }
+        self.surface_feedback.entry(id.clone()).or_default();
+        dmabuf.get_surface_feedback(&surface, &up.qh, SurfaceRef(id.clone()));
     }
 
     pub(crate) fn dismiss_popup(&mut self, id: &ObjectId) {
@@ -1338,6 +1365,7 @@ impl State {
             destroy_role(us.role);
             us.surface.destroy();
         }
+        self.surface_feedback.remove(id);
         self.seat.surface_gone(id);
     }
 
@@ -1391,10 +1419,12 @@ impl State {
                         ..
                     }),
                 ) if top.tag == tag => {
-                    if let Some(up) = &self.up {
-                        up.sending_for(&kept.surface);
+                    // A surface of this app breaks the protocol, as a bad request of its would:
+                    // the desktop's error names this surface, which is the app's.
+                    if let Some(us) = &kept.up {
+                        us.surface.attach(None, 1, 0);
+                        us.surface.commit();
                     }
-                    xdg.xdg.ack_configure(u32::MAX.wrapping_sub(7));
                     true
                 }
                 _ => false,
