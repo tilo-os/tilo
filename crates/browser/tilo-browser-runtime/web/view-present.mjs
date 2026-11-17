@@ -613,6 +613,14 @@ export function createViewPresenter(layer, {onScroll, picture, semantic, onFrame
         input.disabled = disabled;
         mark(input, 'value', target);
         out.push(input);
+        // What it is at, said beside it as the canvas says it.
+        if (control.text) {
+          const said = elementFor(`${key}:said`, 'span', next);
+          write(said, 'css', 'flex:none;min-width:40px;text-align:end;font-size:13px;font-variant-numeric:tabular-nums;color:var(--tilo-text-dim,#6e6e73);');
+          write(said, 'text', control.text);
+          write(said, '@aria-hidden', 'true');
+          out.push(said);
+        }
         return;
       }
       if (control.kind === 'entry') {
@@ -907,8 +915,8 @@ export const VIEW_CSS = `
 .tilo-view input[type=checkbox]:focus-visible,.tilo-view input[type=radio]:focus-visible,.tilo-view input[type=range]:focus-visible{outline:2px solid var(--tilo-accent,#2f6fed);outline-offset:2px;}
 .tilo-view input[type=range]{flex:1;min-width:0;margin:0;accent-color:var(--tilo-accent,#2f6fed);cursor:pointer;}
 /* Entries, choosers and strips of choices on the raised well the canvas paints them on. */
-.tilo-view [data-tilo-act=step]{width:28px!important;height:28px!important;background:var(--tilo-raised,#f1f2f4);color:var(--tilo-text,#1d1d1f)!important;font-size:15px!important;}
-.tilo-view [data-tilo-act=step]:hover{background:color-mix(in srgb,var(--tilo-raised,#f1f2f4) 85%,var(--tilo-text,#1d1d1f) 8%);}
+.tilo-view [data-tilo-act=step]{width:28px!important;height:28px!important;background:var(--tilo-raised,#f1f2f4)!important;color:var(--tilo-text,#1d1d1f)!important;font-size:15px!important;}
+.tilo-view [data-tilo-act=step]:hover{background:color-mix(in srgb,var(--tilo-raised,#f1f2f4) 85%,var(--tilo-text,#1d1d1f) 8%)!important;}
 .tilo-view [data-tilo-act=step]:disabled{opacity:.45;}
 .tilo-view [data-tilo-act=value][role=spinbutton],.tilo-view input[type=date],.tilo-view input[type=time],.tilo-view input[type=search]{height:28px;border-radius:6px!important;background:var(--tilo-raised,#f1f2f4)!important;padding:0 8px!important;text-align:center;}
 .tilo-view input[type=search]{text-align:start;}
@@ -947,7 +955,8 @@ export const VIEW_CSS = `
 .tilo-view img[data-fit=contain]{object-fit:contain;}
 .tilo-view img[data-fit=fill]{object-fit:fill;}
 .tilo-view progress{accent-color:var(--tilo-accent,#2f6fed);}
-.tilo-view [data-widget=Spinner]{box-sizing:border-box;border-radius:50%;border:2px solid color-mix(in srgb,var(--tilo-text-dim,#6e6e73) 28%,transparent);border-top-color:var(--tilo-text-dim,#6e6e73);animation:tilo-spin .8s linear infinite;}
+/* Four dots orbit, the leading one full and each after it fainter, as painted. */
+.tilo-view [data-widget=Spinner]{background:radial-gradient(10% 10% at 50% 15%,var(--tilo-accent,#2f6fed) 90%,transparent 100%),radial-gradient(10% 10% at 85% 50%,color-mix(in srgb,var(--tilo-accent,#2f6fed) 75%,transparent) 90%,transparent 100%),radial-gradient(10% 10% at 50% 85%,color-mix(in srgb,var(--tilo-accent,#2f6fed) 50%,transparent) 90%,transparent 100%),radial-gradient(10% 10% at 15% 50%,color-mix(in srgb,var(--tilo-accent,#2f6fed) 25%,transparent) 90%,transparent 100%);animation:tilo-spin 1.5s linear infinite reverse;}
 .tilo-view [data-widget=Skeleton]{background:var(--tilo-raised,rgba(127,127,127,.1));border-radius:6px;overflow:hidden;position:relative;}
 .tilo-view [data-widget=Skeleton]::after{content:"";position:absolute;inset:0;background:linear-gradient(90deg,transparent,color-mix(in srgb,var(--tilo-text-dim,#6e6e73) 10%,transparent),transparent);transform:translateX(-100%);animation:tilo-shimmer 1.6s ease-in-out infinite;}
 @keyframes tilo-spin{to{transform:rotate(1turn);}}

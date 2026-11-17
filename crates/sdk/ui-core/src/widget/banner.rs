@@ -659,20 +659,9 @@ impl Widget for BannerBody {
         // Its geometry is the banner's own; the page places its parts in the window.
         let at = vello::kurbo::Vec2::new(self.rect.x0, self.rect.y0 + dy);
         let x = g.text.x + at.x;
-        // Its icon and its buttons as painted, where they stand.
-        for (key, rect) in [
-            ("icon", Some(g.icon)),
-            ("action", g.action),
-            ("secondary-action", g.secondary_action),
-            ("dismiss", g.dismiss),
-        ] {
-            if let Some(rect) = rect.filter(|rect| !rect.is_zero_area()) {
-                let part = cx.part(key, "BannerPart", rect + at);
-                if key != "icon" {
-                    part.tag = Some("button");
-                }
-                part.painted(0);
-            }
+        // Its icon as painted, where it stands; its buttons are the banner's own widgets.
+        if !g.icon.is_zero_area() {
+            cx.part("icon", "BannerPart", g.icon + at).painted(0);
         }
         let on_well = theme.on_ground(well);
         let text_width = f64::from(g.text_width);
@@ -1304,6 +1293,16 @@ impl Widget for Banner {
     fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
         cx.element("aside");
         cx.children();
+        // Its buttons stand where it lays them, over its body.
+        for (key, button) in [
+            ("secondary", &self.secondary),
+            ("action", &self.action),
+            ("dismiss", &self.dismiss),
+        ] {
+            if let Some(button) = button {
+                cx.part_widget(key, button);
+            }
+        }
     }
 
     crate::described!();

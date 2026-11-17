@@ -90,16 +90,8 @@ impl<M: ListModel + 'static> VirtualList<M> {
         let side = f64::from(theme.tokens.metrics.icon_sm).min(rect.width().min(rect.height()));
         part.own = crate::composition::glyph(icon, side, theme.text_dim, false).map(|glyph| {
             Own::Face(crate::composition::Face {
-                icon: Some(glyph),
-                label: None,
-                detail: None,
-                trailing: None,
-                fill: None,
-                edge: None,
                 radius: f64::from(theme.tokens.radii.control),
-                pad: 0.0,
-                gap: 0.0,
-                spread: false,
+                ..crate::composition::Face::glyph(glyph)
             })
         });
         let mut node = AccessNode::new(Role::Button)

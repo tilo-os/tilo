@@ -473,6 +473,10 @@ impl Widget for Breadcrumb {
         let last = self.segments.len().saturating_sub(1);
         let measured = self.segment_rects.len() == labels.len()
             && self.segment_rects.iter().all(|rect| rect.width() > 0.0);
+        let sep_pad = f64::from(theme.tokens.spacing.s2);
+        let sep_w = separator_width(theme);
+        let icon_side = f64::from(theme.tokens.metrics.icon_sm);
+        let centre_y = self.rect.center().y;
         for (index, label) in labels.iter().enumerate() {
             let rect = if measured {
                 self.segment_rects[index]
@@ -481,13 +485,9 @@ impl Widget for Breadcrumb {
                 let x0 = self.rect.x0 + step * crate::num::f64_of_usize(index);
                 Rect::new(x0, self.rect.y0, x0 + step, self.rect.y1)
             };
-            let item = trail.part(&format!("segment:{index}"), "BreadcrumbSegment", rect);
-            item.tag = Some("li");
+            let origin = self.visible_origin.get(index).copied();
             // The newest segment is the page; a trail no paint has laid out still says so.
-            let current = self
-                .visible_origin
-                .get(index)
-                .copied()
+            let current = origin
                 .flatten()
                 .map_or(index == last, |origin| origin == last);
             let ink = if current {
@@ -495,10 +495,63 @@ impl Widget for Breadcrumb {
             } else {
                 theme.tokens.colors.text_dim
             };
-            let look = TextLook::new(label.clone(), &style, Some(ink)).with_max_lines(Some(1));
-            item.own = Some(crate::composition::Own::Text(look));
+            let followed = index + 1 < labels.len();
+            // The chevron after a segment stands in its item, so the list holds only items.
+            let span = if followed {
+                rect.x1 + sep_pad + sep_w + sep_pad
+            } else {
+                rect.x1
+            };
+            let item = trail.part(
+                &format!("segment:{index}"),
+                "BreadcrumbSegment",
+                Rect::new(rect.x0, rect.y0, span, rect.y1),
+            );
+            item.tag = Some("li");
             if current {
                 item.attrs.push(("aria-current", "page".into()));
+            }
+            let mut words_x = rect.x0;
+            if let (Some(icon), 0, Some(Some(0)) | None) = (self.root_icon, index, origin) {
+                let at = Rect::from_center_size(
+                    vello::kurbo::Point::new(rect.x0 + icon_side / 2.0, centre_y),
+                    (icon_side, icon_side),
+                );
+                item.icon("root", at, icon, ink);
+                words_x += self.root_width(&theme);
+            }
+            if matches!(origin, Some(None)) {
+                let at = Rect::from_center_size(
+                    vello::kurbo::Point::new(rect.center().x, centre_y),
+                    (icon_side, icon_side),
+                );
+                item.icon("more", at, Icon::MoreHorizontal, ink)
+                    .attrs
+                    .push(("aria-label", label.clone()));
+            } else {
+                let words = item.part(
+                    "label",
+                    "Text",
+                    Rect::new(words_x, rect.y0, rect.x1, rect.y1),
+                );
+                words.tag = Some("span");
+                words.own = Some(crate::composition::Own::Text(
+                    TextLook::new(label.clone(), &style, Some(ink)).with_max_lines(Some(1)),
+                ));
+            }
+            if followed {
+                let at = Rect::from_center_size(
+                    vello::kurbo::Point::new(rect.x1 + sep_pad + sep_w / 2.0, centre_y),
+                    (sep_w, sep_w),
+                );
+                item.icon(
+                    "chevron",
+                    at,
+                    Icon::ChevronRight,
+                    theme.tokens.colors.text_dim,
+                )
+                .attrs
+                .push(("aria-hidden", "true".into()));
             }
         }
     }

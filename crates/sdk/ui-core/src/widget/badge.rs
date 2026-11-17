@@ -550,7 +550,12 @@ impl Widget for Badge {
             edge: colors.edge.map(rgba8),
             radius,
         });
-        cx.text(TextLook::new(label, &metrics.caption, Some(colors.ink)).with_max_lines(Some(1)));
+        // The pill is as wide as its words and their padding: they stand in its middle.
+        cx.text(
+            TextLook::new(label, &metrics.caption, Some(colors.ink))
+                .with_max_lines(Some(1))
+                .aligned("center"),
+        );
     }
 
     crate::described!();

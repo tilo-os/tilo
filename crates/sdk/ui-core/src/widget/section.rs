@@ -1803,12 +1803,37 @@ impl Widget for StatusLine {
             .clone()
             .unwrap_or_else(|| theme.text(crate::TextRole::Caption));
         cx.element("p");
+        let line = f64::from(style.line_height_px());
+        let dot = f64::from(theme.tokens.spacing.s2);
+        let gap = f64::from(theme.tokens.spacing.rhythm.related);
+        let (x0, y0) = (self.rect.x0, self.rect.y0);
+        let mark = cx.part(
+            "dot",
+            "Dot",
+            Rect::new(
+                x0,
+                y0 + (line - dot) / 2.0,
+                x0 + dot,
+                y0 + (line + dot) / 2.0,
+            ),
+        );
+        mark.ground = Some(crate::composition::Ground {
+            fill: Some(crate::composition::rgba8(self.status().colour(theme))),
+            edge: None,
+            radius: dot / 2.0,
+        });
+        mark.attrs.push(("aria-hidden", "true".into()));
         let look = crate::composition::TextLook::new(
             self.text.clone(),
             &style,
             Some(theme.tokens.colors.text_dim),
         );
-        cx.text(look);
+        cx.words(
+            "text",
+            "span",
+            Rect::new(x0 + dot + gap, y0, self.rect.x1, self.rect.y1),
+            look,
+        );
     }
 
     crate::described!();
@@ -2055,8 +2080,38 @@ impl Widget for ObjectHeader {
         let width = self.rect.width();
         let (title_h, caption_h) =
             crate::text_render::with_layout_renderer(theme, |text| self.block(text, &m, width));
-        let x0 = self.rect.x0 + if self.lead.is_some() { m.lead } else { 0.0 };
+        let x0 = self.rect.x0 + self.text_x(&m);
         let y0 = self.rect.y0 + (self.rect.height() - (title_h + caption_h)).max(0.0) / 2.0;
+        let lead = Rect::new(
+            self.rect.x0,
+            self.rect.center().y - m.lead / 2.0,
+            self.rect.x0 + m.lead,
+            self.rect.center().y + m.lead / 2.0,
+        );
+        match &self.lead {
+            Some(ObjectLead::Avatar {
+                name,
+                identity,
+                image,
+                square,
+            }) => {
+                let face = AvatarFace::new(name, identity).image(image.as_ref());
+                let face = if *square { face.square() } else { face };
+                let part = cx.part("lead", "Avatar", lead);
+                part.tag = Some("span");
+                face.compose(theme, lead, part);
+            }
+            Some(ObjectLead::Icon(icon)) => {
+                let side = f64::from(theme.tokens.metrics.icon_lg);
+                cx.icon(
+                    "lead",
+                    Rect::from_center_size(lead.center(), (side, side)),
+                    *icon,
+                    theme.text_dim,
+                );
+            }
+            None => {}
+        }
         let look = crate::composition::TextLook::new(
             self.title.clone(),
             &m.title,
@@ -2079,7 +2134,12 @@ impl Widget for ObjectHeader {
             cx.words(
                 "caption",
                 "p",
-                crate::kurbo::Rect::new(x0, y0 + title_h, self.rect.x1, y0 + title_h + caption_h),
+                crate::kurbo::Rect::new(
+                    x0,
+                    y0 + title_h + m.tight,
+                    self.rect.x1,
+                    y0 + title_h + caption_h,
+                ),
                 look,
             );
         }

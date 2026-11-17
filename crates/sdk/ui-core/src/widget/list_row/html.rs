@@ -47,7 +47,7 @@ impl ListRowFace<'_> {
             None | Some(RowLeading::AvatarSpace) => {}
             Some(RowLeading::Icon(icon)) => {
                 let r = Rect::from_center_size(slot.center(), (m.icon, m.icon));
-                icon_part(cx, "leading", r, icon, theme.text_dim);
+                cx.icon("leading", r, icon, theme.text_dim);
             }
             Some(RowLeading::Checkbox { checked, icon }) => {
                 let boxed = super::geometry::checkbox_box(slot, icon, m);
@@ -71,7 +71,7 @@ impl ListRowFace<'_> {
                         at + m.icon,
                         slot.center().y + m.icon / 2.0,
                     );
-                    icon_part(cx, "leading-icon", r, icon, theme.text_primary);
+                    cx.icon("leading-icon", r, icon, theme.text_primary);
                 }
             }
             Some(_) => painted(cx, "leading", slot),
@@ -347,30 +347,6 @@ fn words(cx: &mut HtmlCx<'_>, key: &str, rect: Rect, text: String, style: &TextS
         return;
     }
     cx.words(key, "span", rect, TextLook::new(text, style, Some(ink)));
-}
-
-/// A part showing `icon` in `ink`, filling `rect`; a picture of it while the page has no code
-/// for icons yet.
-fn icon_part(cx: &mut HtmlCx<'_>, key: &str, rect: Rect, icon: crate::icons::Icon, ink: Color) {
-    let glyph = crate::composition::glyph(icon, rect.width(), ink, false);
-    let part = cx.part(key, "Icon", rect);
-    match glyph {
-        Some(glyph) => {
-            part.own = Some(crate::composition::Own::Face(Face {
-                icon: Some(glyph),
-                label: None,
-                detail: None,
-                trailing: None,
-                fill: None,
-                edge: None,
-                radius: 0.0,
-                pad: 0.0,
-                gap: 0.0,
-                spread: false,
-            }));
-        }
-        None => part.painted(0),
-    }
 }
 
 /// A part showing the row's paint within `rect`.

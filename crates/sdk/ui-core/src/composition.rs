@@ -342,6 +342,24 @@ pub struct Face {
     pub spread: bool,
 }
 
+impl Face {
+    /// A face that is `icon` alone, on its container's ground.
+    pub fn glyph(icon: Glyph) -> Self {
+        Self {
+            icon: Some(icon),
+            label: None,
+            detail: None,
+            trailing: None,
+            fill: None,
+            edge: None,
+            radius: 0.0,
+            pad: 0.0,
+            gap: 0.0,
+            spread: false,
+        }
+    }
+}
+
 /// The ground a widget's element is filled with, under its words and its children: a card's, a
 /// banner's, a badge's. Colours are straight sRGB, 0–255.
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -762,6 +780,24 @@ impl Composed {
         &mut self.children[index]
     }
 
+    /// A part of it showing `icon` alone in `ink`, centred in `rect` at the size of the
+    /// smaller side; a picture of it where the page has no code for that icon.
+    pub fn icon(
+        &mut self,
+        key: &str,
+        rect: vello::kurbo::Rect,
+        icon: crate::icons::Icon,
+        ink: vello::peniko::Color,
+    ) -> &mut Self {
+        let glyph = glyph(icon, rect.width().min(rect.height()), ink, false);
+        let part = self.part(key, "Icon", rect);
+        match glyph {
+            Some(glyph) => part.own = Some(Own::Face(Face::glyph(glyph))),
+            None => part.painted(0),
+        }
+        part
+    }
+
     /// The part shows as a picture of the widget's paint within its rect.
     pub fn painted(&mut self, version: u64) {
         use std::hash::{Hash, Hasher};
@@ -825,6 +861,11 @@ pub struct HtmlCx<'a> {
 }
 
 impl<'a> HtmlCx<'a> {
+    /// The element itself, for a look composed by a shared face ([`crate::widget::AvatarFace`]).
+    pub fn node(&mut self) -> &mut Composed {
+        &mut self.composed
+    }
+
     /// The widget is a `tag` element (`button`, `li`, `section`, `dialog`).
     pub fn element(&mut self, tag: &'static str) {
         self.composed.tag = Some(tag);
@@ -864,6 +905,17 @@ impl<'a> HtmlCx<'a> {
         self.composed.part(key, widget, rect)
     }
 
+    /// A part of it showing `icon` alone in `ink`, centred in `rect` ([`Composed::icon`]).
+    pub fn icon(
+        &mut self,
+        key: &str,
+        rect: vello::kurbo::Rect,
+        icon: crate::icons::Icon,
+        ink: vello::peniko::Color,
+    ) -> &mut Composed {
+        self.composed.icon(key, rect, icon, ink)
+    }
+
     /// A part of it showing `look`'s words as a `tag` element (`h3`, `dt`, `td`) standing at `rect`.
     pub fn words(
         &mut self,
@@ -876,6 +928,19 @@ impl<'a> HtmlCx<'a> {
         part.tag = Some(tag);
         part.own = Some(Own::Text(look));
         part
+    }
+
+    /// `widget`, which the widget lays out and draws itself rather than through its layout
+    /// node, composed as a part keyed `key`: a banner's buttons.
+    pub fn part_widget(&mut self, key: &str, widget: &dyn crate::widget::Widget) {
+        let rect = widget.get_rect();
+        if rect.width() <= 0.0 || rect.height() <= 0.0 {
+            return;
+        }
+        let path = format!("{}#{key}", self.composed.path);
+        self.composed
+            .children
+            .push(compose_alone(widget, self.theme, &path));
     }
 
     /// The widget's element is filled with `ground`, under its words and its children.
