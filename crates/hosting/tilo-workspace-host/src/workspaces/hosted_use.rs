@@ -828,3 +828,33 @@ impl Workspaces {
             .map_err(refused)
     }
 }
+
+impl super::GovernedWorkspace {
+    /// The device of `person`'s this workspace certified most recently and admits now: the one an
+    /// agent this host runs for them works on, so what the agent may do is the person's access
+    /// here at every step, and a person removed from the workspace leaves their agent nothing.
+    pub(super) fn person_device(&self, person: &[u8; 32]) -> Option<[u8; 32]> {
+        let peer = self.peer();
+        let now = tilo_clock::wall();
+        peer.certificates()
+            .iter()
+            .filter(|cert| &cert.user_public_key == person)
+            .filter(|cert| peer.permissions(cert.device_public_key, now).is_ok())
+            .max_by_key(|cert| cert.issued_at_ns)
+            .map(|cert| cert.device_public_key)
+    }
+}
+
+impl Workspaces {
+    /// [`GovernedWorkspace::person_device`] in the workspace `workspace` governed here: `None` for
+    /// a workspace not governed here, or a person it admits on no device.
+    pub async fn person_device(
+        &self,
+        workspace: WorkspaceId,
+        person: [u8; 32],
+    ) -> Option<[u8; 32]> {
+        let governed = self.held(workspace).await?;
+        let runtime = governed.lock().await;
+        runtime.person_device(&person)
+    }
+}

@@ -31,20 +31,6 @@ impl GovernedWorkspace {
         peer.permissions(device, tilo_clock::wall()).ok()
     }
 
-    /// The device of `person`'s this workspace certified most recently and admits now: the one an
-    /// agent this host runs for them works on, so what the agent may do is the person's access
-    /// here at every step, and a person removed from the workspace leaves their agent nothing.
-    fn person_device(&self, person: &[u8; 32]) -> Option<[u8; 32]> {
-        let peer = self.peer();
-        let now = tilo_clock::wall();
-        peer.certificates()
-            .iter()
-            .filter(|cert| &cert.user_public_key == person)
-            .filter(|cert| peer.permissions(cert.device_public_key, now).is_ok())
-            .max_by_key(|cert| cert.issued_at_ns)
-            .map(|cert| cert.device_public_key)
-    }
-
     /// Whether `caller` is someone this workspace admits.
     fn admits(&self, caller: &Caller) -> bool {
         self.admitted(caller).is_some()
@@ -120,18 +106,6 @@ impl Workspaces {
         self.governing(workspace, |runtime| runtime.admits(caller))
             .await
             .unwrap_or(false)
-    }
-
-    /// [`GovernedWorkspace::person_device`] in the workspace `workspace` governed here: `None` for
-    /// a workspace not governed here, or a person it admits on no device.
-    pub async fn person_device(
-        &self,
-        workspace: WorkspaceId,
-        person: [u8; 32],
-    ) -> Option<[u8; 32]> {
-        self.governing(workspace, |runtime| runtime.person_device(&person))
-            .await
-            .flatten()
     }
 
     pub async fn resource_view_policy(
