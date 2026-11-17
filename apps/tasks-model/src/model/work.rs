@@ -1,22 +1,22 @@
-//! What an issue keeps while it is worked on over many runs: where its working material is, what
-//! it waits for, what it may cost, and why it stopped.
+//! What an issue keeps while it is worked on over many agent sessions: where its working
+//! material is, what it waits for, what it may cost, and why it stopped.
 //!
-//! Work that takes hours or weeks does not fit one run of whoever does it. A run ends, the
-//! machine restarts, a reply takes two days. So everything the next run needs is kept with the
-//! issue, in the workspace's own records, and nothing beside them:
+//! Work that takes hours or weeks does not fit one session of whoever does it. A session ends,
+//! the machine restarts, a reply takes two days. So everything the next session needs is kept
+//! with the issue, in the workspace's own resources, and nothing beside them:
 //!
-//! - **A place.** A folder in the workspace's files and a note in Notes, both named here. A run
-//!   writes its plan, what it found (with where it found it) and what is still open into the
-//!   note, and puts files into the folder; a fresh run starts from them.
+//! - **A place.** A folder in the workspace's files and a note in Notes, both named here. A
+//!   session writes its plan, what it found (with where it found it) and what is still open into
+//!   the note, and puts files into the folder; a fresh session starts from them.
 //! - **Waits.** What the work waits for, in words a person reads, and the latest moment the wait
 //!   ends. Whichever comes first ends it: any one of the things waited for, or that moment.
-//!   Waiting costs nothing: nothing runs until the wait ends.
-//! - **A budget.** Money and working time for the whole issue, over all its runs.
-//! - **Why it stopped.** A run that hit the budget, lost its worker or failed says so here, in a
-//!   plain line, so an issue nobody works on never reads as one somebody does.
+//!   Waiting costs nothing: nobody works on it until the wait ends.
+//! - **A budget.** Money and working time for the whole issue, over all its sessions.
+//! - **Why it stopped.** A session that hit the budget, lost its worker or failed says so here,
+//!   in a plain line, so an issue nobody works on never reads as one somebody does.
 //!
 //! [`task_state`] is how every reader tells these apart: the panel that lists a person's tasks,
-//! the host that decides whether to run, and a test.
+//! the server that decides whether to work on it, and a test.
 
 use serde::{Deserialize, Serialize};
 use tilo_resource::{JsonSchema, Model, Refusal};
@@ -29,8 +29,8 @@ pub const MAX_WAITS: usize = 16;
 pub const MAX_LINE_CHARS: usize = 1024;
 /// The longest address a wait or a place names, in characters.
 pub const MAX_ADDRESS_CHARS: usize = 1024;
-/// How often in a row a run may be lost before the issue stops and says so.
-pub const MOST_LOST_RUNS: u64 = 2;
+/// How often in a row an agent session may be lost before the issue stops and says so.
+pub const MOST_LOST_SESSIONS: u64 = 2;
 
 /// What a wait is for.
 #[derive(
@@ -43,7 +43,7 @@ pub enum WaitKind {
     Time,
     /// A reply: in a mail thread, a conversation.
     Reply,
-    /// A record of the workspace changing.
+    /// A resource of the workspace changing.
     Change,
     /// An answer of the person the work is for: the issue needs them.
     Answer,
@@ -80,7 +80,7 @@ pub enum StoppedWhy {
     Budget,
     /// Its budget in working time is spent.
     Time,
-    /// Its runs were interrupted and did not come back.
+    /// Its agent sessions were interrupted and did not come back.
     LostWorker,
     /// A person stopped it.
     Person,
@@ -116,7 +116,7 @@ pub enum BudgetBy {
     Agent,
 }
 
-/// What an issue keeps while it is worked on over many runs.
+/// What an issue keeps while it is worked on over many agent sessions.
 #[derive(Model, Default, Debug, Clone, PartialEq, Eq)]
 pub struct Work {
     /// The folder in the workspace's files its working material is kept in; empty for none.
@@ -132,19 +132,20 @@ pub struct Work {
     pub since_ms: Option<i64>,
     /// What the whole issue may cost, in millionths of the currency.
     pub budget_micros: Option<u64>,
-    /// How long it may be worked on over all its runs, in milliseconds. Waiting is not counted.
+    /// How long it may be worked on over all its sessions, in milliseconds. Waiting is not
+    /// counted.
     pub budget_ms: Option<u64>,
     /// Who set the budget.
     pub budget_by: BudgetBy,
-    /// What its runs cost so far.
+    /// What its sessions cost so far.
     pub spent_micros: u64,
-    /// How long its runs worked so far.
+    /// How long its sessions worked so far.
     pub worked_ms: u64,
-    /// How many runs began.
-    pub runs: u64,
-    /// Since when a run is going, as its agent said when it began.
-    pub running_since_ms: Option<i64>,
-    /// How many runs in a row began and never ended.
+    /// How many agent sessions began on it.
+    pub sessions: u64,
+    /// Since when a session is going, as its agent said when it began.
+    pub session_since_ms: Option<i64>,
+    /// How many sessions in a row began and never ended.
     pub lost: u64,
     /// Set when the work stopped.
     pub stopped: Option<Stopped>,

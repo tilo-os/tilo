@@ -178,8 +178,8 @@ fields = [
   { path = "issues.*.work.budget_by", type = { named = "BudgetBy" } },
   { path = "issues.*.work.spent_micros", type = "int" },
   { path = "issues.*.work.worked_ms", type = "int" },
-  { path = "issues.*.work.runs", type = "int" },
-  { path = "issues.*.work.running_since_ms", type = { option = "int" } },
+  { path = "issues.*.work.sessions", type = "int" },
+  { path = "issues.*.work.session_since_ms", type = { option = "int" } },
   { path = "issues.*.work.lost", type = "int" },
   { path = "issues.*.work.stopped", type = { option = { named = "Stopped" } }, stored = "record" },
   { path = "issues.*.work.stopped.why", type = { named = "StoppedWhy" } },
@@ -401,7 +401,7 @@ params = [
 ]
 
 [[resources.verbs]]
-id = "run-began"
+id = "session-began"
 kind = "undoable"
 writes = ["record", "issues.*"]
 params = [
@@ -409,7 +409,7 @@ params = [
 ]
 
 [[resources.verbs]]
-id = "run-ended"
+id = "session-ended"
 kind = "undoable"
 writes = ["record", "issues.*"]
 params = [
@@ -650,8 +650,8 @@ fields = [
   { name = "budget_by", type = { named = "BudgetBy" } },
   { name = "spent_micros", type = "int" },
   { name = "worked_ms", type = "int" },
-  { name = "runs", type = "int" },
-  { name = "running_since_ms", type = { option = "int" } },
+  { name = "sessions", type = "int" },
+  { name = "session_since_ms", type = { option = "int" } },
   { name = "lost", type = "int" },
   { name = "stopped", type = { option = { named = "Stopped" } } },
   { name = "resumed", type = { option = { named = "Resumed" } } },

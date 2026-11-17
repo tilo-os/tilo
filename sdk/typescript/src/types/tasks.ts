@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.tasks@dbcb4eda35527380";
+export const SURFACE = "so.tilo.tasks@6528ebcbb74478c7";
 
 /** One of "project", "area". */
 export type Kind = "project" | "area";
@@ -196,8 +196,8 @@ export interface Work {
   budget_by: BudgetBy;
   spent_micros: number;
   worked_ms: number;
-  runs: number;
-  running_since_ms: number | null;
+  sessions: number;
+  session_since_ms: number | null;
   lost: number;
   stopped: Stopped | null;
   resumed: Resumed | null;
@@ -384,13 +384,13 @@ export interface SetBudgetArgs {
   time_ms?: number;
 }
 
-/** The arguments of `run-began`. */
-export interface RunBeganArgs {
+/** The arguments of `session-began`. */
+export interface SessionBeganArgs {
   issue: string;
 }
 
-/** The arguments of `run-ended`. */
-export interface RunEndedArgs {
+/** The arguments of `session-ended`. */
+export interface SessionEndedArgs {
   issue: string;
   cost_micros: number;
   worked_ms: number;
@@ -601,18 +601,18 @@ export interface Issues extends tilo.Resource {
   }): Promise<void>;
   /** Runs `set-budget` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   setBudgetMany(items: SetBudgetArgs[]): Promise<tilo.ActionAnswer[]>;
-  runBegan(args: {
+  sessionBegan(args: {
     issue: string;
   }): Promise<void>;
-  /** Runs `run-began` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  runBeganMany(items: RunBeganArgs[]): Promise<tilo.ActionAnswer[]>;
-  runEnded(args: {
+  /** Runs `session-began` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  sessionBeganMany(items: SessionBeganArgs[]): Promise<tilo.ActionAnswer[]>;
+  sessionEnded(args: {
     issue: string;
     cost_micros: number;
     worked_ms: number;
   }): Promise<void>;
-  /** Runs `run-ended` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  runEndedMany(items: RunEndedArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Runs `session-ended` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  sessionEndedMany(items: SessionEndedArgs[]): Promise<tilo.ActionAnswer[]>;
   stop(args: {
     issue: string;
     why: StoppedWhy;
@@ -624,7 +624,7 @@ export interface Issues extends tilo.Resource {
 
 /** The actions `Issues` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const ISSUES_ACTIONS = ["create", "createMany", "start", "startMany", "rename", "renameMany", "moveUnder", "moveUnderMany", "assign", "assignMany", "setProject", "setProjectMany", "attach", "attachMany", "detach", "detachMany", "addLabel", "addLabelMany", "place", "placeMany", "comment", "commentMany", "link", "linkMany", "linkNote", "linkNoteMany", "delete", "deleteMany", "plan", "planMany", "setPlace", "setPlaceMany", "wait", "waitMany", "resume", "resumeMany", "setBudget", "setBudgetMany", "runBegan", "runBeganMany", "runEnded", "runEndedMany", "stop", "stopMany"] as const;
+export const ISSUES_ACTIONS = ["create", "createMany", "start", "startMany", "rename", "renameMany", "moveUnder", "moveUnderMany", "assign", "assignMany", "setProject", "setProjectMany", "attach", "attachMany", "detach", "detachMany", "addLabel", "addLabelMany", "place", "placeMany", "comment", "commentMany", "link", "linkMany", "linkNote", "linkNoteMany", "delete", "deleteMany", "plan", "planMany", "setPlace", "setPlaceMany", "wait", "waitMany", "resume", "resumeMany", "setBudget", "setBudgetMany", "sessionBegan", "sessionBeganMany", "sessionEnded", "sessionEndedMany", "stop", "stopMany"] as const;
 
 /** The `tasks.issues` kind at `path`. */
 export function issues(ws: tilo.Workspace, path: string): Issues {

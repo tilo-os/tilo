@@ -606,7 +606,7 @@ struct Task {
 
 impl Task {
     /// Ada files "Write the market analysis" and gives it to the agent
-    /// `claude` at 1 000 ms; the agent holds the same record.
+    /// `claude` at 1 000 ms; the agent holds the same document.
     fn given() -> Self {
         let mut ada = Replica::<IssuePart>::new().as_author("ada");
         ada.set_now_ms(1_000);
@@ -620,7 +620,7 @@ impl Task {
         Self { ada, agent, issue }
     }
 
-    /// The agent does `invoke` at `now_ms`, and Ada's record takes it.
+    /// The agent does `invoke` at `now_ms`, and Ada's document takes it.
     fn agent_does(
         &mut self,
         now_ms: i64,
@@ -667,7 +667,7 @@ impl Task {
         let issue = self.issue.clone();
         self.agent_does(
             now_ms,
-            IssuePart::RUN_BEGAN.with(issue_part::RunBegan { issue }),
+            IssuePart::SESSION_BEGAN.with(issue_part::SessionBegan { issue }),
         )
         .unwrap();
     }
@@ -676,7 +676,7 @@ impl Task {
         let issue = self.issue.clone();
         self.agent_does(
             now_ms,
-            IssuePart::RUN_ENDED.with(issue_part::RunEnded {
+            IssuePart::SESSION_ENDED.with(issue_part::SessionEnded {
                 issue,
                 cost_micros,
                 worked_ms,
@@ -703,7 +703,7 @@ impl Task {
         crate::model::task_state(&self.held())
     }
 
-    /// What asks the agent at `now_ms`, read from the record alone, as a host
+    /// What asks the agent at `now_ms`, read from the document alone, as a server
     /// that just started reads it.
     fn asks(&self, now_ms: i64) -> Vec<crate::model::IssueAsk> {
         crate::model::agent_asks_at(self.ada.state().unwrap().issues.iter(), now_ms)
@@ -721,7 +721,7 @@ fn reply_wait() -> crate::model::WaitFor {
 
 /// A task that waits two days for a reply costs nothing while it waits, is
 /// asked again when the reply comes, and in a second telling when the two
-/// days are over; a reader that holds only the record reads the same asks.
+/// days are over; a reader that holds only the document reads the same asks.
 #[test]
 fn a_task_that_waits_is_asked_again_by_what_it_waited_for_or_by_its_deadline() {
     use crate::model::{Asked, TaskState};
@@ -765,7 +765,7 @@ fn a_task_that_waits_is_asked_again_by_what_it_waited_for_or_by_its_deadline() {
         }
     );
     for now in [2_500, 2_000 + DAY_MS, until - 1] {
-        assert!(task.asks(now).is_empty(), "nothing runs while it waits");
+        assert!(task.asks(now).is_empty(), "nothing is asked while it waits");
     }
     let issue = task.issue.clone();
     task.agent_does(
@@ -795,9 +795,9 @@ fn a_task_that_waits_is_asked_again_by_what_it_waited_for_or_by_its_deadline() {
     );
     let work = task.work();
     assert_eq!(
-        (work.runs, work.spent_micros, work.worked_ms),
+        (work.sessions, work.spent_micros, work.worked_ms),
         (2, 1_200, 700),
-        "both runs are counted"
+        "both sessions are counted"
     );
 
     // On the deadline, in a second telling.
@@ -811,19 +811,19 @@ fn a_task_that_waits_is_asked_again_by_what_it_waited_for_or_by_its_deadline() {
     assert_eq!(
         task.task_state(),
         TaskState::Working,
-        "the run ended the wait"
+        "the session ended the wait"
     );
     assert_eq!(task.work().until_ms, None);
     task.says(until + 6, "No reply came: I wrote again.");
     assert!(task.asks(until + DAY_MS).is_empty(), "answered once");
 }
 
-/// A run that was lost is asked again from the record alone, and one lost
-/// while the task waited does not start it early. After the most lost runs
+/// A session that was lost is asked again from the document alone, and one lost
+/// while the task waited does not start it early. After the most lost sessions
 /// in a row the task stops and says so: it never reads as done.
 #[test]
-fn a_task_whose_worker_was_lost_is_run_again_then_stops_and_never_reads_as_done() {
-    use crate::model::{Asked, MOST_LOST_RUNS, StoppedWhy, TaskState};
+fn a_task_whose_worker_was_lost_is_asked_again_then_stops_and_never_reads_as_done() {
+    use crate::model::{Asked, MOST_LOST_SESSIONS, StoppedWhy, TaskState};
     // Lost after it began to wait: the wait still holds.
     let mut task = Task::given();
     task.begins(2_000);
@@ -843,16 +843,16 @@ fn a_task_whose_worker_was_lost_is_run_again_then_stops_and_never_reads_as_done(
     );
     assert_eq!(task.asks(9_000)[0].asked, Asked::WaitEnded);
 
-    // Lost while it worked: asked again, each new run counting the one before.
+    // Lost while it worked: asked again, each new session counting the one before.
     let mut task = Task::given();
     let issue = task.issue.clone();
-    for run in 0..=MOST_LOST_RUNS {
+    for lost in 0..=MOST_LOST_SESSIONS {
         let asked = task.asks(2_000);
-        assert_eq!(asked.len(), 1, "run {run} is asked again: {asked:?}");
-        task.begins(2_000 + i64::try_from(run).unwrap());
-        assert_eq!(task.work().lost, run, "the runs lost in a row");
+        assert_eq!(asked.len(), 1, "session {lost} is asked again: {asked:?}");
+        task.begins(2_000 + i64::try_from(lost).unwrap());
+        assert_eq!(task.work().lost, lost, "the sessions lost in a row");
     }
-    assert!(task.work().lost >= MOST_LOST_RUNS);
+    assert!(task.work().lost >= MOST_LOST_SESSIONS);
     task.agent_does(
         3_000,
         IssuePart::STOP.with(issue_part::Stop {
@@ -971,7 +971,10 @@ fn a_spent_budget_stops_a_task_until_its_person_raises_it() {
         !read.resolved(),
         "work that stopped at its budget is not done"
     );
-    assert!(task.asks(3_000).is_empty(), "nothing runs past the budget");
+    assert!(
+        task.asks(3_000).is_empty(),
+        "nothing is asked past the budget"
+    );
 
     let resume = || {
         IssuePart::RESUME.with(issue_part::Resume {
@@ -1090,7 +1093,7 @@ fn an_agent_gives_an_issue_for_its_person_and_what_it_filed_itself_waits_for_the
     assert!(asks(&lone).is_empty());
 }
 
-/// Only the agent an issue is with counts its runs, a closed issue takes no
+/// Only the agent an issue is with counts its sessions, a closed issue takes no
 /// wait and no stop, and a place is a folder's path and a note.
 #[test]
 fn runs_are_the_assigned_agents_and_a_closed_issue_neither_waits_nor_stops() {
@@ -1098,13 +1101,13 @@ fn runs_are_the_assigned_agents_and_a_closed_issue_neither_waits_nor_stops() {
     let mut task = Task::given();
     let issue = task.issue.clone();
     let began = || {
-        IssuePart::RUN_BEGAN.with(issue_part::RunBegan {
+        IssuePart::SESSION_BEGAN.with(issue_part::SessionBegan {
             issue: issue.clone(),
         })
     };
     let refused = task.ada_does(1_100, began()).unwrap_err();
     assert!(
-        refused.contains("Only the agent an issue is assigned to counts its runs"),
+        refused.contains("Only the agent an issue is assigned to counts its sessions"),
         "{refused}"
     );
     let mut other = task.ada.fork().as_agent_for("scout", "ada");

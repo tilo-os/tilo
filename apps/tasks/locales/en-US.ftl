@@ -124,8 +124,8 @@ tasks-set-place = Said where the material of { $item } is kept
 tasks-wait = Let { $item } wait
 tasks-resume = Let { $item } go on
 tasks-set-budget = Set the budget of { $item }
-tasks-run-began = Began working on { $item }
-tasks-run-ended = Ended a run on { $item }
+tasks-session-began = Began working on { $item }
+tasks-session-ended = Ended a session on { $item }
 tasks-stop = Stopped { $item }
 
 ## What the app is called in a window and in the launcher
@@ -160,6 +160,6 @@ tasks-issues-set-place = Set where its material is kept
 tasks-issues-wait = Let issue wait
 tasks-issues-resume = Let issue go on
 tasks-issues-set-budget = Set issue budget
-tasks-issues-run-began = Begin a run
-tasks-issues-run-ended = End a run
+tasks-issues-session-began = Begin a session
+tasks-issues-session-ended = End a session
 tasks-issues-stop = Stop issue

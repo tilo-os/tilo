@@ -127,8 +127,8 @@ tasks-set-place = Ablage für { $item } festgelegt
 tasks-wait = { $item } wartet
 tasks-resume = { $item } fortgesetzt
 tasks-set-budget = Budget für { $item } festgelegt
-tasks-run-began = Arbeit an { $item } begonnen
-tasks-run-ended = Lauf an { $item } beendet
+tasks-session-began = Arbeit an { $item } begonnen
+tasks-session-ended = Sitzung an { $item } beendet
 tasks-stop = { $item } angehalten
 
 ## What the app is called in a window and in the launcher
@@ -163,6 +163,6 @@ tasks-issues-set-place = Ablage festlegen
 tasks-issues-wait = Aufgabe warten lassen
 tasks-issues-resume = Aufgabe fortsetzen
 tasks-issues-set-budget = Budget festlegen
-tasks-issues-run-began = Lauf beginnen
-tasks-issues-run-ended = Lauf beenden
+tasks-issues-session-began = Sitzung beginnen
+tasks-issues-session-ended = Sitzung beenden
 tasks-issues-stop = Aufgabe anhalten
