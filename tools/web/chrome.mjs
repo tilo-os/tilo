@@ -571,6 +571,7 @@ export async function launch({args = [], media = false} = {}) {
       for (;;) {
         const left = deadline - Date.now();
         if (left <= 0) throw new Error(`timed out waiting for ${expression}`);
+        if (dead) throw new Error(`${expression}: ${dead}`);
         const document = documents;
         const value = await evaluate(untilTruthy(expression, left), {timeout: left + 5_000})
           .catch(() => undefined);
@@ -582,7 +583,10 @@ export async function launch({args = [], media = false} = {}) {
     };
     const nextDocument = within => new Promise(resolve => {
       const done = () => { clearTimeout(timer); loaded.delete(done); resolve(); };
+      // Never what keeps the run going: a wait that lost its race (a flow
+      // that failed or finished meanwhile) ends with the process.
       const timer = setTimeout(done, Math.max(0, within));
+      timer.unref?.();
       loaded.add(done);
     });
     // One capture at a time: Chromium answers two overlapping
