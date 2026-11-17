@@ -48,7 +48,7 @@ pub(super) struct StoredResource {
     pub(super) version: u32,
     pub(super) workspace: String,
     pub(super) workspace_id: WorkspaceId,
-    pub(super) authority: DeviceCert,
+    pub(super) owner: DeviceCert,
     pub(super) peer: Vec<super::peer_parts::PeerPart>,
     pub(super) generation: u64,
     /// The publications after the ones the publications file holds.
@@ -70,7 +70,7 @@ pub(super) struct StoredDocumentRef<'a> {
     pub(super) version: u32,
     pub(super) workspace: &'a str,
     pub(super) workspace_id: WorkspaceId,
-    pub(super) authority: &'a DeviceCert,
+    pub(super) owner: &'a DeviceCert,
     pub(super) peer: &'a [super::peer_parts::PeerPart],
     pub(super) generation: u64,
     pub(super) outgoing: &'a [Publication],

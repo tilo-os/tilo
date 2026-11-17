@@ -518,7 +518,6 @@ async fn members_writes_the_node_took_in_survive_a_hard_stop() {
         server,
         workspaces,
         workspace,
-        governor,
         member,
         ..
     } = lounge().await;
@@ -548,7 +547,7 @@ async fn members_writes_the_node_took_in_survive_a_hard_stop() {
         let copy = stopped.path().join(path.file_name().unwrap());
         std::fs::copy(&path, &copy).unwrap();
         copy_dir(path.parent().unwrap(), stopped.path());
-        let held = match GovernedWorkspace::open(copy, &governor, device.as_ref()) {
+        let held = match GovernedWorkspace::open(copy, device.as_ref()) {
             Ok(reopened) => reopened.readable_document(APP, RECORD).await.unwrap(),
             // Copied while the workspace wrote its next state.
             Err(_) => None,

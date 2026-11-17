@@ -216,7 +216,7 @@ struct WorkspaceDocumentEntry {
     version: u32,
     workspace: String,
     workspace_id: WorkspaceId,
-    authority: DeviceCert,
+    owner: DeviceCert,
     peer: Vec<peer_parts::PeerPart>,
     generation: u64,
     /// The complete committed publication: the last full checkpoint and every
@@ -254,7 +254,7 @@ impl WorkspaceDocumentEntry {
             version: DOCUMENT_VERSION,
             workspace: stored.workspace,
             workspace_id: stored.workspace_id,
-            authority: stored.authority,
+            owner: stored.owner,
             peer: stored.peer,
             generation: stored.generation,
             outgoing: published,
@@ -418,7 +418,7 @@ impl GovernedWorkspace {
             workspace_id: WorkspaceId::parse(&workspace)
                 .ok_or_else(|| "a workspace is named by its id".to_string())?,
             workspace: workspace.clone(),
-            authority: authority.clone(),
+            owner: authority.clone(),
             peer: parts.stage(&peer)?,
             generation: 1,
             outgoing,
@@ -455,11 +455,7 @@ impl GovernedWorkspace {
         Ok(this)
     }
 
-    fn open(
-        path: PathBuf,
-        authority: &DeviceCert,
-        device: Option<&DeviceKeys>,
-    ) -> Result<Self, String> {
+    fn open(path: PathBuf, device: Option<&DeviceKeys>) -> Result<Self, String> {
         let bytes = std::fs::read(&path).map_err(|error| error.to_string())?;
         let (version, _) = postcard::take_from_bytes::<u32>(&bytes).map_err(|error| {
             format!(
@@ -487,22 +483,10 @@ impl GovernedWorkspace {
         let (receipts, receipted) =
             appended::Appended::open(&path, RECEIPTS, stored.filed_receipts)?;
         let record = WorkspaceDocumentEntry::read(stored, published, receipted);
-        // The record must have been governed by this host's device. What
-        // makes a device that device is its key and what the certificate
-        // lets it do; a certificate's `device_label` is a human-readable
-        // name, which `DeviceCert` itself calls "not authoritative", and a
-        // host that renamed its own certificate — the same key, the same
-        // capabilities, the same validity, a new label — still governs the
-        // workspace it made. Refusing the label alone made a host that
-        // renamed its certificate's label unable
-        // to start on the workspaces it had been serving.
-        if record.authority.device_public_key != authority.device_public_key
-            || record.authority.user_public_key != authority.user_public_key
-            || record.authority.capabilities != authority.capabilities
-            || record.authority.expires_at_ns != authority.expires_at_ns
-        {
-            return Err("workspace is governed by a different device".into());
-        }
+        // The record names the workspace's owner, a fact of its membership
+        // that every holder keeps as it was handed over; the device opening
+        // it only writes what this host changes, and is never taken for the
+        // owner.
         if record.published > record.outgoing.len() {
             return Err("workspace record is inconsistent".into());
         }
@@ -511,8 +495,8 @@ impl GovernedWorkspace {
                 .load(&record.peer)
                 .map_err(|error| format!("peer state parts: {error}"))?,
             &record.workspace,
-            record.authority.clone(),
-            vec![record.authority.clone()],
+            record.owner.clone(),
+            vec![record.owner.clone()],
             RevocationList::new(),
             tilo_clock::wall(),
         )
@@ -572,7 +556,7 @@ impl GovernedWorkspace {
             version: DOCUMENT_VERSION,
             workspace: &self.record.workspace,
             workspace_id: self.record.workspace_id,
-            authority: &self.record.authority,
+            owner: &self.record.owner,
             peer: &self.record.peer,
             generation: self.record.generation,
             outgoing: self
@@ -1300,9 +1284,8 @@ impl Workspaces {
             {
                 continue;
             }
-            let workspace =
-                GovernedWorkspace::open(path.clone(), &this.inner.host.cert, device.as_ref())
-                    .map_err(|error| format!("{}: record: {error}", path.display()))?;
+            let workspace = GovernedWorkspace::open(path.clone(), device.as_ref())
+                .map_err(|error| format!("{}: record: {error}", path.display()))?;
             this.serve_direct(&workspace)?;
             workspaces.insert(
                 workspace.workspace().to_owned(),
@@ -1905,7 +1888,7 @@ impl Workspaces {
         let workspace = workspace.lock().await;
         member_bootstrap(
             &workspace.peer(),
-            &workspace.record.authority,
+            &workspace.record.owner,
             workspace.workspace_id(),
             workspace.record.generation,
             device,

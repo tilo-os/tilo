@@ -145,7 +145,7 @@ impl Workspaces {
         entries: &[RevocationEntry],
     ) -> Result<(), String> {
         let key = &self.inner.host.key;
-        let authority = workspace.record.authority.clone();
+        let authority = workspace.record.owner.clone();
         let certified = workspace.peer().certificates();
         let carried = workspace.peer().revocations();
         let live = self.revocations();

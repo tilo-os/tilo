@@ -163,7 +163,7 @@ impl Workspaces {
         };
         let primary_governor = (source.document.is_empty()
             && runtime.peer().holds_document(&source.app_id, ""))
-        .then_some(runtime.record.authority.device_public_key);
+        .then_some(runtime.record.owner.device_public_key);
         if keys.is_none() && primary_governor.is_none() {
             return Err(if runtime.seals() {
                 "source channel keys unavailable".into()

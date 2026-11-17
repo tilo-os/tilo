@@ -143,7 +143,7 @@ fn kept_document() -> Vec<u8> {
         version: DOCUMENT_VERSION,
         workspace: &workspace.to_string(),
         workspace_id: workspace,
-        authority: &issuer,
+        owner: &issuer,
         peer: &peer,
         generation: 3,
         outgoing: &outgoing,
@@ -220,7 +220,7 @@ fn kept() -> StoredResource {
         version: DOCUMENT_VERSION,
         workspace: WORKSPACE.into(),
         workspace_id: WorkspaceId::parse(WORKSPACE).unwrap(),
-        authority: DeviceCert {
+        owner: DeviceCert {
             user_public_key: [1; 32],
             device_public_key: [2; 32],
             device_label: "host".into(),
@@ -256,7 +256,7 @@ fn written(record: &StoredResource) -> Vec<u8> {
         version: record.version,
         workspace: &record.workspace,
         workspace_id: record.workspace_id,
-        authority: &record.authority,
+        owner: &record.owner,
         peer: &record.peer,
         generation: record.generation,
         outgoing: &record.outgoing,
@@ -284,7 +284,7 @@ fn the_record_kept_here_reads_and_writes_as_it_is() {
             let read: StoredResource = postcard::from_bytes(bytes).unwrap();
             assert_eq!(read.version, FORMAT.version);
             assert_eq!(read.workspace_id, kept.workspace_id);
-            assert_eq!(read.authority.device_public_key, [2; 32]);
+            assert_eq!(read.owner.device_public_key, [2; 32]);
             assert_eq!(read.peer.len(), 1);
             assert_eq!(read.outgoing[0].bytes.as_ref(), [6, 7, 8]);
             assert_eq!(read.collaboration.administration[0].generation, 9);

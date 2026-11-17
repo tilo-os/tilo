@@ -94,7 +94,7 @@ fn a_large_record_is_stored_apart_and_written_only_when_it_changes() {
         "the parts it replaced are removed"
     );
 
-    let restored = GovernedWorkspace::open(workspace.path.clone(), &cert, None).unwrap();
+    let restored = GovernedWorkspace::open(workspace.path.clone(), None).unwrap();
     assert_eq!(
         restored.peer().document(APP, "plan"),
         workspace.peer().document(APP, "plan")
@@ -112,5 +112,5 @@ fn a_large_record_is_stored_apart_and_written_only_when_it_changes() {
     let mut bytes = std::fs::read(&path).unwrap();
     bytes[0] ^= 1;
     std::fs::write(&path, bytes).unwrap();
-    assert!(GovernedWorkspace::open(workspace.path.clone(), &cert, None).is_err());
+    assert!(GovernedWorkspace::open(workspace.path.clone(), None).is_err());
 }

@@ -133,7 +133,7 @@ fn governed<'a>(
 ) -> Governed<'a> {
     Governed {
         peer,
-        host: &record.authority,
+        host: &record.owner,
         workspace_id: record.workspace_id,
         generation: record.generation,
         // A newcomer admits the workspace's governance alone: one message

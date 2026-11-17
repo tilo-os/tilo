@@ -43,7 +43,7 @@ impl Workspaces {
         }
         let state = self.workspace(workspace).await?;
         let mut governed = state.lock().await;
-        if &governed.record.authority != governor {
+        if &governed.record.owner != governor {
             return Err(CollaborationError::new(
                 "record governor differs from current workspace authority",
             ));

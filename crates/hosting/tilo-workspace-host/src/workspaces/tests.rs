@@ -672,42 +672,11 @@ fn a_created_workspace_restores_with_its_governance_and_publication() {
             .unwrap();
     assert!(!created.record.outgoing.is_empty());
     assert!(created.record.outgoing.iter().all(|entry| entry.checkpoint));
-    let restored = GovernedWorkspace::open(created.path.clone(), &cert, None).unwrap();
+    let restored = GovernedWorkspace::open(created.path.clone(), None).unwrap();
     assert_eq!(restored.record.workspace, created.record.workspace);
     assert_eq!(restored.record.generation, 1);
     assert_eq!(restored.summary().name, "Team");
     assert!(restored.peer().has_governance());
-}
-
-/// A workspace is restored by the device that governs it, which the record
-/// holds by its key, what its certificate lets it do and how long it lasts: a
-/// certificate's label is a name, so a host that renamed its own certificate
-/// starts on the workspaces it served, while another device — another key, or
-/// one the person granted more — is refused.
-#[test]
-fn a_workspace_is_restored_by_its_governing_device_and_no_other() {
-    let dir = tempfile::tempdir().unwrap();
-    let (key, cert) = governor();
-    let created =
-        GovernedWorkspace::create(dir.path(), "Team", &cert, &key, None, SystemTime::now())
-            .unwrap();
-    let root = SigningKey::from_bytes(&[1; 32]);
-    let mut renamed = cert.clone();
-    renamed.device_label = "workspace host".into();
-    sign_device_cert(&mut renamed, &root).unwrap();
-    let restored = GovernedWorkspace::open(created.path.clone(), &renamed, None).unwrap();
-    assert_eq!(restored.name(), "Team");
-
-    let mut granted_more = renamed.clone();
-    granted_more.capabilities = DeviceCapabilities::primary();
-    sign_device_cert(&mut granted_more, &root).unwrap();
-    assert!(GovernedWorkspace::open(created.path.clone(), &granted_more, None).is_err());
-
-    let other_key = SigningKey::from_bytes(&[3; 32]);
-    let mut other = cert;
-    other.device_public_key = other_key.verifying_key().to_bytes();
-    sign_device_cert(&mut other, &root).unwrap();
-    assert!(GovernedWorkspace::open(created.path, &other, None).is_err());
 }
 
 #[test]
@@ -1358,7 +1327,7 @@ async fn a_renamed_workspace_shows_its_new_name_to_members_and_after_a_restart()
     };
     drop(workspaces);
     server.shutdown().await;
-    let restored = GovernedWorkspace::open(path, &cert, None).unwrap();
+    let restored = GovernedWorkspace::open(path, None).unwrap();
     assert_eq!(restored.summary().name, "Plaza");
     assert_eq!(
         restored.peer().governance().workspace_name().as_deref(),
@@ -2829,9 +2798,9 @@ async fn a_host_serves_the_workspaces_its_renamed_certificate_governs() {
     assert_eq!(names, vec![created.name]);
     reopened.shutdown().await;
 
-    // Another device's certificate is still refused: only the label moved,
-    // and a host whose certificate names a different key does not serve the
-    // workspace.
+    // Another device opening the same files keeps the workspace's owner:
+    // the record names who owns it, and the device reading it takes no
+    // part in that.
     let other_root = ed25519_dalek::SigningKey::from_bytes(&[3; 32]);
     let other_key = ed25519_dalek::SigningKey::from_bytes(&[4; 32]);
     let mut other_cert = tilo_user_identity::DeviceCert {
@@ -2845,35 +2814,23 @@ async fn a_host_serves_the_workspaces_its_renamed_certificate_governs() {
         issuer: None,
     };
     tilo_user_identity::sign_device_cert(&mut other_cert, &other_root).unwrap();
-    let refused = WorkspaceHost::open(
-        HostConfig {
-            max_workspace_grants: None,
-            ..HostConfig::new(
-                dir.path().to_owned(),
-                tilo_server_protocol::WorkSetting::own_person(),
-            )
-        },
-        HostIdentity {
-            user_public_key: other_cert.user_public_key,
-            device_signing_key: other_key.clone(),
-            device_cert: other_cert,
-            revocations: RevocationList::new(),
-        },
-        iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
-            .secret_key(iroh::SecretKey::from_bytes(&other_key.to_bytes()))
-            .bind()
-            .await
-            .expect("a loopback endpoint binds"),
-        None,
-    )
-    .await
-    .expect_err("a host of another device does not open the workspace");
-    assert!(
-        refused
-            .to_string()
-            .contains("governed by a different device"),
-        "{refused}"
+    let other = test_host(dir.path(), &other_key, &other_cert).await;
+    let summary = other
+        .workspaces()
+        .summary(&created.workspace)
+        .await
+        .expect("another host serves the workspace from its files");
+    let roots: Vec<Option<[u8; 32]>> = summary
+        .members
+        .iter()
+        .map(collab_types::Member::root)
+        .collect();
+    assert_eq!(
+        roots,
+        vec![Some(cert.user_public_key)],
+        "the owner stays the person who made it"
     );
+    other.shutdown().await;
 }
 
 /// A workspace names its own host among its hosts, as its governor, so a member

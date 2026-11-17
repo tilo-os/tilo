@@ -131,7 +131,7 @@ impl Workspaces {
         let app_id = app_id_for(catalogue, app, record)?;
         let state = self.workspace(workspace).await?;
         let mut governed = state.lock().await;
-        if &governed.record.authority != governor {
+        if &governed.record.owner != governor {
             return Err(CollaborationError::new(
                 "application governor differs from current workspace authority",
             ));
@@ -246,7 +246,7 @@ impl Workspaces {
         let app_id = app_id_for(catalogue, app, record)?;
         let state = self.workspace(workspace).await?;
         let mut governed = state.lock().await;
-        if &governed.record.authority != governor {
+        if &governed.record.owner != governor {
             return Err(CollaborationError::new(
                 "application governor differs from current workspace authority",
             ));
@@ -379,7 +379,7 @@ impl Workspaces {
         app_id_for(catalogue, app, record)?;
         let state = self.workspace(workspace).await?;
         let mut governed = state.lock().await;
-        if &governed.record.authority != governor {
+        if &governed.record.owner != governor {
             return Err(CollaborationError::new(
                 "application governor differs from current workspace authority",
             ));
