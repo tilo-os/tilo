@@ -376,12 +376,13 @@ struct PillStyle: ButtonStyle {
             .padding(.horizontal, 12)
             .padding(.vertical, 5)
             .background {
-                // The drawing's one-point line, as a shape with the ground a point inside it.
-                Capsule(style: .circular).fill(isMain ? Token.ink : Token.line)
-                if !isMain { Capsule(style: .circular).fill(Token.content).padding(1) }
+                // The drawing's one-point line, as a shape with the ground a point inside it. Round as
+                // a pill while the answer is one line; an answer that takes more keeps its words inside.
+                RoundedRectangle(cornerRadius: 17).fill(isMain ? Token.ink : Token.line)
+                if !isMain { RoundedRectangle(cornerRadius: 16).fill(Token.content).padding(1) }
             }
             .opacity(configuration.isPressed ? 0.7 : (isEnabled ? 1 : 0.45))
-            .contentShape(Capsule(style: .circular))
+            .contentShape(RoundedRectangle(cornerRadius: 17))
     }
 }
 

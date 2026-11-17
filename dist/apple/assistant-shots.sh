@@ -158,6 +158,7 @@ told() {
   device="$(simulator)"
   mkdir -p "$out/phone"
   xcrun simctl install "$device" "$app"
+  rm -f "$(xcrun simctl get_app_container "$device" "$id" data)"/Documents/*.txt 2>/dev/null || true
   xcrun simctl launch --terminate-running-process "$device" "$id" --tell >/dev/null
   # The tool keeps what it says in its documents, and stays, so its screen can be taken.
   local kept
@@ -186,6 +187,8 @@ started() { # the way
   device="$(simulator)"
   mkdir -p "$out/phone"
   xcrun simctl install "$device" "$app"
+  # What an earlier run kept is not this run's word.
+  rm -f "$(xcrun simctl get_app_container "$device" "$id" data)"/Documents/*.txt 2>/dev/null || true
   xcrun simctl launch --terminate-running-process "$device" "$id" "$1" >/dev/null
   printf '%s\n' "$device"
 }

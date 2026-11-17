@@ -189,13 +189,17 @@ enum PhoneShots {
         var lines: [String] = []
         Spoken.read(window, into: &lines)
         kept.say("read out in front: \(lines.contains { $0.contains(marker) } ? "THE SECRET" : "no letter of it"), \(lines.filter { $0.contains("protected field") }.count) protected field")
-        kept.say("typed")
+        // In front, the window drawn from what it holds shows that something stands in the field:
+        // the measure the picture behind another app is held against.
+        kept.say("in front, drawn from what the window holds: \(marks(in: held(of: window), place)) marks where the letters stand")
+        kept.say("the app is \(UIApplication.shared.applicationState == .active ? "in front" : "NOT in front") as its observers begin")
         let center = NotificationCenter.default
         _ = center.addObserver(forName: UIApplication.willResignActiveNotification, object: nil, queue: .main) { _ in
             MainActor.assumeIsolated { kept.say("leaving the front") }
         }
         _ = center.addObserver(forName: UIApplication.didEnterBackgroundNotification, object: nil, queue: .main) { _ in
             MainActor.assumeIsolated {
+                // The system keeps its picture of the window once the app has been told it is behind.
                 let behind = held(of: window)
                 save(behind, "secret-behind.png")
                 kept.say("behind another app: \(marks(in: behind, place)) marks where the letters stand")
@@ -205,6 +209,7 @@ enum PhoneShots {
                 kept.say("done")
             }
         }
+        kept.say("typed")
     }
 
     /// The main chat with the keyboard up and words in the field, for a picture of the whole screen.

@@ -212,8 +212,9 @@ public struct PhoneRoot: View {
     @Environment(\.wording) private var wording
     @State private var path: [AssistantModel.Place]
     /// Whether the app is in front. When it leaves the front the system keeps a picture of its
-    /// window, and what stands in a protected field is put out of sight before that.
-    @State private var inFront = true
+    /// window, and what stands in a protected field is put out of sight before that. An app that
+    /// is brought up while it is not in front begins covered.
+    @State private var inFront = UIApplication.shared.applicationState == .active
     @Environment(\.dynamicTypeSize) private var textSize
 
     /// `path` is what stands on the list of conversations when the window opens: the main chat,
@@ -252,7 +253,12 @@ public struct PhoneRoot: View {
             JobSheet().presentationDetents([.medium])
         }
         .environment(\.coversSecrets, !inFront)
+        // Every word the system has for leaving the front covers, whichever comes first; only being
+        // in front again uncovers.
         .onReceive(NotificationCenter.default.publisher(for: UIApplication.willResignActiveNotification)) { _ in inFront = false }
+        .onReceive(NotificationCenter.default.publisher(for: UIScene.willDeactivateNotification)) { _ in inFront = false }
+        .onReceive(NotificationCenter.default.publisher(for: UIApplication.didEnterBackgroundNotification)) { _ in inFront = false }
+        .onReceive(NotificationCenter.default.publisher(for: UIScene.didEnterBackgroundNotification)) { _ in inFront = false }
         .onReceive(NotificationCenter.default.publisher(for: UIApplication.didBecomeActiveNotification)) { _ in inFront = true }
     }
 
