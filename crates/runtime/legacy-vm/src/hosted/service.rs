@@ -353,8 +353,10 @@ impl Service {
             return Err(EnsureError::Invalid(DELETED.to_owned()));
         }
         let result = (|| {
-            vm.resize(request.size)?;
-            *lock(&entry.size) = request.size;
+            // The size named is what a VM that is not running would be made at: an
+            // awake machine runs the command at the size it has.
+            vm.want_size(request.size)?;
+            *lock(&entry.size) = vm.identity().size;
             let (link, woke) = vm.ensure(&served, true)?;
             Ok((link, woke.map(|wake| wake.millis)))
         })();
