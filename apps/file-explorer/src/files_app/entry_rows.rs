@@ -246,6 +246,13 @@ fn entry_row(context: &RowContext, facts: &EntryRowFacts, entry: &Entry) -> Live
     if let Some(presentation) = presentation {
         resource = resource.presentation(presentation);
     }
+    if facts.converted.is_some() {
+        resource = resource.operation(row_action(
+            &FilesEffect::ImportConverted { entry: id() },
+            "import-converted",
+            t("files-mounted-copy"),
+        ));
+    }
     if let Some(open_with) = &facts.open_with {
         for action in open_with_actions(open_with, &resource_id) {
             resource = resource.operation(action);
