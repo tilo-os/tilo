@@ -38,7 +38,7 @@ use tilo_relay_protocol::live::{LiveAnchor, LiveFrame, LiveRecord, OpsFrame, Pre
 use tilo_relay_protocol::web::{PageHost, PageHostAddress};
 use tilo_session::sync::{Cmd, Event, Outbox};
 use tilo_session_client::device::{Device, HostRefusal};
-use tilo_session_client::{Events, FailureSubject, Link, LocalState};
+use tilo_session_client::{Events, FailureKind, Link, LocalState};
 use tilo_session_client::{PeerConfig, PeerRecord, PeerStore};
 use tilo_user_identity::{DeviceCert, RevocationEntry, RevocationList, RevocationReason};
 use tilo_workspace_keys::VAULT_SECRET_APP as CHANNEL_VAULT_APP;
@@ -92,11 +92,11 @@ pub fn host_refusal(wire: &str) -> Result<String, JsError> {
 }
 
 /// The page store without a surface; a desktop surface; its asset.
-fn failure_subject(surface: Option<String>, asset: Option<String>) -> FailureSubject {
+fn failure_kind(surface: Option<String>, asset: Option<String>) -> FailureKind {
     match (surface, asset) {
-        (None, _) => FailureSubject::Storage,
-        (Some(surface), None) => FailureSubject::Surface(surface),
-        (Some(surface), Some(asset)) => FailureSubject::Asset { surface, asset },
+        (None, _) => FailureKind::Storage,
+        (Some(surface), None) => FailureKind::Surface(surface),
+        (Some(surface), Some(asset)) => FailureKind::Asset { surface, asset },
     }
 }
 
@@ -2906,14 +2906,14 @@ impl WasmPeer {
         message: &str,
     ) -> Result<(), JsError> {
         self.handle
-            .report_failure(failure_subject(surface, asset), code, message)
+            .report_failure(failure_kind(surface, asset), code, message)
             .map_err(js_error)
     }
 
-    /// Clear the failure `reportFailure` reported for the same subject.
+    /// Clear the failure `reportFailure` reported for the same kind.
     #[wasm_bindgen(js_name = clearFailure)]
     pub fn clear_failure(&self, surface: Option<String>, asset: Option<String>) {
-        self.handle.clear_failure(&failure_subject(surface, asset));
+        self.handle.clear_failure(&failure_kind(surface, asset));
     }
 
     /// Clear every failure of desktop surface `surface` and its assets.

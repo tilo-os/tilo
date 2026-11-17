@@ -543,7 +543,7 @@ pub(crate) struct Mount {
     /// The workspace the mount's presence board speaks for.
     workspace: String,
     /// The name the page gave the workspace it mounted ([`Config::workspace_name`]):
-    /// what a tab is titled after while the shell's own space carries no name.
+    /// what a tab is titled after while the shell's own workspace carries no name.
     workspace_name: Option<String>,
     /// The change of the page's theme this mount draws in
     /// ([`crate::page_theme::generation`]).
@@ -3407,8 +3407,8 @@ impl Mount {
             "rootRect": root_rect,
             "record": self.checkout.as_ref().map(|checkout| checkout.id.as_str()),
             "desktopRevision": self.desktop.as_ref().map(|d| d.handle.revision()),
-            // The page titles its tab after it: the space in front on the
-            // shell, or, while the shell's own space is unnamed (one this page
+            // The page titles its tab after it: the workspace in front on the
+            // shell, or, while the shell's own workspace is unnamed (one this page
             // seeded for a workspace no directory named), the name the
             // workspace answered this page's admission with.
             "workspaceName": self.desktop.as_ref()

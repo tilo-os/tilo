@@ -22,7 +22,7 @@ use std::sync::Arc;
 
 use crate::remote::{Heard, NOT_CONNECTED};
 use crate::{
-    CallPicture, CallShown, Closed, Cmd, Event, Failure, FailureSubject, Link, Outbox, PageShown,
+    CallPicture, CallShown, Closed, Cmd, Event, Failure, FailureKind, Link, Outbox, PageShown,
     PeerStatus, Reports, TransportPhase, content::Kept,
 };
 use std::time::Duration;
@@ -818,24 +818,24 @@ impl Task {
     }
 
     fn fail(&self, code: &'static str, message: impl Into<String>) {
-        self.fail_on(FailureSubject::Session, code, message);
+        self.fail_on(FailureKind::Session, code, message);
     }
 
-    fn fail_on(&self, subject: FailureSubject, code: &'static str, message: impl Into<String>) {
+    fn fail_on(&self, kind: FailureKind, code: &'static str, message: impl Into<String>) {
         let message = message.into();
         self.reports.change(|status| {
             status.upsert(Failure {
                 code,
                 message,
                 at_ms: tilo_clock::unix_now_ms(),
-                subject,
+                kind,
             });
         });
     }
 
     fn persist(&self) {
         if let Err(error) = self.store.save(&self.record) {
-            self.fail_on(FailureSubject::Storage, "storage-transaction-failed", error);
+            self.fail_on(FailureKind::Storage, "storage-transaction-failed", error);
         }
     }
 
@@ -882,7 +882,7 @@ impl Task {
                 if status
                     .failures
                     .iter()
-                    .any(|failure| failure.subject == FailureSubject::Admission)
+                    .any(|failure| failure.kind == FailureKind::Admission)
                 {
                     self.clear_admission_failure();
                 }
@@ -891,7 +891,7 @@ impl Task {
             Admission::Overdue => {
                 self.admission_since = None;
                 self.fail_on(
-                    FailureSubject::Admission,
+                    FailureKind::Admission,
                     "admission-timeout",
                     "Shared state is still catching up. Refresh it to ask the host again.",
                 );
@@ -903,7 +903,7 @@ impl Task {
         self.reports.change(|status| {
             status
                 .failures
-                .retain(|failure| failure.subject != FailureSubject::Admission);
+                .retain(|failure| failure.kind != FailureKind::Admission);
         });
     }
 
@@ -2142,7 +2142,7 @@ impl Task {
             );
         }
         if let Err(error) = self.key_state.save(self.store.as_ref()) {
-            self.fail_on(FailureSubject::Storage, "storage-transaction-failed", error);
+            self.fail_on(FailureKind::Storage, "storage-transaction-failed", error);
         }
     }
 

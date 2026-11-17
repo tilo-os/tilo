@@ -9,7 +9,7 @@
 
 use super::{
     Answered, BTreeMap, BTreeSet, CoeditPayload, Completion, CustodyEntry, DocumentRoute, Envelope,
-    FailureSubject, RelayClient, Task,
+    FailureKind, RelayClient, Task,
 };
 use tilo_peer_state::owner::WriteRefusal;
 use tilo_relay_protocol::WorkspaceId;
@@ -83,8 +83,7 @@ impl Task {
         if self.engine.held_writes().lock().is_empty() {
             self.reports.change(|status| {
                 status.failures.retain(|failure| {
-                    failure.subject != FailureSubject::Session
-                        || !HELD_CODES.contains(&failure.code)
+                    failure.kind != FailureKind::Session || !HELD_CODES.contains(&failure.code)
                 });
             });
         }
@@ -453,7 +452,7 @@ impl Task {
         }
         for (workspace, answers) in answers {
             if let Err(error) = self.replicas.owner().retire_answered(workspace, &answers) {
-                self.fail_on(FailureSubject::Storage, "storage-transaction-failed", error);
+                self.fail_on(FailureKind::Storage, "storage-transaction-failed", error);
             }
         }
         self.outbound_due = true;

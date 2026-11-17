@@ -11,7 +11,7 @@ use serde::Serialize;
 use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_peer_state::owner::RecordWrites;
 
-use crate::link::{Entry, Failure, FailureSubject, LocalState, PeerStatus, TransportPhase};
+use crate::link::{Entry, Failure, FailureKind, LocalState, PeerStatus, TransportPhase};
 
 /// `PeerSnapshot` of a certified peer.
 #[derive(Clone, Debug, Serialize)]
@@ -293,8 +293,8 @@ fn local_state(state: Option<LocalState>) -> &'static str {
 /// The failure's `SessionFailure` projection: id, scope, severity,
 /// recovery, surface and asset.
 fn session_failure(failure: &Failure) -> SessionFailure {
-    let (id, scope, severity, recovery, surface_id, asset_id) = match &failure.subject {
-        FailureSubject::Session => {
+    let (id, scope, severity, recovery, surface_id, asset_id) = match &failure.kind {
+        FailureKind::Session => {
             let (scope, severity, recovery) = failure_scope(failure.code);
             (
                 format!("{}-{}", failure.code, failure.at_ms),
@@ -305,7 +305,7 @@ fn session_failure(failure: &Failure) -> SessionFailure {
                 None,
             )
         }
-        FailureSubject::Storage => (
+        FailureKind::Storage => (
             "storage".to_owned(),
             "storage",
             "error",
@@ -313,7 +313,7 @@ fn session_failure(failure: &Failure) -> SessionFailure {
             None,
             None,
         ),
-        FailureSubject::Admission => (
+        FailureKind::Admission => (
             "admission".to_owned(),
             "admission",
             "error",
@@ -321,7 +321,7 @@ fn session_failure(failure: &Failure) -> SessionFailure {
             None,
             None,
         ),
-        FailureSubject::Surface(surface) => (
+        FailureKind::Surface(surface) => (
             format!("surface:{surface}"),
             "renderer",
             "error",
@@ -331,7 +331,7 @@ fn session_failure(failure: &Failure) -> SessionFailure {
             Some(surface.clone()),
             None,
         ),
-        FailureSubject::Asset { surface, asset } => (
+        FailureKind::Asset { surface, asset } => (
             format!("asset:{surface}:{asset}"),
             "asset",
             "error",
@@ -522,30 +522,30 @@ mod tests {
             .unwrap_or_default()
     }
 
-    fn failure(code: &'static str, subject: FailureSubject) -> Failure {
+    fn failure(code: &'static str, kind: FailureKind) -> Failure {
         Failure {
             code,
             message: "copy".into(),
             at_ms: 5,
-            subject,
+            kind,
         }
     }
 
     #[test]
-    fn every_recovery_kind_is_offered_for_its_subject() {
+    fn every_recovery_kind_is_offered() {
         let health = snapshot(vec![
-            failure("transport-ended", FailureSubject::Session),
-            failure("certificate-rejected", FailureSubject::Session),
-            failure("not-admitted", FailureSubject::Session),
-            failure("storage-transaction-failed", FailureSubject::Storage),
-            failure("admission-timeout", FailureSubject::Admission),
+            failure("transport-ended", FailureKind::Session),
+            failure("certificate-rejected", FailureKind::Session),
+            failure("not-admitted", FailureKind::Session),
+            failure("storage-transaction-failed", FailureKind::Storage),
+            failure("admission-timeout", FailureKind::Admission),
             failure(
                 "gpu-device-lost",
-                FailureSubject::Surface("tilo-desktop-1".into()),
+                FailureKind::Surface("tilo-desktop-1".into()),
             ),
             failure(
                 "asset-unavailable",
-                FailureSubject::Asset {
+                FailureKind::Asset {
                     surface: "tilo-desktop-1".into(),
                     asset: "font:Noto.ttf".into(),
                 },
