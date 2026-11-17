@@ -71,6 +71,32 @@ impl Writes {
     }
 }
 
+/// The units a run of several verbs of one record may write: every unit any of them declares.
+/// What a group writes into a record it holds in memory is checked against it once, on the
+/// group's result, rather than member by member against the whole record.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct Footprints {
+    fields: std::collections::BTreeSet<&'static str>,
+    items: std::collections::BTreeSet<Id>,
+}
+
+impl Footprints {
+    /// Add what one verb declares.
+    pub(crate) fn add(&mut self, writes: &Writes) {
+        self.fields.extend(writes.fields.iter().copied());
+        self.items.extend(writes.item.iter().cloned());
+    }
+
+    fn allows(&self, unit: &[Segment]) -> bool {
+        unit.is_empty()
+            || unit.iter().any(|segment| match segment {
+                Segment::Field(key) => self.fields.contains(key.as_str()),
+                Segment::Item(id) => self.items.contains(id),
+                _ => false,
+            })
+    }
+}
+
 /// Whether `shape` has units beside the record.
 #[must_use]
 pub fn has_units(shape: Shape) -> bool {
@@ -111,6 +137,23 @@ pub(crate) fn check_edits(
     edits: &[crate::Edit<()>],
     writes: &Writes,
 ) -> Result<(), Refusal> {
+    check_edits_within(shape, edits, &|unit| writes.allows(unit))
+}
+
+/// [`check_edits`] against every unit `footprints` declares.
+pub(crate) fn check_edits_of(
+    shape: Shape,
+    edits: &[crate::Edit<()>],
+    footprints: &Footprints,
+) -> Result<(), Refusal> {
+    check_edits_within(shape, edits, &|unit| footprints.allows(unit))
+}
+
+fn check_edits_within(
+    shape: Shape,
+    edits: &[crate::Edit<()>],
+    allows: &dyn Fn(&[Segment]) -> bool,
+) -> Result<(), Refusal> {
     use crate::path::EditOp;
     for edit in edits {
         // Adding, removing or moving an item writes the item itself.
@@ -125,7 +168,7 @@ pub(crate) fn check_edits(
         let unit = shape.unit_of(&path);
         // What a change queues in an outbox is judged as reaching outside
         // wherever it is written, so no footprint needs to declare it.
-        if !writes.allows(&unit) && !is_outbox(shape, &unit) {
+        if !allows(&unit) && !is_outbox(shape, &unit) {
             return Err(Refusal::new(format!(
                 "the action wrote `{}`, outside the units it declares; add \
                  `#[action(writes = field)]`",

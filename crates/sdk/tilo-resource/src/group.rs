@@ -98,21 +98,27 @@ struct Deferring(bool);
 
 impl Deferring {
     fn begin() -> Self {
-        Self(DEFERRED.with(|deferred| {
+        let outermost = DEFERRED.with(|deferred| {
             let mut deferred = deferred.borrow_mut();
             if deferred.is_some() {
                 return false;
             }
             *deferred = Some(Vec::new());
             true
-        }))
+        });
+        if outermost {
+            crate::action::hold_records();
+        }
+        Self(outermost)
     }
 
-    /// The deferred checks, run once on the group's result.
-    fn finish(&self, doc: &Doc) -> Result<(), ActionError> {
+    /// The records the group held, written once, then the deferred checks, run once on the
+    /// group's result.
+    fn finish(&self, doc: &mut Doc) -> Result<(), ActionError> {
         if !self.0 {
             return Ok(());
         }
+        crate::action::write_held(doc)?;
         let checks = DEFERRED.with(|deferred| deferred.borrow_mut().take().unwrap_or_default());
         for (_, check) in checks {
             check(doc).map_err(ActionError::from)?;
@@ -125,6 +131,7 @@ impl Drop for Deferring {
     fn drop(&mut self) {
         if self.0 {
             DEFERRED.with(|deferred| deferred.borrow_mut().take());
+            crate::action::drop_held();
         }
     }
 }

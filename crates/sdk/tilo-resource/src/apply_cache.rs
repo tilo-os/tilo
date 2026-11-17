@@ -21,6 +21,11 @@
 //! action that starts inside an open transaction, a version it cannot find
 //! its own change on top of, more changes since than are worth indexing.
 //!
+//! Inside a transaction still open (a host applying several actions before it commits), the
+//! record an action wrote is kept as it wrote it: every slot it holds is as `store` writes it,
+//! so the next action of its type in the same transaction starts from it with nothing to
+//! refresh, as long as nothing else wrote into the transaction in between.
+//!
 //! Keyed by the record's type and by content-addressed change hashes, so a
 //! record kept for one document is never mistaken for another's: a document
 //! without the kept version reads the record whole.
@@ -53,6 +58,9 @@ struct Kept {
     /// The change the action that kept `record` wrote on top of `base`. Not
     /// yet in `record`.
     wrote: Wrote,
+    /// Kept inside a transaction still open: its actor and how many operations it held once
+    /// `record` was written into it. `record` is then the record as written, not as read.
+    open: Option<(ActorId, usize)>,
 }
 
 /// The record kept for the record type `kind`, brought up to the document
@@ -68,7 +76,15 @@ pub(crate) fn take_any(
         mut record,
         base,
         wrote,
+        open,
     } = KEPT.with(|kept| kept.borrow_mut().remove(&kind))?;
+    if let Some((actor, pending)) = open {
+        let mut started = doc.base_heads();
+        started.compact_sort();
+        // The same transaction, with nothing written into it since.
+        return (started == base && doc.get_actor() == &actor && doc.pending_ops() == pending)
+            .then(|| (record, Delta::nothing()));
+    }
     if doc.pending_ops() > 0 {
         return None;
     }
@@ -146,11 +162,28 @@ pub(crate) fn keep_any(kind: TypeId, record: Box<dyn Any>, doc: &Doc, started: &
             record,
             base,
             wrote,
+            open: None,
         };
         KEPT.with(|cell| {
             cell.borrow_mut().insert(kind, kept);
         });
     }
+}
+
+/// Keep `record`, of the record type `kind`, exactly as an action inside a transaction still
+/// open just wrote it into `doc`, for the next action of its type in the same transaction.
+pub(crate) fn keep_open(kind: TypeId, record: Box<dyn Any>, doc: &Doc) {
+    let mut base = doc.base_heads();
+    base.compact_sort();
+    let kept = Kept {
+        record,
+        base,
+        wrote: None,
+        open: Some((doc.get_actor().clone(), doc.pending_ops())),
+    };
+    KEPT.with(|cell| {
+        cell.borrow_mut().insert(kind, kept);
+    });
 }
 
 /// The change an action wrote on top of the version it started from: its
