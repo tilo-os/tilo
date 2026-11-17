@@ -452,6 +452,78 @@ fn ask_action_in(app: &mut TestApp<ChatShell>, person: &MemberId) -> crate::mode
     asked_in(app)
 }
 
+/// An action that would use an item of its person's vault says which one in
+/// the system's words, never by its address, and words "always" for that
+/// item at that place. A question that names no item keeps the event's words.
+#[test]
+fn an_action_that_uses_a_vault_item_says_which_and_what_always_covers() {
+    let mut app = TestApp::<ChatShell>::new().unwrap();
+    let me = window_person(&mut app);
+    let mut detail = draft();
+    detail["use"] = json!({
+        "ask": "0123456789abcdef0123456789abcdef",
+        "item": {
+            "kind": "login",
+            "belongsTo": ["imap://mail.example.test:993", "smtp://mail.example.test:465"],
+        },
+    });
+    app.call_by(
+        agent_for(&me),
+        &chain(),
+        "ask",
+        json!({
+            "channel": CHANNEL,
+            "text": "You asked me to read your mail.",
+            "kind": ACTION,
+            "answers": [{"id": ALLOW}, {"id": ALWAYS}, {"id": DENY}],
+            "detail": detail,
+        }),
+    )
+    .expect("the agent's host asks its person");
+    let asked = asked_in(&mut app);
+
+    let label = app.chat().model_message_label(&asked);
+    let item = "From your vault: Password for imap://mail.example.test:993, \
+                smtp://mail.example.test:465";
+    assert!(label.contains(item), "the card says which item: {label}");
+    assert!(
+        !label.contains("0123456789abcdef"),
+        "what the host keeps the question under is not read out: {label}"
+    );
+    let named: Vec<String> = {
+        let chat = app.chat();
+        chat.semantic_hits()
+            .into_iter()
+            .filter(|(_, hit, ..)| matches!(hit, crate::app::Hit::Answer { .. }))
+            .map(|(_, _, name, _, _)| name.text)
+            .collect()
+    };
+    assert_eq!(
+        named,
+        [
+            "Allow once",
+            "Always allow with this item here",
+            "Don’t allow"
+        ]
+    );
+
+    press(&mut app, &asked.id, ALWAYS);
+    let answered = row(&mut app, &asked.id);
+    let label = app.chat().model_message_label(&answered);
+    assert!(
+        label.contains("always allowed with this item here"),
+        "{label}"
+    );
+
+    let plain = ask_action_in(&mut app, &me);
+    let question = plain.question.as_ref().expect("it asks");
+    assert!(question.uses_item().is_none());
+    assert_eq!(
+        crate::question_card::answer_label(question, ALWAYS),
+        "Always allow for this event"
+    );
+}
+
 #[test]
 fn the_window_draws_an_action_question_as_a_card_with_named_buttons_and_takes_the_press() {
     let mut app = TestApp::<ChatShell>::new().unwrap();
