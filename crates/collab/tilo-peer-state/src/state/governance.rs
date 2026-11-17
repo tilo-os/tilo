@@ -12,6 +12,25 @@ use collab_types::signer::DeviceSigner;
 use tilo_action_policy::Change;
 
 impl PeerGovernance<'_> {
+    /// Whether the governance carries a device's removal without its cut
+    /// ([`crate::removals`]): one recorded before cuts were kept. Until the
+    /// device that governs the workspace completes it
+    /// ([`PeerGovernanceMut::publish_governed_revocations`]), nobody decides
+    /// what that device wrote.
+    #[must_use]
+    pub fn lacks_removal_cuts(self) -> bool {
+        let Some(doc) = self.peer.core.workspace_doc.as_ref() else {
+            return false;
+        };
+        let Ok(recorded) = crate::removals::recorded(doc) else {
+            return false;
+        };
+        doc.identities()
+            .values()
+            .filter_map(|identity| identity.as_ref().ok())
+            .flat_map(|identity| &identity.revocations)
+            .any(|entry| !recorded.contains(&entry.revoked_device_public_key))
+    }
     /// The sandbox capabilities the workspace's governance grants its apps.
     pub fn governed_sandbox(self) -> Result<Vec<collab_types::caps::CapOverride>, String> {
         let doc = self
@@ -518,7 +537,11 @@ impl PeerGovernanceMut<'_> {
     /// replica refuses the revoked devices. The authority's root revokes any
     /// of its keys, kept on the authority's own row too so a device revoked
     /// before it was ever admitted stays refused; any other root revokes only
-    /// a device the workspace certifies to it. Returns whether governance changed.
+    /// a device the workspace certifies to it. With each removal goes its cut
+    /// ([`crate::removals`]): where each document's history stood for the
+    /// removed device as this replica holds it, written once, also for a
+    /// removal the governance carried before cuts were kept. Returns whether
+    /// governance changed.
     ///
     /// # Errors
     ///
@@ -573,7 +596,23 @@ impl PeerGovernanceMut<'_> {
             written.sort_by_key(|entry| entry.revoked_device_public_key);
             identity.revocations = written;
         }
-        let changed = super::governed_rows::put_identity_rows(&mut doc, &projected).map_err(err)?;
+        let mut changed =
+            super::governed_rows::put_identity_rows(&mut doc, &projected).map_err(err)?;
+        // With every removal the governance carries goes its cut, written
+        // once: where each document's history stood for the removed device, as
+        // this replica holds it now. A removal the governance carried before
+        // cuts were kept gets its cut here too: this replica refused
+        // everything of the device since, so what it holds of it is what the
+        // workspace had taken.
+        let removed: BTreeSet<[u8; 32]> = projected
+            .iter()
+            .flat_map(|(_, _, identity)| &identity.revocations)
+            .map(|entry| entry.revoked_device_public_key)
+            .collect();
+        for device in removed {
+            changed |= crate::removals::write(&mut doc, &device, &self.peer.taken_from(&device))
+                .map_err(err)?;
+        }
         if changed {
             doc.commit();
             self.peer.write_governance(doc, &before, key, now)?;

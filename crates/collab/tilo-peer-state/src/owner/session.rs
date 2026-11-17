@@ -296,10 +296,13 @@ pub fn app_write(
     if cluster_id != &workspace.to_string() {
         return None;
     }
+    // What its author may do, as the write was taken: what the device may
+    // now, or, for a device its person removed since, what its person may
+    // when the cut of the removal keeps the write as history.
     let access = owner
         .with_current(workspace, |view| {
             view.peer()
-                .permissions(author, tilo_clock::wall())
+                .permissions_as_written(app_id, document_id, envelope, tilo_clock::wall())
                 .map_err(|error| error.to_string())
         })
         .ok()?;

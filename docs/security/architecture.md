@@ -125,9 +125,33 @@ subsystem mints its own.
 ### 3.4 Revocation
 
 "Forget this device" from any other device signs a revocation into the account's identity
-document, which replicates like any other data. A revoked device's operations are rejected from
-the revocation's timestamp forward; operations it signed before that point remain valid, because
-retroactively invalidating history would destroy the audit log the system depends on.
+document, which replicates like any other data. Removing a device takes its future, not its
+person's past: the operations a workspace had taken from it when the removal was written down remain
+valid for everyone, because retroactively invalidating history would destroy the audit log the
+system depends on, and would leave a workspace unreadable for every device added later.
+Everything else the device signs is rejected.
+
+Where the past ends is a place in each document, never a time. A revocation's timestamp is its
+signer's and an operation's timestamp is its author's, so no clock can say what a removed device
+wrote before: it would only have to date its operations earlier. Every operation carries its
+author's own running number per document, so the device that writes a removal into a workspace's
+governance writes its **cut** beside it: for each document, the number of the removed device's last
+operation the workspace had taken. An operation at or below its document's cut is history, whatever
+the reason for the removal. A compaction restates history under a number its author used before, so
+the cut also names each compaction of the removed device that the workspace had taken, and no other
+compaction of its is history. One above the cut, or in a document the cut does not name, is refused by
+every device and holder, whoever hands it over and whatever time it claims. A replica that knows of
+a removal and not yet of its cut holds that device's operations undecided, and a cut is never
+lowered or erased. The device itself is refused everywhere from the instant its removal is known:
+at the handshake, for everything it asks after it, and for keys.
+
+For a device that was stolen or compromised the person may also name the moment from which it is
+not to be trusted. What it wrote after that moment and before its removal was written down cannot
+be untaken, since devices merged it before anyone knew. It stays in its document marked as written
+while the device was not trusted, is handed to apps with that mark and not as its person's own act,
+and the document's history offers to take it back. The moment becomes a second place per document,
+fixed by the governing device from when each operation reached it, which it notes itself: the
+removed device's own dates are never asked.
 
 ### 3.5 Recovery
 

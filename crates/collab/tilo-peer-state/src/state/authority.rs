@@ -27,6 +27,16 @@ fn access_of(
     access
 }
 
+/// What [`StatePeer::authorize_document`] decided of a change.
+pub(super) enum Authorized {
+    /// It is its author's to make, under `member`. `history` when its
+    /// author's device was removed since and the cut of the removal keeps
+    /// the change ([`crate::removals`]).
+    Admit { member: MemberAccess, history: bool },
+    /// Not decided until what it waits for is here.
+    Hold(crate::MissingPrerequisite),
+}
+
 impl StatePeer {
     pub(super) fn has_governed_admission(&self, cert: &DeviceCert) -> bool {
         self.core.workspace_doc.as_ref().is_some_and(|doc| {
@@ -375,6 +385,167 @@ impl StatePeer {
             delegate,
         ))
     }
+    /// What `source` may do, for a write of its history: [`Self::permissions`]
+    /// as if its person had not removed the device since. Asked only of a
+    /// write the cut of the removal keeps ([`Self::written_as`]); it never
+    /// says what the device may do now.
+    fn permissions_in_history(
+        &self,
+        source: &[u8; 32],
+        now: SystemTime,
+    ) -> Result<MemberAccess, MembershipError> {
+        let policy = self
+            .core
+            .workspace_doc
+            .as_ref()
+            .ok_or(MembershipError::GovernanceMissing)?
+            .workspace_policy(&self.core.workspace)
+            .clone();
+        let (_, delegate) = backend::member::legacy_in_history(&self.core, source, now)?;
+        let cert = self
+            .core
+            .certificate_held(source, now)
+            .map_err(MembershipError::from)?;
+        Ok(access_of(
+            policy,
+            hex::encode(cert.user_public_key),
+            backend::member::foreign(cert, &self.core.origin),
+            delegate,
+        ))
+    }
+    /// How `write`, a write to `document` of `app`, is decided at `now`: what
+    /// its author may do, and whether the write is history of a device its
+    /// person removed since. `None` while the
+    /// removal is known here and its cut is not: nothing is decided about
+    /// the write until then.
+    ///
+    /// Removing a device takes its future, not its person's past. A removed
+    /// device's write is history when the cut of its removal keeps it
+    /// ([`crate::removals`]): the workspace had taken it when the removal
+    /// was recorded, and it is decided as its person's, as it was then.
+    /// Every other write of a removed device is refused, whoever hands it
+    /// over and whatever time it claims: its place in the document decides,
+    /// never a clock.
+    ///
+    /// # Errors
+    /// Why the author may not make the write, as [`Self::permissions`].
+    pub(super) fn written_as(
+        &self,
+        app: &str,
+        document: &str,
+        write: &SignedOp,
+        now: SystemTime,
+    ) -> Result<Option<(MemberAccess, bool)>, MembershipError> {
+        let author = write.author.as_bytes();
+        match self.permissions(*author, now) {
+            Ok(member) => Ok(Some((member, false))),
+            Err(MembershipError::Revoked) => {
+                let Some(workspace) = self.core.workspace_doc.as_deref() else {
+                    return Err(MembershipError::Revoked);
+                };
+                // A compaction restates history under a number its author
+                // used before, so its number says nothing: the cut names the
+                // very compactions the workspace had taken.
+                let compaction = if write.kind == collab_types::OpKind::Compaction {
+                    Some(
+                        self.write_id(app, document, write)
+                            .ok_or(MembershipError::Revoked)?,
+                    )
+                } else {
+                    None
+                };
+                // Cuts that do not read keep nothing: the device stays refused.
+                match crate::removals::place(
+                    workspace,
+                    author,
+                    (app, document),
+                    write.seq,
+                    compaction.as_ref(),
+                ) {
+                    Ok(crate::removals::Place::Before) => self
+                        .permissions_in_history(author, now)
+                        .map(|member| Some((member, true))),
+                    Ok(crate::removals::Place::Unrecorded) => Ok(None),
+                    Ok(crate::removals::Place::After) | Err(_) => Err(MembershipError::Revoked),
+                }
+            }
+            Err(error) => Err(error),
+        }
+    }
+    /// What the author of `write`, a write to `document` of `app`, may do, for
+    /// whoever hands the write to an app: what its device may now, or, for a
+    /// device its person removed since, what its person may when the cut of
+    /// the removal keeps the write ([`Self::written_as`]).
+    ///
+    /// # Errors
+    /// Why the author may not make the write, as [`Self::permissions`]; a
+    /// removed device's write whose cut is not here yet is
+    /// [`MembershipError::Revoked`] too.
+    pub fn permissions_as_written(
+        &self,
+        app: &str,
+        document: &str,
+        write: &SignedOp,
+        now: SystemTime,
+    ) -> Result<MemberAccess, MembershipError> {
+        self.written_as(app, document, write, now)?
+            .map(|(member, _)| member)
+            .ok_or(MembershipError::Revoked)
+    }
+    /// Whether the device that wrote a change is one of the owner's: a known
+    /// device of theirs now, or, for a change that is `history`, one they
+    /// removed since.
+    pub(super) fn wrote_as_owner(&self, device: &[u8; 32], history: bool) -> bool {
+        self.signed_by_owner(device)
+            || (history
+                && self
+                    .core
+                    .certificates
+                    .get(device)
+                    .is_some_and(|cert| cert.user_public_key == self.core.owner))
+    }
+    /// The id the cut of a removal names `write`, a write to `document` of
+    /// `app`, by: `None` when the write does not encode.
+    fn write_id(&self, app: &str, document: &str, write: &SignedOp) -> Option<[u8; 32]> {
+        crate::admission::DocumentAdmission::from_op(&self.core.workspace, app, document, write)
+            .ok()
+            .map(|admitted| admitted.operation_id())
+    }
+    /// What this replica has taken of `device`, by route
+    /// ([`crate::coverage::route_key`]): the number of its last write and its
+    /// compactions in each document's history. What the cut of its removal
+    /// holds.
+    pub(super) fn taken_from(
+        &self,
+        device: &[u8; 32],
+    ) -> std::collections::BTreeMap<String, crate::removals::Held> {
+        let author = collab_types::Ed25519PublicKey::from_bytes(*device);
+        self.core
+            .documents
+            .iter()
+            .filter_map(|(route, document)| {
+                let (app, document_id) = (&route.app, &route.record);
+                let held = crate::removals::Held {
+                    last: document
+                        .channel
+                        .last_seq_per_author
+                        .get(&author)
+                        .copied()
+                        .unwrap_or(0),
+                    compactions: document
+                        .sealed
+                        .iter()
+                        .filter(|write| {
+                            write.author == author && write.kind == collab_types::OpKind::Compaction
+                        })
+                        .filter_map(|write| self.write_id(app, document_id, write))
+                        .collect(),
+                };
+                (held != crate::removals::Held::default())
+                    .then(|| (crate::coverage::route_key(app, document_id), held))
+            })
+            .collect()
+    }
     /// [`Self::permissions`] as the text refusal the workspace's own write paths
     /// report to the app that asked.
     pub(crate) fn membership(
@@ -567,8 +738,15 @@ impl StatePeer {
         &self,
         source: &[u8; 32],
         now: SystemTime,
+        history: bool,
     ) -> Option<collab_types::MemberId> {
-        self.permissions(*source, now).ok()?;
+        // A change that is history of a device removed since showed what the
+        // device could show when the workspace took it.
+        if history {
+            self.permissions_in_history(source, now).ok()?;
+        } else {
+            self.permissions(*source, now).ok()?;
+        }
         let doc = self.core.workspace_doc.as_ref()?;
         let bytes = doc.policy().identities.get(&hex::encode(source))?.clone();
         let identity = GovernedIdentity::decode(&bytes).ok()?;
@@ -578,8 +756,9 @@ impl StatePeer {
     }
 
     /// The authority of `source` for the change `envelope` makes on `record`
-    /// of `app_id`, refused when the change is not granted; `None` while
-    /// the app surface it is decided against is not here.
+    /// of `app_id`, refused when the change is not granted; held while what
+    /// it is decided against is not here: its app surface, or the cut of its
+    /// author's removal ([`Self::written_as`]).
     pub(super) fn authorize_document(
         &self,
         source: &[u8; 32],
@@ -587,8 +766,16 @@ impl StatePeer {
         record: &str,
         envelope: &SignedOp,
         authorization_time: SystemTime,
-    ) -> Result<Option<MemberAccess>, String> {
-        let member = self.membership(*source, authorization_time)?;
+    ) -> Result<Authorized, String> {
+        if envelope.author.as_bytes() != source {
+            return Err("the change is not its sender's own".into());
+        }
+        let Some((member, history)) = self
+            .written_as(app_id, record, envelope, authorization_time)
+            .map_err(|error| error.to_string())?
+        else {
+            return Ok(Authorized::Hold(crate::MissingPrerequisite::RemovalCut));
+        };
         // A change made with another version of the app than the workspace runs
         // is held: its author's desktop switches to the workspace's version, and
         // the same changes then name that version's surface.
@@ -596,20 +783,20 @@ impl StatePeer {
             && let Some(running) = self.workspace_surface(app_id)
             && envelope.surface != Some(running)
         {
-            return Ok(None);
+            return Ok(Authorized::Hold(crate::MissingPrerequisite::AppSurface));
         }
         let route = Route {
             app: app_id.into(),
             record: record.into(),
         };
-        // The record as this peer holds it, read only when changes are
+        // The document as this peer holds it, read only when changes are
         // decided against app surfaces: which of the app's resources it is,
         // and which units a change writes.
         let enforced = self.surfaces.enforced();
         let document = enforced.then(|| self.core.documents.get(&route)).flatten();
         let kind = document.and_then(|document| resource_type(&*document.doc));
         let pinned = document.and_then(|document| document_surface(&*document.doc));
-        // A record this peer does not hold yet is read from its first
+        // A document this peer does not hold yet is read from its first
         // changes: they carry its unit index from the start.
         let held = match document {
             Some(document) => Some(held_units(&document.doc, envelope)),
@@ -642,8 +829,10 @@ impl StatePeer {
             &|node, kind| allows(node, kind),
         );
         match decided {
-            Ok(collab_types::Receipt::Admit) => Ok(Some(member)),
-            Ok(collab_types::Receipt::Hold) => Ok(None),
+            Ok(collab_types::Receipt::Admit) => Ok(Authorized::Admit { member, history }),
+            Ok(collab_types::Receipt::Hold) => {
+                Ok(Authorized::Hold(crate::MissingPrerequisite::AppSurface))
+            }
             Err(refusal) => Err(format!("document change forbidden: {refusal}")),
         }
     }

@@ -2397,7 +2397,7 @@ fn learned_revocation_and_governed_identity_survive_stale_enrollment_restore() {
             NeighbourMsg::IdentityHello {
                 protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
                 cert: Box::new(native.owner_certificates()[0].clone()),
-                revocations: vec![revocation],
+                revocations: vec![revocation.clone()],
             },
             now,
         )
@@ -2431,6 +2431,27 @@ fn learned_revocation_and_governed_identity_survive_stale_enrollment_restore() {
         .publication_mut()
         .publish_incremental("test.app", "tab:1", doc.save_after(&heads), &b, now)
         .unwrap();
+    // The removal is known here without its cut ([`crate::removals`]): the
+    // write is held undecided, and nothing of it is taken.
+    let before = restored.document("test.app", "tab:1");
+    let held = restored
+        .receive_from(
+            TransportOrigin::RelayDelta(b.verifying_key().to_bytes()),
+            op.clone(),
+            now,
+        )
+        .unwrap();
+    assert!(held.deferred && !held.changed, "held, not taken");
+    assert_eq!(restored.document("test.app", "tab:1"), before);
+    // The governance takes the removal with its cut, which the write is
+    // above: it is refused, held or sent again.
+    assert!(
+        restored
+            .governance_mut()
+            .publish_governed_revocations(&[revocation], &a, now)
+            .unwrap()
+    );
+    assert_eq!(restored.document("test.app", "tab:1"), before);
     assert!(
         restored
             .receive_from(
@@ -2442,6 +2463,7 @@ fn learned_revocation_and_governed_identity_survive_stale_enrollment_restore() {
             .to_string()
             .contains("revoked")
     );
+    assert_eq!(restored.document("test.app", "tab:1"), before);
 }
 
 #[test]

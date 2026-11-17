@@ -141,6 +141,10 @@ pub enum MissingPrerequisite {
     /// unapplied: applied first, this one would leave that one behind for
     /// good, its sequence overtaken.
     EarlierWrite,
+    /// Its author's device was removed and the cut of that removal is not
+    /// here yet ([`crate::removals`]): whether the write is history is
+    /// decided once it is.
+    RemovalCut,
 }
 impl std::fmt::Display for MissingPrerequisite {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -154,6 +158,7 @@ impl std::fmt::Display for MissingPrerequisite {
             Self::ExactHistoricalEvidence => "exact evidence of its earlier admission",
             Self::AppSurface => "its app surface",
             Self::EarlierWrite => "an earlier write of its author to its record",
+            Self::RemovalCut => "the cut of its author's removal",
         })
     }
 }

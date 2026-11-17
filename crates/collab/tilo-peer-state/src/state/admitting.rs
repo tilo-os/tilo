@@ -184,31 +184,45 @@ impl StatePeer {
         } else {
             now
         };
-        let Some(member) = self.authorize_document(
+        let (member, history) = match self.authorize_document(
             &source,
             &app_id,
             &document_id,
             &envelope,
             authorization_time,
-        )?
-        else {
-            return self.defer(
-                source,
-                NeighbourMsg::AppDocument {
-                    peer,
-                    app_id,
-                    cluster_id,
-                    document_id,
-                    envelope,
-                    own: own.clone(),
-                },
-                Held {
-                    retained_replay,
-                    prerequisite: MissingPrerequisite::AppSurface,
-                    now,
-                },
-            );
+        )? {
+            // A device its person removed writes nothing more: only what the
+            // workspace had taken of it is history, and a write this device
+            // makes now is never that.
+            super::authority::Authorized::Admit { history: true, .. }
+            | super::authority::Authorized::Hold(MissingPrerequisite::RemovalCut)
+                if local_app =>
+            {
+                return Err(super::MembershipError::Revoked.to_string().into());
+            }
+            super::authority::Authorized::Admit { member, history } => (member, history),
+            super::authority::Authorized::Hold(prerequisite) => {
+                return self.defer(
+                    source,
+                    NeighbourMsg::AppDocument {
+                        peer,
+                        app_id,
+                        cluster_id,
+                        document_id,
+                        envelope,
+                        own: own.clone(),
+                    },
+                    Held {
+                        retained_replay,
+                        prerequisite,
+                        now,
+                    },
+                );
+            }
         };
+        // Whether the change's writer is one of the owner's devices: a device
+        // of theirs removed since wrote its history as one.
+        let by_owner = self.wrote_as_owner(&source, history);
         let payload = collab_types::validate_whole_document_payload_route(
             &app_id,
             &cluster_id,
@@ -219,7 +233,7 @@ impl StatePeer {
         // A person's view of the workspace's layout is theirs: every member reads it, and only they
         // write it. The workspace's own host commits the documents of its records, so its writes
         // are the workspace's like any other.
-        if !self.signed_by_owner(&source) {
+        if !by_owner {
             tilo_desktop_model::shared_resource::guard::may_write(
                 &app_id,
                 &document_id,
@@ -404,7 +418,7 @@ impl StatePeer {
         candidate.channel = validated_channel;
         if let DocumentMutation::Incremental(bytes) = &mutation {
             let changes = collab_types::parse_changes(bytes).map_err(err)?;
-            let shows = self.appearance_author(&source, authorization_time);
+            let shows = self.appearance_author(&source, authorization_time, history);
             collab_types::check_appearances(&changes, shows.as_ref())
                 .map_err(|refusal| format!("document change forbidden: {refusal}"))?;
         }
@@ -417,10 +431,7 @@ impl StatePeer {
         // record.
         let empty = matches!(&mutation, DocumentMutation::Snapshot(bytes) if empty_genesis(bytes));
         let genesis = empty && !route_existed;
-        if genesis
-            && !self.signed_by_owner(&source)
-            && !self.may_create_document(&member, &route, authorization_time)
-        {
+        if genesis && !by_owner && !self.may_create_document(&member, &route, authorization_time) {
             return self.defer(
                 source,
                 NeighbourMsg::AppDocument {
@@ -454,7 +465,7 @@ impl StatePeer {
         let owner_snapshot = matches!(&mutation, DocumentMutation::Snapshot(_))
             && !local_app
             && !genesis
-            && self.signed_by_owner(&source);
+            && by_owner;
         let governed_checkpoint =
             owner_snapshot && covered_by.is_none_or(|author| author == source);
         if governed_checkpoint {
@@ -570,7 +581,7 @@ impl StatePeer {
         }
         // A member's write of the shared desktop is decided by what each of
         // its changes did ([`Self::check_shared_desktop`]).
-        let desktop_before = (!self.signed_by_owner(&source)
+        let desktop_before = (!by_owner
             && tilo_desktop_model::shared_resource::guard::is_shared_desktop(
                 &route.app,
                 &route.record,

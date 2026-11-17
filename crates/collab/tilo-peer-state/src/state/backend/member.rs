@@ -31,17 +31,30 @@ trait Policy {
 fn key_text(key: &[u8; 32]) -> String {
     hex::encode(key)
 }
+/// What its person having removed a device means to the question asked of it.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Removal {
+    /// The device is asked about now: removed, it holds no role.
+    Refuses,
+    /// A write of the device's history is asked about, one the cut of its
+    /// removal keeps ([`crate::removals`]): it is decided as its person's,
+    /// as it was when the workspace took it.
+    IsHistory,
+}
 /// A current member's role, and the bound on it when its device is a
 /// delegate.
 fn current<'peer, P: Policy>(
     peer: &'peer PeerCore,
     source: &[u8; 32],
     now: SystemTime,
+    removal: Removal,
     collect: impl FnOnce(&'peer crate::cached_document::CachedDocument) -> Result<P, MembershipError>,
 ) -> Result<(Role, Option<crate::state::ActingAs>), MembershipError> {
-    let cert = peer
-        .certificate_typed(source, now)
-        .map_err(MembershipError::from)?;
+    let cert = match removal {
+        Removal::Refuses => peer.certificate_typed(source, now),
+        Removal::IsHistory => peer.certificate_held(source, now),
+    }
+    .map_err(MembershipError::from)?;
     let workspace = peer
         .workspace_doc
         .as_ref()
@@ -62,7 +75,7 @@ fn current<'peer, P: Policy>(
         tilo_user_identity::verify_revocation_entry(entry).map_err(MembershipError::Revocation)?;
         revoked |= &entry.revoked_device_public_key == source;
     }
-    if revoked {
+    if revoked && removal == Removal::Refuses {
         return Err(MembershipError::Revoked);
     }
     identity
@@ -129,7 +142,25 @@ pub(in crate::state) fn legacy(
     source: &[u8; 32],
     now: SystemTime,
 ) -> Result<(Role, Option<crate::state::ActingAs>), MembershipError> {
-    current(peer, source, now, |workspace| {
+    legacy_with(peer, source, now, Removal::Refuses)
+}
+/// [`legacy`] for a write of `source`'s history: the role its person holds,
+/// whether or not they removed the device since. Asked only of a write the
+/// cut of the removal keeps; it never says what the device may do now.
+pub(in crate::state) fn legacy_in_history(
+    peer: &PeerCore,
+    source: &[u8; 32],
+    now: SystemTime,
+) -> Result<(Role, Option<crate::state::ActingAs>), MembershipError> {
+    legacy_with(peer, source, now, Removal::IsHistory)
+}
+fn legacy_with(
+    peer: &PeerCore,
+    source: &[u8; 32],
+    now: SystemTime,
+    removal: Removal,
+) -> Result<(Role, Option<crate::state::ActingAs>), MembershipError> {
+    current(peer, source, now, removal, |workspace| {
         let data = workspace.workspace_policy(&peer.workspace);
         let key = key_text(source);
         // Decoded once per document state, not on every lookup.

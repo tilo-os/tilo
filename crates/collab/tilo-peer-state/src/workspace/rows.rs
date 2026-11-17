@@ -51,10 +51,13 @@ pub enum GovernanceRow {
     Log,
     /// The capabilities the workspace gives its apps' sandboxes.
     Sandbox,
+    /// Where each document's history stood when a device was removed
+    /// ([`crate::removals`]).
+    Removals,
 }
 
 impl GovernanceRow {
-    const ALL: [Self; 11] = [
+    const ALL: [Self; 12] = [
         Self::Owner,
         Self::Membership,
         Self::Identities,
@@ -66,6 +69,7 @@ impl GovernanceRow {
         Self::Hosts,
         Self::Log,
         Self::Sandbox,
+        Self::Removals,
     ];
 
     /// The digest of this part of `doc`: every value it holds, whatever shape
@@ -110,6 +114,7 @@ impl GovernanceRow {
             Self::Bots => &BOT_KEYS,
             Self::Checkpoints => &CHECKPOINT_KEYS,
             Self::Hosts => &[HOSTS_KEY],
+            Self::Removals => &[crate::removals::FIELD_V1],
             Self::Log => &[],
         }
     }
@@ -121,7 +126,9 @@ impl GovernanceRow {
     pub fn action(self) -> Option<&'static str> {
         match self {
             Self::Bots => Some(governance::GRANT),
-            Self::Media | Self::Checkpoints | Self::Hosts => Some(governance::SETTINGS),
+            Self::Media | Self::Checkpoints | Self::Hosts | Self::Removals => {
+                Some(governance::SETTINGS)
+            }
             Self::Versions => Some(governance::INSTALL_APP),
             Self::Owner
             | Self::Membership

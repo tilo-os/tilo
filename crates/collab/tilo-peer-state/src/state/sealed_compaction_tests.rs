@@ -13,19 +13,19 @@ const APP: &str = "test.app";
 const RECORD: &str = "tab:1";
 const SECRET: &str = "a sentence only key holders may read";
 
-struct Fixture {
+pub(super) struct Fixture {
     /// A durable replica holding the seeded record and no channel key.
-    host: StatePeer,
+    pub(super) host: StatePeer,
     /// The workspace's governing device, which holds the owner role.
-    owner: SigningKey,
+    pub(super) owner: SigningKey,
     /// The owner's second device.
-    other: SigningKey,
+    pub(super) other: SigningKey,
     /// A member with the editor role.
     editor: SigningKey,
     authority: DeviceCert,
     /// The record channel's group, whose content keys key holders use.
     group: KeyGroup,
-    now: SystemTime,
+    pub(super) now: SystemTime,
 }
 
 fn device(root: u8, seed: u8) -> (SigningKey, DeviceCert) {
@@ -45,7 +45,7 @@ fn device(root: u8, seed: u8) -> (SigningKey, DeviceCert) {
     (key, cert)
 }
 
-fn fixture() -> Fixture {
+pub(super) fn fixture() -> Fixture {
     let (owner, authority) = device(1, 2);
     let (other, other_cert) = device(1, 3);
     let (editor, editor_cert) = device(110, 111);
@@ -124,7 +124,7 @@ fn fixture() -> Fixture {
 }
 
 impl Fixture {
-    fn keys(&self) -> ContentKeys {
+    pub(super) fn keys(&self) -> ContentKeys {
         self.group.content_keys().unwrap()
     }
 
@@ -167,7 +167,7 @@ fn route() -> Route {
     }
 }
 
-fn held(peer: &StatePeer) -> Vec<SignedOp> {
+pub(super) fn held(peer: &StatePeer) -> Vec<SignedOp> {
     peer.core.documents[&route()].sealed.to_vec()
 }
 
@@ -228,14 +228,14 @@ fn signed(
 
 /// Edits of the seeded record, each an incremental on the one before, as
 /// the plaintext a key holder's sealed write opens to.
-struct Author(AutoCommit);
+pub(super) struct Author(AutoCommit);
 
 impl Author {
-    fn new(peer: &StatePeer) -> Self {
+    pub(super) fn new(peer: &StatePeer) -> Self {
         Self(AutoCommit::load(&peer.document(APP, RECORD).unwrap()).unwrap())
     }
 
-    fn edit(&mut self, key: &str, value: &str) -> Vec<u8> {
+    pub(super) fn edit(&mut self, key: &str, value: &str) -> Vec<u8> {
         let heads = self.0.get_heads();
         self.0.put(ROOT, key, value).unwrap();
         self.0.commit();
@@ -256,7 +256,7 @@ impl Author {
 }
 
 /// `key`'s next sealed write to `peer`'s record.
-fn write(
+pub(super) fn write(
     peer: &StatePeer,
     key: &SigningKey,
     keys: &ContentKeys,
@@ -301,7 +301,12 @@ fn checkpoint(
     ))
 }
 
-fn admit(peer: &mut StatePeer, key: &SigningKey, message: NeighbourMsg, now: SystemTime) {
+pub(super) fn admit(
+    peer: &mut StatePeer,
+    key: &SigningKey,
+    message: NeighbourMsg,
+    now: SystemTime,
+) {
     let report = peer.receive_from_report(origin(key), message, now).unwrap();
     assert!(
         matches!(report.primary(), InputDisposition::Accepted(_)),
@@ -319,7 +324,7 @@ fn open(keys: &ContentKeys, op: &SignedOp) -> Result<Vec<u8>, String> {
 }
 
 /// A compaction of a record small enough for one op.
-fn mint(
+pub(super) fn mint(
     peer: &mut StatePeer,
     keys: &ContentKeys,
     key: &SigningKey,
@@ -357,7 +362,7 @@ fn mint_pieces(
 }
 
 /// A compaction of `superseded`, sealed with `keys` but not signed.
-fn wrapper(
+pub(super) fn wrapper(
     peer: &StatePeer,
     keys: &ContentKeys,
     superseded: &[SignedOp],
@@ -376,7 +381,7 @@ fn wrapper(
 
 /// A correctly numbered compaction, so each forgery is refused for what it
 /// forges and not for its author's sequence.
-fn forged(
+pub(super) fn forged(
     _peer: &StatePeer,
     key: &SigningKey,
     (wrapper, metadata): &(SealedCompaction, EncryptionMetadata),

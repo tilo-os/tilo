@@ -112,6 +112,8 @@ mod refused_commit;
 mod rename;
 #[path = "resume.rs"]
 mod resume;
+#[path = "revoked_device_history.rs"]
+mod revoked_device_history;
 #[path = "routed_actions.rs"]
 mod routed_actions;
 #[path = "session_store.rs"]

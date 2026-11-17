@@ -78,6 +78,7 @@ pub use state::{
 };
 pub mod coverage;
 mod governed_routes;
+pub mod removals;
 pub use collab_types::DocumentMutation;
 
 pub mod outbox;

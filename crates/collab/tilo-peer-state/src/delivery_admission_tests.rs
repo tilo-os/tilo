@@ -232,10 +232,24 @@ tilo_test_env::scenario! {
             .publish_governed_revocations(&[revocation], &governor, now)
             .unwrap();
         let later = now + Duration::from_secs(301);
-        assert!(
+        // The write was taken before its device was removed, so the cut of
+        // the removal keeps it: it is the workspace's history, and sent again
+        // it is the duplicate it always was, never a new admission.
+        assert!(matches!(
             receiver
                 .receive_from_report(origin, message, later)
-                .is_err()
+                .unwrap()
+                .primary(),
+            InputDisposition::Duplicate(_)
+        ));
+        // What the device signs after its removal is refused.
+        let after = incremental(&mut author, &key, later, "B");
+        assert!(
+            receiver
+                .receive_from_report(origin, after, later)
+                .unwrap_err()
+                .to_string()
+                .contains("revoked")
         );
     }
 

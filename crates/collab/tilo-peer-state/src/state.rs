@@ -536,6 +536,9 @@ mod joined_tests;
 mod member_list_tests;
 mod rebase;
 #[cfg(test)]
+#[path = "state/removal_tests.rs"]
+mod removal_tests;
+#[cfg(test)]
 #[path = "state/roster_beside_governance_tests.rs"]
 mod roster_beside_governance_tests;
 #[cfg(test)]

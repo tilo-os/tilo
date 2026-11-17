@@ -851,6 +851,38 @@ from signing locally. Held by
 and `crates/runtime/tilo-identity-host/src/broker.rs::tests::identity_service_wire_is_pinned` with
 `::privileged_moderation_signing_requires_the_selected_trusted_device`.
 
+
+## P2-3a — A removed device's past is kept by its cut; the moment of distrust is not built
+
+§3.4 of the design: removing a device takes its future, not its person's past, and where the past
+ends is a place in each document, never a time.
+
+**As built.** Before this entry every replica refused every change a removed device had ever
+signed, at whatever time: a device added later, or one that came back, could read no document the
+removed device had written into (four of the five scenarios of
+`crates/session/client/tests/revoked_device_history.rs` failed, for each of the four reasons
+alike). Now the device that writes a removal into a workspace's governance writes its cut beside it
+(`crates/collab/tilo-peer-state/src/removals.rs`); a removed device's change is decided, when it is
+taken in and when it is handed to an app, by that cut
+(`crates/collab/tilo-peer-state/src/state/authority.rs::written_as`); a replica that knows a
+removal and not its cut holds such changes undecided; and the governing device writes the cut of a
+removal that was written before cuts were kept the next time it opens the workspace. Held by
+`crates/collab/tilo-peer-state/src/state/removal_tests.rs::removing_a_device_takes_its_future_and_keeps_its_persons_past`
+(history for each reason; a device that keeps writing, dates its writes back, sends an old one
+again or signs a new compaction under a number it used; a cut nobody lowers or erases) and by the
+five scenarios named above.
+
+**Not built.** The moment a person names for a stolen or compromised device, and the mark on what
+it wrote after it. Every change at or below the cut is plain history today, whatever the reason.
+
+**Residual.** The cut fixes where a removed device's history ends in each document, not what that
+history says. A holder that has the removed device's key can show a device that joins later
+another change under a number below the cut; a device that holds the original refuses it. Closing
+this needs the cut to name the content it keeps. And a cut holds what its writer had taken: a
+write the governing device kept without having decided it yet (one waiting for a change it builds
+on) is above the cut, so everyone refuses it afterwards, and a device that merged it before the
+removal holds a change the others never take.
+
 ## P2-4 — Egress documentation describes a weaker mechanism than the code implements
 
 `docs/app-model/sandbox.md:162-172` describes DNS-layer filtering that direct-IP connections bypass.
