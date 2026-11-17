@@ -1,6 +1,6 @@
 /// The canvases of shell.md §2 and §8: places at points on a surface that pans and zooms, each
 /// drawn in a frame (`frames`), or as its own view standing as content and grouped by where it
-/// is into a space per task (`spaces`).
+/// is grouped by where it is, a cluster per task (`frameless`).
 ///
 /// Pan and zoom are the map component's (`ui.Map`) camera: each person's lens, kept on their
 /// device, never in the layout. What this file gives the map is where every place stands,
@@ -81,7 +81,7 @@ view canvas(a: Layout, name: Text, framed: Bool, lists: Bool) {
                         if framed {
                             canvas_place(a, p, lists and p.key == front_place(a), fill)
                         } else {
-                            space_content(a, p)
+                            frameless_place(a, p)
                         }
                     }
                 }
@@ -314,10 +314,10 @@ view framed_place(a: Layout, p: LayoutPlace, lists: Bool) {
 
 /// A place on the frameless canvas: its resource's view standing as content (or its window's
 /// well), with a line naming what it is rather than a frame around it. The controls stand
-/// outside it, and the content itself is `place_content`'s, as every preset draws it.
-view space_content(a: Layout, p: LayoutPlace) {
+/// outside it, and the content itself is `place_content`'s, as every style draws it.
+view frameless_place(a: Layout, p: LayoutPlace) {
     stack(gap: .related, fill) {
-        // A space has no frame bar: its content's own header row carries the window's actions,
+        // A frameless place has no frame bar: its content's own header row carries the window's actions,
         // so the shell's controls keep theirs off (`listed`), and each command stands once.
         place_controls(a, p, true)
         ui.Text(place_title(p), role: .label, secondary: true)

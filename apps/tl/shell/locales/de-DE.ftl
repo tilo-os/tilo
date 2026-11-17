@@ -12,13 +12,8 @@ d-nkjtmr33 = Sicht
 d-kna5sco4 = Stil
     .doc = Der Stil, den die Person zeigt, als Ansichtsreferenz: ein Paket und eine Ansicht (`so.tilo.shell:strips`, `me.styles:timeline`).
 
-d-nl27ikjq = Zeigt
-    .doc = Die Vorgabe, die die Person zeigte, bevor Stile Ansichten waren.
-
 d-6b2coqll = Im Fokus
     .doc = Die Leiste vorn, nach ihrem Schlüssel; leer für keine.
-
-d-nkjtmr33-filter-showing = Zeigt
 
 d-cejnvssb = Shell
     .doc = Der eigene Shell-Datensatz der Person, erreichbar als `shell` (`root shell: Shell`).
@@ -176,21 +171,6 @@ d-ipingyqi = Zwei Drittel der Zeile: eine Notiz, eine Unterhaltung
 d-nfufnx7j = Die ganze nutzbare Breite der Zeile
     .doc = Die ganze nutzbare Breite der Zeile.
 
-d-vvznzcd4 = Vorgabe
-    .doc = Eine Art, dieselben Ressourcen und Aktionen anzuordnen, die eine Person gewählt hat, bevor die Shell Stile hatte: `Viewing.showing` hielt eine.
-
-d-25lm42aq = Spalten aus Plätzen, waagerecht gescrollt, mit Leisten gestapelt und senkrecht gescrollt
-    .doc = Spalten aus Plätzen, waagerecht gescrollt, mit Leisten gestapelt und senkrecht gescrollt.
-
-d-3ha7yyn2 = Plätze an Punkten auf einer verschiebbaren, zoombaren Fläche, jeder in einem Rahmen gezeichnet
-    .doc = Plätze an Punkten auf einer verschiebbaren, zoombaren Fläche, jeder in einem Rahmen gezeichnet.
-
-d-whadpf2h = Plätze an Punkten, jeder als eigene Ansicht gezeichnet: Ressourcen stehen als Inhalt auf einer Fläche, gruppiert danach, wo sie sind, statt nach einem Rahmen um sie
-    .doc = Plätze an Punkten, jeder als eigene Ansicht gezeichnet: Ressourcen stehen als Inhalt auf einer Fläche, gruppiert danach, wo sie sind, statt nach einem Rahmen um sie.
-
-d-6uzzl3rd = Der traditionelle Desktop: Rahmen frei über der Shell, die eigenen Befehle des fokussierten Fensters in der oberen Leiste und ein schwebendes Dock am Fuß, die Form, die Menschen von macOS und GNOME kennen
-    .doc = Der traditionelle Desktop: Rahmen frei über der Shell, die eigenen Befehle des fokussierten Fensters in der oberen Leiste und ein schwebendes Dock am Fuß, die Form, die Menschen von macOS und GNOME kennen.
-
 d-nxjnwtsd = Kante
     .doc = Die Shell der Person: welche Teile die obere Leiste und das Dock haben, in welcher Reihenfolge, an welcher Kante, wie sie aussehen und wann sie zeigen.
 
@@ -290,9 +270,6 @@ d-qqg4smi5 = Das Menü nach dem Namen seines Fensters, aber nicht die Aufgaben u
 
 d-7caakb5b = Am wenigsten: das Menü steht als Symbol des Fensters, und nur, was ein Telefon behält, bleibt
     .doc = Am wenigsten: das Menü steht als Symbol des Fensters, und nur, was ein Telefon behält, bleibt.
-
-d-p4bqyuzt = Stil benennen
-    .doc = Ein Stil, gewählt, bevor Stile Ansichten waren: der Name der Vorgabe, gewendet in die Ansicht dieses Pakets davon (`strips` zu `so.tilo.shell:strips`), damit die Wahl der Person bleibt.
 
 d-7j7tzynq = Zeigen als
     .doc = Zeigt die Shell durch den Stil `style`: ein Paket und eine Ansicht (`so.tilo.shell:strips`).
@@ -544,7 +521,7 @@ d-kzhftbrb = Platz auf der Fläche
 
 d-t3cux3yd = Gerahmter Platz
 
-d-s6b5stgz = Inhalt der Fläche
+d-s6b5stgz = Rahmenloser Platz
 
 d-ewgdlyyr = App-Menüs zeigen~present
 
@@ -565,8 +542,8 @@ d-zzd3yipu = Leisten
 d-tj4z2obq = Rahmen
     .w-canvas = Fläche
 
-d-tqbdxbtn = Flächen
-    .w-spaces = Flächen
+d-tqbdxbtn = Rahmenlos
+    .w-frameless = Rahmenlos
 
 d-pbhumuny = Desktop
 
@@ -987,8 +964,8 @@ d-e3tczbcu = Einstellungen des Reihenstils
 d-mnbjennf = Einstellungen des Rahmenstils
     .w-snap-places-to-a-grid = Plätze am Raster einrasten
 
-d-xwhxaimf = Einstellungen des Raumstils
-    .w-spaces-shows-each-place-as-its = Räume zeigt jeden Platz als eigene Ansicht und hat nichts einzustellen.
+d-xwhxaimf = Einstellungen des rahmenlosen Stils
+    .w-frameless-shows-each-place-as-its = Rahmenlos zeigt jeden Platz als eigene Ansicht und hat nichts einzustellen.
 
 d-st426t4p = Ein vorderer Arbeitsbereich
     .doc = Fügt `a` den vorderen Arbeitsbereich mit seiner vorderen Zeile hinzu und gibt den Schlüssel der Zeile zurück.

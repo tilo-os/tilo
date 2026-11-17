@@ -384,13 +384,8 @@ d-nkjtmr33 = Viewing
 d-kna5sco4 = Style
     .doc = The style the person shows, as a view reference: a package and a view (`so.tilo.shell:strips`, `me.styles:timeline`).
 
-d-nl27ikjq = Showing
-    .doc = The preset the person showed before styles were views.
-
 d-6b2coqll = Focused
     .doc = The strip in front, by its key; empty for none.
-
-d-nkjtmr33-filter-showing = Showing
 
 d-nxjnwtsd = Edge
     .doc = The person's shell: which parts the top bar and the dock have, in what order, on which edge, how they look and when they show.
@@ -505,21 +500,6 @@ d-ipingyqi = Two thirds of the row: a note, a conversation
 
 d-nfufnx7j = The row's whole usable width
     .doc = The row's whole usable width.
-
-d-vvznzcd4 = Preset
-    .doc = A way of laying out the same resources and actions a person picked before the shell had styles: `Viewing.showing` kept one.
-
-d-25lm42aq = Columns of places, scrolled horizontally, with strips stacked and scrolled vertically
-    .doc = Columns of places, scrolled horizontally, with strips stacked and scrolled vertically.
-
-d-3ha7yyn2 = Places at points on a pannable, zoomable surface, each drawn in a frame
-    .doc = Places at points on a pannable, zoomable surface, each drawn in a frame.
-
-d-whadpf2h = Places at points, each drawn as its own view: resources standing as content on one surface, grouped by where they are rather than by a frame around them
-    .doc = Places at points, each drawn as its own view: resources standing as content on one surface, grouped by where they are rather than by a frame around them.
-
-d-6uzzl3rd = The traditional desktop: frames floating over the shell, the focused window's own commands in the top bar, and a floating dock at the foot, the shape macOS and GNOME people know
-    .doc = The traditional desktop: frames floating over the shell, the focused window's own commands in the top bar, and a floating dock at the foot, the shape macOS and GNOME people know.
 
 d-q7rxwd72 = Bar room
     .doc = How much room the top bar has: for the focused window's menu, and for its parts.
@@ -705,9 +685,6 @@ d-5giytccr = Open first
     .doc = Enter's work on a query: the first app the text finds opens, so typing "no" and pressing Enter opens Notes; a query that names no app is what search everywhere answers, as Enter has always done for what the shell's own rows do not hold.
 
 d-5giytccr-query = Query
-
-d-p4bqyuzt = Name the style
-    .doc = A style picked before styles were views: the preset's name turned into this package's view of it (`strips` into `so.tilo.shell:strips`), so the person's choice is kept.
 
 d-7j7tzynq = Show as
     .doc = Shows the shell through the style `style`: a package and a view (`so.tilo.shell:strips`).
@@ -905,7 +882,7 @@ d-kzhftbrb = Canvas place
 
 d-t3cux3yd = Framed place
 
-d-s6b5stgz = Space content
+d-s6b5stgz = Frameless place
 
 d-ewgdlyyr = Show app menus~present
 
@@ -1111,8 +1088,8 @@ d-zzd3yipu = Strips
 d-tj4z2obq = Frames
     .w-canvas = Canvas
 
-d-tqbdxbtn = Spaces
-    .w-spaces = Spaces
+d-tqbdxbtn = Frameless
+    .w-frameless = Frameless
 
 d-pbhumuny = Desktop
 
@@ -1198,8 +1175,8 @@ d-e3tczbcu = Strips style settings
 d-mnbjennf = Frames style settings
     .w-snap-places-to-a-grid = Snap places to a grid
 
-d-xwhxaimf = Spaces style settings
-    .w-spaces-shows-each-place-as-its = Spaces shows each place as its own view and has nothing to set.
+d-xwhxaimf = Frameless style settings
+    .w-frameless-shows-each-place-as-its = Frameless shows each place as its own view and has nothing to set.
 
 d-fziuz57n = Switcher
     .w-of = { $at } of { $count }

@@ -108,7 +108,7 @@ The agent does the same work under any of these, and may read them to present it
 
 A style is a tilolang view of the person's layout, and nothing more. A person, or an
 agent working for them, makes a new one the way they make any app: write a package, install
-it, pick it. The four styles that ship (strips, frames, spaces, desktop) are written exactly
+it, pick it. The four styles that ship (strips, frames, frameless, desktop) are written exactly
 that way, and are the examples.
 
 **What makes a view a style.** Its first parameter is the session's layout, the type

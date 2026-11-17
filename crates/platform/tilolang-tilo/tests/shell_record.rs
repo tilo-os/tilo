@@ -639,7 +639,7 @@ fn the_macos_bar_carries_the_focused_windows_own_commands() {
 
     // The canvas keeps only the time, the notices and the person on its bar; each note's place
     // carries the note's commands on its own handle, so none is out of reach.
-    let canvas = open(&r, scenario(&r, APP, "a canvas of spaces"));
+    let canvas = open(&r, scenario(&r, APP, "a canvas of clusters"));
     assert!(
         resource_menus(&canvas, "bar").is_empty(),
         "the canvas's bar holds no window menu: {}",
@@ -929,7 +929,7 @@ fn a_canvas_place_naming_a_resource_and_view_composes_that_view_and_a_window_kee
     let meta = r.host.package(APP).unwrap().meta;
     // The layout is the session's (`origin: session.layout`): the scenario writes it
     // in this host, as the session's reading would, and nothing of it goes to the workspace.
-    let layout = scenario(&r, APP, "a canvas of spaces");
+    let layout = scenario(&r, APP, "a canvas of clusters");
     let shell = meta
         .views
         .iter()
@@ -967,7 +967,7 @@ fn a_canvas_place_naming_a_resource_and_view_composes_that_view_and_a_window_kee
 }
 
 #[test]
-fn resources_standing_as_content_stand_on_the_spaces_canvas() {
+fn resources_standing_as_content_stand_on_the_frameless_canvas() {
     let mut r = workspace();
     r.host.root_of("so.tilo.lang.notes").unwrap();
     r.commit();

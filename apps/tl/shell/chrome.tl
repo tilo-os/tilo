@@ -84,11 +84,11 @@ enum BarPartKind {
     /// The agent's own indicator: a task working for the person.
     agent (icon: .sparkles)
     /// A flexible gap: the bar's parts before it lead, those after it trail.
-    space (icon: .minus)
+    spacer (icon: .minus)
 }
 
 /// A named set of the settings, which the person applies in one action: a chrome preset.
-/// `Viewing.preset` (layout.tl) is the *view* preset — how the same places are shown — and is
+/// `Viewing.style` (layout.tl) is the *view* — how the same places are shown — and is
 /// a different setting; this one names the bar and the dock.
 enum ChromePreset {
     /// The dock on the bottom with the bar on the top: Tilo's own.
@@ -219,9 +219,9 @@ migration action seed(s: Shell) {
         s.bar_parts.insert(BarPart(kind: .workspace))
         s.bar_parts.insert(BarPart(kind: .strip))
         s.bar_parts.insert(BarPart(kind: .agent, shown: false))
-        s.bar_parts.insert(BarPart(kind: .space))
+        s.bar_parts.insert(BarPart(kind: .spacer))
         s.bar_parts.insert(BarPart(kind: .clock))
-        s.bar_parts.insert(BarPart(kind: .space))
+        s.bar_parts.insert(BarPart(kind: .spacer))
         s.bar_parts.insert(BarPart(kind: .people))
         s.bar_parts.insert(BarPart(kind: .status))
     }

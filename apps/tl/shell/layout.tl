@@ -10,7 +10,7 @@
 /// Every entry names the shell that made it (`shell`): a shell that does not know an entry
 /// another shell made keeps it and never changes or removes it.
 /// The person's layout as the session reads it off the layout: the workspaces it holds, its
-/// rows, its strips, and every place. Which preset it shows and which strip stands in front are
+/// rows, its strips, and every place. Which style it shows and which strip stands in front are
 /// the shell's own view of it (`viewing`), this package's record, so a shell is picked per
 /// person and device without changing what the layout holds.
 type Layout (origin: session.layout) {
@@ -155,21 +155,6 @@ fn permille_of(w: Width) -> Int {
     }
 }
 
-/// A way of laying out the same resources and actions a person picked before the shell had
-/// styles: `Viewing.showing` kept one. It is declared still, and unchanged, so the
-/// record the old shell wrote — an enum value the store holds as it wrote it — reads as it was
-/// and the migration below can name the style it stands for. Nothing writes it again.
-enum Preset {
-    /// Columns of places, scrolled horizontally, with strips stacked and scrolled vertically.
-    strips
-    /// Places at points on a pannable, zoomable surface, each drawn in a frame.
-    frames
-    /// Places at points, each drawn as its own view: resources standing as content on one surface, grouped by where they are rather than by a frame around them.
-    spaces
-    /// The traditional desktop: frames floating over the shell, the focused window's own commands in the top bar, and a floating dock at the foot, the shape macOS and GNOME people know.
-    desktop
-}
-
 /// What the person shows of their layout, and which strip stands in front: the shell's own
 /// view of it, in their own record (`records: .own`, `root viewing: Viewing`). The layout
 /// is the session's and the same whichever way it is shown; this is what changes when the
@@ -181,36 +166,11 @@ type Viewing {
     /// layout any installed package declares; empty shows this shell's
     /// strips.
     style: Text
-    /// The preset the person showed before styles were views. It kept its declaration, its type
-    /// and its default, so a record the old shell wrote reads as it was, a record made now
-    /// reads the strips, and the migration below names the style it stands for. Nothing writes
-    /// it again.
-    showing: Preset = .strips
     /// The strip in front, by its key; empty for none.
     focused: Text
 }
 
 root viewing: Viewing
-
-/// A style picked before styles were views: the preset's name turned into this package's
-/// view of it (`strips` into `so.tilo.shell:strips`), so the person's choice is kept. A record
-/// whose `style` is already set keeps it.
-migration action name_the_style(v: Viewing) {
-    if v.style == "" {
-        v.style = style_named(v.showing)
-    }
-}
-
-/// The style reference a preset stands for: this package's own view of that name, the four
-/// that ship.
-fn style_named(p: Preset) -> Text {
-    match p {
-        .frames => "so.tilo.shell:frames",
-        .spaces => "so.tilo.shell:spaces",
-        .desktop => "so.tilo.shell:desktop",
-        .strips => "so.tilo.shell:strips",
-    }
-}
 
 default view viewing_settings for Viewing
 

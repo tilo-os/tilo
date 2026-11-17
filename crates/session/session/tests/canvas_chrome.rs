@@ -293,3 +293,24 @@ fn the_style_shell_menu_has_no_empty_band_above_its_rows() {
         button_y + button_h
     );
 }
+
+/// The frameless style: the same places as the framed canvas, each drawn as its own view with no
+/// frame around it. Switching to it keeps every place where it was and draws the map the style
+/// names.
+#[test]
+fn switching_to_the_frameless_style_keeps_every_place() {
+    let _settled = ui::motion::testing::settled();
+    let root = private_home();
+    let mut session = session(root.path());
+    let before = boxes(&session);
+    assert!(!before.is_empty(), "the framed canvas holds places");
+    show_preset(&mut session, "so.tilo.shell:frameless");
+    wait_for(&mut session, "the frameless canvas", |session| {
+        on_screen(session, "Frameless")
+    });
+    assert_eq!(
+        boxes(&session),
+        before,
+        "the frameless style keeps every place where it stood"
+    );
+}

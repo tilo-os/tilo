@@ -9,7 +9,7 @@
 ///
 /// The frame is `ui.WindowFrame`: one window bar for the whole shell, with the window's own
 /// controls in a pill of the floating material at its trailing end, so a person sees the same
-/// bar here as on the frames, the spaces and the traditional desktop. Every arranging change is
+/// bar here as on the frames, the frameless canvas and the traditional desktop. Every arranging change is
 /// one of the session's published actions (`shell:layout`): a press, a tab, a script and an
 /// agent arrange the same way, attributed and undoable.
 ///
@@ -543,8 +543,8 @@ view place_controls(a: Layout, p: LayoutPlace, listed: Bool) {
 /// shell never draws a place's content itself; the pin, close and move controls are the frame's
 /// chrome, outside it (`place_controls`).
 ///
-/// Every preset draws a place through this one view — a strip's body, a framed canvas pin, a
-/// space on the frameless canvas — so a place looks the same whichever preset shows it.
+/// Every style draws a place through this one view — a strip's body, a framed canvas pin, a
+/// frameless place on the canvas — so a place looks the same whichever style shows it.
 view place_content(p: LayoutPlace) {
     place_view(p, fill)
 }

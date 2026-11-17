@@ -110,8 +110,8 @@ view style_settings_body() {
         strips_style_settings(s)
     } else if chosen == "so.tilo.shell:frames" {
         frames_style_settings(s)
-    } else if chosen == "so.tilo.shell:spaces" {
-        spaces_style_settings(s)
+    } else if chosen == "so.tilo.shell:frameless" {
+        frameless_style_settings(s)
     } else if let declared = device.styles.offered.find(x -> x.style == chosen) {
         // A style another package declares: its own settings are its own record's, which the
         // system cannot read (`shell.md` §6: "A style an agent writes gets settings the same
@@ -189,8 +189,8 @@ view frames_style_settings(s: Shell) {
     }
 }
 
-/// The spaces style's settings. None of its own yet: it shows each place as its own view and
+/// The frameless style's settings. None of its own yet: it shows each place as its own view and
 /// carries no chrome of its own, so it says so rather than showing another style's controls.
-view spaces_style_settings(s: Shell) {
-    ui.Text("Spaces shows each place as its own view and has nothing to set.", role: .caption)
+view frameless_style_settings(s: Shell) {
+    ui.Text("Frameless shows each place as its own view and has nothing to set.", role: .caption)
 }
