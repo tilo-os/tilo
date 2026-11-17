@@ -119,11 +119,14 @@ class Place:
         with self.events.open("a") as events:
             events.write(json.dumps({"at": now(), **fields}) + "\n")
 
+    def main_checkout(self) -> Path:
+        """The clone's main checkout: the one worktree no one removes when their work is done."""
+        listing = out(self.repo, "worktree", "list", "--porcelain").splitlines()
+        return Path(listing[0].split(" ", 1)[1])
+
     def worktree(self) -> Path:
         """The lander's own worktree, beside the main checkout's other worktrees."""
-        listing = out(self.repo, "worktree", "list", "--porcelain").splitlines()
-        main = Path(listing[0].split(" ", 1)[1])
-        return main / ".claude" / "worktrees" / f"land-{self.branch.replace('/', '-')}"
+        return self.main_checkout() / ".claude" / "worktrees" / f"land-{self.branch.replace('/', '-')}"
 
 
 def write_json(path: Path, value: dict) -> None:
@@ -168,8 +171,8 @@ def start_lander(place: Place) -> None:
     with place.log.open("a") as log:
         subprocess.Popen(
             [sys.executable, "-I", str(program), "--serve", "--remote", place.remote,
-             "--branch", place.branch, "--repo", str(place.repo)],
-            cwd=place.repo, stdin=subprocess.DEVNULL, stdout=log, stderr=log, start_new_session=True,
+             "--branch", place.branch, "--repo", str(place.main_checkout())],
+            cwd=place.main_checkout(), stdin=subprocess.DEVNULL, stdout=log, stderr=log, start_new_session=True,
         )
 
 
