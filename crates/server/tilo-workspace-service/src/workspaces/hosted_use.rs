@@ -1157,6 +1157,19 @@ impl Workspaces {
 }
 
 impl Workspaces {
+    /// Whether `turn` may ask for a page's field to be filled from its person's vault at
+    /// all: what [`Self::release_for_turn`] refuses before the vault is opened, asked before
+    /// any window is.
+    ///
+    /// # Errors
+    /// As [`Self::keepers_turn`], and [`NotPermitted`] for a narrowed agent that holds no
+    /// rule for this use.
+    pub async fn may_fill_pages(&self, turn: &HostedTurn<'_>) -> Result<(), ActionCallError> {
+        self.turn_uses_for(turn, &person_vault::page_target())
+            .await
+            .map(drop)
+    }
+
     /// Release what the item `fill` names keeps, for the page at the site
     /// `fill` names, to whoever sends it on to that page's window, for
     /// `turn`. `invocation` is the page action that asked.

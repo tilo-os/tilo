@@ -21,32 +21,45 @@
 //! anything out, so an answer is carried out at most once, and then how it
 //! ended.
 //!
-//! Nothing here sees a secret. The arguments name the item by its
-//! reference, the question shows it withheld, and the entry answers what
-//! the person would be answered: the account, the provider.
+//! A field of a web page is the one use whose secret leaves this server: the page is in the
+//! workspace's Browser window, and only its engine writes into it. The turn names the field and
+//! the item ([`person_vault::fill_row`]); the window is handed the fill and says which site its
+//! page is at ([`crate::hosted_browser::HostedBrowsers::fill_for_turn`]); the entry decides for
+//! that site ([`TurnUses::release`]), asking the person first as for every use. Their allow
+//! fills nothing by itself: it lets that agent's next fill of that item at that site through.
+//!
+//! Nothing here keeps a secret, and nothing here shows one. The arguments name the item by
+//! its reference, the question shows it withheld, and the entry answers what the person would
+//! be answered: the account, the provider. A text released for a page passes through here
+//! once, on its way to be sealed to the window that fills it, in a type that prints nothing.
 
 use std::collections::BTreeMap;
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::Arc;
 
 use chat::question::QuestionState::{Answered, Settled, Waiting, Withdrawn};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 use tilo_actions::policy::MemberId;
+use tilo_actions::remote::person_vault::{FillField, FillPage};
 use tilo_actions::remote::{
-    ActionCallError, Caller, CatalogueProvider, CatalogueQuery, CatalogueRow, InvokeRequest,
-    Pending, RemoteActionTarget, person_vault,
+    ActionCallError, Caller, CatalogueProvider, CatalogueQuery, CatalogueRow, InvokeArgument,
+    InvokeRequest, Pending, RemoteActionTarget, person_vault,
 };
-use tilo_actions::{ActionFailure, ActionOutput, InvocationUpdate};
+use tilo_actions::{ActionFailure, ActionOutput, InvocationId, InvocationUpdate};
 use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_resource::Resource as _;
 use tilo_workspace_agent::Agent;
+use zeroize::Zeroizing;
 
 use super::turn_provider::{Ending, Rows};
 use super::{
     Ask, CHAT, HostAgents, Reply, Turn, TurnProvider, WorkspaceActionProvider, WorkspaceId,
     invoke_named,
 };
-use crate::workspaces::hosted_use::{HostedTurn, OpenAsk, TurnUse, UseAnswer};
+use crate::hosted_browser::{Release, Releasing, TurnFill};
+use crate::workspaces::hosted_use::{HostedTurn, OpenAsk, TurnRelease, TurnUse, UseAnswer};
 
 /// What an agent is told when its person is asked first: nothing ran, and
 /// it neither waits nor asks again.
@@ -85,6 +98,12 @@ fn allowed_once(done: &Value, agent: &str) -> Option<String> {
 
 /// What the question says when the agent gave no reason of its own.
 const NO_REASON: &str = "May I use this item from your vault here?";
+
+/// What an agent is told when its person is asked first about a field of a page: nothing was
+/// filled, and their allow fills nothing by itself.
+const ASKED_PAGE: &str = "Your person is asked in the conversation whether you may fill this \
+     vault item into this site's page. Nothing was filled yet, and their answer fills nothing by \
+     itself: tell them it waits for their answer, and make this call again once they allowed it.";
 
 /// Where a turn's question is put, and for which turn: kept with the ask,
 /// so the server finds its way back after a restart.
@@ -130,6 +149,11 @@ impl TurnUses {
         };
         let mut offered = agents.workspaces.uses_offered(&hosted).await;
         offered.extend(agents.workspaces.calls_offered(&hosted).await);
+        // A page's field is offered where this server places Browser windows, to a turn the
+        // entry would not refuse before the vault is opened.
+        if agents.browsers.is_some() && agents.workspaces.may_fill_pages(&hosted).await.is_ok() {
+            offered.push(person_vault::fill_row());
+        }
         Arc::new(Self {
             agents: agents.clone(),
             workspace: reply.workspace.clone(),
@@ -187,6 +211,108 @@ impl TurnUses {
             invocation,
             error: asked(words),
         })
+    }
+
+    /// Have the field `request` names filled, in the page of this workspace's Browser window,
+    /// from the vault item it names, as `caller`: how the fill ended, as the window said it,
+    /// or the refusal. The window says which site its page is at, and [`Self::release`]
+    /// decides for that site.
+    async fn fill_page(
+        self: &Arc<Self>,
+        caller: &Caller,
+        request: &InvokeRequest,
+    ) -> Result<InvocationUpdate, ActionCallError> {
+        let Some(browsers) = self.agents.browsers.clone() else {
+            return Err(ActionCallError::Refused {
+                reason: "This server keeps no Browser window, so it fills no page".to_owned(),
+            });
+        };
+        let wanted: Option<FillField> = match &request.argument {
+            InvokeArgument::Json(arguments) => {
+                serde_json::from_value(Value::Object(arguments.clone())).ok()
+            }
+            _ => None,
+        };
+        let Some(wanted) = wanted else {
+            return Err(ActionCallError::InvalidRequest {
+                reason: "a field to fill names its element in the page's outline and the vault \
+                         item to fill it from"
+                    .to_owned(),
+            });
+        };
+        // Refused before any window is asked, as before the vault is opened.
+        let narrowed = narrowing(&self.agent, &self.workspace);
+        let hosted = HostedTurn {
+            workspace: self.workspace_id,
+            caller,
+            keeper: &self.agent.keeper,
+            bound: narrowed.as_deref(),
+        };
+        self.agents.workspaces.may_fill_pages(&hosted).await?;
+        let invocation = request.invocation;
+        let fill = TurnFill {
+            invocation,
+            element: wanted.element.clone(),
+            item: wanted.item.to_string(),
+            reason: wanted.reason.trim().to_owned(),
+        };
+        let (this, by) = (Arc::clone(self), caller.clone());
+        let releasing: Releasing = Box::new(move |origin| {
+            let decided: Pin<Box<dyn Future<Output = Release> + Send>> =
+                Box::pin(async move { this.release(&by, invocation, wanted, origin).await });
+            decided
+        });
+        browsers
+            .fill_for_turn(self.workspace_id, fill, releasing)
+            .await
+    }
+
+    /// Decide the fill `invocation` of what `wanted` names, for the site `origin` its window
+    /// says its page is at, as `caller`: the entry releases the item's text for that site, asks
+    /// its person first, or refuses. A released text is handed on once, to be sealed to the
+    /// window, and nothing else here holds it.
+    async fn release(
+        &self,
+        caller: &Caller,
+        invocation: InvocationId,
+        wanted: FillField,
+        origin: String,
+    ) -> Release {
+        let narrowed = narrowing(&self.agent, &self.workspace);
+        let hosted = HostedTurn {
+            workspace: self.workspace_id,
+            caller,
+            keeper: &self.agent.keeper,
+            bound: narrowed.as_deref(),
+        };
+        let fill = FillPage {
+            site: origin,
+            item: wanted.item,
+            reason: wanted.reason.trim().to_owned(),
+        };
+        let workspaces = &self.agents.workspaces;
+        let released = workspaces
+            .release_for_turn(&hosted, &fill, invocation, asked_in(caller))
+            .await;
+        match released {
+            Ok(TurnRelease::Released(text)) => Release::Text {
+                text: Zeroizing::new(text.text().to_owned()),
+                into: text.field().as_str(),
+            },
+            Ok(TurnRelease::Waits) => Release::Asked(ASKED_PAGE.to_owned()),
+            Ok(TurnRelease::Asks(open)) => match self.put(caller, &open).await {
+                Ok(()) => Release::Asked(ASKED_PAGE.to_owned()),
+                Err(why) => {
+                    workspaces.use_not_asked(&open);
+                    Release::Refused(format!(
+                        "Your person could not be asked whether you may use this vault item \
+                         ({why}), so nothing was filled."
+                    ))
+                }
+            },
+            Err(ActionCallError::Refused { reason }) => Release::Refused(reason),
+            Err(error) => Release::Refused(error.to_string()),
+        }
     }
 
     /// Put the question about `open` to the person, in the conversation
@@ -295,7 +421,12 @@ impl TurnProvider for TurnUses {
     /// A turn's caller changes when its person writes again while it works,
     /// so the use is taken as the caller of the tool call that asked for it.
     fn invoke(self: Arc<Self>, caller: Caller, request: InvokeRequest) -> Ending {
-        Box::pin(async move { self.take(&caller, &request).await })
+        Box::pin(async move {
+            if request.target == person_vault::page_target() {
+                return self.fill_page(&caller, &request).await;
+            }
+            self.take(&caller, &request).await
+        })
     }
 }
 

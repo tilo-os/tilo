@@ -541,6 +541,48 @@ pub fn page_use() -> Option<crate::ActionDescriptor> {
     .action
 }
 
+/// What a turn names when it asks for a field of the page in its workspace's Browser window
+/// to be filled ([`FILL_PAGE`], as [`fill_row`] offers it): the field, the item and why. The
+/// site is not the turn's to name: the window's engine says where its page is.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct FillField {
+    /// The field, by its reference in the page's outline.
+    pub element: String,
+    /// The item, by its reference.
+    pub item: ItemRef,
+    /// Why whoever asks says it needs the item; empty when it gave none.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub reason: String,
+}
+
+/// [`FILL_PAGE`] as a turn is offered it by whoever can hand the fill to its workspace's
+/// Browser window: the turn names the field and the item, and the window names the site.
+#[must_use]
+pub fn fill_row() -> CatalogueRow {
+    use crate::{ActionParam, ParamType};
+    use_row(
+        (PROVIDER, RESOURCE, "Vault"),
+        (FILL_PAGE, "Fill page field from vault"),
+        format!(
+            "Fill a field of the page in this workspace's Browser window from an item your \
+             person's vault keeps for that page's site: a login's password, a code generator's \
+             code of this moment, or a kept value. You name the field as the page's outline \
+             names it and the item by its reference, and you never hold what the item keeps. \
+             {ASKED_FIRST}"
+        ),
+        vec![
+            ActionParam::required(
+                "element",
+                ParamType::Text,
+                "The field, by its reference in the page's outline.",
+            ),
+            item_param("item", REFERENCE),
+            ActionParam::optional("reason", ParamType::Text, REASON),
+        ],
+    )
+}
+
 /// The word a leave names the use `target` by
 /// ([`AlwaysUse::using`]): its provider and its action.
 #[must_use]
@@ -1036,5 +1078,31 @@ mod tests {
         .unwrap();
         assert_eq!(fill.site, "https://example.test");
         assert!(fill.reason.is_empty());
+    }
+
+    /// What a turn is offered names the field and the item by reference, and never the site:
+    /// where the page is, is its window's to say.
+    #[test]
+    fn a_turn_names_the_field_and_the_item_and_never_the_site() {
+        let row = fill_row();
+        assert_eq!(row.provider, PROVIDER);
+        let offered = row.action.expect("the row offers the fill");
+        assert_eq!(offered.address, page_target().address);
+        assert_eq!(offered.params.len(), 3);
+        assert!(offered.params.iter().any(takes_item));
+        let item = format!("vault.item:{}", "0".repeat(32));
+        let named: FillField =
+            serde_json::from_value(serde_json::json!({"element": "d1e5", "item": item})).unwrap();
+        assert_eq!(named.element, "d1e5");
+        assert!(named.reason.is_empty());
+        assert!(
+            serde_json::from_value::<FillField>(serde_json::json!({
+                "element": "d1e5",
+                "item": item,
+                "site": "https://example.test",
+            }))
+            .is_err(),
+            "a turn that names a site is not read"
+        );
     }
 }
