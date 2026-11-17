@@ -263,6 +263,18 @@ pub(crate) trait ResourceApi {
     /// Increases whenever what the record holds changed, read now.
     fn revision(&self) -> u64;
     fn publish(&self) -> tilo_actions::ResourceSpec;
+    /// [`Self::publish`] without its children: the record's own kind and actions, what a table
+    /// of its actions reads.
+    fn publish_head(&self) -> tilo_actions::ResourceSpec {
+        let mut head = self.publish();
+        head.children = Vec::new();
+        head
+    }
+    /// [`Self::publish`] as a shared tree, which a record whose items change a few at a time
+    /// (a chain of parts) builds again only where they changed.
+    fn publish_shared(&self) -> ui_core::published::SharedResource {
+        ui_core::published::SharedResource::from_resource(self.publish())
+    }
     /// What search finds in the record beside the app's own: none unless the
     /// record holds what the window's search lists (a chain's items).
     fn search(&self) -> Vec<tilo_resource::SearchEntry> {
@@ -771,7 +783,7 @@ fn resource_actions<P: Resource>(
     alive: std::rc::Weak<()>,
     api: Rc<dyn ResourceApi>,
 ) -> Actions<P> {
-    let actions = Actions::new(app, Rc::new(api.publish())).routed_to(
+    let actions = Actions::new(app, Rc::new(api.publish_head())).routed_to(
         api.id(),
         api.editable(),
         storage.kept_provider(api.id()),
@@ -791,7 +803,7 @@ fn follow_publication(
     storage.follow_with(alive, move || {
         let revision = api.revision();
         if followed.replace(revision) != revision {
-            table.update(api.publish());
+            table.update(api.publish_head());
         }
     });
 }

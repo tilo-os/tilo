@@ -2245,6 +2245,7 @@ impl RootPublishes for ResourceRoot {
     ) -> Vec<ResourceSpec> {
         // What surfaces bind to where someone is, they bind to this
         // member's view.
+        let _profile = tilo_resource::profiling::Phase::start("framework.resources_for");
         let _viewer = member
             .cloned()
             .map(ui_core::invocation_scope::ViewerScope::enter);
@@ -2313,6 +2314,7 @@ impl RootPublishes for ResourceRoot {
         doc: &AutoCommit,
         id: &str,
     ) -> Option<ResourceSpec> {
+        let _profile = tilo_resource::profiling::Phase::start("framework.resource_for");
         let _viewer = member
             .cloned()
             .map(ui_core::invocation_scope::ViewerScope::enter);

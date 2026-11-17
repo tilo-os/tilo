@@ -451,6 +451,24 @@ pub struct VirtualList<M: ListModel> {
 }
 
 impl<M: ListModel> VirtualList<M> {
+    /// Take what the model says changed since it was last asked, and follow it. Whether
+    /// anything did.
+    fn take_model_changes(&mut self) -> bool {
+        let legacy_wakeup = self.model.poll_changed();
+        if legacy_wakeup {
+            self.notify_model_changed();
+        }
+        let model_changes = self.model.poll_changes();
+        let received_changes = !model_changes.is_empty();
+        if received_changes {
+            self.notify_model_changes(&model_changes);
+        }
+        if legacy_wakeup || received_changes {
+            self.open_held();
+        }
+        legacy_wakeup || received_changes
+    }
+
     pub fn new(
         model: M,
         estimated_row_height: f32,
@@ -1552,6 +1570,9 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
     }
 
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
+        // A model that follows the app's state has its changes in the pass that changed it:
+        // taken here, the rows it moved are placed in this frame, not the next.
+        self.take_model_changes();
         let scrolled_only = !self.structure_dirty
             && !self.request_dirty
             && !self.mounted_covers(&self.rows_to_hold());
@@ -1571,19 +1592,7 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
             .map_or(crate::time::Duration::ZERO, |last| {
                 now.saturating_duration_since(last)
             });
-        let legacy_wakeup = self.model.poll_changed();
-        if legacy_wakeup {
-            self.notify_model_changed();
-        }
-        let model_changes = self.model.poll_changes();
-        let received_changes = !model_changes.is_empty();
-        if received_changes {
-            self.notify_model_changes(&model_changes);
-        }
-        if legacy_wakeup || received_changes {
-            self.open_held();
-        }
-        let mut changed = legacy_wakeup || received_changes;
+        let mut changed = self.take_model_changes();
         changed |= self.take_retry();
         let offset = self.viewport.offset();
         if self.scroll.momentum.is_active() {

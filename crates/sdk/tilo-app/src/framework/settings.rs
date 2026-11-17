@@ -482,6 +482,41 @@ impl ViewStorage {
         resources
     }
 
+    /// [`Self::resource_resources`] as shared trees: a chain's items are the nodes its last
+    /// publication carried wherever its parts are unchanged.
+    pub(crate) fn resource_resources_shared(&self) -> Vec<ui_core::published::SharedResource> {
+        let kept_by = self.kept_by.borrow();
+        let owned = |mut resource: tilo_actions::ResourceSpec| {
+            if let Some(provider) = kept_by.get(resource.id.as_str()) {
+                run_by(&mut resource, provider);
+            }
+            ui_core::published::SharedResource::from_resource(resource)
+        };
+        let mut resources: Vec<ui_core::published::SharedResource> = self
+            .person
+            .as_ref()
+            .map(super::person::PersonState::resources)
+            .unwrap_or_default()
+            .into_iter()
+            .map(owned)
+            .collect();
+        resources.extend(
+            self.section_apis
+                .borrow()
+                .iter()
+                .map(|api| owned(api.publish())),
+        );
+        resources.extend(self.chains.apis().iter().map(|api| {
+            // A chain run by another provider names it on every action, so it is built whole.
+            if kept_by.contains_key(api.id()) {
+                owned(api.publish())
+            } else {
+                api.publish_shared()
+            }
+        }));
+        resources
+    }
+
     /// Mark the record `id` as kept by `provider`
     /// ([`Resources::kept_by`](super::Resources::kept_by)).
     pub(crate) fn keep_by(&self, id: &str, provider: &'static str) {

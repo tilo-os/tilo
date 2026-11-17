@@ -16,6 +16,7 @@ use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::Rhythm;
 use crate::widget::DrawChild;
+use crate::widget::virtual_list::ListModel as _;
 use crate::widget::{CardWidth, Column, Container, Element, EventCtx, Row, Scrollable, Widget};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -30,6 +31,18 @@ struct ListKeys {
     key: String,
     cards: Vec<String>,
     heading: bool,
+    /// The list's cards are a list that builds only the cards in view
+    /// ([`Board::long_list`]), not a column holding every one.
+    listed: bool,
+}
+
+/// The cards of a list that builds them as they come into view: each card's key, and the
+/// list over them.
+type ListedCards = super::VirtualList<super::VecListModel<String, String>>;
+
+/// How tall a card is taken to be until it is laid out: a title row and a row of details.
+fn card_estimate() -> f32 {
+    crate::tokens::Metrics::BASE.panel_row_height * 2.0
 }
 
 struct Drag {
@@ -115,6 +128,46 @@ impl Board {
         self
     }
 
+    /// Add a list keyed `key` whose cards, named by `cards` in order, are built by `build` only
+    /// as they come into view: a list of thousands of cards builds and lays out the few its pane
+    /// shows, and the rest as the list scrolls to them. Otherwise as [`Self::list`].
+    #[must_use]
+    pub fn long_list(
+        mut self,
+        key: impl Into<String>,
+        header: Option<Element>,
+        cards: Vec<String>,
+        build: impl Fn(&str) -> Element + 'static,
+        foot: Option<Element>,
+    ) -> Self {
+        // Keys name cards once; a key given twice keeps its first place.
+        let mut seen = std::collections::HashSet::new();
+        let cards: Vec<String> = cards
+            .into_iter()
+            .filter(|card| seen.insert(card.clone()))
+            .collect();
+        let model = super::VecListModel::new(cards.clone(), Clone::clone)
+            .unwrap_or_else(|_| super::VecListModel::empty());
+        let list = ListedCards::new(model, card_estimate(), move |_, _, key| {
+            // The gap a column of cards keeps between them, under each card.
+            Box::new(
+                Column::new()
+                    .with_no_padding()
+                    .with_intrinsic_height()
+                    .with_rhythm(Rhythm::Sibling)
+                    .push(build(key))
+                    .push(Box::new(super::Spacer::token(
+                        crate::tokens::SpacingStep::S0,
+                    ))),
+            ) as Element
+        })
+        .flush()
+        .reading()
+        .fitting_rows();
+        self.push_list_body(key, header, Box::new(list), cards, true, foot);
+        self
+    }
+
     pub(crate) fn push_list(
         &mut self,
         key: impl Into<String>,
@@ -131,13 +184,25 @@ impl Board {
             keys.push(card);
             cards_column = cards_column.push(widget);
         }
+        self.push_list_body(key, header, Box::new(cards_column), keys, false, foot);
+    }
+
+    fn push_list_body(
+        &mut self,
+        key: impl Into<String>,
+        header: Option<Element>,
+        body: Element,
+        keys: Vec<String>,
+        listed: bool,
+        foot: Option<Element>,
+    ) {
         // The cards fill the list under its header and scroll there when they
         // outgrow it, so the header (and what it offers) always stays in
         // reach and a list holding more cards than the pane shows scrolls
         // instead of losing them.
         let scrolling = Scrollable::new_vertical()
             .fit_content_height()
-            .with_child(Box::new(cards_column));
+            .with_child(body);
         let heading = header.is_some();
         let mut stack = Column::new().with_no_padding().with_rhythm(Rhythm::Related);
         if let Some(header) = header {
@@ -158,6 +223,7 @@ impl Board {
             key: key.into(),
             cards: keys,
             heading,
+            listed,
         });
     }
 
@@ -273,6 +339,23 @@ impl Board {
         let Some(cards) = scrolled.first() else {
             return Vec::new();
         };
+        if keys.listed {
+            let Some(list) = cards
+                .as_any()
+                .and_then(|any| any.downcast_ref::<ListedCards>())
+            else {
+                return Vec::new();
+            };
+            return list
+                .mounted_rows()
+                .filter_map(|index| {
+                    let key = list.model().key_at(index)?;
+                    let rect = list.row_rect(&key)?;
+                    Some((key, rect))
+                })
+                .filter(|(_, card)| card.intersect(band).area() > 0.0)
+                .collect();
+        }
         cards
             .children()
             .iter()
@@ -718,6 +801,8 @@ mod tests {
     #![allow(
         clippy::unwrap_used,
         clippy::expect_used,
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
         reason = "in a test these are the assertion"
     )]
 
@@ -842,6 +927,93 @@ mod tests {
                 "a wider pane leaves its extra area open beside the lists: {rects:?} in {board:?}"
             );
         }
+    }
+
+    /// A board whose lists build their cards as they come into view, counting every card built.
+    fn listed(cards: usize, built: &Rc<std::cell::Cell<usize>>) -> Board {
+        let mut board = Board::new();
+        for list in ["todo", "done"] {
+            let keys: Vec<String> = (0..cards).map(|index| format!("{list}-{index}")).collect();
+            let counted = Rc::clone(built);
+            board = board.long_list(
+                list,
+                Some(Box::new(Text::new(list)) as Element),
+                keys,
+                move |_| {
+                    counted.set(counted.get() + 1);
+                    card()
+                },
+                None,
+            );
+        }
+        board
+    }
+
+    #[test]
+    fn a_list_of_ten_thousand_cards_builds_the_few_it_shows_and_more_as_it_scrolls() {
+        let built = Rc::new(std::cell::Cell::new(0));
+        let mut host = harness(listed(10_000, &built));
+        // Before its first layout a list holds the cards of a tall screen; then the nine or so
+        // 60 tall cards its 600 tall pane shows, with a margin either side. However long it is.
+        let tall_screen = (crate::virtual_viewport::UNPLACED_VIEWPORT / f64::from(card_estimate()))
+            .ceil() as usize;
+        let opened = built.get();
+        assert!(
+            opened <= 2 * (tall_screen + 3 * 10 + 16),
+            "two lists of 10,000 cards built {opened} of them as the board opened"
+        );
+        let shown = host.root::<Board>().card_rects(0);
+        assert!(
+            (5..=12).contains(&shown.len()),
+            "the list shows the cards its height fits: {}",
+            shown.len()
+        );
+        let list = host.root::<Board>().list_rects()[0];
+        host.send(&crate::synthetic_input::cursor_moved(
+            list.center().x,
+            list.center().y,
+        ));
+        for _ in 0..20 {
+            let before = built.get();
+            host.scroll(0.0, -10.0);
+            let _ = host.poll_frame();
+            assert!(
+                built.get() - before <= 40,
+                "a step of the list's scroll built {} cards",
+                built.get() - before
+            );
+        }
+        let shown = host.root::<Board>().shown_cards(0);
+        let keys: Vec<&str> = shown.iter().map(|(key, _)| key.as_str()).collect();
+        assert!(
+            (5..=12).contains(&shown.len()),
+            "scrolled, the list shows the cards its height fits: {keys:?}"
+        );
+        assert!(
+            !keys.contains(&"todo-0"),
+            "scrolled, the list shows cards further down: {keys:?}"
+        );
+    }
+
+    #[test]
+    fn a_card_dragged_between_long_lists_drops_before_the_card_under_it() {
+        let built = Rc::new(std::cell::Cell::new(0));
+        let drops = Rc::new(RefCell::new(Vec::new()));
+        let sink = Rc::clone(&drops);
+        let board = listed(3, &built).on_drop(move |drop| sink.borrow_mut().push(drop));
+        let mut host = harness(board);
+        let root = host.root::<Board>();
+        let a = root.card_rects(0)[0];
+        let c = root.card_rects(1)[0];
+        host.drag_at((a.center().x, a.center().y), (c.center().x, c.y0 + 5.0));
+        assert_eq!(
+            drops.borrow().as_slice(),
+            [BoardDrop {
+                card: "todo-0".into(),
+                list: "done".into(),
+                before: Some("done-0".into()),
+            }]
+        );
     }
 
     #[test]

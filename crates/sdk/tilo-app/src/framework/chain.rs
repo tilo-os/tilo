@@ -321,7 +321,48 @@ pub type Parts<P> = Rc<[(u64, Rc<<P as Resource>::State>)]>;
 
 /// What each held part published, by its number: the state and language it
 /// was built from, and the publication.
-type PartsPublished = BTreeMap<u64, (Rc<dyn Any>, u64, tilo_actions::ResourceSpec)>;
+type PartsPublished = BTreeMap<u64, (Rc<dyn Any>, u64, Rc<PartPublished>)>;
+
+/// What one part publishes as the chain carries it: the part's own resource without its items,
+/// and its items, each routed to the chain and offering the chain's reads and opener, shared
+/// from one version of the chain's publication to the next while the part is unchanged.
+struct PartPublished {
+    head: tilo_actions::ResourceSpec,
+    items: Vec<ui_core::published::SharedResource>,
+}
+
+/// The items of every part before the newest, newest first, each id once: gathered again only
+/// when one of those parts changed, not when the newest one takes another item.
+struct EarlierItems {
+    parts: Vec<Rc<PartPublished>>,
+    items: Vec<ui_core::published::SharedResource>,
+    ids: std::collections::HashSet<String>,
+}
+
+impl EarlierItems {
+    fn of(parts: Vec<Rc<PartPublished>>) -> Self {
+        let mut ids = std::collections::HashSet::new();
+        let mut items = Vec::new();
+        for part in &parts {
+            items.extend(
+                part.items
+                    .iter()
+                    .filter(|item| ids.insert(item.id().to_owned()))
+                    .cloned(),
+            );
+        }
+        Self { parts, items, ids }
+    }
+
+    fn holds(&self, parts: &[Rc<PartPublished>]) -> bool {
+        self.parts.len() == parts.len()
+            && self
+                .parts
+                .iter()
+                .zip(parts)
+                .all(|(kept, part)| Rc::ptr_eq(kept, part))
+    }
+}
 
 /// What search found in each held part, by its number, with the state it was
 /// read from.
@@ -338,7 +379,7 @@ pub(crate) struct ChainState<P: Chained> {
     /// What a part holds before anything was written to it: what the chain
     /// publishes before it has a head.
     empty: Rc<P::State>,
-    published: RefCell<Option<((u64, u64), tilo_actions::ResourceSpec)>>,
+    published: RefCell<Option<((u64, u64), ui_core::published::SharedResource)>>,
     /// The parts held, as view state that follows every change
     /// ([`Chain::state`]), and the revision it was last written at.
     state: ui_core::LocalState<Parts<P>>,
@@ -374,6 +415,8 @@ pub(crate) struct ChainCore {
     waiting: RefCell<BTreeMap<u64, PartArrival>>,
     revision: Cell<u64>,
     part_published: RefCell<PartsPublished>,
+    /// The items of the parts before the newest, as last gathered ([`EarlierItems`]).
+    earlier: RefCell<Option<EarlierItems>>,
     part_search: RefCell<PartsSearched>,
     /// The store's [`ResourceStore::kept_revision`] when the window last
     /// looked for a newer head and at the parts it waits for.
@@ -565,18 +608,59 @@ impl ChainCore {
         state: Rc<dyn Any>,
         language: u64,
         publish: &dyn Fn() -> tilo_actions::ResourceSpec,
-    ) -> tilo_actions::ResourceSpec {
+        table: Option<&'static tilo_resource::table::ModelTable>,
+    ) -> Rc<PartPublished> {
         if let Some((kept, at, published)) = self.part_published.borrow().get(&index)
             && Rc::ptr_eq(kept, &state)
             && *at == language
         {
-            return published.clone();
+            return Rc::clone(published);
         }
-        let published = publish();
+        let mut head = publish();
+        let items = std::mem::take(&mut head.children)
+            .into_iter()
+            .map(|child| {
+                ui_core::published::SharedResource::from_resource(
+                    self.carried_item(route_at(child, &self.id, true), table),
+                )
+            })
+            .collect();
+        let published = Rc::new(PartPublished { head, items });
         self.part_published
             .borrow_mut()
-            .insert(index, (state, language, published.clone()));
+            .insert(index, (state, language, Rc::clone(&published)));
         published
+    }
+
+    /// `child`, an item routed to the chain, offering the chain's read of it and its opener.
+    fn carried_item(
+        &self,
+        mut child: tilo_actions::ResourceSpec,
+        table: Option<&'static tilo_resource::table::ModelTable>,
+    ) -> tilo_actions::ResourceSpec {
+        let item = child.id.as_str().to_owned();
+        if tilo_resource::items::item_of_resource_in(self.part.kind, &item).is_none() {
+            return child;
+        }
+        // What the chain holds, read newest part first and paged, and each
+        // item read from the part keeping it ([`Self::read`]): a device holds
+        // a chat's head, and what a caller wants of a chat is its messages,
+        // not the part they were written into.
+        if !child.actions.iter().any(|spec| spec.id == "read") {
+            child
+                .actions
+                .push(read_spec(self.part.label, &self.id, Some(&item)));
+        }
+        // What an item holds as a resource of its own (a rich-text
+        // body) is read through the same read, from the part keeping it.
+        if let Some(table) = table {
+            offer_nested_reads(&mut child.children, table, &self.part, &self.id);
+        }
+        // Shown where the app's window shows it, as its search hit
+        // opens it (the window's openers answer the item's address), and
+        // named by a link of its own, as an item of the record is.
+        super::root::offer_item(&mut child);
+        child
     }
 
     /// What search finds in part `index`, read as `state` (`search`): built
@@ -651,64 +735,68 @@ impl ChainCore {
     }
 
     /// The chain as it is published, from what its head published
-    /// (`resource`), its earlier parts, newest first (`earlier`), and the
+    /// (`head`), its earlier parts, newest first (`earlier`), and the
     /// places the app derives from them (`places`): their items, each
     /// carried out through [`CHAIN_ACTION_TYPE`] on the part it changes, and
-    /// the chain's read.
+    /// the chain's read. Each part's items are the very nodes the last
+    /// version carried while that part is unchanged, so a change to one part
+    /// publishes that part's items anew and only points at the others'.
     fn publish(
         &self,
-        mut resource: tilo_actions::ResourceSpec,
-        earlier: Vec<tilo_actions::ResourceSpec>,
+        head: &PartPublished,
+        earlier: Vec<Rc<PartPublished>>,
         places: Vec<tilo_actions::ResourceSpec>,
+        hidden: &std::collections::HashSet<String>,
         table: Option<&'static tilo_resource::table::ModelTable>,
-    ) -> tilo_actions::ResourceSpec {
-        let mut seen: std::collections::HashSet<tilo_actions::ResourceId> = resource
-            .children
-            .iter()
-            .map(|child| child.id.clone())
-            .collect();
-        for earlier in earlier {
-            resource.children.extend(
+    ) -> ui_core::published::SharedResource {
+        let _profile = tilo_resource::profiling::Phase::start("framework.chain_publish");
+        let mut kept = self.earlier.borrow_mut();
+        if !kept.as_ref().is_some_and(|kept| kept.holds(&earlier)) {
+            *kept = Some(EarlierItems::of(earlier));
+        }
+        let (earlier, earlier_ids) = kept.as_ref().map_or((&[][..], None), |kept| {
+            (kept.items.as_slice(), Some(&kept.ids))
+        });
+        let mut items = Vec::with_capacity(
+            head.items
+                .len()
+                .saturating_add(earlier.len())
+                .saturating_add(places.len()),
+        );
+        let mut own: std::collections::HashSet<String> = std::collections::HashSet::new();
+        items.extend(
+            head.items
+                .iter()
+                .filter(|item| own.insert(item.id().to_owned()))
+                .cloned(),
+        );
+        // An earlier part's item the newest part claims too is the newest part's.
+        if earlier_ids.is_some_and(|ids| own.iter().any(|id| ids.contains(id))) {
+            items.extend(
                 earlier
-                    .children
-                    .into_iter()
-                    .filter(|child| seen.insert(child.id.clone())),
+                    .iter()
+                    .filter(|item| !own.contains(item.id()))
+                    .cloned(),
             );
+        } else {
+            items.extend(earlier.iter().cloned());
         }
         for place in places {
-            if seen.insert(place.id.clone()) {
-                resource.children.push(place);
+            let id = place.id.as_str();
+            if own.contains(id) || earlier_ids.is_some_and(|ids| ids.contains(id)) {
+                continue;
             }
+            own.insert(id.to_owned());
+            items.push(ui_core::published::SharedResource::from_resource(
+                self.carried_item(route_at(place, &self.id, true), table),
+            ));
         }
-        let mut published = route(resource, &self.id);
-        // What the chain holds, read newest part first and paged, and each
-        // item read from the part keeping it ([`Self::read`]): a device holds
-        // a chat's head, and what a caller wants of a chat is its messages,
-        // not the part they were written into.
+        drop(kept);
+        let mut published = route(head.head.clone(), &self.id);
         published
             .actions
             .push(read_spec(self.part.label, &self.id, None));
-        for child in &mut published.children {
-            let item = child.id.as_str().to_owned();
-            if tilo_resource::items::item_of_resource_in(self.part.kind, &item).is_none() {
-                continue;
-            }
-            if !child.actions.iter().any(|spec| spec.id == "read") {
-                child
-                    .actions
-                    .push(read_spec(self.part.label, &self.id, Some(&item)));
-            }
-            // What an item holds as a resource of its own (a rich-text
-            // body) is read through the same read, from the part keeping it.
-            if let Some(table) = table {
-                offer_nested_reads(&mut child.children, table, &self.part, &self.id);
-            }
-            // Shown where the app's window shows it, as its search hit
-            // opens it (the window's openers answer the item's address), and
-            // named by a link of its own, as an item of the record is.
-            super::root::offer_item(child);
-        }
-        let own: std::collections::HashSet<String> = published
+        let named: std::collections::HashSet<String> = published
             .actions
             .iter()
             .map(|spec| spec.id.clone())
@@ -716,10 +804,16 @@ impl ChainCore {
         published.actions.extend(
             super::history::part_edit_specs()
                 .into_iter()
-                .filter(|spec| !own.contains(&spec.id))
+                .filter(|spec| !named.contains(&spec.id))
                 .map(|spec| super::resources::route_operation(spec, CHAIN_ACTION_TYPE, &self.id)),
         );
-        published
+        if !hidden.is_empty() {
+            items.retain(|item| !hidden.contains(item.id()));
+        }
+        ui_core::published::SharedResource::new(
+            published,
+            ui_core::published::SharedChildren::new(items),
+        )
     }
 
     /// Answer the read the chain publishes ([`read_spec`]) from the parts this
@@ -923,6 +1017,7 @@ impl ChainCore {
             waiting: RefCell::default(),
             revision: Cell::new(0),
             part_published: RefCell::default(),
+            earlier: RefCell::new(None),
             part_search: RefCell::default(),
             looked: Cell::new(None),
             waiting_resource: unsent_checkout(&workspace.me),
@@ -1950,6 +2045,16 @@ impl<P: Chained> ChainState<P> {
     /// part it changes; checked against the member's roles in the workspace
     /// as the app's own actions are.
     pub(crate) fn publish(&self) -> tilo_actions::ResourceSpec {
+        self.publish_shared().to_resource()
+    }
+
+    /// [`Self::publish`] without its items: what a table of the chain's own actions reads.
+    pub(crate) fn publish_head(&self) -> tilo_actions::ResourceSpec {
+        self.publish_shared().head().clone()
+    }
+
+    /// [`Self::publish`] as a shared tree ([`ChainCore::publish`]).
+    pub(crate) fn publish_shared(&self) -> ui_core::published::SharedResource {
         let revision = (self.revision(), ui_core::i18n::I18nManager::revision());
         if let Some((at, published)) = self.published.borrow().as_ref()
             && *at == revision
@@ -1957,11 +2062,14 @@ impl<P: Chained> ChainState<P> {
             return published.clone();
         }
         let parts = self.parts();
-        let resource = match parts.last() {
+        let newest = match parts.last() {
             Some((index, head)) => self.part_published(*index, head, revision.1),
-            None => tilo_resource::publish::<P>(&self.core.id, P::LABEL, &self.empty),
+            None => Rc::new(PartPublished {
+                head: tilo_resource::publish::<P>(&self.core.id, P::LABEL, &self.empty),
+                items: Vec::new(),
+            }),
         };
-        let earlier: Vec<tilo_actions::ResourceSpec> = parts
+        let earlier: Vec<Rc<PartPublished>> = parts
             .iter()
             .rev()
             .skip(1)
@@ -1973,15 +2081,14 @@ impl<P: Chained> ChainState<P> {
             .to_resources();
         let held: Vec<u64> = parts.iter().map(|(index, _)| *index).collect();
         self.core.forget_unheld(&held);
-        let mut published = self
-            .core
-            .publish(resource, earlier, places, P::RESOURCE_TABLE);
-        let hidden = P::hidden(&parts);
-        if !hidden.is_empty() {
-            published
-                .children
-                .retain(|child| !hidden.contains(child.id.as_str()));
-        }
+        // What the chain does not show (`Chained::hidden`) is left out of what it publishes.
+        let published = self.core.publish(
+            &newest,
+            earlier,
+            places,
+            &P::hidden(&parts),
+            P::RESOURCE_TABLE,
+        );
         *self.published.borrow_mut() = Some((revision, published.clone()));
         published
     }
@@ -2015,16 +2122,14 @@ impl<P: Chained> ChainState<P> {
     }
 
     /// [`ChainCore::part_published`] of part `index`, read as `state`.
-    fn part_published(
-        &self,
-        index: u64,
-        state: &Rc<P::State>,
-        language: u64,
-    ) -> tilo_actions::ResourceSpec {
-        self.core
-            .part_published(index, Rc::clone(state) as Rc<dyn Any>, language, &|| {
-                tilo_resource::publish::<P>(&self.core.id, P::LABEL, state)
-            })
+    fn part_published(&self, index: u64, state: &Rc<P::State>, language: u64) -> Rc<PartPublished> {
+        self.core.part_published(
+            index,
+            Rc::clone(state) as Rc<dyn Any>,
+            language,
+            &|| tilo_resource::publish::<P>(&self.core.id, P::LABEL, state),
+            P::RESOURCE_TABLE,
+        )
     }
 
     /// [`ChainCore::read`] of the parts held, without the items the chain
@@ -2118,6 +2223,14 @@ impl<P: Chained> ResourceApi for ChainState<P> {
 
     fn publish(&self) -> tilo_actions::ResourceSpec {
         ChainState::publish(self)
+    }
+
+    fn publish_head(&self) -> tilo_actions::ResourceSpec {
+        ChainState::publish_head(self)
+    }
+
+    fn publish_shared(&self) -> ui_core::published::SharedResource {
+        ChainState::publish_shared(self)
     }
 
     fn search(&self) -> Vec<tilo_resource::SearchEntry> {

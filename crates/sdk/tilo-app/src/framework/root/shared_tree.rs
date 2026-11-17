@@ -470,13 +470,24 @@ impl ResourceRoot {
                 .cloned()
                 .chain(
                     self.storage
-                        .resource_resources()
+                        .resource_resources_shared()
                         .into_iter()
-                        .map(|mut record| {
-                            if opens {
-                                offer_item_open(self.resource.opens_as_item, &mut record);
+                        .map(|record| {
+                            if !opens {
+                                return record;
                             }
-                            SharedResource::from_resource(record)
+                            // The opener is the record's own: its items stay the nodes they were.
+                            let mut head = record.head().clone();
+                            offer_item_open(self.resource.opens_as_item, &mut head);
+                            // It only ever adds: an opener, and the view it shows.
+                            let before = record.head();
+                            if head.actions.len() == before.actions.len()
+                                && head.views.len() == before.views.len()
+                            {
+                                record
+                            } else {
+                                SharedResource::new(head, record.children().clone())
+                            }
                         }),
                 )
                 .collect(),
