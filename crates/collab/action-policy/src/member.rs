@@ -280,6 +280,25 @@ impl Actor {
         }
     }
 
+    /// The actor whose changes a document names by `bytes` ([`Self::actor_bytes`]); `None` for
+    /// bytes no actor writes as.
+    #[must_use]
+    pub fn of_actor_bytes(bytes: &[u8]) -> Option<Self> {
+        let nonempty = |id: &[u8]| {
+            std::str::from_utf8(id)
+                .ok()
+                .filter(|id| !id.is_empty())
+                .map(str::to_owned)
+        };
+        if let Some(id) = bytes.strip_prefix(b"automation:") {
+            return nonempty(id).map(|id| Self::Automation(AutomationId(id)));
+        }
+        if let Some(app) = bytes.strip_prefix(b"app:") {
+            return nonempty(app).map(|app| Self::App(AppId::new(app)));
+        }
+        MemberId::of_actor_bytes(bytes).map(Self::Member)
+    }
+
     /// The id inside the actor: a member's, an automation's or an app's.
     #[must_use]
     pub fn id(&self) -> &str {

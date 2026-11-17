@@ -648,7 +648,6 @@ step-searching = Searching for { $what }
 # to a reader. A selection says that instead.
 presence-writing-here = { $name } is writing here
 presence-selecting-here = { $name } is selecting here
-member-unknown-agent = Unknown agent
 
 
 # Command palette chrome: footer key hints, result count and empty states.

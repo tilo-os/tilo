@@ -25,15 +25,6 @@ pub const UNKNOWN_AUTHOR_NAME: &str = "Unknown member";
 #[doc(hidden)]
 pub const SHORT_LEN: usize = 8;
 
-/// The namespace of the actor an application acts under (`app:so.tilo.notes`).
-pub const APP_NAMESPACE: &str = "app:";
-/// The namespace of the actor an agent acts under (`agent:scribe`).
-pub const AGENT_NAMESPACE: &str = "agent:";
-/// The namespace of the actor an installed bot acts under (`bot:status`).
-pub const BOT_NAMESPACE: &str = "bot:";
-/// The namespace of the actor a Shortcut's run acts under (`shortcut:morning`).
-pub const SHORTCUT_NAMESPACE: &str = "shortcut:";
-
 /// Where the words a reader names software by come from — a history row, a presence mark, a
 /// catch-up line: every surface that says who made a change.
 pub trait MemberNames {
@@ -56,28 +47,6 @@ pub trait MemberNames {
     fn agent(&self, name: &str) -> String {
         name_words(name)
     }
-}
-
-/// What the actor `id` is called to the person reading `names`: a person by their name, an app
-/// by its own name in their language, an agent by the name it goes by. The id itself is never
-/// shown, and never cut short: a reader who knows no name reads [`UNKNOWN_AUTHOR_NAME`].
-pub fn actor_name(id: &str, names: &dyn MemberNames) -> String {
-    let id = id.trim();
-    if let Some(app) = id.strip_prefix(APP_NAMESPACE) {
-        return names.app(app.trim());
-    }
-    if let Some(agent) = id.strip_prefix(AGENT_NAMESPACE) {
-        return names.agent(agent);
-    }
-    if let Some(bot) = id.strip_prefix(BOT_NAMESPACE) {
-        return names.person(bot).unwrap_or_else(|| name_words(bot));
-    }
-    if let Some(shortcut) = id.strip_prefix(SHORTCUT_NAMESPACE) {
-        return name_words(shortcut);
-    }
-    names
-        .person(id)
-        .unwrap_or_else(|| UNKNOWN_AUTHOR_NAME.to_owned())
 }
 
 /// The words a self-declared name is shown in: the name a person reads, its first letter
@@ -553,36 +522,9 @@ pub fn hue_to_rgb(hue_deg: f32) -> (u8, u8, u8) {
 mod tests {
     use super::*;
 
-    /// A reader whose words are the source language's, and who knows one person by name.
-    struct Reader;
-
-    impl MemberNames for Reader {
-        fn person(&self, id: &str) -> Option<String> {
-            (id == "ada").then(|| "Ada Lovelace".to_owned())
-        }
-    }
-
     tilo_test_env::scenario! {
-        /// Names read with no session's app names on this thread: neither case sets them.
-        fn actors_and_apps_are_named_in_words_never_by_an_id;
-
-        phase every_kind_of_actor_is_named_by_what_it_is_never_by_an_id;
-        {
-            assert_eq!(actor_name("ada", &Reader), "Ada Lovelace");
-            assert_eq!(
-                actor_name("9f2c1a34b7", &Reader),
-                UNKNOWN_AUTHOR_NAME,
-                "a person nobody named is never shown by their key"
-            );
-            assert_eq!(actor_name("agent:scribe", &Reader), "Scribe");
-            assert_eq!(actor_name("shortcut:morning", &Reader), "Morning");
-            assert_eq!(actor_name("bot:status", &Reader), "Status");
-            assert_eq!(
-                actor_name("app:so.tilo.lang.today", &Reader),
-                "Today",
-                "an app is its own name, whole: never its id, never part of one"
-            );
-        }
+        /// Names read with no session's app names on this thread.
+        fn apps_are_named_in_words_never_by_an_id;
 
         phase an_app_id_is_written_as_words_a_person_reads;
         {

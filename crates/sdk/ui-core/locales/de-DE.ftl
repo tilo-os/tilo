@@ -650,7 +650,6 @@ step-searching = Sucht nach { $what }
 # ist, für eine Vorlesehilfe gesagt. Bei einer Auswahl steht das stattdessen.
 presence-writing-here = { $name } schreibt hier
 presence-selecting-here = { $name } markiert hier
-member-unknown-agent = Unbekannter Agent
 
 
 # Befehlspalette: Tastenhinweise, Ergebniszahl und leere Zustände.
