@@ -675,18 +675,25 @@ impl Widget for Checkbox {
             };
         };
         let gap = LABEL_GAP;
+        // A labelled box stands at the row's leading edge, in line with the text above and below
+        // it; the whole row is its target.
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "the box is 18 logical pixels"
+        )]
+        let lead = BOX_EDGE as f32 + gap;
         let available_width = known_dimensions.width.or(match available_space.width {
             taffy::AvailableSpace::Definite(width) => Some(width),
-            taffy::AvailableSpace::MinContent => Some(target + gap),
+            taffy::AvailableSpace::MinContent => Some(lead),
             taffy::AvailableSpace::MaxContent => None,
         });
-        let label_limit = available_width.map(|width| (width - target - gap).max(0.0));
+        let label_limit = available_width.map(|width| (width - lead).max(0.0));
         let (label_width, label_height) =
             text_renderer.measure_style(&widget_text(label), label_limit, &self.label_style);
         let hugged = self.intrinsic.then(|| {
             let (natural, _) =
                 text_renderer.measure_style(&widget_text(label), None, &self.label_style);
-            let natural = target + gap + natural.ceil();
+            let natural = lead + natural.ceil();
             available_width.map_or(natural, |spare| natural.min(spare))
         });
         Size {
@@ -694,7 +701,7 @@ impl Widget for Checkbox {
                 .width
                 .or(hugged)
                 .or(available_width)
-                .unwrap_or(target + gap + label_width),
+                .unwrap_or(lead + label_width),
             height: known_dimensions
                 .height
                 .unwrap_or_else(|| label_height.max(target)),
@@ -725,10 +732,9 @@ impl Widget for Checkbox {
         self.motion
             .follow_input(marked, glyph, self.feel.over(theme.motion()), now);
         self.drawing = Some(self.painted_now());
-        let target = f64::from(self.control.interaction.minimum_target());
         let visual_center = if self.label.is_some() {
             Point::new(
-                self.control.rect.x0 + target / 2.0,
+                self.control.rect.x0 + BOX_EDGE / 2.0,
                 self.control.rect.center().y,
             )
         } else {
@@ -746,7 +752,7 @@ impl Widget for Checkbox {
         if let Some(label) = self.label.as_ref() {
             let label = widget_text(label);
             let gap = f64::from(LABEL_GAP);
-            let x = self.control.rect.x0 + target + gap;
+            let x = self.control.rect.x0 + BOX_EDGE + gap;
             let max_width = (self.control.rect.x1 - x).max(0.0);
             let style = self.label_style.clone();
             let (_, label_height) =

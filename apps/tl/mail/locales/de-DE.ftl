@@ -481,9 +481,13 @@ d-n2xgxnbw = Nachricht
     .w-attached = Angehängt: { $attachments }
 
 d-oqpazwvc = Schreiben
+    .w-status = Status
     .w-sending = Wird gesendet
     .w-it-goes-in-a-moment = Sie geht gleich raus.
     .w-undo-send = Senden rückgängig
+    .w-from = Von
+    .w-to = An
     .w-name-example-org = name@example.org
+    .w-cc = Cc
     .w-subject = Betreff
     .w-write-your-message = Schreib deine Nachricht

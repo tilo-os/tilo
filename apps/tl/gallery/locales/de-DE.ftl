@@ -102,8 +102,11 @@ d-yykr4gsy = Per E-Mail
 d-ueet4dqw = Wiederholend
     .doc = Ob er sich wiederholt.
 
-d-zyguwmk5 = Plätze
-    .doc = Wie viele hineinpassen.
+d-hje3rno5 = Gesperrt
+    .doc = Ob der Arbeitsbereich ihn gesperrt hält, was hier niemand ändern kann.
+
+d-ivx3pet3 = Rand
+    .doc = Der Rand um den Bericht, in Pixeln.
 
 d-lvaal6xy = Anteil
     .doc = Wie viel der Zeit er läuft.
@@ -119,12 +122,6 @@ d-cb2aj7ey = Verantwortlich
 
 d-rkns6vsj = Prüfer
     .doc = Wer ihn prüft; noch niemand gewählt.
-
-d-us66ciy2 = Zeigt
-    .doc = Welche Ansicht zeigt.
-
-d-253kc4mp = Schritt
-    .doc = Bei welchem Schritt der Lauf ist.
 
 d-u6zwjsis = Beginnt
     .doc = Der Tag, an dem er beginnt.
@@ -144,17 +141,23 @@ d-ii5w5nej = Tastenkürzel
 d-lnvof4vo = Empfänger
     .doc = An wen es geht, getippt.
 
-d-6a3xhxmz = Archiviert
-    .doc = Ob das Archiv alles hatte.
+d-an7amte4 = Hintergrund
+    .doc = Ob die Hintergrundebene zu sehen ist.
 
-d-bmzzwoln = Textgröße
-    .doc = Die Größe des Textes im Bericht.
+d-6mugp36y = Schrift
+    .doc = Ob die Textebene zu sehen ist.
 
 d-lhci3noh-filter-by_email = Per E-Mail
 
 d-lhci3noh-filter-repeating = Wiederholend
 
-d-lhci3noh-filter-seats = Plätze
+d-lhci3noh-filter-locked = Gesperrt
+
+d-lhci3noh-filter-margin = Rand
+
+d-lhci3noh-filter-background = Hintergrund
+
+d-lhci3noh-filter-lettering = Schrift
 
 d-lhci3noh-filter-share = Anteil
 
@@ -164,19 +167,11 @@ d-lhci3noh-filter-owner = Verantwortlich
 
 d-lhci3noh-filter-reviewer = Prüfer
 
-d-lhci3noh-filter-showing = Zeigt
-
-d-lhci3noh-filter-step = Schritt
-
 d-lhci3noh-filter-starts = Beginnt
 
 d-lhci3noh-filter-clock = Uhr
 
 d-lhci3noh-filter-ends = Endet
-
-d-lhci3noh-filter-archived = Archiviert
-
-d-lhci3noh-filter-text_size = Textgröße
 
 d-pprp6hfn = Daten
     .doc = Die Datenansichten: eine Tabelle aus Spalten und Zeilen, ein Baum aus Knoten, eine Unterhaltung, ein Raster aus Karten und der Verlauf eines Dokuments, jede liest eine Sammlung der App selbst.
@@ -515,33 +510,43 @@ d-z5ai6zk5 = Bedienelemente
     .w-boxes-and-switches = Kästchen und Schalter
     .w-send-by-email = Per E-Mail senden
     .w-repeat-weekly = Wöchentlich wiederholen
-    .w-archived = Archiviert
-    .w-archived-items-stay-for-30-days = Archivierte Einträge bleiben 30 Tage.
+    .w-keep-a-copy-as-the-workspace = Eine Kopie behalten, wie der Arbeitsbereich es verlangt
+    .w-locked-by-the-workspace = Vom Arbeitsbereich gesperrt
+    .w-margin = Rand
+    .w-px = px
+    .w-share-of-the-time = Anteil der Zeit
+    .w-margin-locked = Rand, gesperrt
+    .w-room = Raum
+    .w-repeats = Wiederholt sich
+    .w-daily = Täglich
+    .w-weekly = Wöchentlich
+    .w-monthly = Monatlich
+    .w-report = Bericht
+    .w-owner = Verantwortlich
+    .w-reviewer = Prüfer
+    .w-progress = Fortschritt
+    .w-accent = Akzent
+    .w-title = Titel
+    .w-send-to = Senden an
+    .w-name-or-address = Name oder Adresse
+    .w-ada = Ada
+    .w-read-about-tilo = Mehr über Tilo
+    .w-layers = Ebenen
+    .w-background = Hintergrund
+    .w-lettering = Schrift
+    .w-text-size = Textgröße
     .w-numbers = Zahlen
-    .w-share = Anteil
-    .w-time = Zeit
     .w-choices = Auswahl
     .w-studio = Studio
     .w-gallery = Galerie
     .w-annex = Anbau
     .w-choose-a-room = Wähle einen Raum
-    .w-steps = Schritte
-    .w-grid = Raster
-    .w-list = Liste
-    .w-board = Board
     .w-views = Ansichten
     .w-summary = Zusammenfassung
     .w-details = Details
     .w-history = Verlauf
-    .w-cases = Fälle
     .w-urgency = Dringlichkeit
-    .w-no-hurry = Keine Eile
-    .w-low = Niedrig
-    .w-medium = Mittel
-    .w-high = Hoch
     .w-people = Personen
-    .w-who-looks-after-it = Wer sich darum kümmert
-    .w-who-reviews-it-still-to-be = Wer es prüft, noch zu wählen
     .w-draft = Entwurf
     .w-review = Prüfung
     .w-send = Senden
@@ -552,9 +557,7 @@ d-z5ai6zk5 = Bedienelemente
     .w-colours = Farben
     .w-text = Text
     .w-open-with = Öffnen mit
-    .w-who-it-goes-to = An wen es geht
     .w-bo = Bo
-    .w-the-site = Die Website
     .w-pictures = Bilder
     .w-small = Klein
     .w-regular = Normal

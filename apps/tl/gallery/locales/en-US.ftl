@@ -103,8 +103,11 @@ d-yykr4gsy = By email
 d-ueet4dqw = Repeating
     .doc = Whether it repeats.
 
-d-zyguwmk5 = Seats
-    .doc = How many fit.
+d-hje3rno5 = Locked
+    .doc = Whether the workspace holds it locked, which nobody here can change.
+
+d-ivx3pet3 = Margin
+    .doc = The margin round the report, in pixels.
 
 d-lvaal6xy = Share
     .doc = How much of the time it runs.
@@ -120,12 +123,6 @@ d-cb2aj7ey = Owner
 
 d-rkns6vsj = Reviewer
     .doc = Who reviews it, nobody picked yet.
-
-d-us66ciy2 = Showing
-    .doc = Which view shows.
-
-d-253kc4mp = Step
-    .doc = Which step the run is on.
 
 d-u6zwjsis = Starts
     .doc = The day it starts.
@@ -145,17 +142,19 @@ d-ii5w5nej = Shortcut
 d-lnvof4vo = Recipient
     .doc = Who it goes to, typed.
 
-d-6a3xhxmz = Archived
-    .doc = Whether the archive had everything.
+d-an7amte4 = Background
+    .doc = Whether the background layer shows.
 
-d-bmzzwoln = Text size
-    .doc = The size of the text in the report.
+d-6mugp36y = Lettering
+    .doc = Whether the text layer shows.
 
 d-lhci3noh-filter-by_email = By email
 
 d-lhci3noh-filter-repeating = Repeating
 
-d-lhci3noh-filter-seats = Seats
+d-lhci3noh-filter-locked = Locked
+
+d-lhci3noh-filter-margin = Margin
 
 d-lhci3noh-filter-share = Share
 
@@ -165,19 +164,15 @@ d-lhci3noh-filter-owner = Owner
 
 d-lhci3noh-filter-reviewer = Reviewer
 
-d-lhci3noh-filter-showing = Showing
-
-d-lhci3noh-filter-step = Step
-
 d-lhci3noh-filter-starts = Starts
 
 d-lhci3noh-filter-clock = Clock
 
 d-lhci3noh-filter-ends = Ends
 
-d-lhci3noh-filter-archived = Archived
+d-lhci3noh-filter-background = Background
 
-d-lhci3noh-filter-text_size = Text size
+d-lhci3noh-filter-lettering = Lettering
 
 d-pprp6hfn = Data
     .doc = The data views: a table of columns and rows, a tree of nodes, a conversation, a grid of cards and the history of a document, each reading a collection of the app's own.
@@ -516,34 +511,34 @@ d-glo4d4xp = Board item row
 d-z5ai6zk5 = Controls
     .w-boxes-and-switches = Boxes and switches
     .w-send-by-email = Send by email
+    .w-keep-a-copy-as-the-workspace = Keep a copy, as the workspace asks
     .w-repeat-weekly = Repeat weekly
-    .w-archived = Archived
-    .w-archived-items-stay-for-30-days = Archived items stay for 30 days.
+    .w-locked-by-the-workspace = Locked by the workspace
     .w-numbers = Numbers
-    .w-share = Share
-    .w-time = Time
+    .w-margin = Margin
+    .w-px = px
+    .w-share-of-the-time = Share of the time
+    .w-margin-locked = Margin, locked
     .w-choices = Choices
+    .w-room = Room
     .w-studio = Studio
     .w-gallery = Gallery
     .w-annex = Annex
     .w-choose-a-room = Choose a room
-    .w-steps = Steps
-    .w-grid = Grid
-    .w-list = List
-    .w-board = Board
+    .w-urgency = Urgency
+    .w-repeats = Repeats
+    .w-daily = Daily
+    .w-weekly = Weekly
+    .w-monthly = Monthly
     .w-views = Views
+    .w-report = Report
     .w-summary = Summary
     .w-details = Details
     .w-history = History
-    .w-cases = Cases
-    .w-urgency = Urgency
-    .w-no-hurry = No hurry
-    .w-low = Low
-    .w-medium = Medium
-    .w-high = High
     .w-people = People
-    .w-who-looks-after-it = Who looks after it
-    .w-who-reviews-it-still-to-be = Who reviews it, still to be picked
+    .w-owner = Owner
+    .w-reviewer = Reviewer
+    .w-progress = Progress
     .w-draft = Draft
     .w-review = Review
     .w-send = Send
@@ -552,12 +547,20 @@ d-z5ai6zk5 = Controls
     .w-ends = Ends
     .w-at = At
     .w-colours = Colours
+    .w-accent = Accent
     .w-text = Text
+    .w-title = Title
     .w-open-with = Open with
-    .w-who-it-goes-to = Who it goes to
+    .w-send-to = Send to
+    .w-name-or-address = Name or address
+    .w-ada = Ada
     .w-bo = Bo
-    .w-the-site = The site
+    .w-read-about-tilo = Read about Tilo
+    .w-layers = Layers
+    .w-background = Background
+    .w-lettering = Lettering
     .w-pictures = Pictures
+    .w-text-size = Text size
     .w-small = Small
     .w-regular = Regular
     .w-large = Large

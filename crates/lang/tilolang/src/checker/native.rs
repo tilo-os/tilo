@@ -1435,13 +1435,22 @@ impl Checker<'_> {
             Imp::UiPropH,
             vec![view.clone(), Ex::str("bind"), Ex::str(&binding.name)],
         ));
+        self.enum_options(
+            &view,
+            &concat(key.clone(), Ex::str(&format!("#enum-{}", field.name))),
+            &info,
+        );
+        Some(view)
+    }
+
+    /// The cases of the enum `info` as the options of the case field `view`, keyed under `key`:
+    /// each named by the id the enum declares it by, which is what the field holds and an edit
+    /// writes back, with the words, glyph and tone the enum gives it.
+    pub(super) fn enum_options(&mut self, view: &Ex, key: &Ex, info: &crate::resolve::EnumInfo) {
         for case in &info.variants {
             let n = self.new_node(
                 &crate::toolkit::kind("EnumOption"),
-                concat(
-                    key.clone(),
-                    Ex::str(&format!("#enum-{}-{}", field.name, case.id)),
-                ),
+                concat(key.clone(), Ex::str(&format!("-{}", case.id))),
             );
             let option = Ex::local(n, Ty::View);
             let prop = |name: &str, value: &str| {
@@ -1460,7 +1469,6 @@ impl Checker<'_> {
             }
             self.emit(host(Imp::UiChild, vec![view.clone(), option]));
         }
-        Some(view)
     }
 }
 

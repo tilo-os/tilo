@@ -482,9 +482,13 @@ d-n2xgxnbw = Message
     .w-attached = Attached: { $attachments }
 
 d-oqpazwvc = Editor
+    .w-status = Status
     .w-sending = Sending
     .w-it-goes-in-a-moment = It goes in a moment.
     .w-undo-send = Undo send
+    .w-from = From
+    .w-to = To
     .w-name-example-org = name@example.org
+    .w-cc = Cc
     .w-subject = Subject
     .w-write-your-message = Write your message

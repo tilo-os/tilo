@@ -12,7 +12,8 @@ pub struct ToggleProps {
     /// Whether it is on, and where a turn of it goes.
     #[component(bind)]
     pub value: Bound<bool>,
-    /// The setting's name, read beside its state by assistive technology.
+    /// The setting's name, beside the switch at the row's leading edge: the whole row turns it,
+    /// and assistive technology reads it with the state.
     #[component(positional)]
     pub label: Option<String>,
     /// Whether it can be turned now.
@@ -44,13 +45,20 @@ impl Described for Toggle {
             .with_id(key)
             .with_enabled(enabled);
         if let Some(label) = label {
-            toggle = toggle.with_accessible_name(&label);
+            toggle = toggle.with_label(label);
         }
         toggle
     }
 
-    /// Its state and whether it can be turned change in place.
+    /// Its state, its words and whether it can be turned change in place; words given to a bare
+    /// switch, or taken from a labelled one, change its layout, so it is built again.
     fn set_props(&mut self, props: ToggleProps) -> bool {
+        if props.label.is_some() != self.has_label() {
+            return false;
+        }
+        if let Some(label) = props.label {
+            self.set_label(label);
+        }
         self.set_enabled(props.enabled);
         self.set_checked(props.value.state.get());
         true

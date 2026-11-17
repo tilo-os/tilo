@@ -320,4 +320,59 @@ view talk(t: Talk) {
             .key
             .clone()
     }
+
+    // A text field the new item was not given starts as the words its type declares, as a case
+    // field starts as its declared case: a control bound to it shows them, never an empty field.
+    #[test]
+    fn a_new_items_text_field_starts_as_its_declared_words() {
+        const ROOMS: &str = r#"app so.tilo.rooms "Rooms"
+
+type Booking {
+    room: Text = "Studio"
+    note: Text
+}
+
+type Desk {
+    bookings: Collection<Booking>
+}
+
+root Desk
+
+default view desk for Desk
+
+view desk(d: Desk) {
+    text("Bookings")
+}
+
+action book(d: Desk) {
+    d.bookings.insert(Booking(note: "Bring the key"))
+}
+"#;
+        let store = AmStore::new();
+        let app = App::compile(ROOMS, &[]);
+        let rt = Runtime::new(store, SimpleAuthority::new()).unwrap();
+        app.load(&rt);
+        let desk = rt.create("Desk").unwrap();
+        rt.invoke_action(
+            &me(),
+            (app.action("book").as_str(), vec![Value::resource(&desk)]),
+        )
+        .unwrap();
+        let Value::List(bookings) = rt.read(&desk, "bookings").unwrap() else {
+            panic!("a list");
+        };
+        let Some(Value::Ref(booking)) = bookings.first() else {
+            panic!("the booking");
+        };
+        assert_eq!(
+            rt.read(&booking.target, "room").unwrap(),
+            Value::text("Studio"),
+            "the room it was not given is the one its type declares"
+        );
+        assert_eq!(
+            rt.read(&booking.target, "note").unwrap(),
+            Value::text("Bring the key"),
+            "the words it was given stand"
+        );
+    }
 }

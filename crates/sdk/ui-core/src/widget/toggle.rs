@@ -1,7 +1,8 @@
 use super::bool_control::{
     BoolControl, bool_control_api, bool_control_capabilities, bool_control_widget_methods,
 };
-use crate::text_render::TextRenderer;
+use crate::i18n::widget_text;
+use crate::text_render::{TextRenderer, TextStyle};
 use crate::theme::Theme;
 use crate::widget::Interaction;
 use crate::widget::TaffyTreeExt;
@@ -21,6 +22,12 @@ pub struct Toggle {
     switch: SwitchMotion,
     hold: Option<KnobHold>,
     pointer_x: f64,
+    /// The setting's name, drawn at the row's leading edge with the switch at its trailing one:
+    /// the whole row turns it.
+    label: Option<String>,
+    label_style: TextStyle,
+    /// The switch's width at the theme's scale, as the last layout read it.
+    track_width: f32,
     drawn_track: Rect,
     motion: Option<crate::tokens::EffectiveMotion>,
     slop: f64,
@@ -37,6 +44,9 @@ type Painted = (bool, bool, bool, bool, u64, u32);
 
 #[derive(Clone, Copy, Debug)]
 struct KnobHold {
+    /// Whether the hand took the knob: a press on a labelled switch's words is a click, never a
+    /// drag of the knob.
+    on_knob: bool,
     start_x: f64,
     from: f64,
     dragged: bool,
@@ -47,8 +57,9 @@ struct KnobHold {
 const STILL_AFTER: crate::time::Duration = crate::time::Duration::from_millis(80);
 
 impl KnobHold {
-    fn new(x: f64, from: f64) -> Self {
+    fn new(x: f64, from: f64, on_knob: bool) -> Self {
         Self {
+            on_knob,
             start_x: x,
             from,
             dragged: false,
@@ -82,6 +93,9 @@ impl Toggle {
             switch: SwitchMotion::default(),
             hold: None,
             pointer_x: 0.0,
+            label: None,
+            label_style: crate::tokens::typography::stock().style(crate::tokens::TextRole::Body),
+            track_width: TRACK_WIDTH,
             drawn_track: Rect::ZERO,
             motion: None,
             slop: f64::from(crate::tokens::Metrics::BASE.click_slop),
@@ -145,7 +159,7 @@ impl Toggle {
 
     fn drag_to(&mut self, x: f64) {
         let travel = self.knob_travel();
-        let Some(hold) = self.hold.as_mut() else {
+        let Some(hold) = self.hold.as_mut().filter(|hold| hold.on_knob) else {
             return;
         };
         if !hold.dragged {
@@ -197,6 +211,36 @@ impl Toggle {
         toggle
     }
 
+    /// Name the setting beside the switch: its words at the row's leading edge, the switch at the
+    /// trailing one, and a press anywhere on the row turns it. The words are its spoken name too.
+    #[must_use]
+    pub fn with_label(mut self, label: impl Into<String>) -> Self {
+        self.set_label(label.into());
+        self
+    }
+
+    /// Change the words beside the switch in place.
+    pub fn set_label(&mut self, label: String) {
+        self.control.accessible_name = Some(label.clone());
+        self.control.name_resolved = true;
+        self.label = Some(label);
+    }
+
+    #[must_use]
+    pub fn has_label(&self) -> bool {
+        self.label.is_some()
+    }
+
+    /// Where the switch stands inside `rect`: centred in a bare switch's target, at the trailing
+    /// edge of a labelled one's row.
+    fn switch_target(&self, rect: Rect, theme: &Theme) -> Rect {
+        if self.label.is_none() {
+            return rect;
+        }
+        let (track_w, _) = ToggleFace::size(theme);
+        Rect::new((rect.x1 - track_w).max(rect.x0), rect.y0, rect.x1, rect.y1)
+    }
+
     bool_control_api!();
 }
 
@@ -211,6 +255,8 @@ const TRACK_HEIGHT: f32 = 24.0;
 /// track height and this gap, so a host painting a taller face keeps the
 /// same proportions.
 const KNOB_EDGE_GAP: f64 = 2.0;
+/// Between a labelled switch's words and the switch.
+const LABEL_GAP: f32 = 12.0;
 
 /// The pill's rect inside a layout target: centred, never stretched, at
 /// the theme's size.
@@ -644,8 +690,19 @@ impl Widget for Toggle {
         )]
         let (track_w, track_h) = (track_w as f32, track_h as f32);
         let target = self.control.interaction.minimum_target();
+        self.label_style = theme.tokens.typography.style(crate::tokens::TextRole::Body);
+        self.track_width = track_w;
+        let size = if self.label.is_some() {
+            Size {
+                width: taffy::Dimension::percent(1.0),
+                height: taffy::Dimension::auto(),
+            }
+        } else {
+            Size::from_lengths(track_w.max(target), track_h.max(target))
+        };
         let style = Style {
-            size: Size::from_lengths(track_w.max(target), track_h.max(target)),
+            size,
+            min_size: Size::from_lengths(track_w.max(target), track_h.max(target)),
             // A switch is a fixed target, like a button: in a row that also
             // holds a percent-width field it must not be the item that gives.
             // With the default shrink factor and no measured minimum, taffy
@@ -660,6 +717,42 @@ impl Widget for Toggle {
         taffy.widget_leaf(style, node_map, self)
     }
 
+    /// A labelled switch is as tall as its words, wrapped beside the switch, and never shorter than
+    /// its target.
+    fn measure(
+        &mut self,
+        known_dimensions: Size<Option<f32>>,
+        available_space: Size<taffy::AvailableSpace>,
+        text_renderer: &mut TextRenderer,
+    ) -> Size<f32> {
+        let target = self.control.interaction.minimum_target();
+        let track = self.track_width;
+        let Some(label) = self.label.as_ref() else {
+            return Size {
+                width: known_dimensions.width.unwrap_or(target),
+                height: known_dimensions.height.unwrap_or(target),
+            };
+        };
+        let lead = track + LABEL_GAP;
+        let available = known_dimensions.width.or(match available_space.width {
+            taffy::AvailableSpace::Definite(width) => Some(width),
+            taffy::AvailableSpace::MinContent => Some(lead),
+            taffy::AvailableSpace::MaxContent => None,
+        });
+        let limit = available.map(|width| (width - lead).max(0.0));
+        let (label_width, label_height) =
+            text_renderer.measure_style(&widget_text(label), limit, &self.label_style);
+        Size {
+            width: known_dimensions
+                .width
+                .or(available)
+                .unwrap_or(lead + label_width),
+            height: known_dimensions
+                .height
+                .unwrap_or_else(|| label_height.max(target)),
+        }
+    }
+
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         self.control.rect = crate::widget::layout_rect(taffy, node, origin);
         if let Some((kept, _)) = self.hand_on.place(self.control.rect) {
@@ -667,11 +760,15 @@ impl Widget for Toggle {
         }
     }
 
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "widget rectangles are finite renderer coordinates already laid out as f32"
+    )]
     fn draw(
         &mut self,
         scene: &mut Scene,
         transform: Affine,
-        _text_renderer: &mut TextRenderer,
+        text_renderer: &mut TextRenderer,
         theme: &Theme,
         presence: &crate::presence::PresenceCtx,
     ) {
@@ -688,8 +785,8 @@ impl Widget for Toggle {
         // One painter for the retained widget and immediate-mode hosts, so
         // the two cannot drift: the pill is centred in the layout target and
         // every state resolves through the same `ToggleFace`.
+        let track = track_rect(self.switch_target(self.control.rect, theme), theme);
         let c = &self.control;
-        let track = track_rect(c.rect, theme);
         self.drawn_track = track - c.rect.origin().to_vec2();
         Self::paint(
             scene,
@@ -701,6 +798,27 @@ impl Widget for Toggle {
                 .focused(c.focus_visible())
                 .disabled(!c.effectively_enabled()),
         );
+        if let Some(label) = self.label.as_ref() {
+            let label = widget_text(label);
+            let rect = self.control.rect;
+            let max_width = (track.x0 - f64::from(LABEL_GAP) - rect.x0).max(0.0);
+            let (_, height) =
+                text_renderer.measure_style(&label, Some(max_width as f32), &self.label_style);
+            let y = rect.y0 + ((rect.height() - f64::from(height)) / 2.0).max(0.0);
+            let ink = if self.control.effectively_enabled() {
+                theme.tokens.colors.text_primary
+            } else {
+                theme.tokens.colors.text_dim
+            };
+            text_renderer.draw_style(
+                scene,
+                &label,
+                ink,
+                transform.pre_translate((rect.x0, y).into()),
+                Some(max_width as f32),
+                &self.label_style,
+            );
+        }
         crate::widget::draw_gate_and_peer_focus(self, scene, transform, theme, presence);
     }
 
@@ -749,7 +867,9 @@ impl Widget for Toggle {
                 self.control.pressed_into_focus |= !self.control.is_focused;
                 *ctx.focus_target = Some(ctx.node_id);
                 let drawn = self.switch.knob(crate::motion::frame_now());
-                self.hold = Some(KnobHold::new(self.pointer_x, drawn));
+                let track = self.drawn_track + self.control.rect.origin().to_vec2();
+                let on_knob = self.label.is_none() || self.pointer_x >= track.x0 - self.slop;
+                self.hold = Some(KnobHold::new(self.pointer_x, drawn, on_knob));
             }
             WindowEvent::MouseInput {
                 state: ElementState::Released,

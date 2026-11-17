@@ -20,8 +20,10 @@ type Controls {
     by_email: Bool = false
     /// Whether it repeats.
     repeating: Bool = false
-    /// How many fit.
-    seats: Int = 3
+    /// Whether the workspace holds it locked, which nobody here can change.
+    locked: Bool = true
+    /// The margin round the report, in pixels.
+    margin: Float = 12.0
     /// How much of the time it runs.
     share: Float = 0.6
     /// The room it is in.
@@ -32,10 +34,6 @@ type Controls {
     owner: Option<Actor> = .none
     /// Who reviews it, nobody picked yet.
     reviewer: Option<Actor> = .none
-    /// Which view shows.
-    showing: Int = 1
-    /// Which step the run is on.
-    step: Int = 1
     /// The day it starts.
     starts: Date = Date("2026-11-03")
     /// The time of day it starts.
@@ -48,77 +46,120 @@ type Controls {
     shortcut: Text = "Ctrl+K"
     /// Who it goes to, typed.
     recipient: Text = ""
-    /// Whether the archive had everything.
-    archived: Bool = false
-    /// The size of the text in the report.
-    text_size: Int = 1
+    /// Whether the background layer shows.
+    background: Bool = true
+    /// Whether the text layer shows.
+    lettering: Bool = true
 }
 
 default view controls for Controls
 
-/// The controls window: each kind in a section of its own page.
+/// The controls window: each kind in a section of its own page, each in the states a person meets
+/// it in. Every value is the document's or the window's own, so each control can be played with.
 view controls(c: Controls) {
-    state last: Text = ""
+    state cadence: Int = 1
+    state showing: Int = 0
+    state step: Int = 1
+    state layer: Int = 0
+    state swatch: Int = 0
+    state text_size: Int = 1
     std.page(c) {
         ui.Section("Boxes and switches") {
             ui.Checkbox(bind: c.by_email, label: "Send by email")
+            ui.Checkbox(bind: c.locked, label: "Keep a copy, as the workspace asks", enabled: false)
             ui.Toggle(bind: c.repeating, label: "Repeat weekly")
-            ui.ControlRow(label: "Archived", selected: c.archived) {
-                ui.Text("Archived items stay for 30 days.", role: .caption, secondary: true)
-            }
+            ui.Toggle(bind: c.locked, label: "Locked by the workspace", enabled: false)
         }
         ui.Section("Numbers") {
-            ui.NumberInput(
-                bind: c.share,
-                label: "Share",
-                min: 0.0,
-                max: 1.0,
-                step: 0.05,
-                precision: 2,
-            )
-            ui.Slider(bind: c.share, label: "Time", max: 1.0, step: 0.05, shows_value: true)
+            form {
+                field("Margin") {
+                    ui.NumberInput(
+                        bind: c.margin,
+                        label: "Margin",
+                        min: 0.0,
+                        max: 64.0,
+                        step: 4.0,
+                        suffix: "px",
+                    )
+                }
+                field("Share of the time") {
+                    ui.Slider(
+                        bind: c.share,
+                        label: "Share of the time",
+                        step: 0.05,
+                        shows_value: true,
+                    )
+                }
+                field("Margin, locked") {
+                    ui.NumberInput(
+                        bind: c.margin,
+                        label: "Margin, locked",
+                        min: 0.0,
+                        max: 64.0,
+                        suffix: "px",
+                        enabled: false,
+                    )
+                }
+            }
         }
         ui.Section("Choices") {
-            ui.Dropdown(
-                bind: c.room,
-                options: ["Studio", "Gallery", "Annex"],
-                placeholder: "Choose a room",
-            )
-            ui.ToggleGroup(selected: c.step, caption: "Steps") {
-                ui.Segment("Grid")
-                ui.Segment("List")
-                ui.Segment("Board")
+            form {
+                field("Room") {
+                    ui.Dropdown(
+                        bind: c.room,
+                        options: ["Studio", "Gallery", "Annex"],
+                        placeholder: "Choose a room",
+                    )
+                }
+                field("Urgency") {
+                    ui.EnumField(bind: c.urgency, label: "Urgency")
+                }
+                field("Repeats") {
+                    ui.ToggleGroup(selected: cadence, label: "Repeats") {
+                        ui.Segment("Daily")
+                        ui.Segment("Weekly")
+                        ui.Segment("Monthly")
+                        on change(i): set(cadence, i)
+                    }
+                }
             }
-            ui.ViewTabs(selected: c.showing, label: "Views") {
+        }
+        ui.Section("Views") {
+            ui.ViewTabs(selected: showing, label: "Report") {
                 ui.Segment("Summary")
                 ui.Segment("Details")
                 ui.Segment("History")
-            }
-        }
-        ui.Section("Cases") {
-            ui.EnumField(bind: c.urgency, label: "Urgency") {
-                ui.EnumOption("No hurry", name: "none")
-                ui.EnumOption("Low", name: "low")
-                ui.EnumOption("Medium", name: "medium")
-                ui.EnumOption("High", name: "high", icon: .flag, tone: .warning)
+                on change(i): set(showing, i)
             }
         }
         ui.Section("People") {
-            ui.Text("Who looks after it", role: .caption, secondary: true)
-            ui.PersonField(bind: c.owner, people: workspace.members, me: workspace.me)
-            ui.Text("Who reviews it, still to be picked", role: .caption, secondary: true)
-            ui.PersonField(bind: c.reviewer, people: workspace.members, me: workspace.me)
+            form {
+                field("Owner") {
+                    ui.PersonField(bind: c.owner, people: workspace.members, me: workspace.me)
+                }
+                field("Reviewer") {
+                    ui.PersonField(bind: c.reviewer, people: workspace.members, me: workspace.me)
+                }
+            }
         }
-        ui.Section("Steps") {
-            ui.Stepper(steps: ["Draft", "Review", "Send"], current: c.step) {
-                on station: set(last, "Step")
+        ui.Section("Progress") {
+            ui.Stepper(steps: ["Draft", "Review", "Send"], current: step) {
+                on station(i): set(step, i)
             }
         }
         ui.Section("Days and times") {
-            ui.DateField(bind: c.starts, label: "Starts", optional: false)
-            ui.DateField(bind: c.ends, label: "Ends", optional: true)
-            ui.DatePicker(bind: c.starts)
-            ui.TimeField(bind: c.clock)
+            form {
+                field("Starts") {
+                    ui.DateField(bind: c.starts, label: "Starts", optional: false)
+                }
+                field("Ends") {
+                    ui.DateField(bind: c.ends, label: "Ends", optional: true)
+                }
+                field("At") {
+                    ui.TimeField(bind: c.clock)
+                }
+            }
+            ui.DatePicker(bind: c.starts, label: "Starts")
             ui.TimePicker(bind: c.clock, label: "At")
         }
         ui.Section("Colours") {
@@ -126,23 +167,49 @@ view controls(c: Controls) {
             ui.ColorSwatchPicker(
                 swatches: ["#3a7bd5", "#d55a3a", "#3ad57b", "#d5c23a"],
                 columns: 4,
-                selected: 0,
-            )
+                selected: swatch,
+                label: "Accent",
+            ) {
+                on change(i): set(swatch, i)
+            }
         }
         ui.Section("Text") {
-            ui.EditableLabel(bind: c.title)
-            ui.ShortcutRecorder(bind: c.shortcut, default: "Ctrl+K", label: "Open with")
-            ui.Autocomplete(bind: c.recipient, placeholder: "Who it goes to") {
-                ui.Suggestion("ada@example.com")
-                ui.Suggestion("bo@example.com", label: "Bo")
+            form {
+                field("Title") {
+                    ui.EditableLabel(bind: c.title, label: "Title")
+                }
+                field("Open with") {
+                    ui.ShortcutRecorder(bind: c.shortcut, default: "Ctrl+K", label: "Open with")
+                }
+                field("Send to") {
+                    ui.Autocomplete(bind: c.recipient, placeholder: "Name or address") {
+                        ui.Suggestion("ada@example.com", label: "Ada")
+                        ui.Suggestion("bo@example.com", label: "Bo")
+                    }
+                }
             }
-            ui.Link("https://tilo.sh", label: "The site")
+            ui.Link("https://tilo.sh", label: "Read about Tilo")
+        }
+        ui.Section("Layers") {
+            ui.ControlRow(label: "Background", selected: layer == 0) {
+                ui.Text("Background")
+                spacer
+                ui.Toggle(bind: c.background)
+                on choose: set(layer, 0)
+            }
+            ui.ControlRow(label: "Lettering", selected: layer == 1) {
+                ui.Text("Lettering")
+                spacer
+                ui.Toggle(bind: c.lettering)
+                on choose: set(layer, 1)
+            }
         }
         ui.Section("Pictures") {
-            ui.PictureChoice(selected: c.text_size) {
+            ui.PictureChoice(selected: text_size, label: "Text size") {
                 ui.PictureOption("Small", picture: .text_size_small)
                 ui.PictureOption("Regular", picture: .text_size_regular)
                 ui.PictureOption("Large", picture: .text_size_large)
+                on change(i): set(text_size, i)
             }
         }
     }

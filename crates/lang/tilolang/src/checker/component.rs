@@ -10,7 +10,7 @@ use crate::ast::{self, ExprKind, UiCall, UiKind, UiStmt};
 use crate::diag::Span;
 use crate::ir::{Ek, LocalId, Stmt};
 use crate::prims;
-use crate::toolkit::{self, Description, Type};
+use crate::toolkit::{self, Accepts, Description, Type};
 use crate::types::Ty;
 
 fn host(imp: Imp, args: Vec<Ex>) -> Stmt {
@@ -145,6 +145,7 @@ impl Checker<'_> {
         // lowered.
         let places = PLACES.iter().any(|kind| *kind == d.name);
         let mut placement: Option<&ast::Expr> = None;
+        let mut bound: Option<Ty> = None;
         for a in args {
             if a.name.is_none() && self.is_flag(None, &a.value) {
                 self.flag_arg(n, &a.value);
@@ -183,7 +184,12 @@ impl Checker<'_> {
                 placement = Some(&a.value);
                 continue;
             }
-            self.component_arg(n, d, &name, &a.value, &given);
+            if let Some(ty) = self.component_arg(n, d, &name, &a.value, &given) {
+                bound = Some(ty);
+            }
+        }
+        if let Some(Ty::Enum(enum_key)) = &bound {
+            self.enum_cases(n, d, c, enum_key);
         }
         if let Some(value) = placement {
             self.placement_prop(n, d, value, args);
@@ -212,6 +218,50 @@ impl Checker<'_> {
             self.component_block(n, d, block, span);
         }
         n
+    }
+
+    /// The cases a field bound to the enum `enum_key` offers: the enum's own, each as the enum
+    /// declares it (its words, glyph and tone, and the id the field holds and an edit writes
+    /// back). Cases the view lists itself would be a second, drifting copy of the enum, named by
+    /// words the field never holds, so they are refused.
+    fn enum_cases(
+        &mut self,
+        n: LocalId,
+        d: &'static Description,
+        c: &UiCall,
+        enum_key: &crate::types::TypeKey,
+    ) {
+        const OPTION: &str = "EnumOption";
+        let offers_cases = d.parts.iter().any(|part| match &part.accepts {
+            Accepts::Component(name) => name == OPTION,
+            Accepts::OneOf(names) => names.iter().any(|name| name == OPTION),
+            Accepts::View => false,
+        });
+        if !offers_cases {
+            return;
+        }
+        let listed = c.block.iter().flatten().find(|stmt| {
+            matches!(&stmt.kind, UiKind::Call(call)
+                if component_of(call).is_some_and(|(_, name)| name == OPTION))
+        });
+        if let Some(listed) = listed {
+            self.err(
+                "E063",
+                listed.span,
+                format!(
+                    "{} bound to a case of `{}` offers the cases the enum declares, in its words, \
+                     glyphs and tones; drop the `ui.{OPTION}`s and say each case's words in the enum",
+                    shown(d),
+                    enum_key.name
+                ),
+            );
+            return;
+        }
+        let info = self.env.enum_info(enum_key).cloned();
+        if let Some(info) = info.filter(|info| info.variants.iter().all(|v| v.fields.is_empty())) {
+            let key = self.node_key(c);
+            self.enum_options(&Ex::local(n, Ty::View), &key, &info);
+        }
     }
 
     /// `actions:` on a node that places actions: the view names, in order, the actions it puts on
@@ -464,7 +514,8 @@ impl Checker<'_> {
     }
 
     /// One argument of a component call: a prop, a value the control shows, a piece of state, or a
-    /// sizing argument. The place a control edits is the `bind:` of the call.
+    /// sizing argument. The place a control edits is the `bind:` of the call: its type is returned
+    /// when that is the argument given.
     fn component_arg(
         &mut self,
         n: LocalId,
@@ -472,10 +523,10 @@ impl Checker<'_> {
         name: &str,
         value: &ast::Expr,
         given: &HashSet<String>,
-    ) {
+    ) -> Option<Ty> {
         if let Some(msg) = super::ui::removed_arg(&d.name, name) {
             self.err("E096", value.span, msg);
-            return;
+            return None;
         }
         // `bind:` names the component's bindable value whatever it is called: its type and its merge
         // are the description's.
@@ -490,9 +541,9 @@ impl Checker<'_> {
                     ),
                 );
             } else {
-                self.binding_prop(n, d, value, given);
+                return self.binding_prop(n, d, value, given);
             }
-            return;
+            return None;
         }
         if let Some(p) = d.prop(name) {
             // The literals a prop of words shows are the view's messages.
@@ -542,17 +593,18 @@ impl Checker<'_> {
             );
             let _ = self.expr(value, None);
         }
+        None
     }
 
     /// `bind:` bound to what `value` names, checked against the binding's types; the node carries the
-    /// name of the one the bound place fits.
+    /// name of the one the bound place fits. The bound place's type, when it fits one.
     pub(super) fn binding_prop(
         &mut self,
         n: LocalId,
         d: &'static Description,
         value: &ast::Expr,
         given: &HashSet<String>,
-    ) {
+    ) -> Option<Ty> {
         let bindings = &d.bindings;
         let node = Ex::local(n, Ty::View);
         let want: Vec<Ty> = bindings.iter().flat_map(|b| binding_types(&b.ty)).collect();
@@ -564,16 +616,13 @@ impl Checker<'_> {
             && d.prop("placeholder").is_some_and(|p| {
                 p.ty == Type::Text || matches!(&p.ty, Type::Option(inner) if **inner == Type::Text)
             });
-        let Some(ty) = self.bind_typed(&node, value, &want, enum_case, titled, placeholder) else {
-            return;
-        };
-        let Some(b) = bindings.iter().find(|b| binds(&b.ty, &ty)) else {
-            return;
-        };
+        let ty = self.bind_typed(&node, value, &want, enum_case, titled, placeholder)?;
+        let b = bindings.iter().find(|b| binds(&b.ty, &ty))?;
         self.emit(host(
             Imp::UiPropH,
             vec![node, Ex::str("bind"), Ex::str(&b.name)],
         ));
+        Some(ty)
     }
 
     /// Whether `value` names somewhere a control can be bound to: a field, or a piece of the view's

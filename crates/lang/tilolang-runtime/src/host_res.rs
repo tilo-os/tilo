@@ -415,7 +415,14 @@ impl Core {
                     FieldKind::Set => FieldValue::Keys(Vec::new()),
                     FieldKind::Map => FieldValue::Entries(Vec::new()),
                     FieldKind::Counter => FieldValue::Counter(0),
-                    FieldKind::Text => FieldValue::Text(String::new()),
+                    FieldKind::Text => FieldValue::Text(
+                        field
+                            .default
+                            .as_ref()
+                            .and_then(Json::as_str)
+                            .unwrap_or_default()
+                            .to_owned(),
+                    ),
                     FieldKind::RichText => FieldValue::Rich(crate::rich::RichValue::default()),
                     FieldKind::Register => FieldValue::Absent,
                 }
@@ -941,6 +948,26 @@ impl Core {
                         f.name, ty.name
                     ));
                 }
+            };
+            self.journaled_apply(ctx.txn, target, &m)?;
+        }
+        // A text field the new item was not given starts as the words its type declares: the store
+        // reads an unwritten text field as empty, never as its default.
+        for f in &ty.fields {
+            if f.kind != FieldKind::Text || rec.fields.contains_key(&f.id) {
+                continue;
+            }
+            let Some(text) = f
+                .default
+                .as_ref()
+                .and_then(Json::as_str)
+                .filter(|t| !t.is_empty())
+            else {
+                continue;
+            };
+            let m = Mutation::SetText {
+                field: f.id.clone(),
+                text: text.to_owned(),
             };
             self.journaled_apply(ctx.txn, target, &m)?;
         }

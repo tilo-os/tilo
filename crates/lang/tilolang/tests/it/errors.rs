@@ -464,6 +464,11 @@ tilo_test_env::scenario! {
     phase e063_unknown_property;
     {
         expect("E063", "view v() {\n    text(\"x\", nope: 2)\n}");
+        // A case field offers the enum's own cases: listing them again is refused.
+        expect(
+            "E063",
+            "enum Size {\n    small\n    large\n}\ntype S {\n    size: Size\n}\nview v(s: S) {\n    ui.EnumField(bind: s.size) {\n        ui.EnumOption(\"Small\", name: \"small\")\n    }\n}",
+        );
     }
 
     phase e070_pinned_references;

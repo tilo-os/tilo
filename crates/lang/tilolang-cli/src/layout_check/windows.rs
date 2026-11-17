@@ -2416,3 +2416,59 @@ fn a_task_two_people_changed_names_them_both_in_its_catch_up() {
         "and goes on with the newest change's words: {words:?}"
     );
 }
+
+/// The gallery's controls show what the fields they are bound to hold: a room the type starts at,
+/// and the case an urgency starts as, in the words the enum gives it.
+#[test]
+fn the_gallerys_controls_show_what_their_fields_hold() {
+    on_a_windows_stack(|| {
+        tilo_ui_host::i18n::ensure();
+        ui::clock::freeze_for_capture();
+        let packages = app_packages("gallery");
+        let ty = packages
+            .0
+            .iter()
+            .find(|c| c.meta.app == "so.tilo.lang.gallery")
+            .and_then(|c| c.meta.types.iter().find(|t| t.name == "Controls"))
+            .map(|t| t.id.clone())
+            .expect("the gallery declares its controls");
+        let size = (1280, 800);
+        let mut staged = stage::Staged::over(
+            "so.tilo.lang.gallery",
+            &packages,
+            "controls",
+            size,
+            ui::Theme::light(),
+            None,
+            &[],
+        )
+        .expect("the scenario stages");
+        staged
+            .lay_out(size, ui::Theme::light(), input_at(size), 1.0)
+            .expect("the app lays out");
+        let controls = super::listed_of(&mut staged, &ty).expect("the controls are listed");
+        staged.open(controls);
+        staged
+            .lay_out(size, ui::Theme::light(), input_at(size), 1.0)
+            .expect("the controls lay out");
+        let nodes: Vec<(String, String)> = staged
+            .harness()
+            .a11y_nodes()
+            .into_iter()
+            .map(|(_, node)| {
+                (
+                    node.label().unwrap_or_default().to_owned(),
+                    node.value().unwrap_or_default().to_owned(),
+                )
+            })
+            .collect();
+        assert!(
+            nodes.iter().any(|(label, _)| label == "Urgency, No hurry"),
+            "the urgency shows its case: {nodes:?}"
+        );
+        assert!(
+            nodes.iter().any(|(_, value)| value == "Studio"),
+            "the room shows the one the type starts at: {nodes:?}"
+        );
+    });
+}

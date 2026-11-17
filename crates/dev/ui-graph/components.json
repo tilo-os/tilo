@@ -5301,7 +5301,7 @@
       "props": [
         {
           "name": "label",
-          "doc": "The setting's name, read beside its state by assistive technology.",
+          "doc": "The setting's name, beside the switch at the row's leading edge: the whole row turns it, and assistive technology reads it with the state.",
           "type": {
             "option": "text"
           },
