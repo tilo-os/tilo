@@ -429,8 +429,22 @@ public final class TiloSource: AssistantSource {
         }
     }
 
-    /// Chat's own name for the mark that the workspace's server answers for an agent.
+    /// Chat's own name for the mark that the workspace's server answers for an agent, and for
+    /// the action that sets it.
     private static let answeredByServer = "on_host"
+    private static let answersFor = "set-agent-on-host"
+
+    /// Have the workspace's server answer for an agent. Where the ask goes unanswered it is
+    /// made once more: asked twice, it changes nothing a second time.
+    private func haveServerAnswer(for agent: String) async throws {
+        let arguments: [String: JSON] = ["agent": .string(agent), TiloSource.answeredByServer: true]
+        do {
+            try await engine.askAgents(TiloSource.answersFor, arguments)
+        } catch TiloEngine.Problem.noAnswer {
+            _ = await engine.nextChange(within: .milliseconds(700))
+            try await engine.askAgents(TiloSource.answersFor, arguments)
+        }
+    }
 
     /// Whether an agent beside the assistant is one another device of the person's made as its
     /// assistant in the same moment: it carries the name the app gives one, and the server
@@ -466,6 +480,8 @@ public final class TiloSource: AssistantSource {
         setups.set(.findingAssistant)
         do {
             var all = try await agentsWhenOffered()
+            // The agent this device just had the server answer for.
+            var finished: String?
             if TiloSource.assistant(among: all, of: me) == nil {
                 // An assistant lives in its person's own workspace: none is made anywhere else.
                 // Where the server did not say which workspace that is, it is asked once more.
@@ -484,10 +500,25 @@ public final class TiloSource: AssistantSource {
                     setups.set(.noAssistant(TiloSource.notInOwn))
                     return
                 }
-                try await engine.askAgents("create-agent", ["name": .string(TiloSource.assistantName)])
-                all = try await agentsOnServer()
-                guard let made = TiloSource.assistant(among: all, of: me)?["id"]?.string else { throw TiloEngine.Problem.noAnswer }
-                try await engine.askAgents("set-agent-on-host", ["agent": .string(made), TiloSource.answeredByServer: true])
+                do {
+                    try await engine.askAgents("create-agent", ["name": .string(TiloSource.assistantName)])
+                } catch TiloEngine.Problem.noAnswer {
+                    // A busy server takes the ask and is not done with it yet: what it keeps is read below.
+                }
+                // A server lists a new agent a moment after it made it, and an ask of a busy one
+                // goes unanswered: the list is read again until it holds the assistant.
+                var made: String?
+                for _ in 0..<8 where made == nil {
+                    if let now = try? await agentsOnServer(), let found = TiloSource.assistant(among: now, of: me)?["id"]?.string {
+                        all = now
+                        made = found
+                    } else {
+                        _ = await engine.nextChange(within: .milliseconds(700))
+                    }
+                }
+                guard let made else { throw TiloEngine.Problem.noAnswer }
+                try await haveServerAnswer(for: made)
+                finished = made
                 // Another device of the person's found none in the same moment and made one too.
                 // The earliest made is the assistant on both, and what was made after it is
                 // taken back, so the person keeps one and no agent nobody writes to.
@@ -496,6 +527,11 @@ public final class TiloSource: AssistantSource {
                 }
             }
             if let found = TiloSource.assistant(among: all, of: me) {
+                // One the app made that no server answers for yet: the device that made it lost an
+                // ask on its way. It is finished here, so it answers with every device off.
+                if let id = found["id"]?.string, id != finished, TiloSource.isTwin(found), !livesInOwn || standsInOwn {
+                    try? await haveServerAnswer(for: id)
+                }
                 take(found, of: me)
                 return
             }
