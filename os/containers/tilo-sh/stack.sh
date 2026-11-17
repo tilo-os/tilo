@@ -562,10 +562,13 @@ start_mail() {
   : > "$log"
   node "$repo/os/containers/tilo-lounge/integration/mail-sink.mjs" "$state/mail" "$mail_port" \
     >> "$log" 2>&1 < /dev/null 9>&- &
-  echo $! > "$state/mail.pid"
-  local deadline=$((SECONDS + 10))
+  local pid=$!
+  echo "$pid" > "$state/mail.pid"
+  # A sink that exited failed; one still starting on a loaded machine is given a minute.
+  local deadline=$((SECONDS + 60))
   until grep -q '"url"' "$log" 2>/dev/null; do
-    ((SECONDS < deadline)) || die "the mail sink did not start: $(cat "$log")"
+    kill -0 "$pid" 2>/dev/null || die "the mail sink exited: $(cat "$log")"
+    ((SECONDS < deadline)) || die "the mail sink did not start within a minute: $(cat "$log")"
     sleep 0.1
   done
 }
@@ -1492,9 +1495,9 @@ start_native_discord() {
   private_env discord "$programs" > "$runs/discord.env"
   run_native discord "$runs/discord" "$programs/fake-discord" --rest "127.0.0.1:$discord_rest_port" \
     --gateway "127.0.0.1:$discord_gateway_port" --control "127.0.0.1:$discord_control_port"
-  local deadline=$((SECONDS + 10))
+  local deadline=$((SECONDS + 60))
   until grep -q '^DISCORD_API_BASE=' "$state/logs/discord.log" 2>/dev/null; do
-    ((SECONDS < deadline)) || die "the fake Discord did not start: $(cat "$state/logs/discord.log")"
+    ((SECONDS < deadline)) || die "the fake Discord did not start within a minute: $(cat "$state/logs/discord.log")"
     sleep 0.2
   done
   discord_api=http://127.0.0.1:$discord_rest_port
@@ -1846,9 +1849,9 @@ start_discord() {
   "$bin" --rest "127.0.0.1:$discord_rest_port" --gateway "127.0.0.1:$discord_gateway_port" \
     --control "127.0.0.1:$discord_control_port" > "$state/logs/discord.log" 2>&1 9>&- &
   echo $! > "$state/discord.pid"
-  local deadline=$((SECONDS + 10))
+  local deadline=$((SECONDS + 60))
   until grep -q '^DISCORD_API_BASE=' "$state/logs/discord.log" 2>/dev/null; do
-    ((SECONDS < deadline)) || die "the fake Discord did not start: $(cat "$state/logs/discord.log")"
+    ((SECONDS < deadline)) || die "the fake Discord did not start within a minute: $(cat "$state/logs/discord.log")"
     sleep 0.2
   done
   discord_api=http://127.0.0.1:$discord_rest_port
