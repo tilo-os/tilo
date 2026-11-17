@@ -72,7 +72,12 @@ fn notebook(workspace: &str, person: &str) -> AutoCommit {
     // "Ask @Pat about the date": the run the mention covers.
     doc.mark(
         &block,
-        Mark::new(MARK.into(), person, 4, 8),
+        Mark::new(
+            MARK.into(),
+            tilo_reference::Embed::Member(ui::MemberId::person(person)).mark_value(),
+            4,
+            8,
+        ),
         ExpandMark::None,
     )
     .unwrap();

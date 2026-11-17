@@ -45,6 +45,12 @@ impl MentionCandidate {
     pub fn label(&self) -> String {
         format!("@{}", self.name)
     }
+
+    /// The value a mention of them is stored as.
+    #[must_use]
+    pub fn reference(&self) -> String {
+        tilo_reference::Embed::Member(self.id.clone()).mark_value()
+    }
 }
 
 impl MentionCandidate {
@@ -224,7 +230,7 @@ impl MentionPicker {
                     let keep = self
                         .list
                         .highlighted()
-                        .and_then(|row| ranked.iter().position(|c| c.id.key() == row.value));
+                        .and_then(|row| ranked.iter().position(|c| c.reference() == row.value));
                     self.list.set_rows(ranked.iter().map(suggestion).collect());
                     self.list.set_highlight(Some(keep.unwrap_or(0)));
                     self.shown = ranked;
@@ -378,7 +384,7 @@ impl MentionPicker {
 /// who is not simply a person, what they are. Its value is the member
 /// id, because a document's mention records who it is.
 pub(crate) fn suggestion(candidate: &MentionCandidate) -> Suggestion {
-    suggestion_with_value(candidate, candidate.id.key())
+    suggestion_with_value(candidate, candidate.reference())
 }
 
 /// A member as a completion offers them: their avatar and name; a pick writes `@name`
@@ -388,7 +394,7 @@ pub(crate) fn candidate(candidate: &MentionCandidate) -> crate::widget::completi
     let mut out = crate::widget::completion::Candidate::reference(
         &candidate.name,
         row.value,
-        candidate.id.key(),
+        candidate.reference(),
     );
     out.person = row.person;
     out.label = row.detail;

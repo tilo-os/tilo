@@ -1576,8 +1576,7 @@ impl Core {
                 };
                 if person
                     .member_id()
-                    .and_then(crate::ids::MemberId::person_id)
-                    .is_some_and(|person| rich.mentions(person))
+                    .is_some_and(|member| rich.mentions(member))
                 {
                     found = found.saturating_add(1);
                     break;

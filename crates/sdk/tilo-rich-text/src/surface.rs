@@ -239,7 +239,7 @@ impl<S: RichTextSource + 'static> RichTextSurface<S> {
     /// Put a mention of the member `id`, shown as `label`, at the caret
     /// (replacing a selection, such as the typed query the person picked it
     /// from), through the source's edits.
-    pub fn insert_mention(&mut self, edits: &mut Edits<'_>, id: &str, label: &str) {
+    pub fn insert_mention(&mut self, edits: &mut Edits<'_>, id: &ui::MemberId, label: &str) {
         self.erased().insert_mention_dyn(edits, id, label);
     }
 
@@ -292,7 +292,7 @@ impl RichTextSurface<dyn ErasedSource> {
     }
 
     /// [`RichTextSurface::insert_mention`], compiled once.
-    fn insert_mention_dyn(&mut self, edits: &mut Edits<'_>, id: &str, label: &str) {
+    fn insert_mention_dyn(&mut self, edits: &mut Edits<'_>, id: &ui::MemberId, label: &str) {
         if self.editor.insert_mention(id, label) {
             self.commit(edits);
         }

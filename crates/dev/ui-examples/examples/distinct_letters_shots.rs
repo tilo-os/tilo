@@ -67,7 +67,7 @@ fn chat_marked() -> Element {
     let mut line = RichTextLine::new().with_text(text);
     line.set_inline_formatting(true);
     line.set_marks(vec![
-        MarkSpan::new(7..19, Mark::Mention("ilya".into())),
+        MarkSpan::new(7..19, Mark::Mention(tilo_ui::MemberId::person("ilya"))),
         MarkSpan::new(
             29..32,
             Mark::ExternalLink("https://docs.example.org/I0l".into()),

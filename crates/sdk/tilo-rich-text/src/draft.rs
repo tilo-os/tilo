@@ -274,7 +274,7 @@ mod tests {
         field.type_text("hi ");
         field.host.widget_mut().insert_mention(
             &mut ui::widget::Edits::lend(&mut field.doc),
-            "u-ada",
+            &ui::MemberId::person("u-ada"),
             "@Ada",
         );
         field
@@ -286,7 +286,10 @@ mod tests {
         let blocks = draft.blocks();
         assert_eq!(
             blocks[0].marks,
-            [MarkSpan::new(3..7, Mark::Mention("u-ada".into()))]
+            [MarkSpan::new(
+                3..7,
+                Mark::Mention(ui::MemberId::person("u-ada"))
+            )]
         );
         let clip = &draft.clip_blocks()[0];
         assert!(

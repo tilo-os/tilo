@@ -7,14 +7,25 @@ use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, ScalarValue, Value};
 
 use crate::resource::DocumentId;
 
-/// The mark a mention's run carries, valued with the member's id.
+use tilo_actions::MemberId;
+
+/// The mark a mention's run carries, valued with the member's id ([`tilo_reference::Embed`]).
 pub const MARK: &str = "mention";
 
-/// Whether a `mention` mark's value names a resource rather than a person, in any form it was written
+/// Whether a `mention` mark's value names a resource rather than a member, in any form it was written
 /// in (`tilo_reference::embed`).
 #[must_use]
 pub fn names_resource(value: &str) -> bool {
     tilo_reference::embed::names_resource(value)
+}
+
+/// The member a `mention` mark's value names, when it names one.
+#[must_use]
+pub fn member_of(value: &str) -> Option<MemberId> {
+    match tilo_reference::Embed::of_mark(value)? {
+        tilo_reference::Embed::Member(member) => Some(member),
+        tilo_reference::Embed::Resource(_) => None,
+    }
 }
 const AUTHOR_MARK: &str = "author";
 /// The key a stored enum value keeps its variant under (`tilo_resource::VARIANT_KEY`).
@@ -39,7 +50,7 @@ const EXCERPT_CHARS: usize = 160;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Mention {
     /// The member named.
-    pub person: String,
+    pub person: MemberId,
     /// Who wrote it, when the record says: the run's author mark, or the item's author.
     pub by: Option<String>,
     /// The item it was written in, as the record's top-level collection keeps it: its field and id.
@@ -64,7 +75,7 @@ pub type Reader<'a> = &'a dyn Fn(&tilo_reference::Embed) -> tilo_reference::embe
 /// them, every resource as not shared. A reference never grants a read.
 #[must_use]
 pub fn reading_nothing(reference: &tilo_reference::Embed) -> tilo_reference::embed::Reading {
-    if reference.as_person().is_some() {
+    if reference.as_member().is_some() {
         tilo_reference::embed::Reading::AsWritten
     } else {
         tilo_reference::embed::Reading::Unshared
@@ -85,7 +96,10 @@ pub struct Touched {
 /// `people` ([`Touched`]); `None` when they do not read as changes. Costs what the changes hold, never
 /// what the record does: a host follows a large record's mentions without reading it whole.
 #[must_use]
-pub fn touched_by(changes: &[u8], people: &std::collections::BTreeSet<String>) -> Option<Touched> {
+pub fn touched_by(
+    changes: &[u8],
+    people: &std::collections::BTreeSet<MemberId>,
+) -> Option<Touched> {
     use automerge::legacy::{Key, MarkData, OpType};
     let mut touched = Touched::default();
     for change in automerge::Automerge::parse_changes(changes).ok()? {
@@ -99,7 +113,8 @@ pub fn touched_by(changes: &[u8], people: &std::collections::BTreeSet<String>) -
             );
             match &op.action {
                 OpType::Put(ScalarValue::Str(value))
-                    if mark_value && people.contains(value.as_str()) =>
+                    if mark_value
+                        && member_of(value).is_some_and(|member| people.contains(&member)) =>
                 {
                     touched.names = true;
                 }
@@ -107,7 +122,11 @@ pub fn touched_by(changes: &[u8], people: &std::collections::BTreeSet<String>) -
                     name,
                     value: ScalarValue::Str(value),
                     ..
-                }) if name == MARK && people.contains(value.as_str()) => touched.names = true,
+                }) if name == MARK
+                    && member_of(value).is_some_and(|member| people.contains(&member)) =>
+                {
+                    touched.names = true;
+                }
                 OpType::MarkBegin(MarkData {
                     value: ScalarValue::Null,
                     ..
@@ -223,12 +242,12 @@ impl Walk<'_> {
             })
             .collect();
         for mark in &marks {
-            let (MARK, ScalarValue::Str(person)) = (mark.name(), mark.value()) else {
+            let (MARK, ScalarValue::Str(value)) = (mark.name(), mark.value()) else {
                 continue;
             };
-            if person.is_empty() || names_resource(person) {
+            let Some(person) = member_of(value) else {
                 continue;
-            }
+            };
             let by = marks
                 .iter()
                 .filter(|other| other.name() == AUTHOR_MARK)
@@ -242,7 +261,7 @@ impl Walk<'_> {
                 .filter(|key| key.parse::<usize>().is_err())
                 .cloned();
             let excerpt = self.read_around(&text, &references, mark.start);
-            self.push(person.to_string(), by, block, excerpt, cx);
+            self.push(person, by, block, excerpt, cx);
         }
     }
 
@@ -271,10 +290,7 @@ impl Walk<'_> {
         if self.string(obj, "name").as_deref() != Some(MARK) {
             return;
         }
-        let Some(person) = self
-            .mark_value(obj)
-            .filter(|person| !person.is_empty() && !names_resource(person))
-        else {
+        let Some(person) = self.mark_value(obj).and_then(|value| member_of(&value)) else {
             return;
         };
         let start = self.int(obj, "start").unwrap_or(0);
@@ -313,7 +329,7 @@ impl Walk<'_> {
 
     fn push(
         &mut self,
-        person: String,
+        person: MemberId,
         by: Option<String>,
         block: Option<String>,
         excerpt: String,
@@ -489,10 +505,14 @@ impl Place {
     /// The tag a notice of this place for `person` goes by: the same on every device and window, so the
     /// host shows it once.
     #[must_use]
-    pub fn tag(&self, person: &str) -> String {
+    pub fn tag(&self, person: &MemberId) -> String {
         format!(
             "{TAGS}{}/{}/{}/{}/{}",
-            self.app, self.record, self.resource, self.anchor, person
+            self.app,
+            self.record,
+            self.resource,
+            self.anchor,
+            person.id()
         )
     }
 }

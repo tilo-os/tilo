@@ -114,7 +114,7 @@ pub fn editor_mark(name: &str, value: &MarkValue) -> Option<Mark> {
             || (!what.is_empty()).then(|| Mark::Embed(what.clone())),
             |page| Some(Mark::Transclusion(page)),
         ),
-        ("mention", MarkValue::Str(id)) if !id.is_empty() => Some(Mark::Mention(id.clone())),
+        ("mention", MarkValue::Str(value)) => Mark::of_reference(value),
         _ => None,
     }
 }
@@ -230,8 +230,10 @@ fn stored_mark(mark: &Mark) -> Option<(&'static str, MarkValue)> {
         Mark::ExternalLink(target) | Mark::ResourceLink(target) => {
             ("link", MarkValue::Str(target.clone()))
         }
-        Mark::Mention(id) if !id.is_empty() => ("mention", MarkValue::Str(id.clone())),
-        Mark::Mention(_) => return None,
+        Mark::Mention(_) | Mark::Reference(_) => (
+            "mention",
+            MarkValue::Str(mark.reference().filter(|value| !value.is_empty())?),
+        ),
     })
 }
 

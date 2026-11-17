@@ -18,7 +18,10 @@ fn a_mention_in_a_message_is_found_in_the_record_the_workspace_sent() {
     let mut bo = ada.fork_as(BO);
     let message_text = "@Bo the deploy is green";
     let mut paragraph = BlockContent::paragraph("b1", message_text);
-    paragraph.marks = vec![MarkSpan::new(0..3, Mark::Mention(BO.into()))];
+    paragraph.marks = vec![MarkSpan::new(
+        0..3,
+        Mark::Mention(ui::tilo_resource::MemberId::person(BO)),
+    )];
     let body = vec![tilo_rich_text::clip_of_content(&paragraph)];
     ada.apply(ChatPart::POST.with(chat_part::Post {
         message: NewMessage {
@@ -42,7 +45,7 @@ fn a_mention_in_a_message_is_found_in_the_record_the_workspace_sent() {
 
     let found = ui::mentions::in_resource(&part);
     assert_eq!(found.len(), 1, "{found:#?}");
-    assert_eq!(found[0].person, BO);
+    assert_eq!(found[0].person, ui::tilo_resource::MemberId::person(BO));
     assert_eq!(found[0].by.as_deref(), Some(ADA), "{found:#?}");
     assert_eq!(found[0].channel.as_deref(), Some(id("c_chat").as_str()));
     assert_eq!(

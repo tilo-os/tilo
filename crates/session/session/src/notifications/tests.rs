@@ -379,7 +379,7 @@ tilo_test_env::scenario! {
                 "Ask about the date",
                 place.clone(),
             )
-            .tagged(place.tag("u-bea"))
+            .tagged(place.tag(&ui::MemberId::person("u-bea")))
             .choosing(vec![(OPEN_ACTION.to_owned(), "Open".to_owned())])
             .staying(Some(Duration::from_secs(8))),
         );
@@ -403,7 +403,7 @@ tilo_test_env::scenario! {
         );
         assert_eq!(
             role.take_chosen_actions(),
-            [(place.tag("u-bea"), OPEN_ACTION.to_owned())],
+            [(place.tag(&ui::MemberId::person("u-bea")), OPEN_ACTION.to_owned())],
             "the action it offered, by the notice's tag"
         );
         assert!(rig.feed().banners.is_empty(), "a chosen notice leaves");

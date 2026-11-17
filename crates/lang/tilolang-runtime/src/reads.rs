@@ -45,9 +45,9 @@ pub enum ReadRequest {
         /// A time as a filter writes it: only resources last changed then.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         changed: Option<String>,
-        /// A person, by member id: only resources whose text mentions them.
+        /// A member: only resources whose text mentions them.
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        mentions: Option<String>,
+        mentions: Option<crate::ids::MemberId>,
     },
     /// The resources whose text holds every one of `words`.
     Find { app: String, words: String },
@@ -271,7 +271,7 @@ struct TextField {
 /// mentions.
 struct TextOf {
     parts: Vec<Part>,
-    mentions: Vec<String>,
+    mentions: Vec<crate::ids::MemberId>,
     /// Authored runs of rich text: the part's anchor, its span and who wrote it.
     authored: Vec<(String, usize, usize, String)>,
 }
@@ -329,8 +329,8 @@ impl Core {
                 }
                 Ok(Value::Rich(rich)) => {
                     for reference in rich.references() {
-                        if let Some(person) = reference.as_person() {
-                            out.mentions.push(person.to_owned());
+                        if let Some(member) = reference.as_member() {
+                            out.mentions.push(member.clone());
                         }
                     }
                     for (anchor, block) in rich.anchors() {

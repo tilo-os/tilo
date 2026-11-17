@@ -13,7 +13,7 @@ use super::BlockEditor;
 use crate::component::{Bound, Component, Described, Event, Link, PropType, Type, Value};
 use crate::theme::Theme;
 use crate::widget::block_editor_body::BodyBinding;
-use crate::widget::marks::{Mark, MentionColors, MentionPaint};
+use crate::widget::marks::{MentionColors, MentionPaint};
 
 pub const OPEN_REFERENCE: &str = "open_reference";
 
@@ -270,7 +270,7 @@ impl BlockEditor {
         {
             let line = &block.line;
             for span in line.marks() {
-                let Mark::Mention(reference) = &span.mark else {
+                let Some(reference) = span.mark.reference() else {
                     continue;
                 };
                 for rect in line.mark_rects(theme, span.range.clone()) {
@@ -509,6 +509,8 @@ mod tests {
     const TASK: &str = r#"{"app":"so.tilo.lang.board","id":"tl:so.tilo.lang.board:d/f:t1","kind":"tl.so.tilo.lang.board.Task"}"#;
     const SECRET: &str =
         r#"{"app":"so.tilo.lang.board","id":"tl:so.tilo.lang.board:hidden","kind":""}"#;
+    /// How a mention of Ada is stored ([`tilo_reference::Embed::mark_value`]).
+    const ADA: &str = r#"{"person":"u-ada"}"#;
 
     fn mention(start: usize, end: usize, value: &str) -> RichMark {
         RichMark {
@@ -527,7 +529,7 @@ mod tests {
                 kind: "paragraph".into(),
                 text: "Ask @ada about Fix it, not secret.".into(),
                 marks: vec![
-                    mention(4, 8, "u-ada"),
+                    mention(4, 8, ADA),
                     mention(15, 21, TASK),
                     mention(27, 33, SECRET),
                 ],
@@ -969,9 +971,9 @@ mod tests {
             let props = BlockEditorProps {
                 value: Some(text(vec![
                     (
-                        "u-ada",
+                        ADA,
                         InlineView::Person {
-                            identity: "u-ada".into(),
+                            identity: tilo_actions::MemberId::person("u-ada"),
                             name: "Ada Lovelace".into(),
                         },
                     ),
@@ -1009,7 +1011,7 @@ mod tests {
                 .find(|(_, reference)| reference == TASK)
                 .map(|(rect, _)| *rect)
                 .expect("the task is painted as a chip");
-            assert!(hits.iter().any(|(_, reference)| reference == "u-ada"));
+            assert!(hits.iter().any(|(_, reference)| reference == ADA));
             assert!(hits.iter().any(|(_, reference)| reference == SECRET));
             assert_eq!(
                 editor.cursor_shape(task.center()),
@@ -1083,7 +1085,7 @@ mod tests {
             assert!(
                 matches!(
                     editor.blocks()[0].line.marks().first().map(|span| &span.mark),
-                    Some(Mark::Mention(reference)) if reference == "tl:so.tilo.notes:tl.so.tilo.notes.d/f:t1"
+                    Some(Mark::Reference(reference)) if reference == "tl:so.tilo.notes:tl.so.tilo.notes.d/f:t1"
                 ),
                 "what is written names the record, so it reads as it reads now wherever it goes"
             );
@@ -1297,7 +1299,7 @@ mod tests {
             laid_out(&mut editor, &mut renderer);
             let paint = editor.mention_paint().cloned().expect("painted");
             assert_eq!(
-                paint("u-ada"),
+                paint(ADA),
                 owner,
                 "a person in the owner's colours for them"
             );

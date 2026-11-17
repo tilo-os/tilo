@@ -89,7 +89,10 @@ pub struct Run {
 #[serde(rename_all = "snake_case")]
 pub enum InlineView {
     /// A person: their avatar and what the room calls them.
-    Person { identity: String, name: String },
+    Person {
+        identity: tilo_action_policy::MemberId,
+        name: String,
+    },
     /// A resource the reader can read: its title as its app publishes it now, the icon of its
     /// type, and what its type shows beside the title (a task's state and number).
     Resource {
@@ -155,7 +158,7 @@ impl Attr {
 impl InlineView {
     fn strings(&self) -> Vec<&str> {
         match self {
-            Self::Person { identity, name } => vec![identity, name],
+            Self::Person { identity, name } => vec![identity.id(), name],
             Self::Resource {
                 title,
                 icon,

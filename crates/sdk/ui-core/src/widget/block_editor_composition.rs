@@ -56,7 +56,7 @@ impl BlockEditor {
                             Mark::Link(_) | Mark::Embed(_) | Mark::Transclusion(_) => {
                                 ("link", None)
                             }
-                            Mark::Mention(_) => ("mention", None),
+                            Mark::Mention(_) | Mark::Reference(_) => ("mention", None),
                         };
                         InlineMark {
                             start: span.range.start,

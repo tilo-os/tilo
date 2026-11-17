@@ -302,7 +302,10 @@ mod cases {
             assert_eq!(body.written_text(), "@me will look at Fix the build.");
             let refs = body.references();
             assert_eq!(refs.len(), 2, "{refs:?}");
-            assert_eq!(refs[0], Reference::Person("me".into()));
+            assert_eq!(
+                refs[0],
+                Reference::Member(tilolang_runtime::ids::MemberId::person("me"))
+            );
             let Some(at) = refs[1].as_resource() else {
                 panic!("{refs:?}")
             };

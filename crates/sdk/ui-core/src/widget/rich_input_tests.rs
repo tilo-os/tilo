@@ -109,11 +109,14 @@ tilo_test_env::scenario! {
         );
         let rich = last_value(&edits).expect("the pick reported the rich text");
         assert_eq!(crate::widget::rich_doc::plain_text(&rich), "@Ada Lovelace ");
-        assert_eq!(rich.blocks[0].marks[0].value, Attr::Text("u_ada".into()));
+        assert_eq!(
+            rich.blocks[0].marks[0].value,
+            Attr::Text(reference(&MemberId::person("u_ada")))
+        );
         assert_eq!(
             rich.embeds[0].view,
             InlineView::Person {
-                identity: "u_ada".into(),
+                identity: MemberId::person("u_ada"),
                 name: "Ada Lovelace".into()
             }
         );
@@ -128,11 +131,11 @@ tilo_test_env::scenario! {
             value: input.value.clone(),
             placeholder: Some("Message".into()),
             enabled: true,
-            speakers: vec![person("u_bo", "Bo")],
+            speakers: vec![person(&MemberId::person("u_bo"), "Bo")],
             people: vec![
-                person("u_ada", "Ada Lovelace"),
-                person("u_bo", "Bo"),
-                person("agent:planner", "Planner"),
+                person(&MemberId::person("u_ada"), "Ada Lovelace"),
+                person(&MemberId::person("u_bo"), "Bo"),
+                person(&MemberId::agent("planner"), "Planner"),
             ],
             submit: Event::None,
         };
@@ -178,11 +181,14 @@ tilo_test_env::scenario! {
                     vec![
                         (
                             Some("In this conversation".to_owned()),
-                            vec!["u_bo".to_owned()]
+                            vec![reference(&MemberId::person("u_bo"))]
                         ),
                         (
                             Some("Members".to_owned()),
-                            vec!["u_ada".to_owned(), "agent:planner".to_owned()]
+                            vec![
+                                reference(&MemberId::person("u_ada")),
+                                reference(&MemberId::agent("planner"))
+                            ]
                         ),
                     ]
                 ),
@@ -197,7 +203,7 @@ tilo_test_env::scenario! {
         let rich = last_value(&edits).expect("the pick reported the rich text");
         assert_eq!(
             rich.blocks[0].marks[0].value,
-            Attr::Text("agent:planner".into())
+            Attr::Text(reference(&MemberId::agent("planner")))
         );
     }
 
@@ -226,11 +232,11 @@ tilo_test_env::scenario! {
     {
         let rich = rich_of(
             "ping @Ada\nsecond",
-            &[MarkSpan::new(5..9, Mark::Mention("u_ada".into()))],
+            &[MarkSpan::new(5..9, Mark::Mention(MemberId::person("u_ada")))],
             &HashMap::from([(
-                "u_ada".to_owned(),
+                reference(&MemberId::person("u_ada")),
                 InlineView::Person {
-                    identity: "u_ada".into(),
+                    identity: MemberId::person("u_ada"),
                     name: "Ada".into(),
                 },
             )]),
@@ -239,7 +245,7 @@ tilo_test_env::scenario! {
         assert_eq!(rich.blocks[0].marks[0].start, 5);
         let (text, marks) = line_of(&rich);
         assert_eq!(text, "ping @Ada\nsecond");
-        assert_eq!(marks, [MarkSpan::new(5..9, Mark::Mention("u_ada".into()))]);
+        assert_eq!(marks, [MarkSpan::new(5..9, Mark::Mention(MemberId::person("u_ada")))]);
     }
 
     phase with_submit_enter_sends_what_was_written_and_breaks_no_line;
@@ -268,10 +274,11 @@ tilo_test_env::scenario! {
     }
 }
 
-fn person(identity: &str, name: &str) -> Person {
-    Person {
-        hue: crate::tokens::PresenceHue::of_identity(identity),
-        identity: tilo_actions::MemberId::person(identity).into(),
-        name: name.into(),
-    }
+fn person(identity: &MemberId, name: &str) -> Person {
+    Person::new(identity.clone(), name)
+}
+
+/// The value a mention of `member` is stored as.
+fn reference(member: &MemberId) -> String {
+    tilo_reference::Embed::Member(member.clone()).mark_value()
 }

@@ -199,7 +199,7 @@ tilo_test_env::scenario! {
             sent.blocks()[0]
                 .marks
                 .iter()
-                .any(|span| span.mark == ui::widget::Mark::Mention(who.id.key())),
+                .any(|span| span.mark == ui::widget::Mark::Mention(who.id.clone())),
             "the body keeps the mention as written"
         );
         // Rendered through the read-only view, it lays out at its width.

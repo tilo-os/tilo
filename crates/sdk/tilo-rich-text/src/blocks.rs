@@ -382,7 +382,10 @@ mod tests {
                     start: 3,
                     end: 7,
                     name: "mention".into(),
-                    value: tilo_doc::document::MarkValue::Str("u-ada".into()),
+                    value: tilo_doc::document::MarkValue::Str(
+                        ui::tilo_reference::Embed::Member(ui::MemberId::person("u-ada"))
+                            .mark_value(),
+                    ),
                 }],
                 level: None,
                 ordered: None,
@@ -405,7 +408,10 @@ mod tests {
         assert_eq!(shown[0].text, "hi @Ada");
         assert_eq!(
             shown[0].marks,
-            [MarkSpan::new(3..7, Mark::Mention("u-ada".into()))]
+            [MarkSpan::new(
+                3..7,
+                Mark::Mention(ui::MemberId::person("u-ada"))
+            )]
         );
         assert_eq!(
             shown[1].kind,

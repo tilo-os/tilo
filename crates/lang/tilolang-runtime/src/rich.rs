@@ -238,13 +238,15 @@ impl RichValue {
         String::new()
     }
 
-    /// Whether any run of it is a `mention` mark naming `person` (`tilo_reference::embed::MARK`):
+    /// Whether any run of it is a `mention` mark naming `member` (`tilo_reference::embed::MARK`):
     /// what a mention count counts, read the way the system's mention notices read it.
     #[must_use]
-    pub fn mentions(&self, person: &str) -> bool {
+    pub fn mentions(&self, member: &crate::ids::MemberId) -> bool {
         self.blocks.iter().any(|b| {
             b.marks.iter().any(|m| {
-                m.name == MENTION && matches!(&m.value, MarkValue::Str(value) if value == person)
+                m.name == MENTION
+                    && matches!(&m.value, MarkValue::Str(value)
+                        if Reference::of_mark(value).as_ref().and_then(Reference::as_member) == Some(member))
             })
         })
     }
@@ -736,7 +738,7 @@ mod tests {
         phase references_are_read_from_the_marks_in_order_each_once;
         {
             let mut v = RichValue::from_text("Ask ");
-            let ada = Reference::Person("u_ada".into());
+            let ada = Reference::Member(crate::ids::MemberId::person("u_ada"));
             let ch = Reference::resource("so.tilo.chat", "chat.channel", "chat.channel:general");
             v.push_reference("@Ada", &ada);
             v.push_text(" in ");

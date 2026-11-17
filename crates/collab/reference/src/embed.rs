@@ -1,8 +1,8 @@
 //! What a reference inside rich text refers to: the one form native apps and tilolang write.
 //!
 //! A reference is a run of rich text marked [`MARK`] (`@Ada`, `#general`, `Fix the build`):
-//! the run is what the text says, the mark's value names what it refers to. A person is named
-//! by their member id; any other resource by the catalogue's resource reference
+//! the run is what the text says, the mark's value names what it refers to. A member is named
+//! by their [`MemberId`]'s serde form; any other resource by the catalogue's resource reference
 //! ([`ResourceAt`]: the app that keeps it, its record when not the app's record of the
 //! workspace, its kind and its id), the same reference an action parameter that picks a
 //! resource takes ([`tilo_actions::Pick::Resource`]). It names no workspace: a reference is
@@ -14,6 +14,7 @@
 //! id (`tl:<app>:<id>`). Nothing rewrites them; text written from now on uses the one form.
 
 use serde_json::{Map, Value as Json};
+use tilo_actions::MemberId;
 
 use crate::link::{Link, ResourceSegment};
 use crate::{ResourceAt, ResourceRef};
@@ -29,8 +30,8 @@ const PUBLISHED_PREFIX: &str = "tl:";
 /// What a reference refers to.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Embed {
-    /// A person (or agent), by member id.
-    Person(String),
+    /// A person, agent or bot.
+    Member(MemberId),
     /// A resource of the workspace, by the catalogue's reference to it. Its label is empty:
     /// the run is what the text calls it, and its app's title is what a reader sees.
     Resource(ResourceAt),
@@ -59,6 +60,9 @@ impl Embed {
             return None;
         }
         if value.starts_with('{') {
+            if let Ok(member) = serde_json::from_str(value) {
+                return Some(Self::Member(member));
+            }
             return resource_of_json(value).map(Self::Resource);
         }
         if value.starts_with(NATIVE_LINK) {
@@ -74,16 +78,16 @@ impl Embed {
             }
             return Some(Self::resource(app, String::new(), value));
         }
-        Some(Self::Person(value.to_owned()))
+        None
     }
 
-    /// The [`MARK`] mark's value naming it, in the one form: a person's member id, or a
-    /// resource's reference as JSON (`{"app":…,"id":…,"kind":…}`, with its record and span
-    /// when it has them).
+    /// The [`MARK`] mark's value naming it, in the one form: a member's id as JSON
+    /// (`{"person":…}`), or a resource's reference as JSON (`{"app":…,"id":…,"kind":…}`, with
+    /// its record and span when it has them).
     #[must_use]
     pub fn mark_value(&self) -> String {
         match self {
-            Self::Person(id) => id.clone(),
+            Self::Member(member) => serde_json::to_string(member).unwrap_or_default(),
             Self::Resource(at) => {
                 let mut fields = Map::new();
                 fields.insert("app".into(), at.app.clone().into());
@@ -102,20 +106,20 @@ impl Embed {
         }
     }
 
-    /// The resource it refers to, when it refers to one rather than a person.
+    /// The resource it refers to, when it refers to one rather than a member.
     #[must_use]
     pub fn as_resource(&self) -> Option<&ResourceAt> {
         match self {
             Self::Resource(at) => Some(at),
-            Self::Person(_) => None,
+            Self::Member(_) => None,
         }
     }
 
-    /// The person it names, when it names one.
+    /// The member it names, when it names one.
     #[must_use]
-    pub fn as_person(&self) -> Option<&str> {
+    pub fn as_member(&self) -> Option<&MemberId> {
         match self {
-            Self::Person(id) => Some(id),
+            Self::Member(member) => Some(member),
             Self::Resource(_) => None,
         }
     }
@@ -183,10 +187,10 @@ pub fn read_text<'a>(
     out
 }
 
-/// Whether a [`MARK`] mark's value names a resource rather than a person, in any form.
+/// Whether a [`MARK`] mark's value names a resource rather than a member, in any form.
 #[must_use]
 pub fn names_resource(value: &str) -> bool {
-    value.starts_with('{') || value.starts_with(NATIVE_LINK) || value.starts_with(PUBLISHED_PREFIX)
+    matches!(Embed::of_mark(value), Some(Embed::Resource(_)))
 }
 
 fn resource_of_json(value: &str) -> Option<ResourceAt> {
@@ -250,11 +254,14 @@ mod tests {
     }
 
     #[test]
-    fn a_person_is_named_by_member_id() {
-        let ada = Embed::Person("u-ada".into());
-        assert_eq!(ada.mark_value(), "u-ada");
-        assert!(!names_resource("u-ada"));
-        assert_eq!(Embed::of_mark("u-ada"), Some(ada));
+    fn a_member_is_named_by_member_id() {
+        let ada = Embed::Member(MemberId::person("u-ada"));
+        assert_eq!(ada.mark_value(), r#"{"person":"u-ada"}"#);
+        assert!(!names_resource(&ada.mark_value()));
+        assert_eq!(Embed::of_mark(&ada.mark_value()), Some(ada));
+        let tide = Embed::Member(MemberId::agent("tide"));
+        assert_eq!(Embed::of_mark(&tide.mark_value()), Some(tide));
+        assert_eq!(Embed::of_mark("u-ada"), None);
         assert_eq!(Embed::of_mark(""), None);
     }
 
@@ -266,13 +273,14 @@ mod tests {
         let text = "Ask @Ada about Fix it, not Acquisition plan.";
         let held_value = held.mark_value();
         let hidden_value = hidden.mark_value();
+        let ada = Embed::Member(MemberId::person("u-ada")).mark_value();
         let runs = [
-            (4, 8, "u-ada"),
+            (4, 8, ada.as_str()),
             (15, 21, held_value.as_str()),
             (27, 43, hidden_value.as_str()),
         ];
         let mut read = |embed: &Embed| match embed {
-            Embed::Person(_) => Reading::AsWritten,
+            Embed::Member(_) => Reading::AsWritten,
             other if *other == held => Reading::Title("Fix the release build".into()),
             Embed::Resource(_) => Reading::Unshared,
         };

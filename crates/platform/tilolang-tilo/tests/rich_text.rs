@@ -198,9 +198,9 @@ tilo_test_env::scenario! {
         let to_task = Reference::resource(APP, format!("tl.{APP}.Task"), format!("tl:{APP}:{task}"));
 
         assert_eq!(
-            inline_view(&ada.host, &Names, &Reference::Person("grace".into())),
+            inline_view(&ada.host, &Names, &Reference::Member(tilolang_tilo::runtime::ids::MemberId::person("grace"))),
             InlineView::Person {
-                identity: "grace".into(),
+                identity: tilolang_tilo::runtime::ids::MemberId::person("grace"),
                 name: "Grace Hopper".into()
             },
             "a person by what the workspace calls them"
@@ -353,7 +353,9 @@ fn a_person_mentioned_in_rich_text_is_told_through_the_mention_notices() {
     let mut asked = tilolang_runtime::rich::RichValue::from_text("Could ");
     asked.push_reference(
         "@Grace",
-        &tilolang_runtime::rich::Reference::Person("grace".into()),
+        &tilolang_runtime::rich::Reference::Member(tilolang_runtime::ids::MemberId::person(
+            "grace",
+        )),
     );
     asked.push_text(" look at ");
     asked.push_reference(
@@ -383,7 +385,7 @@ fn a_person_mentioned_in_rich_text_is_told_through_the_mention_notices() {
     // The workspace's record holds the mention as every app's does: the system finds it without
     // the app, and the task reference is a reference, not a person.
     let found = ui::mentions::in_resource(&grace.doc);
-    let people: Vec<&str> = found.iter().map(|m| m.person.as_str()).collect();
+    let people: Vec<&str> = found.iter().map(|m| m.person.id()).collect();
     assert_eq!(people, ["grace"], "{found:#?}");
     assert!(found[0].excerpt.contains("look at"), "{found:#?}");
 
@@ -391,7 +393,7 @@ fn a_person_mentioned_in_rich_text_is_told_through_the_mention_notices() {
     assert!(
         ui::mentions::in_resource(&ada.doc)
             .iter()
-            .all(|found| found.person != "ada"),
+            .all(|found| found.person.id() != "ada"),
         "the author is told nothing"
     );
 }
@@ -517,7 +519,9 @@ fn a_post_about_a_task_only_ada_holds() -> (Workspace, String, String) {
     let mut said = tilolang_runtime::rich::RichValue::default();
     said.push_reference(
         "@Grace",
-        &tilolang_runtime::rich::Reference::Person("grace".into()),
+        &tilolang_runtime::rich::Reference::Member(tilolang_runtime::ids::MemberId::person(
+            "grace",
+        )),
     );
     said.push_text(" the notes are in ");
     said.push_reference(

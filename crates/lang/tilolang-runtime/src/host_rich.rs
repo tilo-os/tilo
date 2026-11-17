@@ -14,7 +14,7 @@ use std::rc::Rc;
 use crate::abi::Imp;
 use crate::core::{Args, Core, HResult, ret_i32, trap};
 use crate::engine::Wasm;
-use crate::ids::{Actor, MemberId};
+use crate::ids::Actor;
 use crate::rich::{Reference, RichValue};
 use crate::value::{RefValue, ResourceRef, Value};
 
@@ -61,10 +61,9 @@ impl Core {
                         r.references()
                             .into_iter()
                             .filter_map(|r| match r {
-                                // A mention names a member by their key: a person's bare
-                                // root key or an agent's `agent:<id>`.
-                                Reference::Person(key) => MemberId::parse(&key)
-                                    .map(|who| Value::Actor(Actor::Member(who))),
+                                Reference::Member(member) => {
+                                    Some(Value::Actor(Actor::Member(member)))
+                                }
                                 Reference::Resource(_) => None,
                             })
                             .collect(),
@@ -206,9 +205,10 @@ impl Core {
                     .as_ref()
                     .map_or_else(|| p.id().to_owned(), |host| host.name(&p));
                 // A mention links a person; anyone else is named in the text.
-                match p.member_id().and_then(MemberId::person_id) {
-                    Some(person) => out
-                        .push_reference(&format!("@{name}"), &Reference::Person(person.to_owned())),
+                match p.member_id().filter(|member| member.is_person()) {
+                    Some(person) => {
+                        out.push_reference(&format!("@{name}"), &Reference::Member(person.clone()));
+                    }
                     None => out.push_text(&format!("@{name}")),
                 }
             }

@@ -182,7 +182,7 @@ impl Titles<'_> {
 fn referent(reference: &str) -> Option<(String, String)> {
     match tilo_reference::Embed::of_mark(reference)? {
         tilo_reference::Embed::Resource(at) => Some((at.app, at.reference.id)),
-        tilo_reference::Embed::Person(_) => None,
+        tilo_reference::Embed::Member(_) => None,
     }
 }
 

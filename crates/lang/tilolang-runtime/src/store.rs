@@ -1419,7 +1419,7 @@ pub trait Store {
     /// A store that cannot tell what its reader holds reads every resource as not shared: a
     /// reference never grants a read.
     fn reading(&self, reference: &crate::rich::Reference) -> crate::rich::Reading {
-        if reference.as_person().is_some() {
+        if reference.as_member().is_some() {
             crate::rich::Reading::AsWritten
         } else {
             crate::rich::Reading::Unshared

@@ -443,7 +443,9 @@ impl InlineMarkSpan {
             },
             Mark::ExternalLink(url) => InlineMark::ExternalLink { url: url.clone() },
             Mark::ResourceLink(href) => InlineMark::ResourceLink { href: href.clone() },
-            Mark::Mention(id) => InlineMark::Mention { id: id.clone() },
+            Mark::Mention(_) | Mark::Reference(_) => InlineMark::Mention {
+                id: span.mark.reference().unwrap_or_default(),
+            },
         };
         Self {
             start: span.range.start,
@@ -466,7 +468,7 @@ impl InlineMarkSpan {
                     .then(|| Mark::ExternalLink(url.clone()))?,
                 InlineMark::ResourceLink { href } => tilo_rich_text::is_resource_link(href)
                     .then(|| Mark::ResourceLink(href.clone()))?,
-                InlineMark::Mention { id } => Mark::Mention(id.clone()),
+                InlineMark::Mention { id } => Mark::of_reference(id)?,
             };
         Some(MarkSpan::new(self.start..self.end, mark))
     }

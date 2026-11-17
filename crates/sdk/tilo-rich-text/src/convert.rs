@@ -44,7 +44,10 @@ pub fn document_mark(mark: &Mark) -> (&'static str, MarkVal) {
         Mark::Embed(reference) => ("transclusion", MarkVal::Str(reference.clone())),
         Mark::ExternalLink(target) => ("link", MarkVal::Str(target.clone())),
         Mark::ResourceLink(href) => ("link", MarkVal::Str(href.clone())),
-        Mark::Mention(id) => ("mention", MarkVal::Str(id.clone())),
+        Mark::Mention(_) | Mark::Reference(_) => (
+            "mention",
+            MarkVal::Str(mark.reference().unwrap_or_default()),
+        ),
     }
 }
 

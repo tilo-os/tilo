@@ -292,7 +292,7 @@ fn conversation(frame: &mut Frame<'_>) -> f64 {
             "Release is green :tilo: :tilo: \u{2014} @Ada can you tag it? :nope: stays text, and so does code: :tilo:",
             vec![
                 ("Release is green", Mark::Bold),
-                ("@Ada", Mark::Mention("ada".into())),
+                ("@Ada", Mark::Mention(tilo_ui::MemberId::person("ada"))),
                 (":tilo:", Mark::Code),
             ],
         ),

@@ -300,10 +300,13 @@ impl Core {
                 inputs
                     .me
                     .as_ref()
-                    .and_then(|p| p.member_id()?.person_id().map(str::to_owned))
+                    .and_then(|p| p.member_id())
+                    .filter(|member| member.is_person())
+                    .cloned()
                     .ok_or_else(|| "`mentions: me`: this program acts for no person".to_owned())?,
             ),
-            other => other.map(str::to_owned),
+            Some(other) => return Err(format!("`mentions:` takes `me`, not `{other}`").into()),
+            None => None,
         };
         let ask = |app: &str, within: Vec<String>| ReadRequest::Grep {
             app: app.to_owned(),

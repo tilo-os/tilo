@@ -159,8 +159,11 @@ fn mark_tags(mark: &Mark) -> Option<(String, &'static str)> {
         // link it is.
         Mark::ResourceLink(href) => (format!("<a href=\"{}\">", escape_attr(href)), "</a>"),
         Mark::Link(page) => (format!("<a href=\"{PAGE_SCHEME}{page}\">"), "</a>"),
-        Mark::Mention(id) => (
-            format!("<span data-mention=\"{}\">", escape_attr(id)),
+        Mark::Mention(_) | Mark::Reference(_) => (
+            format!(
+                "<span data-mention=\"{}\">",
+                escape_attr(&mark.reference().unwrap_or_default())
+            ),
             "</span>",
         ),
         Mark::Transclusion(_) | Mark::Embed(_) => return None,
@@ -840,9 +843,9 @@ fn inline_marks(name: &str, attrs: &str) -> Vec<Mark> {
         }
     }
     if name == "span"
-        && let Some(id) = attr(attrs, "data-mention").filter(|id| !id.is_empty())
+        && let Some(mark) = attr(attrs, "data-mention").and_then(|value| Mark::of_reference(&value))
     {
-        marks.push(Mark::Mention(id));
+        marks.push(mark);
     }
     marks
 }

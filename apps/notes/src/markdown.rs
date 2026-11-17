@@ -715,7 +715,7 @@ fn mark_chrome(mark: &Mark) -> (&'static str, Option<&'static str>, u8) {
         // Notes still opens it.
         Mark::ResourceLink(_) => ("[", None, 8),
         // Markdown has no mention syntax: the label is the text.
-        Mark::Mention(_) => ("", Some(""), 9),
+        Mark::Mention(_) | Mark::Reference(_) => ("", Some(""), 9),
     }
 }
 

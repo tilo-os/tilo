@@ -37,7 +37,7 @@ pub fn legacy(id: &str, text: &str, mentions: &[Mention]) -> Vec<BlockContent> {
         .map(|mention| {
             MarkSpan::new(
                 mention.start..mention.end(),
-                Mark::Mention(mention.user.key()),
+                Mark::Mention(mention.user.clone()),
             )
         })
         .collect();
@@ -55,13 +55,10 @@ pub fn mentions(blocks: &[BlockContent], members: &[crate::record::Person]) -> V
     let mut offset = 0usize;
     for block in blocks {
         for span in &block.marks {
-            // The editor marks a mention with its member's key.
-            if let Mark::Mention(user) = &span.mark
-                && let Some(user) = ui::tilo_resource::MemberId::parse(user)
-            {
+            if let Mark::Mention(user) = &span.mark {
                 found.push(Mention {
                     is_agent: !user.is_person(),
-                    user,
+                    user: user.clone(),
                     start: offset.saturating_add(span.range.start),
                     len: span.range.len(),
                 });
@@ -102,7 +99,7 @@ mod tests {
         phase a_body_reads_back_as_plain_text_and_its_mentions;
         {
             let mut first = BlockContent::paragraph("a", "hi @Ada");
-            first.marks = vec![MarkSpan::new(3..7, Mark::Mention("u-ada".into()))];
+            first.marks = vec![MarkSpan::new(3..7, Mark::Mention(ui::tilo_resource::MemberId::person("u-ada")))];
             let second = BlockContent::paragraph("b", "and @Ada again");
             let blocks = [first, second];
             assert_eq!(plain_text(&blocks), "hi @Ada\nand @Ada again");
@@ -131,7 +128,7 @@ mod tests {
             assert_eq!(blocks[0].text, text);
             assert_eq!(
                 blocks[0].marks,
-                [MarkSpan::new(5..9, Mark::Mention("u-ada".into()))]
+                [MarkSpan::new(5..9, Mark::Mention(ui::tilo_resource::MemberId::person("u-ada")))]
             );
             let stale = [Mention {
                 start: 90,

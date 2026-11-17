@@ -1920,11 +1920,11 @@ tilo_test_env::scenario! {
         e.focus_block(0, CursorPlacement::End);
         assert_eq!(e.text_before_caret(), Some("hi @ad"));
         e.select_before_caret("@ad".len());
-        assert!(e.insert_mention("u-ada", "@Ada"));
+        assert!(e.insert_mention(&tilo_actions::MemberId::person("u-ada"), "@Ada"));
         assert_eq!(e.blocks[0].line.value(), "hi @Ada ");
         assert_eq!(
             e.blocks[0].line.marks(),
-            [MarkSpan::new(3..7, Mark::Mention("u-ada".into()))]
+            [MarkSpan::new(3..7, Mark::Mention(tilo_actions::MemberId::person("u-ada")))]
         );
         assert_eq!(
             e.blocks[0].line.cursor_pos(),
@@ -1935,7 +1935,7 @@ tilo_test_env::scenario! {
         assert_eq!(e.blocks[0].line.value(), "hi @Ada 🎉");
         assert_eq!(
             e.blocks[0].line.marks(),
-            [MarkSpan::new(3..7, Mark::Mention("u-ada".into()))],
+            [MarkSpan::new(3..7, Mark::Mention(tilo_actions::MemberId::person("u-ada")))],
             "text typed after a mention does not join it"
         );
         e.set_read_only(true);

@@ -15,6 +15,11 @@ use ui::resource::{DocumentId, ResourceType};
 
 const ADA: &str = "u-ada";
 const BEA: &str = "u-bea";
+
+/// The value a mention of `person` is stored as.
+fn mention_of(person: &str) -> String {
+    tilo_reference::Embed::Member(ui::MemberId::person(person)).mark_value()
+}
 const CAI: &str = "u-cai";
 const NOTE: &str = "tab:00000000000000a1";
 const NOTES: &str = "so.tilo.notes";
@@ -200,7 +205,7 @@ fn notebook_at(
     if let Some((start, end, person)) = mention {
         doc.mark(
             &block,
-            Mark::new(MARK.into(), person, start, end),
+            Mark::new(MARK.into(), mention_of(person), start, end),
             ExpandMark::None,
         )
         .unwrap();
@@ -333,7 +338,7 @@ tilo_test_env::scenario! {
         chat_part_mention(&|part, span| {
             let value = part.put_object(span, "value", ObjType::Map).unwrap();
             part.put(&value, "$variant", "str").unwrap();
-            part.put(&value, "$field/str/0", BEA).unwrap();
+            part.put(&value, "$field/str/0", mention_of(BEA)).unwrap();
         });
     }
 
@@ -342,7 +347,7 @@ tilo_test_env::scenario! {
         chat_part_mention(&|part, span| {
             let value = part.put_object(span, "value", ObjType::Map).unwrap();
             part.put(&value, "$variant", "str").unwrap();
-            part.put(&value, "0", BEA).unwrap();
+            part.put(&value, "0", mention_of(BEA)).unwrap();
         });
     }
 }
@@ -439,7 +444,7 @@ tilo_test_env::scenario! {
         let mut held = Held::default();
         let written = notebook("Ask @Bea", Some((4, 8, BEA)), ADA);
         let mut me = BTreeSet::new();
-        me.insert(BEA.to_owned());
+        me.insert(ui::MemberId::person(BEA));
         let told = held.look(
             &Look {
                 app: NOTES,
@@ -605,8 +610,12 @@ fn tracker(issues: usize) -> AutoCommit {
         let thread = doc.put_object(&issue, "thread", ObjType::Text).unwrap();
         doc.splice_text(&thread, 0, 0, "@Bea first look\n").unwrap();
         if at == 7 {
-            doc.mark(&thread, Mark::new(MARK.into(), BEA, 0, 4), ExpandMark::None)
-                .unwrap();
+            doc.mark(
+                &thread,
+                Mark::new(MARK.into(), mention_of(BEA), 0, 4),
+                ExpandMark::None,
+            )
+            .unwrap();
         }
     }
     doc.commit();
@@ -633,7 +642,7 @@ fn comment(device: &Device, doc: &mut AutoCommit, at: usize, person: Option<&str
     if let Some(person) = person {
         doc.mark(
             &thread,
-            Mark::new(MARK.into(), person, end, end.saturating_add(4)),
+            Mark::new(MARK.into(), mention_of(person), end, end.saturating_add(4)),
             ExpandMark::None,
         )
         .unwrap();

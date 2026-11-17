@@ -227,9 +227,13 @@ impl RichInput {
             .flat_map(|tier| &tier.candidates)
         {
             if let Some(reference) = &candidate.reference {
-                let view = match &candidate.person {
-                    Some(_) => InlineView::Person {
-                        identity: reference.clone(),
+                let member = candidate
+                    .person
+                    .as_ref()
+                    .and_then(|person| person.identity.member_id());
+                let view = match member {
+                    Some(member) => InlineView::Person {
+                        identity: member.clone(),
                         name: candidate.name.clone(),
                     },
                     None => InlineView::Resource {
@@ -283,7 +287,12 @@ impl RichInput {
     fn settle(&mut self) {
         let picked: Vec<_> = self.picked.borrow_mut().drain(..).collect();
         for (range, reference) in picked {
-            if !self.views.borrow().contains_key(&reference) {
+            let Some(mark) = Mark::of_reference(&reference) else {
+                continue;
+            };
+            if let Mark::Mention(member) = &mark
+                && !self.views.borrow().contains_key(&reference)
+            {
                 let name = self
                     .line
                     .value()
@@ -294,13 +303,12 @@ impl RichInput {
                 self.views.borrow_mut().insert(
                     reference.clone(),
                     InlineView::Person {
-                        identity: reference.clone(),
+                        identity: member.clone(),
                         name,
                     },
                 );
             }
-            self.line
-                .add_mark(MarkSpan::new(range, Mark::Mention(reference)));
+            self.line.add_mark(MarkSpan::new(range, mark));
         }
         let rich = self.rich();
         if rich != self.shown {
@@ -328,8 +336,10 @@ fn line_of(rich: &RichText) -> (String, Vec<MarkSpan>) {
             };
             let start = base + crate::widget::rich_doc::byte_of_char(&block.text, mark.start);
             let end = base + crate::widget::rich_doc::byte_of_char(&block.text, mark.end);
-            if start < end {
-                marks.push(MarkSpan::new(start..end, Mark::Mention(reference.clone())));
+            if start < end
+                && let Some(mark) = Mark::of_reference(reference)
+            {
+                marks.push(MarkSpan::new(start..end, mark));
             }
         }
         text.push_str(&block.text);
@@ -358,7 +368,7 @@ fn rich_of(text: &str, marks: &[MarkSpan], views: &HashMap<String, InlineView>) 
             ..Block::default()
         };
         for span in marks {
-            let Mark::Mention(reference) = &span.mark else {
+            let Some(reference) = span.mark.reference() else {
                 continue;
             };
             if span.range.start < at || span.range.end > end || span.range.is_empty() {
@@ -370,8 +380,8 @@ fn rich_of(text: &str, marks: &[MarkSpan], views: &HashMap<String, InlineView>) 
                 name: "mention".to_owned(),
                 value: Attr::Text(reference.clone()),
             });
-            if !embeds.iter().any(|embed| embed.reference == *reference)
-                && let Some(view) = views.get(reference)
+            if !embeds.iter().any(|embed| embed.reference == reference)
+                && let Some(view) = views.get(&reference)
             {
                 embeds.push(Embed {
                     reference: reference.clone(),

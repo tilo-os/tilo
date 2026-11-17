@@ -203,7 +203,7 @@ fn unshared_references(doc: &impl ReadDoc, object: &ObjId, text: &str) -> String
         runs.iter()
             .map(|(start, end, value)| (*start, *end, value.as_str())),
         &mut |reference| {
-            if reference.as_person().is_some() {
+            if reference.as_member().is_some() {
                 Reading::AsWritten
             } else {
                 Reading::Unshared
@@ -919,7 +919,8 @@ mod tests {
             "tl:so.tilo.lang.board:plans/tasks:t1",
         )
         .mark_value();
-        for (start, end, value) in [(0, 4, "u-ada".to_owned()), (22, 38, task)] {
+        let ada = ui::tilo_reference::Embed::Member(ui::MemberId::person("u-ada")).mark_value();
+        for (start, end, value) in [(0, 4, ada), (22, 38, task)] {
             doc.mark(
                 &body,
                 Mark::new("mention".into(), value.as_str(), start, end),

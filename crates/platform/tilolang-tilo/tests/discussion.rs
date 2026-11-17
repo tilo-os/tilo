@@ -227,7 +227,10 @@ fn ada_and_bo_after_a_comment() -> (Replica, Replica, ResourceRef, ResourceRef, 
     ada.commit();
     let mut bo = ada.fork("bo", &[(DISCUSSION, DISCUSSION_IDS), (TASKS, TASKS_IDS)]);
     let mut asked = RichValue::from_text("Is this the one that pays the whole quarter? ");
-    asked.push_reference("Ada", &Reference::Person("ada".to_owned()));
+    asked.push_reference(
+        "Ada",
+        &Reference::Member(tilolang_tilo::runtime::ids::MemberId::person("ada")),
+    );
     let asked_text = asked.written_text();
     let all = Value::resource(&bo.host.root_of(DISCUSSION_APP).unwrap());
     let said = target(&call(
@@ -308,7 +311,7 @@ fn a_thread_draws_what_was_said_and_is_read_with_what_it_is_about() {
         "the thread draws what was said, @Ada as a reference in it, not prose"
     );
     assert!(
-        drawn[0].mentions("ada"),
+        drawn[0].mentions(&tilolang_tilo::runtime::ids::MemberId::person("ada")),
         "@Ada refers to her: {:#?}",
         drawn[0]
     );

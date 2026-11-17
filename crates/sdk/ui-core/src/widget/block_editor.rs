@@ -1511,8 +1511,8 @@ impl BlockEditor {
     /// the caret of the focused block, followed by a space. The label is one
     /// marked run, so it reads back as a reference, not as text that happens
     /// to start with `@`.
-    pub fn insert_mention(&mut self, id: &str, label: &str) -> bool {
-        self.insert_marked(label, Some(Mark::Mention(id.to_owned())), " ")
+    pub fn insert_mention(&mut self, id: &tilo_actions::MemberId, label: &str) -> bool {
+        self.insert_marked(label, Some(Mark::Mention(id.clone())), " ")
     }
 
     #[must_use]
@@ -2683,7 +2683,7 @@ impl BlockEditor {
             return false;
         };
         let mark = match (&page.reference, page.id) {
-            (Some(reference), _) => Mark::Mention(reference.clone()),
+            (Some(reference), _) => Mark::Reference(reference.clone()),
             (None, Some(id)) => Mark::Link(id),
             (None, None) => return false,
         };
@@ -2890,7 +2890,7 @@ impl BlockEditor {
         let in_mention = |at: usize| {
             marks
                 .iter()
-                .any(|span| matches!(span.mark, Mark::Mention(_)) && span.range.contains(&at))
+                .any(|span| span.mark.reference().is_some() && span.range.contains(&at))
         };
         if self
             .mention_picker
@@ -2904,7 +2904,7 @@ impl BlockEditor {
         let typed = self.mention_picker.typed();
         self.mention_picker.close();
         self.select_before_caret(typed);
-        if self.insert_mention(&who.id.key(), &who.label()) {
+        if self.insert_mention(&who.id, &who.label()) {
             self.commit_pending = true;
             self.edit_pending = true;
         }
@@ -4859,7 +4859,7 @@ impl BlockEditor {
         let (head, tail) = if projection { ("", "") } else { (head, tail) };
         let mark = match (&page.reference, embedded, projection, page.id) {
             (Some(reference), _, true, _) => Mark::Embed(reference.clone()),
-            (Some(reference), _, false, _) => Mark::Mention(reference.clone()),
+            (Some(reference), _, false, _) => Mark::Reference(reference.clone()),
             (None, true, _, Some(id)) => Mark::Transclusion(id),
             (None, false, _, Some(id)) => Mark::Link(id),
             (None, _, _, None) => return,

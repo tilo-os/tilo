@@ -88,7 +88,7 @@ impl Held {
     pub fn look(
         &mut self,
         look: &Look<'_>,
-        me: &BTreeSet<String>,
+        me: &BTreeSet<ui::MemberId>,
         name: &dyn Fn(&str) -> String,
     ) -> Told {
         let (record, kind) = place_record(look);
@@ -96,7 +96,10 @@ impl Held {
         let mut standing: BTreeMap<String, Notice> = BTreeMap::new();
         for mention in ui::mentions::in_resource_for(look.doc, look.read) {
             if !me.contains(&mention.person)
-                || mention.by.as_ref().is_some_and(|by| me.contains(by))
+                || mention.by.as_ref().is_some_and(|by| {
+                    me.iter()
+                        .any(|member| member.person_id() == Some(by.as_str()))
+                })
             {
                 continue;
             }
@@ -259,7 +262,7 @@ pub struct Given {
 }
 
 struct Inner {
-    me: BTreeSet<String>,
+    me: BTreeSet<ui::MemberId>,
     store: Option<Store>,
     records: Option<Rc<dyn Records>>,
     notices: Option<Rc<dyn Notices>>,
@@ -292,7 +295,11 @@ impl Mentions {
             held.restore(&kept);
         }
         Self(Rc::new(Inner {
-            me: person.into_iter().filter(|id| !id.is_empty()).collect(),
+            me: person
+                .into_iter()
+                .filter(|id| !id.is_empty())
+                .map(ui::MemberId::person)
+                .collect(),
             store,
             records,
             notices,

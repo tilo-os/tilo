@@ -193,7 +193,10 @@ impl ChatApp {
         };
         let map: std::collections::HashMap<String, ui::widget::marks::MentionColors> = members
             .into_iter()
-            .map(|(user, _)| (user.key(), colors(user)))
+            .map(|(user, _)| {
+                let reference = ui::tilo_reference::Embed::Member(user.clone()).mark_value();
+                (reference, colors(user))
+            })
             .collect();
         let paint: ui::widget::marks::MentionPaint =
             std::rc::Rc::new(move |user: &str| map.get(user).copied().unwrap_or(fallback));

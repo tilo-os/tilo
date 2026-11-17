@@ -30,7 +30,11 @@ pub enum Mark {
     Embed(String),
     ExternalLink(String),
     ResourceLink(String),
-    Mention(String),
+    /// A member named in the text (`@Ada`).
+    Mention(tilo_actions::MemberId),
+    /// A record named in the text, by the value its reference is stored as
+    /// ([`tilo_reference::Embed::mark_value`]).
+    Reference(String),
 }
 
 /// How a mention of one member is painted.
@@ -60,8 +64,35 @@ impl Mark {
                 | (Mark::Embed(_), Mark::Embed(_))
                 | (Mark::ExternalLink(_), Mark::ExternalLink(_))
                 | (Mark::ResourceLink(_), Mark::ResourceLink(_))
-                | (Mark::Mention(_), Mark::Mention(_))
+                | (
+                    Mark::Mention(_) | Mark::Reference(_),
+                    Mark::Mention(_) | Mark::Reference(_)
+                )
         )
+    }
+
+    /// The mark a stored reference `value` reads as: a mention of the member it names, or a
+    /// reference to whatever else it names. `None` for an empty value.
+    #[must_use]
+    pub fn of_reference(value: &str) -> Option<Self> {
+        match tilo_reference::Embed::of_mark(value) {
+            Some(tilo_reference::Embed::Member(member)) => Some(Self::Mention(member)),
+            Some(tilo_reference::Embed::Resource(_)) | None => {
+                (!value.is_empty()).then(|| Self::Reference(value.to_owned()))
+            }
+        }
+    }
+
+    /// The value a mention or a record reference is stored as; `None` for any other mark.
+    #[must_use]
+    pub fn reference(&self) -> Option<String> {
+        match self {
+            Self::Mention(member) => {
+                Some(tilo_reference::Embed::Member(member.clone()).mark_value())
+            }
+            Self::Reference(value) => Some(value.clone()),
+            _ => None,
+        }
     }
 }
 
@@ -370,7 +401,7 @@ pub fn segments_for(text_len: usize, spans: &[MarkSpan]) -> Vec<MarkSegment> {
                     Mark::Embed(reference) => seg.embed = Some(reference.clone()),
                     Mark::ExternalLink(_) => seg.external_link = true,
                     Mark::ResourceLink(href) => seg.resource_link = Some(href.clone()),
-                    Mark::Mention(id) => seg.mention = Some(id.clone()),
+                    Mark::Mention(_) | Mark::Reference(_) => seg.mention = s.mark.reference(),
                 }
             }
         }
