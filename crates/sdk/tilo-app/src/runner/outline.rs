@@ -15,11 +15,6 @@ use ui_core::widget::Widget;
 /// The `outline` payload's parameter naming an item to show before reading.
 pub(crate) const ANCHOR_PARAM: &str = "anchor";
 
-/// The value's key explaining that this host cannot picture the view it just described: a
-/// page draws none for a caller, so it says so rather than answering nothing.
-#[cfg(target_family = "wasm")]
-pub(crate) const PICTURE_UNAVAILABLE: &str = "picture_unavailable";
-
 /// The item a payload asks to be shown first, when it asks for one.
 pub(crate) fn rendered_anchor(payload: &[u8]) -> Option<String> {
     let args: serde_json::Value = serde_json::from_slice(payload).ok()?;

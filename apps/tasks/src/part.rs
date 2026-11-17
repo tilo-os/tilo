@@ -28,8 +28,8 @@ use std::rc::Rc;
 
 use ui::framework::Parts;
 
-use tilo_document::RichText;
-use tilo_reference::ResourceAt;
+use tilo_rich_text::RichText;
+use ui::tilo_reference::ResourceAt;
 use ui::tilo_resource::items::Ref;
 use ui::tilo_resource::{
     self, ActionCx, Bytes, Collection, Counter, Id, Model, NonBlank, Origin, Refusal, resource,

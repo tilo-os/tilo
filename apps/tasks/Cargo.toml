@@ -34,8 +34,6 @@ tasks-model = { path = "../tasks-model" }
 # The parts the issues are kept in: the same rich text and references the
 # tracker's issues hold, and their typed action arguments.
 serde.workspace = true
-tilo-document = { path = "../../crates/doc/tilo-document" }
-tilo-reference = { path = "../../crates/collab/reference" }
 
 [dev-dependencies]
 # Tests see this package's samples. The key must not be the package name:
