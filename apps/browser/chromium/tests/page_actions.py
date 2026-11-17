@@ -1767,6 +1767,16 @@ class PageActions(unittest.TestCase):
         for name in ('code', 'nick'):
             drawn = self.main_world(f'getComputedStyle(document.querySelector("[name={name}]")).webkitTextSecurity')
             self.assertEqual(drawn, 'disc', name)
+
+        # A picture of such a field shows dots and nothing of what it holds:
+        # it is the same picture whatever the field holds, at the same length.
+        def pictured(text):
+            self.assertTrue(bound(code, text, self.url, 'code')['ok'])
+            self.main_world('(document.activeElement && document.activeElement.blur(), "left")')
+            return self.ok('capture', element=code)['data']['capture']
+
+        self.assertEqual(pictured('x' * len(other_mark)), pictured(other_mark))
+        self.assertEqual(holds('code'), other_mark)
         # Every read of the page says that the three fields are set, and how
         # long, and none of what they hold.
         after = heard(self.ok('outline', actor='ben'))['outline']
