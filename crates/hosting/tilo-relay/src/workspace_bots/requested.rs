@@ -287,7 +287,10 @@ impl Follower {
             dir.join("progress.json"),
         )?;
         if let Some(person) = runs_for(request) {
-            runner = runner.runs_for(person.to_owned(), super::assistant::host_steps());
+            runner = runner.runs_for(
+                person.to_owned(),
+                super::assistant::host_steps(self.workspaces.clone()),
+            );
         }
         let running = tokio::spawn(runner.run());
         let installation = bot.installation.clone();

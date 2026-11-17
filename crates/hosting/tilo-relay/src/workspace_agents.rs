@@ -769,46 +769,61 @@ impl HostAgents {
         }
     }
 
-    /// Count `cost` against `agent`'s day on the workspace's record of its agents, for its keeper:
-    /// the host's model charged it, and the keeper's limit is read from it. The host writes it as
-    /// the workspace's governor, the count its keeper's own device would write for an agent it runs,
-    /// and as a change of Chat's: a host decides it against Chat's surface like any other.
+    /// Count `cost` against `agent`'s day ([`count_spend`]).
     async fn charge(&self, workspace: &str, agent: &Agent, day: &str, cost: u64) {
-        let keeper = agent.keeper.clone();
-        let record = collab_types::workspace_document_id(tilo_workspace_agent::KIND);
-        let (id, day) = (agent.id.0.clone(), day.to_owned());
-        let counted = self
-            .workspaces
-            .author_application(
-                workspace,
-                self.workspaces.governor(),
-                &tilo_agent_session::AppCatalogue::native(),
-                CHAT,
-                &record,
-                |doc| {
-                    let mut counting =
-                        tilo_resource::Replica::<WorkspaceAgents>::from_doc(std::mem::take(doc))
-                            .as_author(&keeper)
-                            .in_app(CHAT, "Chat");
-                    let applied = counting
-                        .apply(WorkspaceAgents::RECORD_AGENT_SPEND.with(
-                            tilo_workspace_agent::workspace_agents::RecordAgentSpend {
-                                agent: tilo_resource::Id::from_raw(id),
-                                day,
-                                cost_micros: cost,
-                            },
-                        ))
-                        .map(drop)
-                        .map_err(|error| error.to_string());
-                    std::mem::swap(doc, counting.doc_mut());
-                    applied
-                },
-            )
-            .await;
-        if let Err(error) = counted {
+        if let Err(error) = count_spend(&self.workspaces, workspace, agent, day, cost).await {
             tracing::warn!(%workspace, agent = %agent.id.0, %error, "an agent's spend is not counted");
         }
     }
+}
+
+/// Count `cost` against `agent`'s day on the workspace's record of its agents, for its keeper:
+/// a model the host asked for the agent charged it, and the keeper's limit is read from it. The
+/// host writes it as the workspace's governor, the count its keeper's own device would write for
+/// an agent it runs, and as a change of Chat's: a host decides it against Chat's surface
+/// like any other. Whatever the host asks a keeper's model for on their agent's behalf counts
+/// here: a turn's calls, and a judgement one of the agent's events asked.
+///
+/// # Errors
+/// Why the workspace's record did not take the count.
+pub(crate) async fn count_spend(
+    workspaces: &Workspaces,
+    workspace: &str,
+    agent: &Agent,
+    day: &str,
+    cost: u64,
+) -> Result<(), String> {
+    let keeper = agent.keeper.clone();
+    let record = collab_types::workspace_document_id(tilo_workspace_agent::KIND);
+    let (id, day) = (agent.id.0.clone(), day.to_owned());
+    workspaces
+        .author_application(
+            workspace,
+            workspaces.governor(),
+            &tilo_agent_session::AppCatalogue::native(),
+            CHAT,
+            &record,
+            |doc| {
+                let mut counting =
+                    tilo_resource::Replica::<WorkspaceAgents>::from_doc(std::mem::take(doc))
+                        .as_author(&keeper)
+                        .in_app(CHAT, "Chat");
+                let applied = counting
+                    .apply(WorkspaceAgents::RECORD_AGENT_SPEND.with(
+                        tilo_workspace_agent::workspace_agents::RecordAgentSpend {
+                            agent: tilo_resource::Id::from_raw(id),
+                            day,
+                            cost_micros: cost,
+                        },
+                    ))
+                    .map(drop)
+                    .map_err(|error| error.to_string());
+                std::mem::swap(doc, counting.doc_mut());
+                applied
+            },
+        )
+        .await
+        .map_err(|error| error.to_string())
 }
 
 /// A turn's model calls, asked of the model its agent's keeper linked, with their own key.
@@ -1451,7 +1466,7 @@ async fn call_tool(
 }
 
 /// Today, `YYYY-MM-DD`, as an agent's keeper counts the days its spending is charged to.
-fn today() -> String {
+pub(crate) fn today() -> String {
     ui::clock::today().to_string()
 }
 

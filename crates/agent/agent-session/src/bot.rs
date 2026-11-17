@@ -4,6 +4,7 @@
 pub mod api;
 pub mod held;
 pub mod host_steps;
+pub mod judging;
 pub mod kept;
 /// What a bot reads of an item: its stored shape, as every host reads it.
 pub use tilo_automerge::items as item_json;
