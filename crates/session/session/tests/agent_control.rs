@@ -187,7 +187,10 @@ fn an_admitted_client_is_an_agent_member_people_find() {
             .find(|agent| agent.name == "Claude Code")
     });
     assert_eq!(listed.key, "claude-code");
-    assert!(listed.mine, "kept by the person who admitted it");
+    assert_eq!(
+        listed.status, "Kept by you",
+        "kept by the person who admitted it"
+    );
     program.end();
 }
 

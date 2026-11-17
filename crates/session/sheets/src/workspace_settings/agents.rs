@@ -10,8 +10,8 @@ use ui::icons::{Icon, app_glyph};
 use ui::peniko::Color;
 use ui::tokens::{PresenceHue, Rhythm};
 use ui::widget::{
-    Button, ButtonRole, ChipStyle, ColorSwatch, ColorSwatchPicker, Column, Container, ControlSize,
-    Dropdown, Element, EmptyState, ListRow, Row, Section, Segment, TextInput, ToggleGroup, Tone,
+    Button, ButtonRole, ChipStyle, Column, Container, ControlSize, Dropdown, Element, EmptyState,
+    ListRow, Row, Section, Segment, TextInput, ToggleGroup, Tone,
 };
 
 use super::general::{button, buttons, caption};
@@ -33,10 +33,6 @@ pub struct Agent {
     /// What it is asked for by.
     pub key: String,
     pub name: String,
-    /// Its colour: a slot of the presence palette.
-    pub colour: u8,
-    /// Whether the person here keeps it, who alone picks its colour.
-    pub mine: bool,
     /// Who keeps it, in one plain line.
     pub status: String,
     /// What it spent of the day its keeper allows, as the line under that one;
@@ -176,9 +172,7 @@ pub struct Agents {
     /// The form's name field: what it is called for assistive tools, and what
     /// it says while it is empty.
     pub name: String,
-    /// The form's colour row, what it explains, and its model row.
-    pub colour: String,
-    pub colour_hint: String,
+    /// The form's model row.
     pub model: String,
     /// What the model row says while no model is chosen.
     pub model_default: String,
@@ -280,8 +274,7 @@ pub(super) fn intro(intro: &Intro, icon: Icon) -> Element {
 }
 
 /// The way to make an agent: one button, and the small form it opens with
-/// the name people will ask it by, the colour it is drawn in and the model it
-/// plans with.
+/// the name people will ask it by and the model it plans with.
 fn new_agent(agents: &Agents, parts: &Parts) -> Element {
     if !parts.local.get().creating {
         let open = parts.clone();
@@ -305,22 +298,6 @@ fn new_agent(agents: &Agents, parts: &Parts) -> Element {
     let name = Row::new()
         .with_rhythm(Rhythm::Related)
         .push(Box::new(field));
-
-    // Its colour: the twelve people colours, none chosen until the person
-    // does, so an agent nobody dressed keeps the colour its name gives it.
-    let picked = parts.new_colour.get();
-    let chosen = PresenceHue::from_id(&picked).map(PresenceHue::slot);
-    let pick = parts.clone();
-    let colours = colour_picker(chosen).on_change(move |index| {
-        if let Some(hue) = PresenceHue::ALL.get(index) {
-            pick.pick_new_colour(hue.id());
-        }
-    });
-    let colour = ListRow::new("ws-agents-new-colour", agents.colour.clone())
-        .secondary(agents.colour_hint.clone())
-        .two_line_secondary()
-        .nested()
-        .trailing(Box::new(colours));
 
     // Its model: one of this device's Settings, or its keeper's default. Where this device offers
     // none (a page, whose agents run on the workspace's server) there is nothing to choose.
@@ -361,7 +338,7 @@ fn new_agent(agents: &Agents, parts: &Parts) -> Element {
                 .on_effect(move || typed.add_agent()),
         ));
 
-    let mut rows: Vec<Element> = vec![Box::new(name), Box::new(colour)];
+    let mut rows: Vec<Element> = vec![Box::new(name)];
     if !agents.models.is_empty() {
         rows.push(Box::new(model));
     }
@@ -369,45 +346,17 @@ fn new_agent(agents: &Agents, parts: &Parts) -> Element {
     Box::new(Section::titled(agents.add.clone(), rows))
 }
 
-/// The twelve people colours as swatches, the one at `chosen` marked.
-fn colour_picker(chosen: Option<usize>) -> ColorSwatchPicker {
-    let palette = ui::Theme::dark().tokens.colors.presence;
-    let picker = ColorSwatchPicker::new(
-        PresenceHue::ALL
-            .iter()
-            .map(|hue| ColorSwatch::named(palette.hue(*hue), hue.label())),
-        PresenceHue::ALL.len(),
-    );
-    match chosen {
-        Some(slot) => picker.with_selected(slot),
-        None => picker,
-    }
-}
-
-/// The colour of the presence palette at `slot`, as a row's avatar wears it.
-fn colour_of(slot: u8) -> Color {
-    let hue = PresenceHue::from_slot(usize::from(slot));
+/// The colour the agent `key` wears everywhere, as a row's avatar wears it.
+fn colour_of(key: &str) -> Color {
+    let hue = PresenceHue::of_member(&ui::permissions::MemberId::agent(key));
     ui::Theme::dark().tokens.colors.presence.hue(hue)
 }
 
 /// One agent: its face in its own colour, name, keeper and the model it
-/// plans with, with its colour, Review access and Remove; its colour palette
-/// opens under the row for its keeper.
+/// plans with, with Review access and Remove.
 fn agent_row(agents: &Agents, agent: &Agent, parts: &Parts) -> Element {
-    let (review, remove, toggle) = (agent.key.clone(), agent.key.clone(), agent.key.clone());
-    let switching = parts.clone();
-    let colour = PresenceHue::from_slot(usize::from(agent.colour));
-    let swatch = Button::icon_only(
-        &format!("ws-agents-palette-{}", agent.key),
-        Icon::Palette,
-        &format!("{}: {}", agents.colour, colour.label()),
-    )
-    .tooltip(format!("{}: {}", agents.colour, colour.label()))
-    .control_size(ControlSize::Small)
-    .with_enabled(agents.manage && agent.mine)
-    .on_effect(move || switching.toggle_palette(&toggle));
+    let (review, remove) = (agent.key.clone(), agent.key.clone());
     let controls = buttons(vec![
-        swatch,
         // Anyone in the workspace may see what an agent may do.
         button(
             parts,
@@ -433,7 +382,7 @@ fn agent_row(agents: &Agents, agent: &Agent, parts: &Parts) -> Element {
     let mut row = ListRow::new(format!("ws-agents-agent-{}", agent.key), agent.name.clone())
         .two_line_title()
         .avatar(agent.name.clone(), agent.key.clone())
-        .avatar_colour(colour_of(agent.colour))
+        .avatar_colour(colour_of(&agent.key))
         .secondary(agent.status.clone());
     if !agent.spend.is_empty() {
         row = row.note(agent.spend.clone());
@@ -441,32 +390,7 @@ fn agent_row(agents: &Agents, agent: &Agent, parts: &Parts) -> Element {
     if !agent.model.is_empty() {
         row = row.value(agent.model.clone());
     }
-    let row = row.trailing(controls);
-    if parts.local.get().palette != agent.key {
-        return Box::new(row);
-    }
-    let pick = parts.clone();
-    let key = agent.key.clone();
-    let picker = colour_picker(Some(usize::from(agent.colour))).on_change(move |index| {
-        if let Some(hue) = PresenceHue::ALL.get(index) {
-            pick.set_colour(&key, hue.id());
-        }
-    });
-    Box::new(
-        Column::new()
-            .with_no_padding()
-            .with_intrinsic_height()
-            .with_rhythm(Rhythm::Related)
-            .push(Box::new(row))
-            .push(Box::new(
-                ListRow::new(
-                    format!("ws-agents-colour-{}", agent.key),
-                    agents.colour.clone(),
-                )
-                .nested()
-                .trailing(Box::new(picker)),
-            )),
-    )
+    Box::new(row.trailing(controls))
 }
 
 /// The workspace's bots: what they are in one line, Add a bot, and a row for
@@ -757,18 +681,13 @@ fn limit_section(review: &AgentReview, limit: &Limit, parts: &Parts) -> Element 
 
 /// The Agents tab as the workspace's owner sees it, for captures.
 pub(super) fn sample() -> Agents {
-    let agent =
-        |key: &str, name: &str, colour: u8, mine: bool, status: &str, spend: &str, model: &str| {
-            Agent {
-                key: key.to_owned(),
-                name: name.to_owned(),
-                colour,
-                mine,
-                status: status.to_owned(),
-                spend: spend.to_owned(),
-                model: model.to_owned(),
-            }
-        };
+    let agent = |key: &str, name: &str, status: &str, spend: &str, model: &str| Agent {
+        key: key.to_owned(),
+        name: name.to_owned(),
+        status: status.to_owned(),
+        spend: spend.to_owned(),
+        model: model.to_owned(),
+    };
     Agents {
         intro: Intro {
             title: "3 agents".to_owned(),
@@ -779,8 +698,6 @@ pub(super) fn sample() -> Agents {
         create: "Create".to_owned(),
         cancel: "Cancel".to_owned(),
         name: "Name".to_owned(),
-        colour: "Colour".to_owned(),
-        colour_hint: "Its colour comes from its name until you pick one.".to_owned(),
         model: "Model".to_owned(),
         model_default: "Your default model".to_owned(),
         models: vec![
@@ -801,8 +718,6 @@ pub(super) fn sample() -> Agents {
             agent(
                 "claude",
                 "Claude",
-                9,
-                true,
                 "Kept by you",
                 "$0.42 of $5 today",
                 "Model: Sonnet from Anthropic",
@@ -810,8 +725,6 @@ pub(super) fn sample() -> Agents {
             agent(
                 "reviewer",
                 "Reviewer",
-                5,
-                true,
                 "Kept by you",
                 "",
                 "Model: No model chosen in Settings",
@@ -819,8 +732,6 @@ pub(super) fn sample() -> Agents {
             agent(
                 "server",
                 "Encrypted backup",
-                2,
-                false,
                 "Kept by Ada",
                 "$1.20 today",
                 "",

@@ -1431,7 +1431,6 @@ fields = [
   { path = "agents", type = { collection = { named = "Agent" } }, stored = "keyed" },
   { path = "agents.*.id", type = "text" },
   { path = "agents.*.name", type = "text", label = true },
-  { path = "agents.*.colour", type = { option = "int" } },
   { path = "agents.*.keeper", type = "text" },
   { path = "agents.*.on_host", type = "bool" },
   { path = "agents.*.model", type = { option = "text" } },
@@ -1487,7 +1486,6 @@ params = [
   { name = "keeper", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
   { name = "id", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
   { name = "model", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
-  { name = "colour", type = { option = "int" }, required = false, schema = { type = ["integer", "null"], maximum = 255, minimum = 0 } },
   { name = "mcp_client", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
 ]
 
@@ -1514,14 +1512,6 @@ kind = "undoable"
 params = [
   { name = "agent", type = "text", required = true, schema = { type = "string" } },
   { name = "on_host", type = "bool", required = true, schema = { type = "boolean" } },
-]
-
-[[resources.verbs]]
-id = "set-agent-colour"
-kind = "undoable"
-params = [
-  { name = "agent", type = "text", required = true, schema = { type = "string" } },
-  { name = "colour", type = "int", required = true, schema = { type = "integer", maximum = 255, minimum = 0 } },
 ]
 
 [[resources.verbs]]
@@ -1638,7 +1628,6 @@ name = "Agent"
 fields = [
   { name = "id", type = "text" },
   { name = "name", type = "text" },
-  { name = "colour", type = { option = "int" } },
   { name = "keeper", type = "text" },
   { name = "on_host", type = "bool" },
   { name = "model", type = { option = "text" } },

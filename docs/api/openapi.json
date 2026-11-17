@@ -10945,14 +10945,6 @@
               "null"
             ]
           },
-          "colour": {
-            "maximum": 255,
-            "minimum": 0,
-            "type": [
-              "integer",
-              "null"
-            ]
-          },
           "mcp_client": {
             "type": [
               "string",
@@ -11018,24 +11010,6 @@
         "required": [
           "agent",
           "on_host"
-        ],
-        "description": ""
-      },
-      "chat.agent.set-agent-colour.Arguments": {
-        "type": "object",
-        "properties": {
-          "agent": {
-            "type": "string"
-          },
-          "colour": {
-            "maximum": 255,
-            "minimum": 0,
-            "type": "integer"
-          }
-        },
-        "required": [
-          "agent",
-          "colour"
         ],
         "description": ""
       },
@@ -31286,12 +31260,6 @@
       "resource": "chat.agent",
       "action": "set-agent-on-host",
       "arguments": "#/components/schemas/chat.agent.set-agent-on-host.Arguments"
-    },
-    {
-      "app": "so.tilo.chat",
-      "resource": "chat.agent",
-      "action": "set-agent-colour",
-      "arguments": "#/components/schemas/chat.agent.set-agent-colour.Arguments"
     },
     {
       "app": "so.tilo.chat",

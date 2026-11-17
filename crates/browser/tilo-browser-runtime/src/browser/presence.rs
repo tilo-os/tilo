@@ -158,11 +158,9 @@ impl Mount {
             .filter_map(|agent| {
                 let name = agent.name.trim();
                 (!name.is_empty()).then(|| {
-                    (
-                        MemberId::agent(agent.id.0.clone()),
-                        name.to_owned(),
-                        PresenceHue::from_slot(usize::from(agent.slot())),
-                    )
+                    let id = MemberId::agent(agent.id.0.clone());
+                    let hue = PresenceHue::of_member(&id);
+                    (id, name.to_owned(), hue)
                 })
             })
             .collect();

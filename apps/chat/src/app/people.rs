@@ -178,35 +178,24 @@ impl ChatApp {
         }
     }
 
-    /// The presence hue `id` wears: an agent's is the one its own document gives it (its keeper's
-    /// choice, else the one rule's), a person's the one the workspace announced for them, else
-    /// the one rule every surface draws a member by ([`ui::tokens::PresenceHue::of_member`]) —
-    /// so a face, a chip and a byline are one colour, here as in every app of the workspace.
+    /// The presence hue `id` wears: the one the workspace announced for them, else the one rule
+    /// every surface draws a member by ([`ui::tokens::PresenceHue::of_member`]) — so a face, a
+    /// chip and a byline are one colour, here as in every app of the workspace, for an agent as
+    /// for a person.
     pub(crate) fn member_hue(&self, id: &MemberId) -> ui::tokens::PresenceHue {
-        Some(id)
-            .filter(|member| !member.is_person())
-            .and_then(|member| self.workspace_agent_colours.get(member.id()))
-            .map(|slot| ui::tokens::PresenceHue::from_slot(usize::from(*slot)))
-            .or_else(|| {
-                self.workspace_colors
-                    .get(id)
-                    .and_then(|(red, green, blue)| {
-                        ui::tokens::PresenceHue::nearest_to_srgb(*red, *green, *blue)
-                    })
+        self.workspace_colors
+            .get(id)
+            .and_then(|(red, green, blue)| {
+                ui::tokens::PresenceHue::nearest_to_srgb(*red, *green, *blue)
             })
             .unwrap_or_else(|| ui::tokens::PresenceHue::of_member(id))
     }
 
     /// The member's own colour, in the shared presence vocabulary: the workspace's assignment
-    /// when it made one for a person, otherwise [`Self::member_hue`] as the colour that hue
-    /// wears.
+    /// when it made one, otherwise [`Self::member_hue`] as the colour that hue wears.
     pub fn member_color(&self, id: &MemberId) -> (u8, u8, u8) {
-        let agent = Some(id)
-            .filter(|member| !member.is_person())
-            .is_some_and(|member| self.workspace_agent_colours.contains_key(member.id()));
         self.workspace_colors
             .get(id)
-            .filter(|_| !agent)
             .copied()
             .unwrap_or_else(|| ui::presence::identity_rgb(self.member_hue(id)))
     }

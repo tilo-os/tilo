@@ -35,7 +35,6 @@ pub(super) async fn keeps_an_assistant(
                 keeper: None,
                 id: Some(ASSISTANT.into()),
                 model: None,
-                colour: None,
                 mcp_client: None,
             }),
         )

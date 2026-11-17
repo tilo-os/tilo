@@ -715,7 +715,6 @@ so-tilo-workspace-settings-change-review-activity = Die Aktivität ansehen
 so-tilo-workspace-settings-change-review-agent = Einen Agenten prüfen
 so-tilo-workspace-settings-change-revoke = Eine Berechtigung entziehen
 so-tilo-workspace-settings-change-set-agent-answer = Eine Art beantworten
-so-tilo-workspace-settings-change-set-agent-colour = Die Farbe des Agenten setzen
 so-tilo-workspace-settings-change-set-agent-model = Das Modell wählen
 so-tilo-workspace-settings-change-set-agent-spend-limit = Das Tageslimit setzen
 so-tilo-workspace-settings-change-set-role = Eine Rolle ändern

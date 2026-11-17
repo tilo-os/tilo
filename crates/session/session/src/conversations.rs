@@ -44,6 +44,8 @@ const LEARNED_VERBS: [&str; 3] = ["learn", "correct", "forget"];
 pub(crate) struct WorkspaceFacts {
     pub(crate) workspace: String,
     pub(crate) policy: WorkspacePolicy,
+    /// What the workspace's member list calls its people and agents, as apps are told it.
+    pub(crate) members: chat::projection::PeopleNames,
 }
 
 /// The conversations this session's agents answer in, read from Chat's record of each workspace it
@@ -69,6 +71,8 @@ struct Opened {
     /// its decisions follow.
     policy: WorkspacePolicy,
     records: WorkspaceResources,
+    /// What the workspace's member list calls its people and agents, as the last pass read it.
+    members: chat::projection::PeopleNames,
     chat: Option<WorkspaceResource<chat::Chat>>,
     /// The head of the messages' chain, and the part it holds here.
     part: Option<(u64, WorkspaceResource<chat::parts::ChatPart>)>,
@@ -106,14 +110,6 @@ impl Conversations {
             || MemberId::person(""),
             |opened| opened.records.author().clone(),
         )
-    }
-
-    /// The workspace's agents by their id, as the workspace keeps their names: what a
-    /// conversation with an agent is named for.
-    fn agent_names(opened: &Opened) -> chat::projection::AgentNames {
-        Self::workspace_agents(opened)
-            .map(|record| record.get().active_names())
-            .unwrap_or_default()
     }
 
     /// The person's own record of what their agents learned about them in the workspace `opened`
@@ -482,14 +478,6 @@ impl Conversations {
     fn turns(&self, workspace: &WorkspaceFacts, person: &str) -> Vec<(AgentTurn, String)> {
         match self.opened(workspace, person) {
             Some((chat, part)) => {
-                // A conversation with an agent is named for it, as the window names it: the
-                // workspace's own record of its agents says what it is called.
-                let names = self
-                    .open
-                    .borrow()
-                    .get(&workspace.workspace)
-                    .map(Self::agent_names)
-                    .unwrap_or_default();
                 let instructions = self
                     .open
                     .borrow()
@@ -511,7 +499,7 @@ impl Conversations {
                     &chat_record,
                     &part_record,
                     person,
-                    &names,
+                    &workspace.members,
                     &instructions,
                     learned.as_deref(),
                 )
@@ -543,9 +531,11 @@ impl Conversations {
             records: self
                 .records
                 .in_workspace(&workspace.workspace, MemberId::person(person.to_owned())),
+            members: chat::projection::PeopleNames::new(),
             chat: None,
             part: None,
         });
+        opened.members.clone_from(&workspace.members);
         let permissions = PermissionContext::from_access(tilo_action_policy::MemberAccess::person(
             workspace.policy.clone(),
             person.to_owned(),
@@ -650,10 +640,7 @@ impl Conversations {
                 Some(chat.display_names(
                     &Id::from_raw(channel),
                     Some(opened.records.author()),
-                    (
-                        &Self::agent_names(opened),
-                        &chat::projection::PeopleNames::new(),
-                    ),
+                    &opened.members,
                 ))
             })
             .unwrap_or_default()
@@ -687,7 +674,7 @@ impl Conversations {
                     ui::local_identity::load().map(|identity| identity.display_name),
                     me.id(),
                 ),
-                agents: Self::agent_names(opened),
+                members: opened.members.clone(),
             };
             return Some(chat::views::Channel::read(
                 &chat, &rows, channel, me, &names,
@@ -1137,7 +1124,7 @@ fn turns(
     chat: &chat::Chat,
     part: &chat::parts::ChatPart,
     person: &str,
-    agent_names: &chat::projection::AgentNames,
+    members: &chat::projection::PeopleNames,
     agent_instructions: &std::collections::HashMap<String, String>,
     learned: Option<&tilo_app::tilo_workspace_agent::learned::Learned>,
 ) -> Vec<(AgentTurn, String)> {
@@ -1164,8 +1151,8 @@ fn turns(
             let instruction = told.instruction;
             let fold = told.fold;
             let agent_instruction = agent_instructions.get(&summons.agent).cloned();
-            let name = agent_names
-                .get(&summons.agent)
+            let name = members
+                .get(&MemberId::agent(&summons.agent))
                 .cloned()
                 .unwrap_or_else(|| summons.agent.clone());
             Some((
@@ -1183,7 +1170,7 @@ fn turns(
                         title: chat.display_names(
                             &summons.conversation,
                             Some(&MemberId::person(person)),
-                            (agent_names, &chat::projection::PeopleNames::new()),
+                            members,
                         ),
                         instruction,
                         agent_instruction,
@@ -1282,7 +1269,7 @@ mod tests {
             &chat,
             &head,
             ME,
-            &chat::projection::AgentNames::new(),
+            &chat::projection::PeopleNames::new(),
             &told,
             Some(&known),
         );
@@ -1320,7 +1307,7 @@ mod tests {
             &chat,
             &head,
             ME,
-            &chat::projection::AgentNames::new(),
+            &chat::projection::PeopleNames::new(),
             &std::collections::HashMap::new(),
             None,
         );
@@ -1359,7 +1346,7 @@ mod tests {
                 &chat,
                 &head,
                 person,
-                &chat::projection::AgentNames::new(),
+                &chat::projection::PeopleNames::new(),
                 &std::collections::HashMap::new(),
                 Some(&known),
             );
@@ -1422,7 +1409,7 @@ mod tests {
             chat,
             head,
             ME,
-            &chat::projection::AgentNames::new(),
+            &chat::projection::PeopleNames::new(),
             &std::collections::HashMap::new(),
             None,
         )
@@ -1803,7 +1790,7 @@ mod tests {
             &chat,
             &asked,
             ME,
-            &chat::projection::AgentNames::new(),
+            &chat::projection::PeopleNames::new(),
             &std::collections::HashMap::new(),
             None,
         );

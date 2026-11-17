@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.chat@a7f9e5790ecdce7e";
+export const SURFACE = "so.tilo.chat@d2b35f5c7421bf62";
 
 export interface Category {
   name: string;
@@ -504,7 +504,6 @@ export interface Emoji {
 export interface Agent {
   id: string;
   name: string;
-  colour: number | null;
   keeper: string;
   on_host: boolean;
   model: string | null;
@@ -989,7 +988,6 @@ export interface CreateAgentArgs {
   keeper?: string;
   id?: string;
   model?: string;
-  colour?: number;
   mcp_client?: string;
 }
 
@@ -1010,12 +1008,6 @@ export interface RecordAgentSpendArgs {
 export interface SetAgentOnHostArgs {
   agent: string;
   on_host: boolean;
-}
-
-/** The arguments of `set-agent-colour`. */
-export interface SetAgentColourArgs {
-  agent: string;
-  colour: number;
 }
 
 /** The arguments of `rename-agent`. */
@@ -1557,7 +1549,6 @@ export interface ChatAgent extends tilo.Resource {
     keeper?: string;
     id?: string;
     model?: string;
-    colour?: number;
     mcp_client?: string;
   }): Promise<void>;
   /** Runs `create-agent` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
@@ -1581,12 +1572,6 @@ export interface ChatAgent extends tilo.Resource {
   }): Promise<void>;
   /** Runs `set-agent-on-host` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   setAgentOnHostMany(items: SetAgentOnHostArgs[]): Promise<tilo.ActionAnswer[]>;
-  setAgentColour(args: {
-    agent: string;
-    colour: number;
-  }): Promise<void>;
-  /** Runs `set-agent-colour` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  setAgentColourMany(items: SetAgentColourArgs[]): Promise<tilo.ActionAnswer[]>;
   renameAgent(args: {
     agent: string;
     name: string;
@@ -1676,7 +1661,7 @@ export interface ChatAgent extends tilo.Resource {
 
 /** The actions `ChatAgent` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const CHATAGENT_ACTIONS = ["createAgent", "createAgentMany", "setAgentSpendLimit", "setAgentSpendLimitMany", "recordAgentSpend", "recordAgentSpendMany", "setAgentOnHost", "setAgentOnHostMany", "setAgentColour", "setAgentColourMany", "renameAgent", "renameAgentMany", "setAgentModel", "setAgentModelMany", "setAgentInstruction", "setAgentInstructionMany", "setAgentBound", "setAgentBoundMany", "retireAgent", "retireAgentMany", "startSubAgent", "startSubAgentMany", "noteSubAgent", "noteSubAgentMany", "stopSubAgent", "stopSubAgentMany", "subAgentStands", "subAgentStandsMany", "subAgentProduced", "subAgentProducedMany", "subAgentCoding", "subAgentCodingMany", "setSubAgentLimits", "setSubAgentLimitsMany"] as const;
+export const CHATAGENT_ACTIONS = ["createAgent", "createAgentMany", "setAgentSpendLimit", "setAgentSpendLimitMany", "recordAgentSpend", "recordAgentSpendMany", "setAgentOnHost", "setAgentOnHostMany", "renameAgent", "renameAgentMany", "setAgentModel", "setAgentModelMany", "setAgentInstruction", "setAgentInstructionMany", "setAgentBound", "setAgentBoundMany", "retireAgent", "retireAgentMany", "startSubAgent", "startSubAgentMany", "noteSubAgent", "noteSubAgentMany", "stopSubAgent", "stopSubAgentMany", "subAgentStands", "subAgentStandsMany", "subAgentProduced", "subAgentProducedMany", "subAgentCoding", "subAgentCodingMany", "setSubAgentLimits", "setSubAgentLimitsMany"] as const;
 
 /** The `chat.agent` kind at `path`. */
 export function chatAgent(ws: tilo.Workspace, path: string): ChatAgent {

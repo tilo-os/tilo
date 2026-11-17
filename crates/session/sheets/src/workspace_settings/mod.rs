@@ -116,16 +116,6 @@ pub enum WorkspaceSettingsEffect {
         name: String,
         #[param("The model it plans with; empty for the keeper's default")]
         model: String,
-        #[param("Its colour: a presence colour; empty for one derived from its name")]
-        colour: String,
-    },
-    /// Draw an agent in the colour its keeper picked
-    #[effect(attended)]
-    SetAgentColour {
-        #[param("The agent, by its key in the list")]
-        agent: String,
-        #[param("Its colour: one of the presence colours")]
-        colour: String,
     },
     /// Show what an agent may do in the workspace, app by app
     #[effect(own_device, kind = "read")]
@@ -326,8 +316,6 @@ struct Local {
     draft: permissions::Draft,
     /// Whether a new agent's form is open.
     creating: bool,
-    /// The agent whose colour palette is open, by its key.
-    palette: String,
 }
 
 /// What the shell lends the sheet: whether it is up, what it shows, and
@@ -351,7 +339,6 @@ pub struct WorkspaceSettingsState {
 struct Drawn {
     new_agent: LocalState<String>,
     new_model: LocalState<String>,
-    new_colour: LocalState<String>,
     limit: LocalState<String>,
     local: LocalState<Local>,
 }
@@ -456,7 +443,6 @@ impl WorkspaceSettingsState {
             .get_or_insert_with(|| Drawn {
                 new_agent: LocalState::new(String::new()),
                 new_model: LocalState::new(String::new()),
-                new_colour: LocalState::new(String::new()),
                 limit: LocalState::new(String::new()),
                 local: LocalState::new(Local::default()),
             })
@@ -467,7 +453,6 @@ impl WorkspaceSettingsState {
             name,
             new_agent: drawn.new_agent,
             new_model: drawn.new_model,
-            new_colour: drawn.new_colour,
             limit: drawn.limit,
             local: drawn.local,
             state: Some(self.clone()),
@@ -529,7 +514,6 @@ impl ResourceApp for WorkspaceSettingsApp {
         let name = cx.local(initial.name.clone());
         let new_agent = cx.local(String::new());
         let new_model = cx.local(String::new());
-        let new_colour = cx.local(String::new());
         let limit = cx.local(String::new());
         let shown = cx.local(initial);
         let staged = cx.fixture::<Local>().map(|local| (*local).clone());
@@ -553,7 +537,6 @@ impl ResourceApp for WorkspaceSettingsApp {
             name,
             new_agent,
             new_model,
-            new_colour,
             limit,
             local: local.clone(),
             state,
@@ -746,8 +729,6 @@ struct Parts {
     new_agent: LocalState<String>,
     /// The model a new agent plans with as chosen.
     new_model: LocalState<String>,
-    /// The colour a new agent is drawn in as chosen, a presence colour's id.
-    new_colour: LocalState<String>,
     /// What an agent may spend a day as its keeper typed it.
     limit: LocalState<String>,
     /// What the sheet keeps to itself while it is up.
@@ -768,7 +749,6 @@ impl Parts {
             }
             self.new_agent.set(String::new());
             self.new_model.set(String::new());
-            self.new_colour.set(String::new());
             self.local.update(|local| local.creating = false);
         }
         match (&self.state, &self.dispatch) {
@@ -821,13 +801,7 @@ impl Parts {
     fn cancel_agent(&self) {
         self.new_agent.set(String::new());
         self.new_model.set(String::new());
-        self.new_colour.set(String::new());
         self.local.update(|local| local.creating = false);
-    }
-
-    /// Dress the new agent in `colour` as the form shows it.
-    fn pick_new_colour(&self, colour: &str) {
-        self.new_colour.set(colour.to_owned());
     }
 
     /// Ask for an agent as the form has it.
@@ -835,27 +809,6 @@ impl Parts {
         self.ask(WorkspaceSettingsEffect::AddAgent {
             name: self.new_agent.get(),
             model: self.new_model.get(),
-            colour: self.new_colour.get(),
-        });
-    }
-
-    /// Open the colour palette under `agent`, or put it away again.
-    fn toggle_palette(&self, agent: &str) {
-        self.local.update(|local| {
-            if local.palette == agent {
-                local.palette.clear();
-            } else {
-                agent.clone_into(&mut local.palette);
-            }
-        });
-    }
-
-    /// Ask for `agent` to be drawn in `colour`, and put the palette away.
-    fn set_colour(&self, agent: &str, colour: &str) {
-        self.local.update(|local| local.palette.clear());
-        self.ask(WorkspaceSettingsEffect::SetAgentColour {
-            agent: agent.to_owned(),
-            colour: colour.to_owned(),
         });
     }
 

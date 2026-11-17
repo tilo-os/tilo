@@ -414,10 +414,6 @@ tilo_test_env::scenario! {
             says(&mut app, "Analyst"),
             "the form holds the name typed into it"
         );
-        assert!(says(
-            &mut app,
-            "Its colour comes from its name until you pick one."
-        ));
         press(&mut app, "ws-agents-create");
         press(&mut app, "ws-bots-add");
         assert_eq!(
@@ -426,7 +422,6 @@ tilo_test_env::scenario! {
                 WorkspaceSettingsEffect::AddAgent {
                     name: "Analyst".to_owned(),
                     model: String::new(),
-                    colour: String::new(),
                 },
                 WorkspaceSettingsEffect::AddBot,
             ]

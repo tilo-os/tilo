@@ -317,7 +317,6 @@ impl ChatApp {
             (&user.id, &user.name).hash(&mut people);
         }
         hash_sorted(&self.workspace_colors, &mut people);
-        hash_sorted(&self.workspace_agent_colours, &mut people);
         let look = PaintLook {
             theme: theme.clone(),
             transform: tf,

@@ -375,16 +375,6 @@ pub struct ChatApp {
     /// What the workspace calls this window's person, numbered like anyone else.
     pub(crate) own_label: Option<String>,
     pub(crate) workspace_colors: HashMap<MemberId, (u8, u8, u8)>,
-    /// The presence colour each agent's resource gives it, by bare id: the one its keeper chose, or
-    /// the one its identity gives it. An agent wears it here as it does in every app of the
-    /// workspace.
-    pub(crate) workspace_agent_colours: HashMap<Id, u8>,
-    /// The agent identity resource, followed every frame (see `follow_agents`).
-    agents_document:
-        Option<ui::framework::WorkspaceResource<ui::tilo_workspace_agent::WorkspaceAgents>>,
-    /// Opens the agent identity record once the workspace delivers it: a window whose agents
-    /// record was made after it opened reads it too, without being opened again.
-    agents_opener: Option<ui::framework::ResourceOpener<ui::tilo_workspace_agent::WorkspaceAgents>>,
     /// Explicit shot fixture; never set on the live launch path.
     capture_agent_presence: Option<PresenceCtx>,
     /// The direct conversations that hold messages, by conversation id: the
@@ -765,9 +755,6 @@ impl ChatApp {
             workspace_labels: ui::presence::MemberLabels::default(),
             own_label: None,
             workspace_colors: HashMap::new(),
-            workspace_agent_colours: HashMap::new(),
-            agents_document: None,
-            agents_opener: None,
             capture_agent_presence: None,
             direct_held: std::collections::HashSet::new(),
             recorded_channels: std::collections::HashSet::new(),

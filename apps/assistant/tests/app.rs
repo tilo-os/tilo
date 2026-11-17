@@ -297,7 +297,6 @@ fn a_window_opened_before_the_agents_arrive_shows_them_when_they_do() {
                     keeper: None,
                     id: Some("assistant".to_owned()),
                     model: None,
-                    colour: None,
                     mcp_client: None,
                 }),
             )

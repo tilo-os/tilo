@@ -14,7 +14,6 @@ fn make(name: &str) -> tilo_resource::Invoke<WorkspaceAgents> {
         keeper: None,
         id: None,
         model: None,
-        colour: None,
         mcp_client: None,
     })
 }
@@ -27,7 +26,6 @@ fn restore(id: &str, keeper: &str) -> tilo_resource::Invoke<WorkspaceAgents> {
         keeper: Some(keeper.to_owned()),
         id: Some(id.to_owned()),
         model: None,
-        colour: None,
         mcp_client: None,
     })
 }
@@ -43,13 +41,6 @@ fn set_model(agent: &str, model: Option<&str>) -> tilo_resource::Invoke<Workspac
     WorkspaceAgents::SET_AGENT_MODEL.with(workspace_agents::SetAgentModel {
         agent: id(agent),
         model: model.map(str::to_owned),
-    })
-}
-
-fn set_colour(agent: &str, colour: u8) -> tilo_resource::Invoke<WorkspaceAgents> {
-    WorkspaceAgents::SET_AGENT_COLOUR.with(workspace_agents::SetAgentColour {
-        agent: id(agent),
-        colour,
     })
 }
 
@@ -89,7 +80,7 @@ fn only(state: &WorkspaceAgents) -> &Agent {
 }
 
 #[test]
-fn an_agent_is_made_with_a_name_keeper_colour_and_when() {
+fn an_agent_is_made_with_a_name_keeper_and_when() {
     let mut record = as_person(ADA);
     record.set_now_ms(1_700_000_000_000);
     record.apply(make("Claude")).unwrap();
@@ -112,65 +103,12 @@ fn an_agent_is_made_with_a_name_keeper_colour_and_when() {
     );
 }
 
-/// Nothing chosen, an agent wears what the one rule gives it, as the bar and every app draw it.
 #[test]
-fn an_agents_colour_follows_the_rule_every_surface_draws_it_by() {
+fn an_agents_identity_is_its_id() {
     let mut record = as_person(ADA);
     record.apply(make("Claude")).unwrap();
-    let agent = {
-        let state = record.state().unwrap();
-        state.agents[0].clone()
-    };
-    let hue =
-        collab_types::presence::PresenceHue::of_member(&collab_types::MemberId::agent(&agent.id.0));
-    assert_eq!(agent.colour, None, "nothing chosen, so the rule's");
-    assert_eq!(agent.slot(), u8::try_from(hue.slot()).unwrap());
+    let agent = record.state().unwrap().agents[0].clone();
     assert_eq!(agent.identity(), format!("agent:{}", agent.id.0));
-}
-
-#[test]
-fn an_agent_is_made_in_the_colour_its_keeper_picks() {
-    let mut record = as_person(ADA);
-    record
-        .apply(
-            WorkspaceAgents::CREATE_AGENT.with(workspace_agents::CreateAgent {
-                name: NonBlank::parse("Claude").expect("a name"),
-                keeper: None,
-                id: None,
-                model: None,
-                colour: Some(4),
-                mcp_client: None,
-            }),
-        )
-        .unwrap();
-    assert_eq!(record.state().unwrap().agents[0].colour, Some(4));
-    let beyond = record.apply(
-        WorkspaceAgents::CREATE_AGENT.with(workspace_agents::CreateAgent {
-            name: NonBlank::parse("Ada").expect("a name"),
-            keeper: None,
-            id: None,
-            model: None,
-            colour: Some(u8::try_from(collab_types::presence::PRESENCE_LEN).unwrap()),
-            mcp_client: None,
-        }),
-    );
-    let refused = beyond.unwrap_err();
-    assert!(refused.to_string().contains("palette"), "{refused}");
-}
-
-#[test]
-fn only_the_keeper_chooses_the_colour_it_is_drawn_in() {
-    let mut record = as_person(ADA);
-    record.apply(make("Claude")).unwrap();
-    let agent = record.state().unwrap().agents[0].id.0.clone();
-    let mut grace = record.fork().as_author(GRACE);
-    let refused = grace.apply(set_colour(&agent, 2)).unwrap_err();
-    assert!(refused.to_string().contains("keeper"), "{refused}");
-    record.apply(set_colour(&agent, 2)).unwrap();
-    assert_eq!(record.state().unwrap().agents[0].colour, Some(2));
-    let beyond = u8::try_from(collab_types::presence::PRESENCE_LEN).unwrap();
-    let refused = record.apply(set_colour(&agent, beyond)).unwrap_err();
-    assert!(refused.to_string().contains("palette"), "{refused}");
 }
 
 #[test]
@@ -635,7 +573,6 @@ fn a_record_of_before_limits_reads_without_one() {
         "agents": [{
             "id": "claude",
             "name": "Claude",
-            "colour": 2,
             "keeper": "ada",
             "model": "anthropic/sonnet",
             "bound": [],
@@ -656,7 +593,6 @@ fn a_record_of_before_instructions_reads_without_one() {
         "agents": [{
             "id": "claude",
             "name": "Claude",
-            "colour": 2,
             "keeper": "ada",
             "model": "anthropic/sonnet",
             "mcp_client": null,
@@ -698,7 +634,6 @@ const GOLDEN: &str = r#"{
     {
       "id": "claude",
       "name": "Claude",
-      "colour": 2,
       "keeper": "ada",
       "on_host": false,
       "model": "anthropic/sonnet",
@@ -736,7 +671,6 @@ fn golden_state() -> WorkspaceAgents {
                 keeper: Some(ADA.to_owned()),
                 id: Some("claude".to_owned()),
                 model: Some("anthropic/sonnet".to_owned()),
-                colour: Some(2),
                 mcp_client: None,
             }),
         )
@@ -782,7 +716,6 @@ fn only_the_keeper_moves_an_agent_to_the_host() {
                 keeper: None,
                 id: Some("claude-code".to_owned()),
                 model: None,
-                colour: None,
                 mcp_client: Some("Claude Code".to_owned()),
             }),
         )

@@ -1158,7 +1158,6 @@ mod tests {
             keeper: None,
             id: Some("main".to_owned()),
             model: None,
-            colour: None,
             mcp_client: None,
         }))
         .expect("a person makes their own agent");

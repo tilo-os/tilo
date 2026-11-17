@@ -684,7 +684,6 @@ fn a_part_that_read_a_workspaces_document_as_not_here_shows_it_when_it_arrives()
                     keeper: None,
                     id: None,
                     model: None,
-                    colour: None,
                     mcp_client: None,
                 }),
             )

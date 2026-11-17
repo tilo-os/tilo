@@ -28,7 +28,6 @@ pub(super) fn with_main() -> Replica<WorkspaceAgents> {
                 keeper: None,
                 id: Some(MAIN.to_owned()),
                 model: None,
-                colour: None,
                 mcp_client: None,
             }),
         )
@@ -582,7 +581,6 @@ fn a_sub_agent_changes_nothing_of_the_workspaces_agents_but_its_own_team() {
                 keeper: None,
                 id: None,
                 model: None,
-                colour: None,
                 mcp_client: None,
             }),
         ),
@@ -610,13 +608,6 @@ fn a_sub_agent_changes_nothing_of_the_workspaces_agents_but_its_own_team() {
             WorkspaceAgents::SET_AGENT_SPEND_LIMIT.with(workspace_agents::SetAgentSpendLimit {
                 agent: id(MAIN),
                 limit_micros: None,
-            }),
-        ),
-        (
-            "choose a colour",
-            WorkspaceAgents::SET_AGENT_COLOUR.with(workspace_agents::SetAgentColour {
-                agent: id("lead"),
-                colour: 1,
             }),
         ),
         (
@@ -1084,7 +1075,6 @@ fn a_sub_agent_is_kept_as_the_fields_a_client_reads() {
         serde_json::json!({
             "id": "find-the-deck",
             "name": "Find the deck",
-            "colour": null,
             "keeper": ADA,
             "on_host": true,
             "model": null,
@@ -1124,7 +1114,6 @@ fn a_sub_agent_is_kept_as_the_fields_a_client_reads() {
         "agents": [{
             "id": "claude",
             "name": "Claude",
-            "colour": 2,
             "keeper": "ada",
             "on_host": false,
             "model": null,

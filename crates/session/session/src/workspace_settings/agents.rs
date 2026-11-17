@@ -204,8 +204,6 @@ impl Agents {
             create: t("workspace-settings-create-agent"),
             cancel: t("workspace-settings-cancel"),
             name: t("workspace-settings-agent-name"),
-            colour: t("workspace-settings-agent-colour"),
-            colour_hint: t("workspace-settings-agent-colour-hint"),
             model: t("workspace-settings-agent-model"),
             model_default: t("workspace-settings-agent-model-default-choice"),
             manage: false,
@@ -227,26 +225,20 @@ impl Agents {
         review: Option<&str>,
     ) -> sheet::Agents {
         let state = record.get();
-        let me = record.me();
         let manage = may.manage;
         let config = agent_provider_config::ProviderConfig::load();
         let agents: Vec<sheet::Agent> = state
             .made_by_people()
-            .map(|agent| {
-                let mine = agent.keeper == me.id();
-                sheet::Agent {
-                    key: agent.id.0.clone(),
-                    name: agent.name.clone(),
-                    colour: agent.slot(),
-                    mine,
-                    status: keeper_line(names, workspace, record, &agent.keeper),
-                    spend: spend_line(agent),
-                    model: if agent.on_host {
-                        t("workspace-settings-agent-on-host")
-                    } else {
-                        model_line(&config, &agent.id.0, agent.model.as_deref())
-                    },
-                }
+            .map(|agent| sheet::Agent {
+                key: agent.id.0.clone(),
+                name: agent.name.clone(),
+                status: keeper_line(names, workspace, record, &agent.keeper),
+                spend: spend_line(agent),
+                model: if agent.on_host {
+                    t("workspace-settings-agent-on-host")
+                } else {
+                    model_line(&config, &agent.id.0, agent.model.as_deref())
+                },
             })
             .collect();
         let count = agents.len();
@@ -280,8 +272,6 @@ impl Agents {
             create: t("workspace-settings-create-agent"),
             cancel: t("workspace-settings-cancel"),
             name: t("workspace-settings-agent-name"),
-            colour: t("workspace-settings-agent-colour"),
-            colour_hint: t("workspace-settings-agent-colour-hint"),
             model: t("workspace-settings-agent-model"),
             model_default: t("workspace-settings-agent-model-default-choice"),
             // An agent made here runs on the workspace's server, on its model: nothing to choose.
@@ -612,7 +602,6 @@ impl Agents {
                 keeper: None,
                 id: Some(agent.clone()),
                 model,
-                colour: None,
                 mcp_client: None,
             }));
             if let Err(refusal) = made {
@@ -676,15 +665,10 @@ impl Agents {
             Err(reason) => Answered::Refused(reason),
         };
         Some(match effect {
-            Ask::AddAgent {
-                name,
-                model,
-                colour,
-            } => {
+            Ask::AddAgent { name, model } => {
                 // The record is the admission: the agent works here because Chat's record names
                 // it and this person keeps it.
-                let colour = presence_slot(colour);
-                match self.create(workspace, person, (name.as_str(), None), model, colour) {
+                match self.create(workspace, person, (name.as_str(), None), model) {
                     Ok(_) => Answered::Done,
                     Err(reason) => Answered::Refused(reason),
                 }
@@ -751,13 +735,6 @@ impl Agents {
                     Some(agent),
                 )
             }
-            Ask::SetAgentColour { agent, colour } => {
-                let Some(colour) = presence_slot(colour) else {
-                    tracing::debug!(%colour, "no such presence colour: nothing changed");
-                    return Some(Answered::Done);
-                };
-                shown(self.set_colour(workspace, person, agent, colour), None)
-            }
             _ => return None,
         })
     }
@@ -774,7 +751,6 @@ impl Agents {
         person: &UserId,
         (name, mcp_client): (&str, Option<&str>),
         model: &str,
-        colour: Option<u8>,
     ) -> Result<(String, String), String> {
         let record = self
             .record(workspace, person)
@@ -788,7 +764,6 @@ impl Agents {
                 keeper: None,
                 id: Some(id.clone()),
                 model: (!model.is_empty()).then(|| model.to_owned()),
-                colour,
                 mcp_client: mcp_client.map(str::to_owned),
             }))
             .map_err(|error| error.to_string())?;
@@ -876,29 +851,6 @@ impl Agents {
             .map_err(|error| error.to_string())
     }
 
-    /// Choose the colour the agent `agent` is drawn in, as its keeper.
-    ///
-    /// # Errors
-    /// The workspace's agents could not be opened here, Chat's grants refuse
-    /// the change, or the person does not keep the agent.
-    pub(crate) fn set_colour(
-        &self,
-        workspace: Option<&Workspace>,
-        person: &UserId,
-        agent: &str,
-        colour: u8,
-    ) -> Result<(), String> {
-        let record = self
-            .record(workspace, person)
-            .ok_or_else(|| t("workspace-settings-agents-unavailable"))?;
-        record
-            .invoke(&Record::SET_AGENT_COLOUR.with(actions::SetAgentColour {
-                agent: Id::from_raw(agent.to_owned()),
-                colour,
-            }))
-            .map_err(|error| error.to_string())
-    }
-
     /// Choose the model the agent `agent` plans with, as its keeper.
     ///
     /// # Errors
@@ -947,11 +899,6 @@ impl Agents {
             )
             .map_err(|error| error.to_string())
     }
-}
-
-/// The presence colour `id` names, by its slot.
-fn presence_slot(id: &str) -> Option<u8> {
-    ui::tokens::PresenceHue::from_id(id).and_then(|hue| u8::try_from(hue.slot()).ok())
 }
 
 /// Today, as a day's counter keeps it: this device's clock, which is its keeper's on the device

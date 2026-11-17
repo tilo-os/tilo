@@ -359,6 +359,7 @@ impl crate::Shared {
             workspaces
                 .into_iter()
                 .map(|(workspace, policy)| crate::conversations::WorkspaceFacts {
+                    members: self.member_names(&workspace, &listed),
                     workspace,
                     policy,
                 })
@@ -383,6 +384,28 @@ impl crate::Shared {
                 tilo_session_core::layout::Busy::default(),
             );
         }
+    }
+
+    /// What `workspace`'s member list calls its people and agents, as apps are told it: its people
+    /// as its governance names them, its agents as its record of them does (`listed`).
+    fn member_names(&self, workspace: &str, listed: &[Listed]) -> chat::projection::PeopleNames {
+        let people = self
+            .engine
+            .as_ref()
+            .and_then(|engine| engine.people(workspace).ok())
+            .unwrap_or_default()
+            .into_iter()
+            .map(|member| (member.id, member.name));
+        let agents = listed
+            .iter()
+            .filter(|agent| agent.workspace == workspace)
+            .map(|agent| {
+                (
+                    ui::permissions::MemberId::agent(&agent.id),
+                    agent.name.clone(),
+                )
+            });
+        people.chain(agents).collect()
     }
 
     /// The person's agent member for the MCP client `client` in `workspace`, as the MCP server

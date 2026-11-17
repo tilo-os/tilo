@@ -80,7 +80,7 @@ impl Person {
 
 /// What a channel's resource does not itself say of the people in it, which the session reading
 /// it knows: the name its reader goes by on this device — the very name the top bar shows them
-/// — and the workspace's agents by their id. A resource holds ids; a person is named where they
+/// — and the workspace's member list. A resource holds ids; a person is named where they
 /// are read.
 ///
 /// Chat's resource names the people it was told about (a workspace's roster), and a session's
@@ -90,9 +90,8 @@ impl Person {
 pub struct Names {
     /// The reader's own name, as this device shows them; empty when it knows none.
     pub me: String,
-    /// Each agent of the workspace, by its id (the part after `agent:`), as the workspace
-    /// keeps its name.
-    pub agents: crate::projection::AgentNames,
+    /// What the workspace's member list calls each of its people and agents.
+    pub members: crate::projection::PeopleNames,
 }
 
 /// One message of a channel, as its page shows it.
@@ -469,11 +468,7 @@ impl Channel {
                 Some(channel) if channel.is_channel() && !channel.name.trim().is_empty() => {
                     channel.name.trim().to_owned()
                 }
-                _ => chat.display_names(
-                    &channel_id,
-                    Some(me),
-                    (&names.agents, &std::collections::HashMap::new()),
-                ),
+                _ => chat.display_names(&channel_id, Some(me), &names.members),
             },
             topic: channel
                 .as_ref()
@@ -503,7 +498,7 @@ impl Channel {
         }
         let agent = !author.is_person();
         let shown = sdk::tilo_resource::members::name_of(author)
-            .or_else(|| agent_name(names, author))
+            .or_else(|| listed_name(names, author))
             .or_else(|| (author == me).then(|| names.me.trim().to_owned()))
             .filter(|name| !name.is_empty())
             .unwrap_or_else(|| crate::identity::unnamed_label(author));
@@ -622,19 +617,19 @@ fn retryable(rows: &[crate::model::Message], row: &crate::model::Message) -> boo
         .to_string()
 }
 
-/// The name an agent author shows, as the workspace's member document names it, and otherwise what
-/// Chat calls an agent it has not been told the name of. An author that is not an agent has no
-/// agent's name.
-fn agent_name(names: &Names, author: &MemberId) -> Option<String> {
-    if author.is_person() {
-        return None;
-    }
+/// The name an author shows, as the workspace's member list names them, and otherwise, for an
+/// agent, what Chat calls an agent it has not been told the name of.
+fn listed_name(names: &Names, author: &MemberId) -> Option<String> {
     let called = names
-        .agents
-        .get(author.id())
+        .members
+        .get(author)
         .map(|name| name.trim())
-        .filter(|name| !name.is_empty());
-    Some(called.map_or_else(|| crate::i18n::t("chat-agent-kind"), str::to_owned))
+        .filter(|name| !name.is_empty())
+        .map(str::to_owned);
+    if author.is_person() {
+        return called;
+    }
+    Some(called.unwrap_or_else(|| crate::i18n::t("chat-agent-kind")))
 }
 
 /// The start of `text` a quote under a reply shows: its first line, cut short.
@@ -1571,8 +1566,8 @@ mod tests {
             ..Names::default()
         };
         names
-            .agents
-            .insert(agent.to_owned(), "Assistant".to_owned());
+            .members
+            .insert(MemberId::agent(agent), "Assistant".to_owned());
         Channel::read(&chat, &rows, "c_ask", &MemberId::person(me), &names)
     }
 
@@ -1674,7 +1669,7 @@ mod tests {
                 ));
             let rows = vec![row("c_ask", "m_ask", MemberId::person(ADA), 1_782_470_400, "hello"), said];
             let names = Names {
-                agents: [("helper".to_owned(), "Helper".to_owned())].into(),
+                members: [(MemberId::agent("helper"), "Helper".to_owned())].into(),
                 ..Names::default()
             };
             let channel = Channel::read(&chat, &rows, "c_ask", &MemberId::person(BOB), &names);
@@ -2073,8 +2068,8 @@ mod tests {
                 ..Names::default()
             };
             names
-                .agents
-                .insert("assistant".to_owned(), "Assistant".to_owned());
+                .members
+                .insert(MemberId::agent("assistant"), "Assistant".to_owned());
             let channel = Channel::read(&chat, &rows, "c_ask", &MemberId::person(ME), &names);
             let by_id = |id: &str| {
                 channel
@@ -2696,8 +2691,8 @@ mod tests {
                 ..Names::default()
             };
             names
-                .agents
-                .insert("assistant".to_owned(), "Assistant".to_owned());
+                .members
+                .insert(MemberId::agent("assistant"), "Assistant".to_owned());
             let channel = Channel::read(&chat, &rows, "c_ask", &MemberId::person(ME), &names);
             let cx = view_cx(&channel);
             let tree = page(&channel, &cx);

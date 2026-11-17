@@ -105,7 +105,6 @@ pub(super) async fn make_agent(
             keeper: None,
             id: Some(SCOUT.into()),
             model: None,
-            colour: None,
             mcp_client: None,
         }),
     )

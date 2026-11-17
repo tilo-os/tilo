@@ -679,7 +679,6 @@ impl WorkspaceAgents {
         self.agents.push(Agent {
             id: Atom(id),
             name,
-            colour: None,
             keeper: person,
             on_host: true,
             model,

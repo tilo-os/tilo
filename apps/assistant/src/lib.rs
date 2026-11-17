@@ -160,7 +160,6 @@ impl Hands {
                     keeper: None,
                     id: Some(id.clone()),
                     model: None,
-                    colour: None,
                     mcp_client: None,
                 }),
             )

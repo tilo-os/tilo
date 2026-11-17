@@ -718,7 +718,6 @@ async fn keeps_an_assistant(
                 keeper: None,
                 id: Some("assistant".into()),
                 model: None,
-                colour: None,
                 mcp_client: None,
             }),
         )

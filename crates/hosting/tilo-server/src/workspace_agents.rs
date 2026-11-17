@@ -1764,7 +1764,6 @@ async fn list_agent(
                             keeper: None,
                             id: Some(agent),
                             model: None,
-                            colour: None,
                         },
                     ))
                     .map(drop)

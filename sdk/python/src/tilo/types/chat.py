@@ -170,7 +170,6 @@ __all__ = [
     "SetAgentSpendLimitArgs",
     "RecordAgentSpendArgs",
     "SetAgentOnHostArgs",
-    "SetAgentColourArgs",
     "RenameAgentArgs",
     "SetAgentModelArgs",
     "SetAgentInstructionArgs",
@@ -600,7 +599,6 @@ class Emoji(TypedDict):
 class Agent(TypedDict):
     id: str
     name: str
-    colour: int | None
     keeper: str
     on_host: bool
     model: str | None
@@ -1070,7 +1068,6 @@ CreateAgentArgs = TypedDict("CreateAgentArgs", {
     "keeper": NotRequired["str | None"],
     "id": NotRequired["str | None"],
     "model": NotRequired["str | None"],
-    "colour": NotRequired["int | None"],
     "mcp_client": NotRequired["str | None"],
 })
 """The arguments of `create-agent`."""
@@ -1093,12 +1090,6 @@ SetAgentOnHostArgs = TypedDict("SetAgentOnHostArgs", {
     "on_host": "bool",
 })
 """The arguments of `set-agent-on-host`."""
-
-SetAgentColourArgs = TypedDict("SetAgentColourArgs", {
-    "agent": "str",
-    "colour": "int",
-})
-"""The arguments of `set-agent-colour`."""
 
 RenameAgentArgs = TypedDict("RenameAgentArgs", {
     "agent": "str",
@@ -1187,7 +1178,7 @@ SetSubAgentLimitsArgs = TypedDict("SetSubAgentLimitsArgs", {
 
 class Workspace(Resource):
     """Chat — `chat.workspace`."""
-    __surface__ = "so.tilo.chat@a7f9e5790ecdce7e"
+    __surface__ = "so.tilo.chat@d2b35f5c7421bf62"
     @property
     def categories(self) -> list[Entry[Category]]:
         """Read only."""
@@ -1522,7 +1513,7 @@ class Workspace(Resource):
 
 class Messages(Resource):
     """Messages — `chat.messages`."""
-    __surface__ = "so.tilo.chat@a7f9e5790ecdce7e"
+    __surface__ = "so.tilo.chat@d2b35f5c7421bf62"
     @property
     def messages(self) -> list[Entry[Message]]:
         """Read only."""
@@ -1970,7 +1961,7 @@ class Messages(Resource):
 
 class Drafts(Resource):
     """Chat drafts — `chat.drafts`."""
-    __surface__ = "so.tilo.chat@a7f9e5790ecdce7e"
+    __surface__ = "so.tilo.chat@d2b35f5c7421bf62"
     drafts: dict[str, str]
 
     def start_draft(self, *, key: str) -> None:
@@ -1988,7 +1979,7 @@ class Drafts(Resource):
 
 class Learned(Resource):
     """What your agents learned — `chat.learned`."""
-    __surface__ = "so.tilo.chat@a7f9e5790ecdce7e"
+    __surface__ = "so.tilo.chat@d2b35f5c7421bf62"
     @property
     def facts(self) -> list[Entry[Fact]]:
         """Read only."""
@@ -2039,7 +2030,7 @@ class Learned(Resource):
 
 class WorkspaceEmoji(Resource):
     """Workspace emoji — `tilo.workspace.emoji`."""
-    __surface__ = "so.tilo.chat@a7f9e5790ecdce7e"
+    __surface__ = "so.tilo.chat@d2b35f5c7421bf62"
     emoji: dict[str, Emoji]
 
     def add_emoji(self,
@@ -2077,7 +2068,7 @@ class WorkspaceEmoji(Resource):
 
 class ChatAgent(Resource):
     """Agents — `chat.agent`."""
-    __surface__ = "so.tilo.chat@a7f9e5790ecdce7e"
+    __surface__ = "so.tilo.chat@d2b35f5c7421bf62"
     agents: list[Entry[Agent]]
 
     def create_agent(self,
@@ -2086,7 +2077,6 @@ class ChatAgent(Resource):
         keeper: str | None = None,
         id: str | None = None,
         model: str | None = None,
-        colour: int | None = None,
         mcp_client: str | None = None,
     ) -> None:
         """Runs the app's action."""
@@ -2098,8 +2088,6 @@ class ChatAgent(Resource):
             args["id"] = id
         if model is not None:
             args["model"] = model
-        if colour is not None:
-            args["colour"] = colour
         if mcp_client is not None:
             args["mcp_client"] = mcp_client
         return self.action("create-agent", **args)
@@ -2148,18 +2136,6 @@ class ChatAgent(Resource):
     def set_agent_on_host_many(self, items: list[SetAgentOnHostArgs]) -> list[dict[str, Any]]:
         """Runs `set-agent-on-host` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("set-agent-on-host", items)
-
-    def set_agent_colour(self,
-        *,
-        agent: str,
-        colour: int,
-    ) -> None:
-        """Runs the app's action."""
-        return self.action("set-agent-colour", agent=agent, colour=colour)
-
-    def set_agent_colour_many(self, items: list[SetAgentColourArgs]) -> list[dict[str, Any]]:
-        """Runs `set-agent-colour` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("set-agent-colour", items)
 
     def rename_agent(self,
         *,
@@ -2368,6 +2344,6 @@ class ChatAgent(Resource):
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"create_agent", "create_agent_many", "set_agent_spend_limit", "set_agent_spend_limit_many", "record_agent_spend", "record_agent_spend_many", "set_agent_on_host", "set_agent_on_host_many", "set_agent_colour", "set_agent_colour_many", "rename_agent", "rename_agent_many", "set_agent_model", "set_agent_model_many", "set_agent_instruction", "set_agent_instruction_many", "set_agent_bound", "set_agent_bound_many", "retire_agent", "retire_agent_many", "start_sub_agent", "start_sub_agent_many", "note_sub_agent", "note_sub_agent_many", "stop_sub_agent", "stop_sub_agent_many", "sub_agent_stands", "sub_agent_stands_many", "sub_agent_produced", "sub_agent_produced_many", "sub_agent_coding", "sub_agent_coding_many", "set_sub_agent_limits", "set_sub_agent_limits_many"})
+    __actions__ = frozenset({"create_agent", "create_agent_many", "set_agent_spend_limit", "set_agent_spend_limit_many", "record_agent_spend", "record_agent_spend_many", "set_agent_on_host", "set_agent_on_host_many", "rename_agent", "rename_agent_many", "set_agent_model", "set_agent_model_many", "set_agent_instruction", "set_agent_instruction_many", "set_agent_bound", "set_agent_bound_many", "retire_agent", "retire_agent_many", "start_sub_agent", "start_sub_agent_many", "note_sub_agent", "note_sub_agent_many", "stop_sub_agent", "stop_sub_agent_many", "sub_agent_stands", "sub_agent_stands_many", "sub_agent_produced", "sub_agent_produced_many", "sub_agent_coding", "sub_agent_coding_many", "set_sub_agent_limits", "set_sub_agent_limits_many"})
 
 

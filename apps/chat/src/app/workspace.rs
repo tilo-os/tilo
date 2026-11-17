@@ -27,55 +27,6 @@ impl ChatApp {
     /// Keep the workspace's document of its agents, as the window reads it: the
     /// agent identity record every app of the workspace opens. Chat keeps it,
     /// and names every author it spells `agent:<id>` by it.
-    #[must_use]
-    pub(crate) fn with_agents_resource(
-        mut self,
-        record: Option<ui::framework::WorkspaceResource<ui::tilo_workspace_agent::WorkspaceAgents>>,
-    ) -> Self {
-        self.agents_document = record;
-        self
-    }
-
-    /// Open the workspace's agents record later, when the workspace delivers one the window
-    /// did not hold as it opened: the record is the workspace's own, and whoever makes its first
-    /// agent does so from anywhere, at any time.
-    #[must_use]
-    pub(crate) fn with_agents_opener(
-        mut self,
-        opener: ui::framework::ResourceOpener<ui::tilo_workspace_agent::WorkspaceAgents>,
-    ) -> Self {
-        self.agents_opener = Some(opener);
-        self
-    }
-
-    /// Follow the workspace's agents record: the colour each agent wears, by its bare id. Its
-    /// name is the member list's, as everyone's is. Whether any colour changed, so the window
-    /// shows them again.
-    pub(super) fn follow_agents(&mut self) -> bool {
-        if self.agents_document.is_none() {
-            // A record the workspace delivered after this window opened is opened here, once it
-            // arrives: the opener retries only when something new did.
-            let id = ui::resource::workspace::document_id(ui::tilo_workspace_agent::KIND);
-            self.agents_document = self
-                .agents_opener
-                .as_ref()
-                .and_then(|opener| opener.open(&id));
-        }
-        let Some(record) = self.agents_document.clone() else {
-            return false;
-        };
-        let state = record.get();
-        let colours: HashMap<Id, u8> = state
-            .active()
-            .map(|agent| (agent.id.0.clone(), agent.slot()))
-            .collect();
-        if colours == self.workspace_agent_colours {
-            return false;
-        }
-        self.workspace_agent_colours = colours;
-        true
-    }
-
     /// Take the workspace's view of the members off the presence store.
     ///
     /// Called once per frame from `draw`. The presence store's member
@@ -95,8 +46,6 @@ impl ChatApp {
     /// while the conversation is put away and not drawn). In a call they show
     /// who speaks, which moves every frame.
     pub(super) fn take_workspace(&mut self) -> bool {
-        // The workspace's agents wear the colour their own document gives them.
-        let agents_changed = self.follow_agents();
         let permissions = ui::presence::frame::frame(PresenceCtx::permission_context).flatten();
         let perms_changed = permissions.is_some_and(|permissions| {
             let changed = self.perms.context() != &permissions;
@@ -110,7 +59,7 @@ impl ChatApp {
             // No presence this frame: nobody's answer says who is here, so the
             // resource's own words about each person stand (`live_status`).
             self.workspace_presence_answers = false;
-            return perms_changed || agents_changed;
+            return perms_changed;
         }
         if self.workspace_names != names_before {
             // A direct conversation is named by what the member list calls its people: read the
@@ -127,7 +76,7 @@ impl ChatApp {
             self.show_sidebar();
             self.shown_rows = rows;
         }
-        changed || agents_changed
+        changed
     }
 
     /// What the channels would show now.

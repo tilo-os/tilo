@@ -11,10 +11,6 @@ use ui::tilo_resource::{Id, Identified, Resource};
 use crate::chat::{Chat, Conversation};
 use crate::model::{AgentStep, AgentWork, Category, Channel, EditEntry, Message, User};
 
-/// What the workspace calls each of its agents, by the bare id its actor carries
-/// (`agent:<id>`): the answer of the workspace's own document of its agents.
-pub type AgentNames = HashMap<String, String>;
-
 /// What the workspace's member list calls each of its people and agents.
 pub type PeopleNames = HashMap<MemberId, String>;
 
@@ -95,7 +91,7 @@ impl Chat {
         let mut rows = self.channel_rows();
         let mut direct: Vec<(String, Channel)> = Vec::new();
         let mut push = |id: &Id, members: Vec<MemberId>, recorded: Option<&Conversation>| {
-            let name = self.display_names(id, Some(me), (&AgentNames::new(), people));
+            let name = self.display_names(id, Some(me), people);
             direct.push((
                 name.clone(),
                 Channel {
@@ -166,16 +162,9 @@ impl Chat {
     /// The one place a conversation is named, for the window and for whatever
     /// else names it (an agent's run on a turn in it).
     ///
-    /// A member is named by what the member list calls them (`people`), else, for an agent, by
-    /// what the workspace's own document of its agents calls it (`agents`): a reader with no
-    /// member list reads that record.
+    /// A member is named by what the member list calls them (`people`).
     #[must_use]
-    pub fn display_names(
-        &self,
-        id: &Id,
-        me: Option<&MemberId>,
-        (agents, people): (&AgentNames, &PeopleNames),
-    ) -> String {
+    pub fn display_names(&self, id: &Id, me: Option<&MemberId>, people: &PeopleNames) -> String {
         if let Some(conversation) = self.channels.get(id)
             && !conversation.members.is_empty()
             && !conversation.name.trim().is_empty()
@@ -188,7 +177,6 @@ impl Chat {
             .map(|member| {
                 people
                     .get(member)
-                    .or_else(|| agents.get(member.id()).filter(|_| !member.is_person()))
                     .map(|name| name.trim().to_owned())
                     .filter(|name| !name.is_empty())
                     .or_else(|| ui::tilo_resource::members::name_of(member))

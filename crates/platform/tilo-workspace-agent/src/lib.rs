@@ -2,7 +2,7 @@
 //! record of agents, kept by Chat.
 //!
 //! The item is the agent's member row. Every app of the workspace opens it, so its
-//! name, colour and model read the same in the settings that list it, in the chat it
+//! name and model read the same in the settings that list it, in the chat it
 //! answers in, and in the presence its work leaves. Its actor is `agent:<item id>`.
 //!
 //! The record is Chat's ([`OWNER`]): its actions are decided against Chat's
@@ -16,7 +16,6 @@
 
 use std::fmt;
 
-use collab_types::presence::{PRESENCE_LEN, PresenceHue};
 use serde::{Deserialize, Serialize};
 use tilo_resource::items::item_resource_id;
 use tilo_resource::search_index::{IndexKind, IndexPerson};
@@ -186,9 +185,6 @@ pub struct Agent {
     /// Its name, as people read it and search finds it.
     #[model(label)]
     pub name: String,
-    /// Its presence colour as its keeper chose it, a slot of the palette people are
-    /// drawn in ([`PresenceHue`]); `None` follows its identity.
-    pub colour: Option<u8>,
     /// Who keeps it: the member whose devices work it and whose credentials pay, and
     /// who alone chooses its model and what it may spend. For an agent the workspace's
     /// host runs ([`Self::on_host`]) the keeper still decides both.
@@ -235,20 +231,10 @@ impl Identified for Agent {
 }
 
 impl Agent {
-    /// The identity its colour and its actor are derived from: `agent:<id>`.
+    /// The identity its actor is derived from: `agent:<id>`.
     #[must_use]
     pub fn identity(&self) -> String {
         format!("agent:{}", self.id.0)
-    }
-
-    /// Its presence colour's slot: the one its keeper chose, or the one the rule every
-    /// surface draws a member by gives it ([`PresenceHue::of_member`]).
-    #[must_use]
-    pub fn slot(&self) -> u8 {
-        self.colour.unwrap_or_else(|| {
-            let hue = PresenceHue::of_member(&collab_types::MemberId::agent(&self.id.0));
-            u8::try_from(hue.slot()).unwrap_or(0)
-        })
     }
 
     #[must_use]
@@ -360,8 +346,7 @@ impl WorkspaceAgents {
 }
 
 impl WorkspaceAgents {
-    /// What the record holds: each agent's name, the member who keeps it, its model and
-    /// its colour. It answers through [`fields`](tilo_resource::read::fields), so a
+    /// What the record holds: each agent's name, the member who keeps it and its model. It answers through [`fields`](tilo_resource::read::fields), so a
     /// caller with no window open reads it like any app's record.
     pub fn read_document(
         &self,
@@ -378,7 +363,7 @@ impl WorkspaceAgents {
 )]
 impl WorkspaceAgents {
     /// Make an agent: a name people read (at most 64 characters), and optionally a model as
-    /// `provider/model` and the colour it is drawn in. Whoever makes it keeps it: a keeper it
+    /// `provider/model`. Whoever makes it keeps it: a keeper it
     /// names is refused unless it is the one who makes it.
     #[action]
     pub fn create_agent(
@@ -389,8 +374,6 @@ impl WorkspaceAgents {
         #[param("Its id: one already in use elsewhere; none to mint one")] id: Option<String>,
         #[param("The model it plans with, as provider/model; none for the keeper's default")]
         model: Option<String>,
-        #[param("Its colour: a slot of the presence palette; none for one derived from its id")]
-        colour: Option<u8>,
         #[param("The MCP client it connects as; none for an agent its keeper's device runs")]
         mcp_client: Option<String>,
     ) -> Result<(), Refusal> {
@@ -428,7 +411,6 @@ impl WorkspaceAgents {
             }
         };
         let model = chosen_model(model)?;
-        let colour = colour_slot(colour)?;
         let mcp_client = match mcp_client.as_deref().map(str::trim) {
             None | Some("") => None,
             Some(client) => {
@@ -439,7 +421,6 @@ impl WorkspaceAgents {
         self.agents.push(Agent {
             id: Atom(id),
             name,
-            colour,
             on_host: false,
             keeper,
             model,
@@ -545,30 +526,6 @@ impl WorkspaceAgents {
             ));
         }
         found.on_host = on_host;
-        Ok(())
-    }
-
-    /// Set the colour an agent is drawn in: part of its identity, the one its face and
-    /// presence are drawn in everywhere.
-    #[action(item = agents)]
-    pub fn set_agent_colour(
-        &mut self,
-        cx: &mut ActionCx,
-        #[param("The agent")] agent: Id,
-        #[param("Its colour: a slot of the presence palette")] colour: u8,
-    ) -> Result<(), Refusal> {
-        self.not_by_sub_agent(cx)?;
-        let me = author(cx)?;
-        let found = self
-            .agents
-            .find_mut(&agent)
-            .ok_or_else(|| no_such(&agent))?;
-        if found.keeper != me {
-            return Err(Refusal::new(
-                "only the agent's keeper chooses the colour it is drawn in",
-            ));
-        }
-        found.colour = colour_slot(Some(colour))?;
         Ok(())
     }
 
@@ -867,15 +824,6 @@ impl WorkspaceAgents {
             sub::check(agent)?;
             check_id(&agent.id.0)?;
             check_name(&agent.name)?;
-            if agent
-                .colour
-                .is_some_and(|colour| usize::from(colour) >= PRESENCE_LEN)
-            {
-                return Err(Refusal::new(format!(
-                    "{:?} wears a colour the palette does not have",
-                    agent.name
-                )));
-            }
             person(&agent.keeper)?;
             if let Some(model) = &agent.model {
                 check_model(model)?;
@@ -1051,19 +999,6 @@ fn given_id(id: &str) -> Result<String, Refusal> {
     let id = id.trim();
     check_id(id)?;
     Ok(id.to_owned())
-}
-
-/// A colour the presence palette has, or `None` following the agent's id.
-fn colour_slot(colour: Option<u8>) -> Result<Option<u8>, Refusal> {
-    let Some(colour) = colour else {
-        return Ok(None);
-    };
-    if usize::from(colour) >= PRESENCE_LEN {
-        return Err(Refusal::new(format!(
-            "{colour} is not a colour the presence palette has"
-        )));
-    }
-    Ok(Some(colour))
 }
 
 fn chosen_model(model: Option<String>) -> Result<Option<String>, Refusal> {

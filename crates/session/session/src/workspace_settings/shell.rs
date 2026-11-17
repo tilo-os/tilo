@@ -244,7 +244,6 @@ fn ask(
         | sheet::WorkspaceSettingsEffect::RemoveAgent { .. }
         | sheet::WorkspaceSettingsEffect::SetAgentModel { .. }
         | sheet::WorkspaceSettingsEffect::SetAgentSpendLimit { .. }
-        | sheet::WorkspaceSettingsEffect::SetAgentColour { .. }
         | sheet::WorkspaceSettingsEffect::SetAgentAnswer { .. }
         | sheet::WorkspaceSettingsEffect::ResetAgentApp { .. } => agent_ask(state, fed, &effect),
         sheet::WorkspaceSettingsEffect::ToggleDevice { device } => {
@@ -581,12 +580,11 @@ impl Feeding<'_> {
         workspace_id: Option<&str>,
         name: &str,
         model: &str,
-        colour: Option<u8>,
     ) -> Result<String, String> {
         let workspace = self.workspace(workspace_id)?;
         self.tabs
             .agents
-            .create(Some(&workspace), self.person, (name, None), model, colour)
+            .create(Some(&workspace), self.person, (name, None), model)
             .map(|(id, _)| id)
     }
 
@@ -609,13 +607,9 @@ impl Feeding<'_> {
         {
             return Ok(agent);
         }
-        self.tabs.agents.create(
-            Some(&workspace),
-            self.person,
-            (client, Some(client)),
-            "",
-            None,
-        )
+        self.tabs
+            .agents
+            .create(Some(&workspace), self.person, (client, Some(client)), "")
     }
 
     fn workspace(&self, workspace_id: Option<&str>) -> Result<Workspace, String> {

@@ -54,14 +54,7 @@ impl Chat {
             .map(|(id, _)| {
                 conversation_entry(
                     id,
-                    &self.display_names(
-                        id,
-                        None,
-                        (
-                            &std::collections::HashMap::new(),
-                            &std::collections::HashMap::new(),
-                        ),
-                    ),
+                    &self.display_names(id, None, &std::collections::HashMap::new()),
                     "",
                 )
                 .showing(self.member_rows(id))
@@ -263,15 +256,7 @@ impl ResourceApp for ChatShell {
             .with_drafts(drafts)
             // The window's actions: its composer's send button is where Chat's
             // `send` lands, the action an agent's send runs too.
-            .with_send_action(&cx.actions())
-            // The workspace's agents, as its own document of them names them: an agent is a
-            // member, and its name reads from the same resource in every app of the workspace.
-            .with_agents_resource(
-                cx.shared_workspace::<ui::tilo_workspace_agent::WorkspaceAgents>(
-                    ui::tilo_workspace_agent::OWNER,
-                ),
-            )
-            .with_agents_opener(cx.resource_opener(ui::tilo_workspace_agent::OWNER));
+            .with_send_action(&cx.actions());
         // A search hit, or an agent's `open`, shows the item it names.
         cx.on_open(app.opener());
         // The shell keeps the workspace's channels as its sidebar, their width,

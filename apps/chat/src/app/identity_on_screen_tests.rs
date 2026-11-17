@@ -347,18 +347,15 @@ fn an_agents_answer_reads_by_the_name_the_member_list_gives_it() {
         read.display_names(
             &conversation,
             Some(&MemberId::person(crate::model::ME)),
-            (&crate::projection::AgentNames::new(), &app.workspace_names)
+            &app.workspace_names
         ),
         "Notes"
     );
 
-    // An agent wears the colour its own document gives it, whatever presence announced.
-    app.workspace_agent_colours.insert("notes".to_owned(), 3);
-    app.workspace_colors
-        .insert(MemberId::agent("notes"), (255, 0, 0));
+    // An agent wears the one colour of who it is, as its cursor and caret do in every app.
     assert_eq!(
         app.member_hue(&MemberId::agent("notes")),
-        ui::tokens::PresenceHue::from_slot(3)
+        ui::tokens::PresenceHue::of_member(&MemberId::agent("notes"))
     );
 
     // The sidebar lists the conversation once, by the agent's name and wearing its own face in

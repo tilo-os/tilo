@@ -440,20 +440,6 @@ fn settle(session: &mut Session, app: &mut HeadlessApp<WorkspaceSettingsApp>) {
     app.settle();
 }
 
-/// Its keeper dresses it from its row: the palette opens under it, and the colour picked is the one
-/// its devices draw it in.
-fn recolour(session: &mut Session, app: &mut HeadlessApp<WorkspaceSettingsApp>) {
-    press(app, "ws-agents-palette-helper");
-    settle(session, app);
-    activate(app, "Green");
-    settle(session, app);
-    assert_eq!(
-        listed_agent(session, "helper").colour,
-        4,
-        "the keeper's colour lands in the record"
-    );
-}
-
 /// This device's Settings offer one model the agents may plan with.
 fn settings_offer_a_model() {
     let profile = "local".to_owned();
@@ -502,7 +488,6 @@ fn workspace_settings_answers_for_an_agent_and_takes_it_out() {
     app.effect(&WorkspaceSettingsEffect::AddAgent {
         name: "helper".to_owned(),
         model: String::new(),
-        colour: "violet".to_owned(),
     })
     .expect("the person makes an agent");
     settle(&mut session, &mut app);
@@ -516,12 +501,6 @@ fn workspace_settings_answers_for_an_agent_and_takes_it_out() {
         "the row says who keeps it, in one line"
     );
     assert_eq!(row.model, "Model: No model chosen in Settings");
-    assert!(
-        row.mine,
-        "the person here keeps it, so its colour is theirs"
-    );
-    assert_eq!(row.colour, 9, "it is drawn in the violet its maker picked");
-    recolour(&mut session, &mut app);
     press(&mut app, "ws-agents-review-helper");
     settle(&mut session, &mut app);
     let review = shown_review(&session);
@@ -1066,21 +1045,6 @@ fn workspace_settings_makes_the_workspaces_agents() {
         "the row says who keeps it, in one line"
     );
     assert_eq!(row.model, "Model: No model chosen in Settings");
-    assert!(
-        row.mine,
-        "the person here keeps it, so its colour is theirs"
-    );
-    // Its keeper dresses it from its row: the palette opens under it.
-    press(&mut app, "ws-agents-palette-analyst");
-    settle(&mut session, &mut app);
-    capture(&mut app, "workspace-settings-agents-palette");
-    activate(&mut app, "Green");
-    settle(&mut session, &mut app);
-    assert_eq!(
-        listed_agent(&session, "analyst").colour,
-        4,
-        "the keeper's colour lands in the record"
-    );
     // Its keeper chooses the model it plans with, and the row says which.
     press(&mut app, "ws-agents-review-analyst");
     settle(&mut session, &mut app);

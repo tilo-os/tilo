@@ -173,7 +173,6 @@ mod tests {
             &Ask::AddAgent {
                 name: "Scout".to_owned(),
                 model: String::new(),
-                colour: String::new(),
             }
         ));
         assert_eq!(listed(&agents), ["Scout"]);

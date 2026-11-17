@@ -24,7 +24,6 @@ fn open_agent(app: &mut TestApp<ChatShell>) {
                 keeper: None,
                 id: Some("assistant".to_owned()),
                 model: None,
-                colour: None,
                 mcp_client: None,
             }),
         )
