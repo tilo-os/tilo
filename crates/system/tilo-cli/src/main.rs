@@ -391,11 +391,15 @@ enum Cmd {
     #[command(
         after_help = "Examples:\n  tilo migrate sources\n  tilo migrate review thunderbird\n  \
                             tilo migrate choose thunderbird ada@example.com --only\n  \
-                            tilo migrate start thunderbird\n  tilo migrate status\n\n\
+                            tilo migrate start thunderbird\n  tilo migrate start thunderbird -w \"Jane Doe\"\n  \
+                            tilo migrate status\n\n\
                       Each step is its own command, so an agent can show the person what a source holds \
                       before anything moves. What comes over appears in the workspace as one entry in \
                       History, which undoes it. Running it again brings only what is not there yet. \
-                      Keys and passwords are never arguments: `connect` asks the person for a key."
+                      Keys and passwords are never arguments: `connect` asks the person for a key.\n\n\
+                      Without -w a run lands in this computer's own workspace. With it, the run lands in \
+                      that hosted workspace (a name or an id) through Tilo's API, with the key this \
+                      computer holds: TILO_API_KEY, the file --key-file names, or the key `tilo login` kept."
     )]
     Migrate {
         /// The answer as JSON.
@@ -1048,6 +1052,16 @@ fn run_hosted(
         } => workspace
             .ok_or_else(needs_workspace)
             .map(|workspace| hosted::hosts(reach, &workspace, cmd)),
+        // Only an explicit `-w` lands a migration in a hosted workspace: without one it comes
+        // over this computer's own, through the session `tilo login` holds.
+        Cmd::Migrate { json, cmd } if workspace.is_some() => {
+            let target = migrate::Target::Hosted {
+                api: api.map(str::to_owned),
+                key_file: key_file.map(std::path::Path::to_path_buf),
+                workspace: workspace.unwrap_or_default(),
+            };
+            migrate::run_into(cmd, json, &target)
+        }
         other => return Err(other),
     })
 }

@@ -341,14 +341,14 @@ fn a_stopped_run_resumes_where_it_stopped() {
 }
 
 #[test]
-fn a_runs_change_in_effect_is_found_by_the_run_id_history_keeps() {
-    let of = |change: &str, run: &str| serde_json::json!({"change": change, "run": "From Linear: Engineering", "actor": {"id": "agent:tilo", "run_id": run}});
+fn a_runs_change_in_effect_is_found_by_the_id_history_keeps() {
+    let of = |change: &str, run: &str| serde_json::json!({"change": change, "run": "From Linear: Engineering", "actor": {"id": "agent:tilo", "declared": run}});
     let history = serde_json::json!({"versions": [
         of("a1", "migrate-linear-1"),
         of("a2", "migrate-linear-1"),
         {"change": "b1", "actor": {"id": "person"}},
         of("c1", "migrate-linear-2"),
-        {"undone": true, "change": "c2", "run": "From Linear: Engineering", "actor": {"id": "agent:tilo", "run_id": "migrate-linear-2"}},
+        {"undone": true, "change": "c2", "run": "From Linear: Engineering", "actor": {"id": "agent:tilo", "declared": "migrate-linear-2"}},
     ]});
     assert_eq!(
         super::run_in_history(Some(&history), "migrate-linear-1"),
@@ -365,7 +365,7 @@ fn a_runs_change_in_effect_is_found_by_the_run_id_history_keeps() {
         super::RunInHistory::Absent
     );
     let undone = serde_json::json!({"versions": [
-        {"undone": true, "change": "d1", "run": "From Linear: Engineering", "actor": {"id": "agent:tilo", "run_id": "migrate-linear-4"}},
+        {"undone": true, "change": "d1", "run": "From Linear: Engineering", "actor": {"id": "agent:tilo", "declared": "migrate-linear-4"}},
     ]});
     assert_eq!(
         super::run_in_history(Some(&undone), "migrate-linear-4"),

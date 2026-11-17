@@ -128,6 +128,7 @@ impl Answer {
         let json = self.json();
         let error = json.get("error");
         let field = |name: &str| error.and_then(|error| error.get(name));
+        let code = field("code").and_then(Value::as_str).unwrap_or("failed");
         let message = field("message")
             .and_then(Value::as_str)
             .unwrap_or("the API refused the call");
@@ -148,7 +149,11 @@ impl Answer {
         // The server names its own routes and an agent's tools; a person at
         // this command types neither.
         let said = crate::v1::names::said(&said, crate::v1::names::Surface::Cli);
-        anyhow!("{said}")
+        anyhow::Error::new(Refusal {
+            code: code.to_owned(),
+            message: said,
+            retry_after_ms: field("retry_after_ms").and_then(Value::as_u64),
+        })
     }
 
     /// How long the answer asks the caller to wait before the same call works,
@@ -164,6 +169,43 @@ impl Answer {
         })
     }
 }
+
+/// A call the API refused: the code it answered, its words, and the wait it
+/// asked for before the same call works.
+#[derive(Clone, Debug)]
+pub struct Refusal {
+    code: String,
+    message: String,
+    retry_after_ms: Option<u64>,
+}
+
+impl Refusal {
+    /// The API's refusal among `error`'s causes, when it refused.
+    #[must_use]
+    pub fn of(error: &anyhow::Error) -> Option<&Self> {
+        error.downcast_ref()
+    }
+
+    /// The API's stable code for why it refused (`rate_limited`).
+    #[must_use]
+    pub fn code(&self) -> &str {
+        &self.code
+    }
+
+    /// How long the API asked the caller to wait before asking again.
+    #[must_use]
+    pub fn retry_after_ms(&self) -> Option<u64> {
+        self.retry_after_ms
+    }
+}
+
+impl std::fmt::Display for Refusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for Refusal {}
 
 /// Whether a call is asked again while it does not answer.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -339,6 +381,64 @@ impl Client {
                 &headers,
                 Waiting::ForPerson,
             )
+            .await?;
+        if !answer.ok() && answer.status != 202 {
+            return Err(answer.refused());
+        }
+        Ok(answer.json())
+    }
+
+    /// Run `action` on `resource` in `workspace` as a step of the invocation
+    /// `run`, titled `title` in History, under the idempotency key `key`: its
+    /// answer, which is `pending` when the person has not answered it yet.
+    ///
+    /// Every call under one `run` is grouped in History as one change, and
+    /// every retry of a step goes with the same `key`, so a retried step runs
+    /// once.
+    pub async fn act_invoked(
+        &self,
+        workspace: &str,
+        resource: &str,
+        action: &str,
+        args: &Value,
+        run: &str,
+        title: &str,
+        key: &str,
+    ) -> Result<Value> {
+        let path = format!(
+            "/v1/workspaces/{workspace}/resources/{}/actions/{action}",
+            encode_path(resource)
+        );
+        let said = args.to_string();
+        let mut headers = grouped(run, title).to_vec();
+        headers.push(("idempotency-key", key.to_owned()));
+        // An action asks the server to hold the call while it runs, so most
+        // answers come back settled.
+        headers.push(("prefer", format!("wait={WAIT_SECONDS}")));
+        let answer = self
+            .call(
+                Method::Post,
+                &path,
+                said.as_bytes(),
+                &headers,
+                Waiting::Busy,
+            )
+            .await?;
+        if !answer.ok() && answer.status != 202 {
+            return Err(answer.refused());
+        }
+        Ok(answer.json())
+    }
+
+    /// The invocation `run` in `workspace`, held while it is pending for up
+    /// to `wait` seconds: its answer, `pending` while it still is.
+    pub async fn invocation(&self, workspace: &str, run: &str, wait: u64) -> Result<Value> {
+        let path = format!(
+            "/v1/workspaces/{workspace}/invocations/{}?wait={wait}",
+            encode_path(run)
+        );
+        let answer = self
+            .call(Method::Get, &path, &[], &[], Waiting::Busy)
             .await?;
         if !answer.ok() && answer.status != 202 {
             return Err(answer.refused());
@@ -705,15 +805,22 @@ impl Client {
     }
 }
 
+/// The headers grouping a call under the invocation `run`: the run, and the
+/// words History names it by.
+fn grouped(run: &str, title: &str) -> [(&'static str, String); 2] {
+    [
+        (crate::v1::INVOCATION_HEADER, run.to_owned()),
+        (crate::v1::INVOCATION_TITLE_HEADER, title.to_owned()),
+    ]
+}
+
 /// The headers a call of an invocation of its own carries: its id, which is the
 /// idempotency key too, and the words History names it by.
-fn titled(title: &str) -> [(&'static str, String); 3] {
+fn titled(title: &str) -> Vec<(&'static str, String)> {
     let id = fresh_key();
-    [
-        (crate::v1::INVOCATION_HEADER, id.clone()),
-        (crate::v1::INVOCATION_TITLE_HEADER, title.to_owned()),
-        ("idempotency-key", id),
-    ]
+    let mut headers = grouped(&id, title).to_vec();
+    headers.push(("idempotency-key", id));
+    headers
 }
 
 /// Whether `text` is written as a workspace's id is.

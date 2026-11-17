@@ -15,11 +15,13 @@
 //! tilo migrate undo <run>                      take a run back
 //! ```
 //!
-//! What comes over is the agent's run in the workspace (see [`workspace`]): one History entry
-//! per run, each record arriving live in the person's tab, the run undone as one step. A run
-//! keeps a journal here, item by item, so it resumes after a stop and a second run adds
-//! nothing. Keys and passwords never pass through the agent: a service's key is typed by the
-//! person at a hidden prompt or read from a file they name, and kept in this computer's vault.
+//! A run lands in the workspace this computer's device is in, or, with `-w <workspace>`, in a
+//! hosted workspace through Tilo's API with the key this computer holds: what comes over is the
+//! agent's run in the workspace (see [`workspace`]), one History entry per run, each record
+//! arriving live in the person's tab, the run undone as one step. A run keeps a journal here,
+//! item by item, so it resumes after a stop and a second run adds nothing. Keys and passwords
+//! never pass through the agent: a service's key is typed by the person at a hidden prompt or
+//! read from a file they name, and kept in this computer's vault.
 
 mod services;
 mod state;
@@ -108,9 +110,74 @@ pub enum MigrateCmd {
     },
 }
 
-/// Run `cmd`; `json` answers as JSON.
+/// Where a run lands.
+pub enum Target {
+    /// The workspace this computer's device is in, through its held session.
+    Device,
+    /// A hosted workspace, through Tilo's API with the key this computer holds.
+    Hosted {
+        /// The API server, as `--api` names it.
+        api: Option<String>,
+        /// A key file the person named, as `--key-file` does.
+        key_file: Option<PathBuf>,
+        /// The workspace, by name or id.
+        workspace: String,
+    },
+}
+
+impl Target {
+    /// The API `reach` this target's key is opened with.
+    fn reach(&self) -> crate::api::Reach<'_> {
+        match self {
+            Self::Device => crate::api::Reach {
+                api: None,
+                key_file: None,
+                json: false,
+            },
+            Self::Hosted { api, key_file, .. } => crate::api::Reach {
+                api: api.as_deref(),
+                key_file: key_file.as_deref(),
+                json: false,
+            },
+        }
+    }
+
+    /// The place a run's journal is kept in: named by the workspace it lands in.
+    fn place(&self) -> Result<Place> {
+        match self {
+            Self::Hosted { workspace, .. } => {
+                let id = workspace::Hosted::workspace_id(self.reach(), workspace)?;
+                Place::of(&id)
+            }
+            Self::Device => {
+                let workspace = crate::login::load(&crate::login::device_dir()?)?.map_or_else(
+                    || "this-computer".to_owned(),
+                    |(_, device)| device.workspace,
+                );
+                Place::of(&workspace)
+            }
+        }
+    }
+
+    /// The workspace a run lands in.
+    fn connect(&self) -> Result<Box<dyn Workspace>> {
+        Ok(match self {
+            Self::Device => Box::new(workspace::Held::connect()?),
+            Self::Hosted { workspace, .. } => {
+                Box::new(workspace::Hosted::connect(self.reach(), workspace)?)
+            }
+        })
+    }
+}
+
+/// Run `cmd` into this computer's workspace; `json` answers as JSON.
 pub fn run(cmd: MigrateCmd, json: bool) -> Result<ExitCode> {
-    let place = place()?;
+    run_into(cmd, json, &Target::Device)
+}
+
+/// Run `cmd` into `target`'s workspace; `json` answers as JSON.
+pub fn run_into(cmd: MigrateCmd, json: bool, target: &Target) -> Result<ExitCode> {
+    let place = target.place()?;
     let home = home()?;
     let answer = match cmd {
         MigrateCmd::Sources => sources(&place, &home),
@@ -146,9 +213,9 @@ pub fn run(cmd: MigrateCmd, json: bool) -> Result<ExitCode> {
             place.keep_review(&review)?;
             review_answer(&review, &place.journal(&source)?)
         }
-        MigrateCmd::Start { source } => start(&place, &home, &source_name(&source)?, json)?,
+        MigrateCmd::Start { source } => start(&place, &home, &source_name(&source)?, json, target)?,
         MigrateCmd::Status { source } => status(&place, source.as_deref())?,
-        MigrateCmd::Undo { run } => undo(&place, &run)?,
+        MigrateCmd::Undo { run } => undo(&place, &run, target)?,
         MigrateCmd::Stop { source } => {
             let source = source_name(&source)?;
             let journal = place.journal(&source)?;
@@ -173,14 +240,6 @@ pub fn run(cmd: MigrateCmd, json: bool) -> Result<ExitCode> {
     } else {
         ExitCode::SUCCESS
     })
-}
-
-fn place() -> Result<Place> {
-    let workspace = crate::login::load(&crate::login::device_dir()?)?.map_or_else(
-        || "this-computer".to_owned(),
-        |(_, device)| device.workspace,
-    );
-    Place::of(&workspace)
 }
 
 /// The home whose Thunderbird is read: this account's.
@@ -292,7 +351,7 @@ fn review_answer(review: &Review, journal: &Journal) -> Value {
     })
 }
 
-fn start(place: &Place, home: &Path, source: &str, json: bool) -> Result<Value> {
+fn start(place: &Place, home: &Path, source: &str, json: bool, target: &Target) -> Result<Value> {
     let review = reviewed_for_start(place, home, source)?;
     if review.chosen().is_empty() {
         bail!(
@@ -327,7 +386,7 @@ fn start(place: &Place, home: &Path, source: &str, json: bool) -> Result<Value> 
     journal.already_there = 0;
     journal.failure = None;
     place.keep_journal(source, &journal)?;
-    let mut held = match workspace::Held::connect() {
+    let mut held = match target.connect() {
         Ok(held) => held,
         Err(error) => {
             journal.state = RunState::Failed;
@@ -344,7 +403,7 @@ fn start(place: &Place, home: &Path, source: &str, json: bool) -> Result<Value> 
     };
     let result = {
         let mut lander = Lander {
-            workspace: &mut held,
+            workspace: &mut *held,
             opened: std::collections::BTreeSet::new(),
             landing_in: None,
             run: &run,
@@ -400,14 +459,14 @@ fn records_of(source: &str) -> &'static [&'static str] {
 }
 
 /// `tilo migrate undo`: take the run `named` back in every record it changed.
-fn undo(place: &Place, named: &str) -> Result<Value> {
+fn undo(place: &Place, named: &str, target: &Target) -> Result<Value> {
     let (source, run) = run_named(place, named)?;
     let mut journal = place.journal(&source)?;
-    let mut held = workspace::Held::connect()?;
+    let mut held = target.connect()?;
     let mut taken = Vec::new();
     let mut named = false;
     for record in records_of(&source) {
-        match undo_in(&mut held, record, &run)? {
+        match undo_in(&mut *held, record, &run)? {
             RunInHistory::InEffect(_) => {
                 named = true;
                 taken.push(json!({"record": record}));
@@ -492,8 +551,8 @@ enum RunInHistory {
     InEffect(String),
 }
 
-/// What a record's `history` answer holds of the run `run`: History keeps with each change the
-/// id of the run its agent said it is a step of (`actor.run_id`).
+/// What a record's `history` answer holds of the run `run`: History keeps with each change the id
+/// of the run its agent said it is a step of (`actor.declared`).
 fn run_in_history(history: Option<&Value>, run: &str) -> RunInHistory {
     let entries = history
         .and_then(|value| {
@@ -505,7 +564,7 @@ fn run_in_history(history: Option<&Value>, run: &str) -> RunInHistory {
     let mut of_run = entries
         .iter()
         .rev()
-        .filter(|entry| entry.pointer("/actor/run_id").and_then(Value::as_str) == Some(run))
+        .filter(|entry| entry.pointer("/actor/declared").and_then(Value::as_str) == Some(run))
         .peekable();
     if of_run.peek().is_none() {
         return RunInHistory::Absent;
