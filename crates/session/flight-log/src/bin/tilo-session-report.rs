@@ -180,10 +180,9 @@ fn main() -> ExitCode {
         let flight = report.get("flight");
         let frames = report.get("frames");
         let shown = |section: Option<&tilo_flight_log::value::Value>, key: &str| {
-            section.and_then(|section| section.get(key)).map_or_else(
-                || "None".to_owned(),
-                tilo_flight_log::value::Value::repr,
-            )
+            section
+                .and_then(|section| section.get(key))
+                .map_or_else(|| "None".to_owned(), tilo_flight_log::value::Value::repr)
         };
         println!(
             "render check: last phase summary {}",

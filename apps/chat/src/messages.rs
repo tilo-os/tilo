@@ -27,12 +27,12 @@ use ui::tilo_resource::{
 };
 
 use crate::cause::{Cause, Starting};
-use crate::parts::{self, ChatPart};
-use crate::question::{Choice, Question};
 use crate::chat::{
     Chat, MAX_AGENT_NAME_BYTES, MAX_MESSAGE_TEXT_BYTES, Message, Posting, ProviderStream, Revision,
     ShareAccess, Step, Transition, WindowShare, Work, WorkUpdate, author, reply_id_at, seconds,
 };
+use crate::parts::{self, ChatPart};
+use crate::question::{Choice, Question};
 
 /// Refuses anyone but `message`'s author: editing and deleting a message is
 /// its author's. Removing someone else's is moderation (`remove-message`),

@@ -26,8 +26,8 @@
 
 use ui::permissions::MemberId;
 
-use crate::parts::ChatPart;
 use crate::chat::{Chat, Message, reply_id_at};
+use crate::parts::ChatPart;
 use ui::prelude::Id;
 use ui::tilo_resource::Resource as _;
 use ui::tilo_resource::{self, Model};

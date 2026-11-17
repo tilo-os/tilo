@@ -297,8 +297,8 @@ mod tests {
         reason = "in a test these are the assertion, not a hazard"
     )]
 
-    use chat::question::{Answered, Choice, Question, Withdrawn};
     use chat::chat::Message;
+    use chat::question::{Answered, Choice, Question, Withdrawn};
     use tilo_actions::MemberId;
     use tilo_resource::Atom;
 
