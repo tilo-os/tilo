@@ -2202,3 +2202,33 @@ async fn a_deleted_workspace_leaves_the_session_its_other_workspaces() {
         "the deleted workspace's subscription went with it"
     );
 }
+
+/// A device the server stops admitting ends the audit as a refusal while it
+/// holds no workspace here — it never had access to lose. One that held a
+/// subscription met a real authorization change, and keeps the
+/// protocol-violation close.
+#[tokio::test]
+async fn an_audit_refuses_an_unadmitted_session_that_holds_no_workspace() {
+    let fixture = Fixture::new();
+    let ctx = fixture.ctx(Side::Recipient, None);
+    *fixture.source.policy.write().unwrap() =
+        crate::policy::TrustPolicy::AllowList { users: Vec::new() };
+
+    let mut subscribed = Vec::new();
+    assert!(
+        matches!(
+            super::access::audit_subscriber_access(&fixture.recipient, &ctx, &mut subscribed).await,
+            Err(PeerError::NotAdmitted)
+        ),
+        "a session with nothing here ends as a refusal"
+    );
+
+    let mut subscribed = vec![WS];
+    assert!(
+        matches!(
+            super::access::audit_subscriber_access(&fixture.recipient, &ctx, &mut subscribed).await,
+            Err(PeerError::Protocol(_))
+        ),
+        "a subscription whose authority changed ends as a protocol violation"
+    );
+}

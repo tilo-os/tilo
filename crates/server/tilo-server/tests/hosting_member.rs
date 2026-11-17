@@ -18,6 +18,11 @@ const IDLE_WINDOW: std::time::Duration = std::time::Duration::from_secs(4);
 /// How long both holders' counters stand still before the idle watch starts.
 const SETTLE: std::time::Duration = std::time::Duration::from_millis(500);
 
+/// How long a refused session may take to end: shorter than the second a
+/// site's first access audit waits, so a close inside it came with the
+/// refusal and not from the audit.
+const REFUSED_CLOSE: std::time::Duration = std::time::Duration::from_millis(750);
+
 /// `counters` once they have stood still for [`SETTLE`].
 async fn still<F, C>(counters: F) -> C
 where
@@ -680,8 +685,8 @@ async fn another_persons_host_holds_a_workspace_its_governor_grants_it() {
 /// another host governs for an owner of it it let in, and for nobody else:
 /// asked before it let the owner in, it refuses and says why, and answers her
 /// device's subscribe with `NotAdmitted` and nothing else (no workspace data,
-/// members or keys); asked after, it holds the workspace and a member's change
-/// through it reaches the governor.
+/// members or keys), ending the session with that refusal; asked after, it
+/// holds the workspace and a member's change through it reaches the governor.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[expect(
     clippy::significant_drop_tightening,
@@ -743,10 +748,13 @@ async fn a_host_holds_a_workspace_for_an_owner_it_let_in() {
             refusal: tilo_server_protocol::refusal::Refusal::NotAdmitted,
         })
     );
-    let after = tokio::time::timeout(IDLE_WINDOW, outside.recv()).await;
+    // The refusal is the session's last word: a device the site never let in
+    // holds no workspace there, so the site ends the session with it instead
+    // of keeping it open.
+    let after = tokio::time::timeout(REFUSED_CLOSE, outside.recv()).await;
     assert!(
-        matches!(after, Err(_) | Ok(None)),
-        "a device the site never let in heard more: {after:?}"
+        matches!(after, Ok(None)),
+        "a device the site never let in is still connected: {after:?}"
     );
 
     // The site lets Alice in, as an owner of its home; now it takes hers.

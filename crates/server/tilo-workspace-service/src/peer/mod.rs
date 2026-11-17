@@ -137,6 +137,11 @@ pub enum PeerError {
     /// subscriber slot while its replay capture was queued.
     #[error("superseded by a newer connection for this device")]
     Superseded,
+    /// The server does not admit this device, which holds no workspace here:
+    /// its refusal went out and the session ended with it. A refusal, not a
+    /// protocol violation.
+    #[error("not admitted")]
+    NotAdmitted,
 }
 
 /// Handle to the set of workspaces the daemon owns.

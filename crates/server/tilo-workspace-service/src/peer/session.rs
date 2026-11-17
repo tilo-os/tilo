@@ -78,7 +78,8 @@ impl<'s, 'a> SessionLoop<'s, 'a> {
 ///
 /// Returns [`PeerError`] if a frame fails to decode, a write to the
 /// wire fails, the peer's device is revoked or falls out of workspace
-/// membership while connected, the peer violates the protocol (e.g. a
+/// membership while connected, the server does not admit the device
+/// ([`PeerError::NotAdmitted`]), the peer violates the protocol (e.g. a
 /// `Delta` before `Subscribe`), or the peer's outbound queue overflows
 /// its backpressure limit.
 pub async fn run_peer<R, W>(
@@ -308,6 +309,10 @@ struct Stopping<'a> {
 /// How long a stopped agent's session waits for the device to hear that it was stopped.
 const STOPPED_WRITE: std::time::Duration = std::time::Duration::from_secs(2);
 
+/// How long a refused session waits for its device to close before the
+/// connection closes under the refusal still on its way.
+const REFUSAL_READ: std::time::Duration = std::time::Duration::from_millis(500);
+
 /// Run a session's `reading` and `writing` until the session ends: the
 /// connection closes, the peer overflows its queue, the session is stopped
 /// ([`Stopping`]), or either half ends.
@@ -351,9 +356,15 @@ async fn until_ended<C: std::future::Future>(
         }
         result = &mut reading => {
             let _ = end_writer.send(true);
-            tokio::select! {
-                _ = closed.as_mut() => {}
-                _ = &mut writing => {}
+            let written = tokio::select! {
+                _ = closed.as_mut() => false,
+                _ = &mut writing => true,
+            };
+            if written && matches!(&result, Err(PeerError::NotAdmitted)) {
+                // Written is not read: the connection's close discards what
+                // the wire has not taken, so the device gets a moment to
+                // close first, as one that heard its refusal does.
+                let _ = tokio::time::timeout(REFUSAL_READ, closed.as_mut()).await;
             }
             result
         }
@@ -404,6 +415,15 @@ pub(super) fn finish_peer_outcome(
     match outcome {
         // A superseded session is a normal handover, not a failure.
         Ok(()) | Err(PeerError::Superseded) => Ok(()),
+        // The server does not admit the device: its refusal went out and the
+        // session ended with it, so nothing here lapsed and nothing is counted.
+        Err(PeerError::NotAdmitted) => {
+            tracing::info!(
+                device = %hex::encode(&device[..4]),
+                "peer session refused: not admitted"
+            );
+            Ok(())
+        }
         Err(error) => {
             metrics.inc_subscriber_dropped();
             tracing::warn!(
