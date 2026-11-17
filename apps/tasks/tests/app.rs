@@ -94,17 +94,22 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase a_viewer_reads_the_tracker_but_cannot_change_it;
+    phase an_editor_changes_the_tracker_and_a_viewer_only_reads_it;
     {
         let mut app = open();
+        app.set_role(ui::Role::Editor);
         app.call_on(&chain(), "create", json!({ "title": "Pick the venue" }))
             .expect("create");
+        let issue = only(&app);
+        app.call_on(&issue_resource(&issue), "rename", json!({ "title": "Book the venue" }))
+            .expect("an editor renames an issue");
         app.set_role(ui::Role::Viewer);
         assert!(
             app.call_on(&chain(), "create", json!({ "title": "Another" })).is_err(),
             "a viewer creates nothing"
         );
-        assert_eq!(held(&app).len(), 1);
+        assert!(app.call_on(&issue_resource(&issue), "rename", json!({ "title": "x" })).is_err());
+        assert_eq!(held(&app).get(&issue).unwrap().title, "Book the venue");
     }
 
     phase a_project_is_made_listed_and_opened_by_its_address;
@@ -1148,7 +1153,7 @@ fn new_issue_enabled(app: &mut TestApp<App>) -> bool {
 #[test]
 fn a_blank_new_issue_cannot_be_invoked() {
     let mut app = open();
-    app.settle();
+    app.set_role(ui::Role::Editor);
     assert!(!new_issue_enabled(&mut app), "a blank title disables it");
     app.harness()
         .click_named("tasks-list-new-create")
@@ -1192,6 +1197,8 @@ fn a_blank_new_issue_cannot_be_invoked() {
     app.settle();
     let titles: Vec<String> = held(&app).values().map(|issue| issue.title).collect();
     assert_eq!(titles, ["Ship it", "Write the notes"]);
+    // The window answers each description's editor views: the list stays published.
+    assert_eq!(app.harness().component_contract_violations(), []);
 }
 
 /// Its palette lists what a person looks for — the tracker's resources by

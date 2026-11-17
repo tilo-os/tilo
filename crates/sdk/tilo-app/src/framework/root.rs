@@ -952,11 +952,10 @@ impl ResourceRoot {
         if !self.follow_document(doc)
             && let Ok(current) = self.typed.read(doc)
         {
-            // Publication can run after an edit and before the view syncs.
-            // Validate its nested views against this same state, rather than
-            // withdrawing the new resource tree using the previous frame's
-            // handler table. The next live revision replaces this cache.
-            self.pin_nested_views(&*current);
+            // Publication can run after an edit and before the view syncs:
+            // validate its nested views against this same state, not the
+            // previous frame's handler table, until the next live revision.
+            self.keep_nested_views(self.shared_document_tree(&*current).children());
             let reason = self.typed.unreadable();
             let mut tree = self.publication_of(&*current);
             if let Some(reason) = reason {

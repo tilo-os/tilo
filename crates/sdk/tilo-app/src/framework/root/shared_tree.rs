@@ -48,10 +48,10 @@ pub(super) struct ItemChildren {
     children: SharedChildren,
 }
 
-/// The view operation types of the nested resources at one live version,
-/// and the children they were collected from.
+/// The view operation types beneath the resource and its records, at one live
+/// version and records' revisions, and the children they were collected from.
 pub(super) struct NestedViews {
-    revision: (u64, u64),
+    at: ((u64, u64), Vec<(String, u64)>),
     children: SharedChildren,
     views: Rc<HashSet<String>>,
 }
@@ -303,41 +303,34 @@ impl ResourceRoot {
         children
     }
 
-    /// The view operation types of the nested resources of the live state.
+    /// The view operation types beneath the live state and the records kept
+    /// beside it, such as a chain's items' rich-text bodies.
     pub(super) fn nested_views(&self) -> Rc<HashSet<String>> {
-        let revision = self.version();
+        let at = (self.version(), self.storage.records_key());
         if let Some(pinned) = self
             .nested_views
             .borrow()
             .as_ref()
-            .filter(|pinned| pinned.revision == revision)
+            .filter(|pinned| pinned.at == at)
         {
             return Rc::clone(&pinned.views);
         }
         let tree = self.shared_document_tree(&*self.typed.state());
-        self.keep_nested_views(revision, tree.children())
+        self.keep_nested_views(tree.children())
     }
 
-    /// Answer the nested views of `state`, a version the view has not
-    /// synced yet, until the live revision moves.
-    pub(super) fn pin_nested_views(&self, state: &dyn Any) {
-        let tree = self.shared_document_tree(state);
-        self.keep_nested_views(self.version(), tree.children());
-    }
-
-    fn keep_nested_views(
-        &self,
-        revision: (u64, u64),
-        children: &SharedChildren,
-    ) -> Rc<HashSet<String>> {
+    /// Answer the nested views of `document`, until the live revision moves.
+    pub(super) fn keep_nested_views(&self, document: &SharedChildren) -> Rc<HashSet<String>> {
+        let children = self.with_record_children(document.clone(), self.stages.opens());
+        let at = (self.version(), self.storage.records_key());
         let mut kept = self.nested_views.borrow_mut();
         let views = match kept.as_ref() {
-            Some(last) if last.children.ptr_eq(children) => Rc::clone(&last.views),
+            Some(last) if last.children.ptr_eq(&children) => Rc::clone(&last.views),
             _ => Rc::new(nested_view_types(children.as_slice())),
         };
         *kept = Some(NestedViews {
-            revision,
-            children: children.clone(),
+            at,
+            children,
             views: Rc::clone(&views),
         });
         views
@@ -373,7 +366,7 @@ impl ResourceRoot {
             if current.is_some() {
                 // As `current_publication`: nested views follow this state
                 // until the view syncs to it.
-                self.keep_nested_views(self.version(), tree.children());
+                self.keep_nested_views(tree.children());
             }
             let mut head =
                 self.decorate_publication(state, tree.head().clone(), Decoration::Actions);
