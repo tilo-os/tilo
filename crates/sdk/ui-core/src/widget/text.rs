@@ -844,7 +844,7 @@ impl Text {
         presence.draw_writes_in(
             &mut crate::paint::PaintCtx::new(scene, transform, text_renderer, theme),
             (Some(field), item, &label),
-            None,
+            (None, None),
             &mut |text, _, start, end| {
                 #[allow(
                     clippy::cast_possible_truncation,

@@ -11,8 +11,9 @@ mod faces;
 pub mod frame;
 mod geom;
 mod interaction;
-pub use interaction::written_by;
-pub(crate) use interaction::written_in;
+mod written;
+pub use written::written_by;
+pub(crate) use written::written_in;
 mod key;
 mod labels;
 mod layer;
@@ -31,7 +32,6 @@ pub use chat::{
 pub use draft::DraftSaid;
 pub use faces::{Face, FaceStack};
 pub use geom::{EdgeMist, MistEdge, edge_mist_for};
-pub(crate) use interaction::written_under;
 pub use interaction::{
     ACTIVE_INTERACTION_EXPIRY, AgentActionMarker, InteractionCardPlacement, MarkerPlace,
     TERMINAL_INTERACTION_DWELL, interaction_card_slots,
@@ -49,6 +49,7 @@ pub use render::{
     layout_peer_pills, paint_follow_frame, paint_followed_pointer, paint_own_chat_bubble,
     paint_reaction, paint_speaking_ring,
 };
+pub(crate) use written::written_under;
 
 /// The scope this process should publish its presence under — the workspace
 /// it collaborates in, or `None` when it has no workspace. Read from
@@ -448,6 +449,11 @@ pub struct PresenceCtx {
     /// the characters a write landed in. The rail leaves them out instead of
     /// naming the same activity a second time.
     shown: std::cell::RefCell<std::collections::HashSet<tilo_actions::InvocationId>>,
+    /// What each write put into a text, by writer and place, drawn where it stands
+    /// ([`Self::draw_writes_in`]): an agent's last write in a place stays marked there.
+    written: std::cell::RefCell<HashMap<written::WrittenPlace, written::Written>>,
+    /// Counts changes to `written` ([`Self::written_generation`]).
+    written_generation: std::cell::Cell<u64>,
     /// Per-user "just typed" highlight spans, keyed by presence scope and
     /// faded out by [`PresenceCtx::active_typing`] over [`crate::motion::Trace::LIFE`].
     /// Not serialised — purely a local render effect.

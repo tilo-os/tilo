@@ -1,5 +1,5 @@
 //! What an action wrote into a field, drawn where it landed: its characters in the writer's
-//! colour, fading, and the writer's caret at their end wearing what it did
+//! colour, and the writer's caret at their end wearing what it did while it arrives
 //! ([`crate::presence::PresenceCtx::draw_writes_in`]), as a block of text shows an agent's write
 //! ([`crate::widget::BlockEditor`]).
 use vello::Scene;
@@ -31,7 +31,11 @@ impl TextInput {
         presence.draw_writes_in(
             &mut crate::paint::PaintCtx::new(scene, transform, text_renderer, theme),
             (Some(region), block, &self.text),
-            None,
+            (
+                self.typing.last_edit(),
+                self.is_focused
+                    .then(|| self.selection_anchor_focus_or_caret()),
+            ),
             &mut |_, _, start, end| {
                 (
                     self.selection_rects(theme, start, end),

@@ -43,8 +43,9 @@ impl BlockEditor {
         }
         // What an invocation writes here glows in its actor's colour, exactly
         // the characters it wrote, with its caret where they end: the marks a
-        // person's typing leaves, from an action rather than from keys. The
-        // person editing this block afterwards puts it away.
+        // person's typing leaves, from an action rather than from keys. An
+        // agent's last write keeps a quiet wash until the person edits this
+        // block or reaches into it.
         // Whose action caret stands on this line: the one tag it wears says who and what, so their
         // own caret here draws no second one.
         let top = self
@@ -56,6 +57,29 @@ impl BlockEditor {
             .as_ref()
             .filter(|(edited, _)| *edited == b.id)
             .map(|(_, at)| *at);
+        // Where the person's own caret or selection stands in this block: reaching into what an
+        // agent wrote puts its mark away.
+        let selected = self
+            .document_selection()
+            .filter(|_| self.is_focused)
+            .map(|selection| selection.ordered())
+            .filter(|(from, to)| (from.block..=to.block).contains(&i))
+            .map(|(from, to)| {
+                (
+                    if from.block == i { from.byte } else { 0 },
+                    if to.block == i {
+                        to.byte
+                    } else {
+                        line.value().len()
+                    },
+                )
+            })
+            .or_else(|| {
+                line.is_focused().then(|| {
+                    line.selection_range()
+                        .unwrap_or((line.cursor_pos(), line.cursor_pos()))
+                })
+            });
         let acting = ctx.presence.draw_writes_in(
             &mut crate::paint::PaintCtx::new(
                 ctx.scene,
@@ -64,7 +88,7 @@ impl BlockEditor {
                 ctx.theme,
             ),
             (None, &b.id, line.value()),
-            edited,
+            (edited, selected),
             &mut |_, interaction, start, end| {
                 // One caret, where the write ends: a write over several paragraphs puts it on
                 // the last of them.

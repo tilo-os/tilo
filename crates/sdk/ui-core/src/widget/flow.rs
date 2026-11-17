@@ -38,6 +38,9 @@ pub(super) struct Flow {
     cache_permissions: u64,
     /// The cache holds a write's mark on text ([`crate::presence::PresenceCtx::shows_writes`]).
     cache_writes: bool,
+    /// What writes were held when the cache was drawn
+    /// ([`crate::presence::PresenceCtx::written_generation`]).
+    cache_written: u64,
     /// The input generation the cache was painted at
     /// ([`crate::input_generation`]), and whether that drawing read state
     /// outside the widgets that made it ([`crate::outside_paint`]): such a
@@ -116,6 +119,7 @@ impl Flow {
             cache_theme: None,
             cache_permissions: 0,
             cache_writes: false,
+            cache_written: 0,
             cache_input: 0,
             cache_outside: false,
             cache_model: 0,
@@ -449,9 +453,10 @@ impl Flow {
             .is_none_or(|drawn| !drawn.is(theme));
         let tracked = crate::scene_parts::is_tracked(scene);
         let permissions_moved = self.cache_permissions != presence.paint_permission_generation();
-        // A write's mark fades on the text it landed in and then goes: while one stands, and on
-        // the frame after the last, the drawing is made again.
+        // A write's mark arrives on the text it landed in and then rests or goes: while one
+        // changes, on the frame after, and once one comes or goes, the drawing is made again.
         let writes = presence.shows_writes(crate::time::now());
+        let written = presence.written_generation();
         let input_moved =
             self.cache_outside && self.cache_input != crate::input_generation::generation();
         let model_moved = self.cache_model != crate::input_generation::model();
@@ -461,6 +466,7 @@ impl Flow {
             || permissions_moved
             || writes
             || self.cache_writes
+            || self.cache_written != written
             || input_moved
             || model_moved
             || any_child_dirty
@@ -573,6 +579,7 @@ impl Flow {
             }
             self.cache_permissions = presence.paint_permission_generation();
             self.cache_writes = writes;
+            self.cache_written = written;
             self.cache_input = crate::input_generation::generation();
             self.cache_model = crate::input_generation::model();
             self.cache_present = true;
