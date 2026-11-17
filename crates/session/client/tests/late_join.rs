@@ -63,8 +63,8 @@ async fn a_late_joiner_receives_a_segmented_checkpoint_and_its_tail_in_bounded_p
     author
         .write(route(), &DocumentMutation::Snapshot(doc.save()))
         .unwrap();
-    // A file put into the document: changes larger than one segment, which travel deflated,
-    // and which everything written after them builds on.
+    // A file put into the document: changes larger than one segment, and everything written
+    // after them builds on them.
     doc.put(ROOT, "file", noise(3 * 1024 * 1024 / 2, 1_000))
         .unwrap();
     author

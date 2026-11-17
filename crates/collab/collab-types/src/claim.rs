@@ -144,8 +144,7 @@ impl ClaimedAction {
     /// its change is: what the entry it continues claims.
     #[must_use]
     pub fn of_continuation(message: &str) -> Option<Self> {
-        let rest = message.strip_prefix(tilo_actions::context::CONTINUATION_PREFIX)?;
-        Some(match serde_json::from_str(rest.split(' ').nth(1)?).ok()? {
+        Some(match ContinuedAction::of_message(message)? {
             ContinuedAction::Edit { kind, path } => Self::Edit { kind, path },
             ContinuedAction::Verb { action, item } => Self::Verb { action, item },
         })
@@ -666,7 +665,7 @@ mod tests {
                 let next = typed(what, r#""ab""#).continuation_of(&first).unwrap();
                 assert_eq!(claim(&next), claim(&first.change_message().unwrap()), "{next}");
             }
-            assert_eq!(claim(r#"tilo.cont/2 g {"cell":"r1"} 0 1 x"#), Err(ClaimError::Unnamed));
+            assert_eq!(claim("tilo.cont/3 g nonsense 0 1 x"), Err(ClaimError::Unnamed));
         }
     }
 
