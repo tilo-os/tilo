@@ -83,6 +83,17 @@ words = ["participant"]
 paths = ["crates/collab/threshold-identity/*"]
 
 [[allow]]
+reason = "The name the report of a local document action gives its provenance: kept in app documents and sent between an app and the system, read and written by that name."
+words = ["custody"]
+paths = [
+    "crates/runtime/runtime-collab/src/lib.rs",
+    "crates/runtime/runtime-collab/src/local_document_action_transport_tests.rs",
+    "crates/collab/tilo-action-broker/src/local_document_action.rs",
+    "crates/sdk/ui-core/src/app/local_action_persistence.rs",
+    "crates/sdk/ui-core/src/app/local_action_persistence_tests.rs",
+]
+
+[[allow]]
 reason = "An iCalendar or WhatsApp group participant."
 words = ["participant"]
 paths = [
