@@ -935,15 +935,26 @@ impl Workspaces {
 }
 
 impl super::GovernedWorkspace {
-    /// The device of `person`'s this workspace certified most recently and admits now: the one an
-    /// agent this host runs for them works on, so what the agent may do is the person's access
-    /// here at every step, and a person removed from the workspace leaves their agent nothing.
-    pub(super) fn person_device(&self, person: &[u8; 32]) -> Option<[u8; 32]> {
+    /// The device of `person`'s own this workspace certified most recently and admits now: the
+    /// one an agent this server runs for them works on, so what the agent may do is the
+    /// person's access here at every step, and a person removed from the workspace leaves
+    /// their agent nothing.
+    ///
+    /// A device this server placed itself (`placed`) is never that device. It is certified in
+    /// the person's name for a window in the workspace's machine, later than any device of
+    /// their own, and it is confined to that window: a person with no other device here has
+    /// none.
+    pub(super) fn person_device(
+        &self,
+        person: &[u8; 32],
+        placed: impl Fn(&[u8; 32]) -> bool,
+    ) -> Option<[u8; 32]> {
         let peer = self.peer();
         let now = tilo_clock::wall();
         peer.certificates()
             .iter()
             .filter(|cert| &cert.user_public_key == person)
+            .filter(|cert| !placed(&cert.device_public_key))
             .filter(|cert| peer.permissions(cert.device_public_key, now).is_ok())
             .max_by_key(|cert| cert.issued_at_ns)
             .map(|cert| cert.device_public_key)
@@ -952,7 +963,9 @@ impl super::GovernedWorkspace {
 
 impl Workspaces {
     /// [`GovernedWorkspace::person_device`] in the workspace `workspace` governed here: `None` for
-    /// a workspace not governed here, or a person it admits on no device.
+    /// a workspace not governed here, or a person it admits on no device of their own. The
+    /// devices this server placed are those its own list of them holds
+    /// ([`crate::environment::EnvironmentRegistry`]).
     pub async fn person_device(
         &self,
         workspace: WorkspaceId,
@@ -960,6 +973,8 @@ impl Workspaces {
     ) -> Option<[u8; 32]> {
         let governed = self.held(workspace).await?;
         let runtime = governed.lock().await;
-        runtime.person_device(&person)
+        let placed = &self.inner.host.environments;
+        let now_ns = tilo_clock::unix_now_ns();
+        runtime.person_device(&person, |device| placed.of(device, now_ns).is_some())
     }
 }

@@ -299,6 +299,7 @@ impl HostSessions {
                 .unwrap_or(crate::workspaces::DEFAULT_MAX_PRE_ADMISSIONS),
             trust_policy: self.handler.trust_policy.clone(),
             agents: self.handler.agents.clone(),
+            environments: self.handler.environments.clone(),
             work: cfg.work.clone(),
             arrivals: self.handler.arrivals.clone(),
         }
