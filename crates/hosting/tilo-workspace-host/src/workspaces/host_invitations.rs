@@ -281,7 +281,9 @@ mod tests {
     use crate::workspaces::listing::entry_tests::walk_in_as;
     use crate::workspaces::tests::{governor, guest_device, test_host};
     use tilo_relay_protocol::directory::{EntryJoin, Listing};
-    use tilo_relay_protocol::workspaces::JoinReply;
+    use tilo_relay_protocol::workspaces::{
+        JoinReply, Workspace, WorkspacesReply, WorkspacesRequest,
+    };
 
     const DAY_NS: u64 = 24 * 3600 * 1_000_000_000;
 
@@ -328,6 +330,14 @@ mod tests {
             .policy_of(workspace)
             .await
             .is_some_and(|policy| policy.is_administrator(&hex::encode(person)))
+    }
+
+    /// `device`'s person as a page's workspace lists them.
+    fn row<'a>(page: &'a Workspace, device: &DeviceCert) -> &'a collab_types::Member {
+        page.members
+            .iter()
+            .find(|row| row.id.key() == hex::encode(device.user_public_key))
+            .unwrap_or_else(|| panic!("{device:?} has a row in {page:?}"))
     }
 
     /// The host invites as itself: the invitation names no person who sent
@@ -443,6 +453,106 @@ mod tests {
             matches!(again, JoinReply::Refused(_)),
             "one owner link, one owner: {again:?}"
         );
+        relay.shutdown().await;
+    }
+
+    /// The owner link's opener is the workspace's owner on its pages: the
+    /// People tab shows them as Owner, reads its own rows as theirs, and the
+    /// workspace lets them change who is in it.
+    #[tokio::test]
+    async fn an_owner_links_opener_reads_as_owner_and_governs_peoples_roles() {
+        let dir = tempfile::tempdir().unwrap();
+        let host = governor();
+        let relay = site(dir.path(), &host).await;
+        let workspaces = relay.workspaces();
+        let lounge = workspaces.create("Lounge").await.unwrap().workspace;
+
+        let owner_link = workspaces
+            .invite_as_host(&lounge, asked(Role::Editor, false, true))
+            .await
+            .unwrap();
+        let (_, owner) = guest_device();
+        let admitted = workspaces
+            .admit_proven(
+                owner_link.signed_invitation,
+                owner.clone(),
+                rand::random(),
+                "Ada",
+                None,
+            )
+            .await;
+        assert!(
+            matches!(admitted, JoinReply::Admitted { .. }),
+            "{admitted:?}"
+        );
+        let invite = workspaces
+            .invite_as_host(&lounge, asked(Role::Editor, false, false))
+            .await
+            .unwrap();
+        let (_, member) = guest_device();
+        let admitted = workspaces
+            .admit_proven(
+                invite.signed_invitation,
+                member.clone(),
+                rand::random(),
+                "Grace",
+                None,
+            )
+            .await;
+        assert!(
+            matches!(admitted, JoinReply::Admitted { .. }),
+            "{admitted:?}"
+        );
+        // The owner's own page: their row is theirs, and reads as the owner's.
+        let WorkspacesReply::Workspaces(listed) = workspaces
+            .page_workspaces(&owner, WorkspacesRequest::List)
+            .await
+        else {
+            panic!("the page lists its workspaces");
+        };
+        let page = listed
+            .into_iter()
+            .find(|page| page.workspace == lounge)
+            .expect("the Lounge is listed");
+        assert_eq!(
+            row(&page, &owner).role,
+            Some(Role::Owner),
+            "the owner link's opener reads as the owner: {page:?}"
+        );
+        assert!(row(&page, &owner).is_self, "their own row is theirs");
+        assert!(!row(&page, &member).is_self, "nobody else's row is");
+        assert_eq!(row(&page, &member).role, Some(Role::Editor));
+        // Anyone else's page reads the owner as the owner, and their own row as theirs.
+        let WorkspacesReply::Workspaces(listed) = workspaces
+            .page_workspaces(&member, WorkspacesRequest::List)
+            .await
+        else {
+            panic!("the page lists its workspaces");
+        };
+        let page = listed
+            .into_iter()
+            .find(|page| page.workspace == lounge)
+            .expect("the Lounge is listed");
+        assert_eq!(row(&page, &owner).role, Some(Role::Owner));
+        assert!(!row(&page, &owner).is_self);
+        assert!(row(&page, &member).is_self);
+
+        // And the workspace lets them change a person's role.
+        let changed = workspaces
+            .page_workspaces(
+                &owner,
+                WorkspacesRequest::SetRole {
+                    workspace: lounge,
+                    request_id: rand::random(),
+                    user_public_key: member.user_public_key,
+                    role: Role::Viewer,
+                },
+            )
+            .await;
+        let WorkspacesReply::Workspace(changed) = changed else {
+            panic!("the owner may change a role: {changed:?}");
+        };
+        assert_eq!(row(&changed, &member).role, Some(Role::Viewer));
         relay.shutdown().await;
     }
 

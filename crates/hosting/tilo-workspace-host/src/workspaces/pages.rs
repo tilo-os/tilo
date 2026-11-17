@@ -14,6 +14,8 @@
 //! are kept with the workspace ([`super::wait_list`]) and listed on their own
 //! ([`WorkspacesRequest::WaitList`]).
 
+use std::collections::BTreeSet;
+
 use tilo_action_policy::roles::governance;
 use tilo_peer_state::join::VerifiedRedemption;
 use tilo_relay_protocol::workspaces::{
@@ -107,8 +109,14 @@ impl Presented {
 }
 
 /// `workspace` as a page sees it, with `summary` its people as its
-/// governance keeps them and `certificates` the devices it records.
-fn page_workspace(summary: WorkspaceSummary, certificates: &[DeviceCert]) -> Workspace {
+/// governance keeps them, `certificates` the devices it records, `owners` the
+/// people it is kept for and `reader` the person the page's device acts for.
+fn page_workspace(
+    summary: WorkspaceSummary,
+    certificates: &[DeviceCert],
+    owners: &BTreeSet<String>,
+    reader: [u8; 32],
+) -> Workspace {
     let members: Vec<_> = summary
         .members
         .into_iter()
@@ -121,6 +129,17 @@ fn page_workspace(summary: WorkspaceSummary, certificates: &[DeviceCert]) -> Wor
             {
                 member.name.clone_from(&cert.device_label);
             }
+            // The person a host keeps the workspace for is its owner: the host
+            // runs the workspace for them and is nobody in it itself, so it is
+            // their role the page reads and their rights it offers.
+            if owners.contains(&member.id.key()) {
+                member.role = Some(Role::Owner);
+            }
+            // The page shows its reader's own row as theirs, and reads from it
+            // what they may do here.
+            if root == Some(reader) {
+                member = member.claiming_self();
+            }
             member
         })
         .collect();
@@ -131,6 +150,18 @@ fn page_workspace(summary: WorkspaceSummary, certificates: &[DeviceCert]) -> Wor
         generation: summary.generation,
         members,
     }
+}
+
+/// The people `workspace` is kept for, by person id: who a page reads as its
+/// owner, as a host running workspaces of people's own keeps each for a person
+/// and is nobody in it itself.
+fn owners_of(workspace: &GovernedWorkspace) -> BTreeSet<String> {
+    workspace
+        .peer()
+        .governance()
+        .governed_policy()
+        .map(|policy| policy.keepers().map(str::to_owned).collect())
+        .unwrap_or_default()
 }
 
 fn valid_name(name: &str) -> Result<String, CollaborationError> {
@@ -166,7 +197,7 @@ impl Workspaces {
             }
             WorkspacesRequest::Enter { workspace } => {
                 self.enter(&workspace, device).await?;
-                self.page_workspace(&workspace).await?
+                self.page_workspace(&workspace, device).await?
             }
             request @ (WorkspacesRequest::Invite { .. }
             | WorkspacesRequest::Cancel { .. }
@@ -369,7 +400,7 @@ impl Workspaces {
                 .map_err(CollaborationError::new)?;
             self.settle(&mut governed).await?;
         }
-        self.page_workspace(workspace).await
+        self.page_workspace(workspace, device).await
     }
 
     /// Name `device`'s person `name` in `workspace`: the name the workspace
@@ -481,7 +512,7 @@ impl Workspaces {
                     },
                 )
                 .await?;
-                self.page_workspace(&workspace).await?
+                self.page_workspace(&workspace, device).await?
             }
             WorkspacesRequest::Remove {
                 workspace,
@@ -551,7 +582,7 @@ impl Workspaces {
         } else {
             self.unban_member(workspace, device, request).await?;
         }
-        self.page_workspace(workspace).await
+        self.page_workspace(workspace, device).await
     }
 
     async fn page_remove(
@@ -573,7 +604,7 @@ impl Workspaces {
             },
         )
         .await?;
-        self.page_workspace(workspace).await
+        self.page_workspace(workspace, device).await
     }
 
     /// Issue the single-use invitation of the owner's grant and record the
@@ -653,7 +684,7 @@ impl Workspaces {
             now,
         )?;
         let created = self.create(name).await?;
-        self.page_workspace(&created.workspace).await
+        self.page_workspace(&created.workspace, device).await
     }
 
     /// Govern `workspace` here unless this host does, created as `name`, and
@@ -679,7 +710,7 @@ impl Workspaces {
             return Err(error.into());
         }
         self.enter(workspace, device).await?;
-        self.page_workspace(workspace).await
+        self.page_workspace(workspace, device).await
     }
 
     async fn page_list(
@@ -709,8 +740,14 @@ impl Workspaces {
             }
             let summary = self.people(&workspace);
             let certificates = workspace.peer().certificates();
+            let owners = owners_of(&workspace);
             drop(workspace);
-            listed.push(page_workspace(summary, &certificates));
+            listed.push(page_workspace(
+                summary,
+                &certificates,
+                &owners,
+                device.user_public_key,
+            ));
         }
         Ok(WorkspacesReply::Workspaces(listed))
     }
@@ -775,15 +812,22 @@ impl Workspaces {
         Ok(issued)
     }
 
-    async fn page_workspace(&self, workspace: &str) -> Result<WorkspacesReply, CollaborationError> {
+    async fn page_workspace(
+        &self,
+        workspace: &str,
+        device: &DeviceCert,
+    ) -> Result<WorkspacesReply, CollaborationError> {
         let workspace = self.workspace(workspace).await?;
         let workspace = workspace.lock().await;
         let summary = self.people(&workspace);
         let certificates = workspace.peer().certificates();
+        let owners = owners_of(&workspace);
         drop(workspace);
         Ok(WorkspacesReply::Workspace(page_workspace(
             summary,
             &certificates,
+            &owners,
+            device.user_public_key,
         )))
     }
 

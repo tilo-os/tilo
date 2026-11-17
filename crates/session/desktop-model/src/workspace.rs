@@ -489,6 +489,15 @@ impl Workspace {
         self.policy.is_owner(user)
     }
 
+    /// Whether the workspace is theirs: its structural owner, or the person a
+    /// host keeps it for when it runs the workspace for them
+    /// ([`WorkspacePolicy::is_keeper`]). They are its owner as every surface
+    /// shows one, and may change who is in it and what each may do.
+    #[must_use]
+    pub fn owns(&self, user: &str) -> bool {
+        self.policy.is_owner(user) || self.policy.is_keeper(user)
+    }
+
     /// The workspace this workspace is, given when it was made and never changed.
     #[must_use]
     pub fn id(&self) -> WorkspaceId {
@@ -1082,5 +1091,32 @@ mod tests {
             "the name as written is trimmed"
         );
         assert_eq!(workspace.name, "Tilo");
+    }
+
+    #[test]
+    fn a_workspace_kept_for_a_person_is_theirs() {
+        let mut workspace = Workspace::new(WorkspaceId::from_u128(2), "Lounge");
+        let host = "22".repeat(32);
+        let person = "11".repeat(32);
+        workspace.set_owner(host.clone());
+        workspace.policy.grants.push(roles::keeper_grant(
+            &workspace.id.to_string(),
+            &person,
+            Grantee::person(host.clone()),
+        ));
+        assert!(
+            workspace.is_owner(&host),
+            "the structural owner is the host"
+        );
+        assert!(
+            !workspace.is_owner(&person),
+            "nobody but the host owns it structurally"
+        );
+        assert!(
+            workspace.owns(&person),
+            "the person the host keeps the workspace for is its owner to every surface"
+        );
+        assert!(workspace.owns(&host));
+        assert!(!workspace.owns(&"33".repeat(32)), "a member owns nothing");
     }
 }
