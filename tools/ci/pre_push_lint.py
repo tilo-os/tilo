@@ -615,8 +615,16 @@ class Passes:
             return
         self.directory.mkdir(parents=True, exist_ok=True)
         (self.directory / key).write_text(label + "\n")
-        entries = sorted(self.directory.iterdir(), key=lambda entry: entry.stat().st_mtime)
-        for stale in entries[:-KEPT_PASSES]:
+        # Every worktree of the clone records here, and pushes run at the same time: an entry
+        # another of them pruned between the listing and its stat is not one to keep or to fail on.
+        entries = []
+        for entry in self.directory.iterdir():
+            try:
+                entries.append((entry.stat().st_mtime, entry))
+            except FileNotFoundError:
+                continue
+        entries.sort(key=lambda modified: modified[0])
+        for _modified, stale in entries[:-KEPT_PASSES]:
             stale.unlink(missing_ok=True)
 
 
