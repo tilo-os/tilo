@@ -469,5 +469,24 @@ final class AsksHoldTests: XCTestCase {
         }
         XCTAssertEqual(held.count, 2)
     }
+
+    func testWhereHerServerNeverSaysWhichWorkspaceIsHerOwnTheDeviceStillGetsInAndTheAskIsMadeAgain() async throws {
+        try await start(livesInOwn: true)
+        source.engine.askPatience = .milliseconds(400)
+        try await enter("window.agents = []; window.plan = {own: ['never']}", own: true)
+        try await signedIn()
+        try await until("nothing more stands in the way") { self.setups.last == .ready }
+        let kept = try await agentsKept()
+        XCTAssertEqual(kept, #"[["assistant",true]]"#)
+    }
+
+    func testAnAnswerThatNeverComesOnTheWayInDoesNotKeepHerFromHearingWhatHerServerTellsHer() async throws {
+        try await start(Self.assistant)
+        source.engine.askPatience = .milliseconds(400)
+        try await enter("window.plan = {'tilo.vault list': ['never']}")
+        try await signedIn()
+        try await inPage(Self.reminderComes)
+        try await isReminder()
+    }
 }
 #endif
