@@ -82,7 +82,7 @@ pub(crate) struct JsPresence {
     /// The latest wave, `target` the waved-at member's publisher.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     wave: Option<ShownWave>,
-    /// Where the windows are: `{size, windows: [{app, record, rect, focused}]}`.
+    /// Where the windows are: `{size, windows: [{app, document, rect, focused}]}`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     layout: Option<ShownLayout>,
     /// Whose view this member follows: their publisher.
@@ -114,12 +114,12 @@ fn shell_from_js(value: &JsPresence) -> Result<Option<Box<ShellPresence>>, JsErr
                 .windows
                 .iter()
                 .map(|window| {
-                    let record =
-                        <[u8; 8]>::try_from(hex::decode(&window.record).map_err(js_error)?)
-                            .map_err(|_| js_error("a window's record is a 16-hex digest"))?;
+                    let document =
+                        <[u8; 8]>::try_from(hex::decode(&window.document).map_err(js_error)?)
+                            .map_err(|_| js_error("a window's document is a 16-hex digest"))?;
                     Ok(ShellWindow {
                         app: window.app.clone(),
-                        record,
+                        document,
                         rect: window.rect,
                         focused: window.focused,
                     })
@@ -133,13 +133,14 @@ fn shell_from_js(value: &JsPresence) -> Result<Option<Box<ShellPresence>>, JsErr
     if let Some(focus) = &value.focus {
         let mut found = false;
         for window in &mut windows {
-            window.focused = window.app == focus.app && hex::encode(window.record) == focus.record;
+            window.focused =
+                window.app == focus.app && hex::encode(window.document) == focus.record;
             found |= window.focused;
         }
         if !found {
             windows.push(ShellWindow {
                 app: focus.app.clone(),
-                record: <[u8; 8]>::try_from(hex::decode(&focus.record).map_err(js_error)?)
+                document: <[u8; 8]>::try_from(hex::decode(&focus.record).map_err(js_error)?)
                     .map_err(|_| js_error("a focused window's record is a 16-hex digest"))?,
                 rect: [0, 0, 0, 0],
                 focused: true,
