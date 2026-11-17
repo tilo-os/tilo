@@ -1780,6 +1780,37 @@ try {
     console.log(`ok: A's shell shows ${invitedRow.label} beside B`);
     mark('A\'s shell shows the invitee');
     await dump(a.tab, '11-a-people-invited');
+
+    // Who is in the workspace, from the workspace menu's settings: the session's own sheet on its
+    // People tab. A, an administrator, changes the invitee's role, and the device serving the workspace
+    // carries it out. The invitee is the one Commenter here (everyone else the
+    // Lounge let in is an Editor), so the role their row's button names is theirs alone.
+    // The invite sheet A made the link in is still up, and holds the keyboard: A puts it away.
+    await key(a.tab, 'Escape');
+    const sheetAway = await a.tab.waitFor(`(${found('Create link')}) === ''`, {timeout: stepLimit(2)})
+      .catch(() => false);
+    if (!sheetAway) await failed('the invite sheet stayed up after Escape', a.tab);
+    await search(a.tab, a.command, 'workspace settings', 'Workspace settings');
+    await waitFor(a.tab, 'Commenter', "the invitee's role in the People tab");
+    await dump(a.tab, '12-a-people-sheet');
+    await pressWhen(a.tab, 'Commenter', "the invitee's role button");
+    await pressWhen(a.tab, 'Viewer', 'the Viewer choice of the role menu');
+    // The row says the new role once the serving device answered with the workspace after the change.
+    const roleChanged = await a.tab.waitFor(`(() => {
+      const names = [];
+      const node = n => { names.push(n.name ?? ''); (n.children || []).forEach(node); };
+      const walk = n => { if (n.semantics) node(n.semantics); (n.children || []).forEach(walk); };
+      const root = globalThis.tiloMount?.state()?.semantics?.root;
+      if (root) walk(root);
+      return !names.includes('Commenter') && names.includes('Viewer');
+    })()`, {timeout: stepLimit(3)}).catch(() => false);
+    if (!roleChanged) {
+      await dump(a.tab, 'timeout-people-role');
+      await failed("the invitee's row never said Viewer after the role was changed", a.tab);
+    }
+    console.log('ok: the People tab changed the invitee to a Viewer through the device serving the workspace');
+    mark('the invitee made a Viewer');
+    await key(a.tab, 'Escape');
   }
 
   // Nothing failed in either page.
