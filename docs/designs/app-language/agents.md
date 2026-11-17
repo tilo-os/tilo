@@ -232,7 +232,8 @@ An answer composes views (agent-ux.md); the action API checks it before the pers
 resolve, suggested actions are allowed, it fits. A view answer is a `view` declaration that
 becomes one of the person's own views (agent-ux.md, "Answers as views"). After a task, its
 result is checked against the request: on by default for small-model profiles, which skip or
-get parts of long requests wrong most often. `history task` lists the steps; `undo task` reverses them.
+get parts of long requests wrong most often. `history task` lists this task's steps and the
+agent's runs in the workspace; `undo task` reverses this task's steps.
 
 ## 9. Evals
 

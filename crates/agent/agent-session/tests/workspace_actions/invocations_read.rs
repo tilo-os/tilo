@@ -176,16 +176,26 @@ fn invocations(
     workspace: WorkspaceId,
     caller: &Caller,
 ) -> serde_json::Value {
+    invocations_of(actions, workspace, caller, None)
+}
+
+/// The runs of the member `by`, or of everyone when it is `None`.
+fn invocations_of(
+    actions: &tilo_agent_session::WorkspaceActions,
+    workspace: WorkspaceId,
+    caller: &Caller,
+    by: Option<&str>,
+) -> serde_json::Value {
     let listing = workspace_invocations::target();
+    let mut query = serde_json::json!({"limit": workspace_invocations::MOST});
+    if let Some(by) = by {
+        query["by"] = by.into();
+    }
     let status = receipt(
         actions,
         workspace,
         caller,
-        &request(
-            &listing.provider,
-            listing.address,
-            json(serde_json::json!({"limit": workspace_invocations::MOST})),
-        ),
+        &request(&listing.provider, listing.address, json(query)),
     );
     let ReceiptStatus::Completed { output } = status else {
         panic!("the runs are listed: {status:?}")
@@ -333,6 +343,22 @@ async fn a_member_lists_only_the_invocations_in_records_they_may_read_now() {
         tokio::time::sleep(Duration::from_millis(100)).await;
     };
     let in_tasks = in_app(&whole, TASKS).len() as u64;
+
+    // Asked for one member's runs, the listing answers theirs alone: here
+    // the editor's own, and nobody's under another id.
+    let editor = member.acting().person_id().unwrap_or_default().to_owned();
+    let own = invocations_of(&actions, workspace, &member, Some(&editor));
+    assert_eq!(
+        own["total"].as_u64().unwrap(),
+        whole["total"].as_u64().unwrap(),
+        "every run here is the editor's: {own}"
+    );
+    let nobody = invocations_of(&actions, workspace, &member, Some("nobody"));
+    assert_eq!(nobody["total"].as_u64().unwrap(), 0, "{nobody}");
+    assert!(
+        nobody["items"].as_array().unwrap().is_empty(),
+        "another member's runs are none of theirs: {nobody}"
+    );
 
     // Their Read on the tasks is gone: the next listing says nothing of the
     // runs there, and counts only what is left.

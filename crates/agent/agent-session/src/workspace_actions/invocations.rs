@@ -203,12 +203,22 @@ fn author(entry: &Value) -> (InvocationBy, Option<String>) {
         .or(run)
         .or_else(|| text(entry, "by"))
         .unwrap_or("someone");
+    // The member's own id tells its runs apart from another's, whatever
+    // either is named; an automation is no member.
+    let id = member
+        .and_then(|member| {
+            ["agent", "bot", "person"]
+                .iter()
+                .find_map(|kind| text(member, kind))
+        })
+        .map(str::to_owned);
     // A run goes by its agent's name unless its client named it.
     let title = run.filter(|run| Some(*run) != named).map(str::to_owned);
     (
         InvocationBy {
             name: name.to_owned(),
             kind: kind.to_owned(),
+            id,
         },
         title,
     )
@@ -358,6 +368,7 @@ fn call_of(id: String, entry: &Entry) -> (Option<String>, Call) {
         by: InvocationBy {
             name,
             kind: kind.to_owned(),
+            id: acting.member_id().map(|member| member.id().to_owned()),
         },
         title: super::said_run_title(&entry.request),
         action,
@@ -498,6 +509,19 @@ fn listing(
     }
     items.sort_by_key(|invocation| std::cmp::Reverse(key(invocation)));
     items
+}
+
+/// The runs of the member `by`, when the query asks for one member's, so an
+/// agent reads its own work in a workspace where others work too; every run
+/// when it asks for none.
+fn of_member(invocations: Vec<Invocation>, by: Option<&str>) -> Vec<Invocation> {
+    match by {
+        Some(by) => invocations
+            .into_iter()
+            .filter(|invocation| invocation.by.id.as_deref() == Some(by))
+            .collect(),
+        None => invocations,
+    }
 }
 
 /// Where a run sorts, newest first, and what a cursor names it by.
@@ -746,7 +770,8 @@ impl Worker {
             None => across,
         });
         let pending = unread.iter().any(&mut may_read);
-        Ok(page(listing(recorded, calls), query, pending))
+        let runs = of_member(listing(recorded, calls), query.by.as_deref());
+        Ok(page(runs, query, pending))
     }
 }
 
@@ -785,6 +810,7 @@ mod tests {
             by: InvocationBy {
                 name: "Jane Doe's agent".into(),
                 kind: "agent".into(),
+                id: Some("a".into()),
             },
             title: None,
             action: "terminal#run".into(),
@@ -826,6 +852,11 @@ mod tests {
             assert_eq!((first.first_ms, first.last_ms), (10, 11));
             assert_eq!(first.by.name, "Jane Doe's agent");
             assert_eq!(first.by.kind, "agent");
+            assert_eq!(
+                first.by.id.as_deref(),
+                Some("a"),
+                "the agent's own id tells its runs from another's"
+            );
             assert_eq!(first.title, None, "a run named for its agent has no title of its own");
             assert_eq!(first.over.as_deref(), Some("Ada"), "Ada's edit stands on it");
             let (_, second) = &shares[1];
@@ -899,6 +930,33 @@ mod tests {
             assert_eq!(runs[0].step.as_deref(), Some("s3"), "newest first");
         }
 
+        phase a_listing_of_one_member_leaves_anothers_runs_out;
+        {
+            let mine = shares(
+                "so.tilo.notes",
+                "",
+                &[change("a1", Some("s1"), "Claude", 10)],
+            );
+            let theirs = shares(
+                "so.tilo.notes",
+                "",
+                &[json!({"change": "b1", "step": "s2", "time_ms": 20,
+                         "actor": {"by": {"member": {"agent": "b"}}, "name": "Another agent"}})],
+            );
+            let runs = listing(
+                BTreeMap::from([
+                    (mine[0].0.clone(), vec![mine[0].1.clone()]),
+                    (theirs[0].0.clone(), vec![theirs[0].1.clone()]),
+                ]),
+                Vec::new(),
+            );
+            assert_eq!(of_member(runs.clone(), None).len(), 2, "every run when none is asked for");
+            let only_mine = of_member(runs.clone(), Some("a"));
+            assert_eq!(only_mine.len(), 1, "{only_mine:?}");
+            assert_eq!(only_mine[0].by.id.as_deref(), Some("a"));
+            assert!(of_member(runs, Some("nobody")).is_empty());
+        }
+
         phase a_call_joins_its_steps_changes_and_says_how_it_stands;
         {
             let shares = shares(
@@ -934,17 +992,36 @@ mod tests {
                 .map(|at| (None, call(&format!("c{at}"), at, succeeded(), false)))
                 .collect();
             let runs = listing(BTreeMap::new(), calls);
-            let first = page(runs.clone(), &InvocationsQuery { limit: 2, cursor: None }, false);
+            let first = page(
+                runs.clone(),
+                &InvocationsQuery {
+                    limit: 2,
+                    ..InvocationsQuery::default()
+                },
+                false,
+            );
             assert_eq!((first.total, first.items.len()), (5, 2));
             assert_eq!(first.items[0].id.as_deref(), Some("c4"));
             let second = page(
                 runs.clone(),
-                &InvocationsQuery { limit: 2, cursor: first.next_cursor },
+                &InvocationsQuery {
+                    limit: 2,
+                    cursor: first.next_cursor,
+                    ..InvocationsQuery::default()
+                },
                 false,
             );
             let ids: Vec<Option<&str>> = second.items.iter().map(|run| run.id.as_deref()).collect();
             assert_eq!(ids, [Some("c2"), Some("c1")]);
-            let last = page(runs, &InvocationsQuery { limit: 2, cursor: second.next_cursor }, false);
+            let last = page(
+                runs,
+                &InvocationsQuery {
+                    limit: 2,
+                    cursor: second.next_cursor,
+                    ..InvocationsQuery::default()
+                },
+                false,
+            );
             assert_eq!(last.items.len(), 1);
             assert_eq!(last.next_cursor, None, "the last page names no next");
         }

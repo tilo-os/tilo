@@ -126,6 +126,7 @@ impl Session {
                 .and_then(Value::as_str)
                 .filter(|cursor| !cursor.is_empty())
                 .map(str::to_owned),
+            ..InvocationsQuery::default()
         };
         match self.list_runs(workspace, &query).await {
             Ok(runs) => {
@@ -219,6 +220,7 @@ mod tests {
                     by: InvocationBy {
                         name: "Jane Doe's agent".into(),
                         kind: "agent".into(),
+                        ..InvocationBy::default()
                     },
                     status: InvocationStatus::Waiting,
                     action: Some("terminal#run".into()),
@@ -229,6 +231,7 @@ mod tests {
                     by: InvocationBy {
                         name: "Visa backend".into(),
                         kind: "agent".into(),
+                        ..InvocationBy::default()
                     },
                     title: Some("Write the letter".into()),
                     status: InvocationStatus::Undone,

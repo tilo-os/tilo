@@ -199,9 +199,11 @@ desktop's search ranks them.
 ```
 
 `output` is the program's answer, one line per element as the text prints it (references and
-all); `steps` is `history task` — every step of this session's that changed something, oldest
-first, with the apps it changed. `status` is `ok`, `failed`, or `preview` for a program that
-would change much or destroy something and waits for `confirm: true`.
+all); `steps` is this task's part of `history task` — every step of this session's that changed
+something, oldest first, with the apps it changed. The `history task` answer's text beside it
+lists the agent's runs in the workspace, its `tilo_do` calls and earlier sessions included.
+`status` is `ok`, `failed`, or `preview` for a program that would change much or destroy
+something and waits for `confirm: true`.
 
 ### tilo_watch
 

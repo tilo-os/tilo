@@ -68,6 +68,10 @@ pub struct InvocationsQuery {
     /// newest.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cursor: Option<String>,
+    /// Only the runs of the member with this id ([`InvocationBy::id`]), when it
+    /// names one; every run otherwise.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub by: Option<String>,
 }
 
 impl InvocationsQuery {
@@ -92,6 +96,11 @@ pub struct InvocationBy {
     /// `agent` (every key, and an agent a person's device handed its session
     /// to), `person`, `bot` or `automation`.
     pub kind: String,
+    /// The member's own id inside that kind: an agent's, a bot's, a person's
+    /// (the lowercase hex of their root key), as History names their changes.
+    /// `None` for a run whose changes name no member (an automation's).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
 }
 
 /// How a run stands.
@@ -214,7 +223,7 @@ mod tests {
         assert_eq!(
             InvocationsQuery {
                 limit: 3,
-                cursor: None
+                ..InvocationsQuery::default()
             }
             .page(),
             3
@@ -222,7 +231,7 @@ mod tests {
         assert_eq!(
             InvocationsQuery {
                 limit: 10_000,
-                cursor: None
+                ..InvocationsQuery::default()
             }
             .page(),
             MOST
@@ -238,5 +247,36 @@ mod tests {
         .unwrap();
         assert_eq!(answer["status"], "waiting");
         assert!(answer.get("id").is_none(), "{answer}");
+    }
+
+    #[test]
+    fn a_listing_asks_for_one_members_runs_and_says_who_ran_each() {
+        let query = serde_json::to_value(InvocationsQuery {
+            by: Some("claude".into()),
+            ..InvocationsQuery::default()
+        })
+        .unwrap();
+        assert_eq!(query["by"], "claude");
+        assert!(
+            serde_json::to_value(InvocationsQuery::default())
+                .unwrap()
+                .get("by")
+                .is_none()
+        );
+        let run = serde_json::to_value(Invocation {
+            by: InvocationBy {
+                name: "Claude".into(),
+                kind: "agent".into(),
+                id: Some("claude".into()),
+            },
+            ..Invocation::default()
+        })
+        .unwrap();
+        assert_eq!(
+            run["by"],
+            serde_json::json!({"name": "Claude", "kind": "agent", "id": "claude"})
+        );
+        let unnamed = serde_json::to_value(InvocationBy::default()).unwrap();
+        assert!(unnamed.get("id").is_none(), "{unnamed}");
     }
 }

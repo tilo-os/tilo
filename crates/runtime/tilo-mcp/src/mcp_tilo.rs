@@ -17,7 +17,9 @@
 //!
 //! One call is one step: every invocation it makes carries the call's undo step and the task's
 //! run, so `undo` takes back the last step, in every app it changed, and `undo task` every step of
-//! this task; `history task` lists them. A program that fails takes back what it changed. One that
+//! this task. `history task` answers from the workspace's runs of this agent, so it lists the
+//! agent's `tilo_do` calls and its work in earlier sessions too, beside the steps this task can
+//! still take back. A program that fails takes back what it changed. One that
 //! would change many resources or destroy something answers with a preview, from a provisional run
 //! that sends nothing, until it is sent again with `confirm`.
 //!
@@ -33,6 +35,10 @@ use serde_json::{Map, Value, json};
 use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _};
 
 use tilo_actions::ActionDescriptor;
+use tilo_actions::remote::workspace_invocations::{
+    self, Invocation, InvocationStatus, Invocations, InvocationsQuery,
+};
+use tilo_actions::remote::{InvokeArgument, InvokeRequest, ReceiptStatus};
 use tilo_lock::MutexRecover as _;
 
 use super::{ActionHost, Addressed, Failure, McpServer, OneCall, Reply, app_names};
@@ -1032,7 +1038,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
                     .map(|reply| (reply, None, None))
                     .map_err(String::from);
             }
-            "history task" => return Ok((Reply::ok(self.history()), None, None)),
+            "history task" => return Ok((Reply::ok(self.history().await), None, None)),
             "catalogue" => {
                 return self
                     .catalogue()
@@ -1494,8 +1500,68 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         }
     }
 
-    fn history(&self) -> String {
-        history_text(&self.programs.lock_recover())
+    /// `history task`: the steps of this task, and this agent's runs in the
+    /// workspace, newest first, so an agent reads what it did in earlier
+    /// sessions too.
+    async fn history(&self) -> String {
+        let steps = history_text(&self.programs.lock_recover());
+        let who = if self.caller.acting().is_agent() {
+            "this agent"
+        } else {
+            "you"
+        };
+        match self.agent_runs().await {
+            Ok(runs) => history_answer(&steps, who, &runs),
+            Err(why) => {
+                let line = format!("the workspace's runs could not be read: {why}");
+                if steps.is_empty() {
+                    line
+                } else {
+                    format!("{steps}\n{line}")
+                }
+            }
+        }
+    }
+
+    /// This agent's runs in the workspace, newest first, as its host lists
+    /// them: the runs of this one member, so another agent's are not read.
+    async fn agent_runs(&self) -> Result<Invocations, String> {
+        let acting = self.caller.acting();
+        let by = acting
+            .agent_id()
+            .or_else(|| acting.member_id().map(collab_types::MemberId::id))
+            .map(str::to_owned);
+        let query = InvocationsQuery {
+            limit: workspace_invocations::PAGE,
+            by,
+            ..InvocationsQuery::default()
+        };
+        let argument = match serde_json::to_value(&query) {
+            Ok(Value::Object(fields)) => InvokeArgument::Json(fields),
+            _ => InvokeArgument::None,
+        };
+        let request = InvokeRequest {
+            invocation: tilo_actions::InvocationId::new(),
+            target: workspace_invocations::target(),
+            argument,
+            context: None,
+            confirmation: None,
+            revision: None,
+            on_behalf_of: None,
+            wait_ms: None,
+            appearance: None,
+        };
+        let Some(answered) = self.host.invoke(&self.caller, request).await else {
+            return Err("the workspace did not answer".to_owned());
+        };
+        match answered.map_err(|why| why.to_string())?.status {
+            ReceiptStatus::Completed { output } => output
+                .value
+                .and_then(|value| serde_json::from_value::<Invocations>(value).ok())
+                .ok_or_else(|| "the workspace answered no list of runs".to_owned()),
+            ReceiptStatus::Rejected { error } => Err(error.to_string()),
+            _ => Err("the workspace did not answer its runs".to_owned()),
+        }
     }
 }
 
@@ -1613,10 +1679,10 @@ fn answer_text(programs: &mut Programs, program: &str, answer: &Value) -> (Strin
     }
 }
 
-/// `history task`: the steps of `programs`' session, oldest first.
+/// The steps of `programs`' session, oldest first; empty when it made none.
 fn history_text(programs: &Programs) -> String {
     if programs.steps.is_empty() {
-        return "no step of this task changed anything".to_owned();
+        return String::new();
     }
     let mut text = String::from("steps of this task, oldest first");
     for step in &programs.steps {
@@ -1642,6 +1708,94 @@ fn history_text(programs: &Programs) -> String {
         );
     }
     text
+}
+
+/// `history task`'s text: the steps this task took and can still take back,
+/// then the runs of `who` in the workspace.
+fn history_answer(steps: &str, who: &str, runs: &Invocations) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    if !steps.is_empty() {
+        parts.push(format!(
+            "{steps}\n`undo` takes back this task's newest step still in effect"
+        ));
+    }
+    if !runs.items.is_empty() {
+        parts.push(runs_text(who, runs));
+    }
+    if parts.is_empty() {
+        return format!("no run of {who} changed anything in this workspace yet");
+    }
+    parts.join("\n\n")
+}
+
+/// What `who` reads of its runs in a workspace: one line each, newest first,
+/// saying what changed where and how it stands.
+fn runs_text(who: &str, runs: &Invocations) -> String {
+    let mut text = format!(
+        "runs by {who} in this workspace, newest first ({} {})",
+        runs.total,
+        if runs.total == 1 { "run" } else { "runs" }
+    );
+    for run in &runs.items {
+        let _ = write!(text, "\n{}", run_line(run));
+    }
+    if runs.next_cursor.is_some() {
+        let _ = write!(
+            text,
+            "\nshowing the newest {} of {}",
+            runs.items.len(),
+            runs.total
+        );
+    }
+    text
+}
+
+/// One run as `history task` lists it: how many changes, in which apps, what
+/// they did, and how it stands.
+fn run_line(run: &Invocation) -> String {
+    let mut apps: Vec<&str> = Vec::new();
+    for record in &run.records {
+        if !record.app.is_empty() && !apps.contains(&record.app.as_str()) {
+            apps.push(&record.app);
+        }
+    }
+    let apps = if apps.is_empty() {
+        "the workspace".to_owned()
+    } else {
+        apps.join(", ")
+    };
+    let mut line = format!(
+        "{} {} in {apps}",
+        run.changes,
+        if run.changes == 1 {
+            "change"
+        } else {
+            "changes"
+        }
+    );
+    if run.undone > 0 && run.status != InvocationStatus::Undone {
+        let _ = write!(line, " ({} undone)", run.undone);
+    }
+    if let Some(summary) = &run.summary {
+        let _ = write!(line, ": {summary}");
+    } else if let Some(action) = &run.action {
+        let _ = write!(line, ": {action}");
+    }
+    if let Some(title) = &run.title {
+        let _ = write!(line, " (run \"{title}\")");
+    }
+    let status = match run.status {
+        InvocationStatus::Ended => None,
+        InvocationStatus::Waiting => Some("waiting for the person"),
+        InvocationStatus::Running => Some("running"),
+        InvocationStatus::Failed => Some("failed"),
+        InvocationStatus::Cancelled => Some("cancelled"),
+        InvocationStatus::Undone => Some("taken back"),
+    };
+    match status {
+        Some(status) => format!("{status}: {line}"),
+        None => line,
+    }
 }
 
 impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
@@ -2234,6 +2388,64 @@ mod tests {
                 "2:7: E020 `n1` is not printable",
                 "2:14: E021 `Note` has no field `titel`; did you mean `title`?",
             ])
+        );
+    }
+
+    /// `history task` line by line: a run says what changed and where, and
+    /// how it stands, never the values it carried (the host's words do not).
+    #[test]
+    fn history_lists_a_runs_changes_and_how_it_stands() {
+        use tilo_actions::remote::workspace_invocations::{
+            Invocation, InvocationBy, InvocationChange, InvocationStatus, Invocations,
+        };
+        let noted = |status: InvocationStatus, undone: usize| Invocation {
+            by: InvocationBy {
+                name: "Claude".into(),
+                kind: "agent".into(),
+                id: Some("claude".into()),
+            },
+            status,
+            changes: 2,
+            undone,
+            summary: Some("Added a task".into()),
+            records: vec![
+                InvocationChange {
+                    app: "tasks".into(),
+                    ..InvocationChange::default()
+                },
+                InvocationChange {
+                    app: "tasks".into(),
+                    ..InvocationChange::default()
+                },
+                InvocationChange {
+                    app: "notes".into(),
+                    ..InvocationChange::default()
+                },
+            ],
+            title: Some("Tidy".into()),
+            ..Invocation::default()
+        };
+        let runs = Invocations {
+            items: vec![
+                noted(InvocationStatus::Ended, 0),
+                noted(InvocationStatus::Waiting, 0),
+                noted(InvocationStatus::Undone, 2),
+            ],
+            total: 3,
+            waiting: 1,
+            pending: false,
+            next_cursor: None,
+        };
+        assert_eq!(
+            history_answer("", "this agent", &runs),
+            "runs by this agent in this workspace, newest first (3 runs)\n\
+             2 changes in tasks, notes: Added a task (run \"Tidy\")\n\
+             waiting for the person: 2 changes in tasks, notes: Added a task (run \"Tidy\")\n\
+             taken back: 2 changes in tasks, notes: Added a task (run \"Tidy\")"
+        );
+        assert_eq!(
+            history_answer("", "this agent", &Invocations::default()),
+            "no run of this agent changed anything in this workspace yet"
         );
     }
 }

@@ -2237,7 +2237,7 @@ tilo_test_env::scenario! {
                 let reply = server.handle(call(text, Value::Null)).await.unwrap();
                 assert_eq!(reply["result"]["isError"], false, "{reply}");
             }
-            let steps = gestures(&host);
+            let steps = runs::gestures(&host);
             assert_eq!(steps.len(), 4);
             assert!(steps.iter().all(Option::is_some), "{steps:?}");
             assert_eq!(steps[0], steps[1], "one task step, one undo step");
@@ -2247,7 +2247,7 @@ tilo_test_env::scenario! {
             // it does not join it.
             let other = agent(&host).with_agent_session("task:7", "Tidy the notes");
             other.handle(call("jam", step.clone())).await.unwrap();
-            assert_ne!(gestures(&host)[4], steps[0]);
+            assert_ne!(runs::gestures(&host)[4], steps[0]);
             // Every invocation is attributed to the task.
             assert!(host.invoked.lock().unwrap().iter().all(|request| {
                 request
@@ -2447,16 +2447,6 @@ tilo_test_env::scenario! {
             assert_eq!(undone, 2, "each run's step is taken back once, in the app");
         });
     }
-}
-
-/// The undo step each invocation the host was asked for joins, in order.
-fn gestures(host: &Notes) -> Vec<Option<tilo_actions::ActionId>> {
-    host.invoked
-        .lock()
-        .unwrap()
-        .iter()
-        .map(|request| request.context.as_ref().and_then(|context| context.gesture))
-        .collect()
 }
 
 /// The actions a listing writes, as the names an agent would call: one line
@@ -2991,6 +2981,8 @@ async fn answer<H: ActionHost + Send + Sync + 'static>(
 mod flux;
 #[path = "mcp_agent_open_tests.rs"]
 mod opening;
+#[path = "mcp_runs_tests.rs"]
+mod runs;
 #[path = "mcp_status_tests.rs"]
 mod status;
 
