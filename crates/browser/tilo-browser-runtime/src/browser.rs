@@ -875,7 +875,7 @@ impl Desktop {
         let opens = !in_workspace
             || self
                 .shared
-                .access
+                .role
                 .role()
                 .is_none_or(|role| role.includes(tilo_action_policy::Role::Editor));
         let opened = self.handle.set_opens(opens);

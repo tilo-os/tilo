@@ -729,7 +729,7 @@ impl Joined {
         for (index, node) in asked.into_iter().enumerate() {
             let answers = Arc::clone(&answers);
             let moderates = Arc::clone(&self.moderates);
-            let role = self.role.clone();
+            let shared_role = self.role.clone();
             let due = Arc::clone(&self.moderation_due_ms);
             let wake = wake.clone();
             let request = tilo_relay_protocol::workspaces::WorkspacesRequest::Permits {
@@ -765,7 +765,7 @@ impl Joined {
                 };
                 let role = tilo_action_policy::roles::role_answered([writes, moderating, governs]);
                 let moved = moderates.swap(moderating, Ordering::Relaxed) != moderating;
-                if role.set(Some(role)) || moved {
+                if shared_role.set(Some(role)) || moved {
                     for wake in &wake {
                         wake();
                     }
