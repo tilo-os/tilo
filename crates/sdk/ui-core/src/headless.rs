@@ -1910,11 +1910,30 @@ impl FrameHarness {
                     |widget| crate::undo::take_undo_request(widget),
                 )
             } {
-                requests.push((self.bindings.binding_for(node), req));
+                requests.push((node, self.bindings.binding_for(node), req));
             }
         }
         let mut acted = false;
-        for (binding, req) in requests {
+        for (node, binding, req) in requests {
+            // As the live host: the component that asked has the first chance
+            // to take the request itself, for a history of its own beside the
+            // record it shows (a window whose writes live in parts).
+            // SAFETY: as above: the node's pointer stands until the next
+            // `relayout`, and this runs no relayout.
+            let local = unsafe {
+                crate::bound_dispatch::mutate_bound_node(
+                    &self.bindings,
+                    &self.node_map,
+                    node,
+                    |widget| crate::undo::handle_local_undo_request(widget, req),
+                )
+            }
+            .ok()
+                == Some(true);
+            if local {
+                acted = true;
+                continue;
+            }
             acted |= if let Some(binding) = binding {
                 self.history_through_component(&binding, req)
             } else {

@@ -271,9 +271,13 @@ impl<R: Resource> ResourceEnv<R> {
         state: Rc<super::chain::ChainState<P>>,
     ) -> Option<super::Chain<P>> {
         let me = self.dispatch.me()?.clone();
+        // A role that may only view the workspace views the parts too; a
+        // member's own record (Mail's) is theirs to write, so its window's
+        // dispatcher is not read-only.
+        let read_only = self.dispatch.read_only() || self.dispatch.is_past();
         let dispatch = super::chain::dispatching(&state, &me, |apply| {
             self.dispatch
-                .for_workspace_resource::<P>(state.id(), self.dispatch.is_past(), apply)
+                .for_workspace_resource::<P>(state.id(), read_only, apply)
         });
         Some(super::Chain::new(state, dispatch))
     }

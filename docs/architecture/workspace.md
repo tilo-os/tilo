@@ -794,7 +794,8 @@ there before it moves into parts:
 | Messages | every conversation with every message | messages | grows without bound |
 | Discord bridge | a mapping row per mirrored message | messages | grows without bound |
 | Calendar | every event with overrides and attendees | events | grows with the calendar |
-| Contacts, Snippets, Photos, Music | every item; Music playlist covers inline up to 256 KiB | items | grows with the library |
+| Contacts | (now) nothing; contacts in parts of at most 500 contacts or 512 KiB of text and portraits | parts | one part's cost: the same bytes and record size at 10× the contacts |
+| Snippets, Photos, Music | every item; Music playlist covers inline up to 256 KiB | items | grows with the library |
 | Chat | channels and people; messages in parts of 2,000 messages or 1 MiB | parts | one part |
 | Sheets, Slides, Word processor, Canvas | one record per file | the file | bounded by the document |
 | Desktop layout | strips and windows, and `effect_receipts` with no cap | receipts | grows with use |

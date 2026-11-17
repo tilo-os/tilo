@@ -390,6 +390,7 @@ fn records_of(source: &str) -> &'static [&'static str] {
         thunderbird::SOURCE => &[
             "mail/mail.mailbox",
             "contacts/contacts.book",
+            "contacts/contacts.contacts",
             "calendar/calendar.calendar",
         ],
         services::OUTLINE => &["notes/notes.notebook"],

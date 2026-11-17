@@ -657,46 +657,6 @@ impl SortKey {
     }
 }
 
-/// What the window reads of the address book. The order of `contacts` is not
-/// significant; every read path sorts on demand.
-impl crate::resource::Contacts {
-    /// Every distinct group across all contacts, sorted alphabetically
-    /// ([`ordered_groups`]).
-    pub fn all_groups(&self) -> Vec<String> {
-        ordered_groups(&self.contacts)
-    }
-
-    /// Ids of the contacts that pass `query` and the optional `group` filter,
-    /// ordered by `sort`: what the list pane renders.
-    pub fn filtered_sorted(
-        &self,
-        query: &str,
-        group: Option<&str>,
-        sort: SortKey,
-    ) -> Vec<ContactId> {
-        let q = normalize_text(query.trim());
-        let mut out: Vec<&Contact> = self
-            .contacts
-            .iter()
-            .filter(|c| c.matches(&q))
-            .filter(|c| match group {
-                None => true,
-                Some(g) => c.groups.iter().any(|x| group_names_equal(&x.value, g)),
-            })
-            .collect();
-        out.sort_by(|a, b| sort_cmp(a, b, sort));
-        out.into_iter().map(|c| c.id).collect()
-    }
-
-    pub fn len(&self) -> usize {
-        self.contacts.len()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.contacts.is_empty()
-    }
-}
-
 /// Case-insensitive comparison the list sorts by.
 pub(crate) fn sort_cmp(a: &Contact, b: &Contact, sort: SortKey) -> std::cmp::Ordering {
     use std::cmp::Ordering;
@@ -1142,10 +1102,10 @@ mod tests {
         }
     }
 
-    fn book(contacts: Vec<Contact>) -> crate::resource::Contacts {
-        crate::resource::Contacts {
+    fn book(contacts: Vec<Contact>) -> crate::part::Book {
+        crate::part::Book {
             contacts: contacts.into(),
-            ..crate::resource::Contacts::default()
+            removed: ui::tilo_resource::Set::default(),
         }
     }
 }

@@ -340,6 +340,22 @@ pub(crate) fn not_by_app<P: Resource>(action: &P::Action) -> Result<(), String> 
 /// person over the broker), else `me`, the person at this window. Every write
 /// path reads it, so an agent's change is the agent's in whichever record
 /// it lands, and names the person it acts for.
+/// Whether `invoker` is the person `me` themselves, or a device of theirs,
+/// rather than software acting on their behalf: whose step the window's Undo
+/// takes back.
+pub(crate) fn acts_for(invoker: &ActionInvoker, me: &tilo_resource::MemberId) -> bool {
+    let by_agent = invoker
+        .acting
+        .by
+        .member_id()
+        .is_some_and(tilo_resource::MemberId::is_agent);
+    !by_agent
+        && (invoker.acting.by.member_id() == Some(me)
+            || me
+                .person_id()
+                .is_some_and(|person| invoker.acting.acted_for_person() == Some(person)))
+}
+
 pub(crate) fn acting(me: &tilo_resource::MemberId) -> ActionInvoker {
     ui_core::invocation_scope::current_invoker()
         .unwrap_or_else(|| ActionInvoker::member(me.clone()))

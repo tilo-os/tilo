@@ -67,4 +67,4 @@ mime = ["text/vcard", "text/x-vcard"]
 ext  = ["vcf", "vcard"]
 
 [resources]
-kinds = ["contacts.book", "tilo.contacts.identities"]
+kinds = ["contacts.book", "tilo.contacts.identities", "contacts.contacts"]

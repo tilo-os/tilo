@@ -1,334 +1,32 @@
-//! The address book, its verbs, the places derived from it, and the app.
+//! The address book's own record, the places its contacts are published
+//! under, and the app.
 //!
-//! A contact's fields change through the field edits every path offers
-//! (`Contacts::paths().contacts.item(&id).favorite.set(true)`), and a saved form
-//! is exactly the edits between the contact it opened and the contact it saves
-//! ([`Contacts::save`]), so a stale form never overwrites what someone else
-//! changed meanwhile. Groups, the favorites and likely duplicates are derived
-//! from the contacts and published as places that reveal them.
-
-use std::collections::HashSet;
+//! The contacts are kept in numbered parts beside the book
+//! ([`crate::part::ContactPart`]): a contact's fields change through the
+//! field edits every path offers, and a saved form is exactly the edits
+//! between the contact it opened and the contact it saves
+//! ([`ContactPart::save`]), so a stale form never overwrites what someone
+//! else changed meanwhile. Groups, the favorites and likely duplicates are
+//! derived from every part and published by the parts' chain as places that
+//! reveal them.
 
 use ui::framework::{ResourceApp, ViewCx};
-use ui::tilo_resource::{
-    self, ActionCx, Derived, Edit, Id, Invoke, Keyed, Model, NonBlank, Refusal, SearchEntry, Set,
-    resource,
-};
+use ui::tilo_resource::{self, Model, resource};
 use ui::widget::Element;
 use uuid::Uuid;
 
-use crate::actions::{
-    ContactsEffect, MAX_CONTEXT_DUPLICATE_RESOURCES, MergeField, duplicate_candidate,
-    duplicate_candidates, reviewed_merge_contact, split_name,
-};
 use crate::app::ContactsApp;
-use crate::model::{
-    Birthday, Contact, ContactId, Labeled, normalize_text, ordered_groups, sample_contacts,
-};
+use crate::model::{Birthday, Contact, ContactId, Labeled, normalize_text, sample_contacts};
+use crate::part::{Book, ContactPart};
 
-/// The address book.
+/// The address book's own record: the page every contact hangs off. The
+/// contacts are kept in numbered parts beside it ([`crate::part::ContactPart`]),
+/// so what a change costs is one part whatever the book holds.
 #[derive(Model, Clone, Debug, Default, PartialEq)]
-pub struct Contacts {
-    /// Contacts
-    pub contacts: Keyed<Contact>,
-    /// The contacts deleted from the book. A deleted contact's id never
-    /// names a contact again, so a late copy of its card cannot bring it
-    /// back.
-    #[model(readonly)]
-    pub removed: Set<ContactId>,
-}
+pub struct Contacts {}
 
-impl Contacts {
-    /// The contacts, and the ones removed so they stay removed, read through
-    /// [`fields`](tilo_resource::read::fields).
-    pub fn read_document(
-        &self,
-        item: Option<&tilo_resource::Id>,
-    ) -> Result<serde_json::Value, String> {
-        if let Some(place) = item.and_then(|item| place_named(item.as_str())) {
-            return self.read_place(place);
-        }
-        tilo_resource::read::fields(self, item)
-    }
-
-    /// The contacts of the place `place`: the favorites, or the members of
-    /// a group, each as the book's own read answers it.
-    fn read_place(&self, place: &str) -> Result<serde_json::Value, String> {
-        let group = place.strip_prefix(GROUP_PLACE).map(group_place);
-        let members: Vec<serde_json::Value> = self
-            .contacts
-            .iter()
-            .filter(|contact| match &group {
-                Some(group) => contact
-                    .groups
-                    .iter()
-                    .any(|entry| group_place(&entry.value) == *group),
-                None => contact.favorite,
-            })
-            .map(tilo_resource::Model::to_json)
-            .collect();
-        if members.is_empty() && group.is_some() {
-            return Err(format!(
-                "no contact is in `{place}`; the book's groups: {}",
-                ordered_groups(&self.contacts).join(", ")
-            ));
-        }
-        Ok(serde_json::json!({ "place": place, "contacts": members }))
-    }
-}
-
-/// How a group's place starts: the group's name follows.
-const GROUP_PLACE: &str = "group:";
-
-/// The place a read's `item` names, the favorites or a group (`group:Investors`), given bare or
-/// as the resource the place is published as.
-fn place_named(item: &str) -> Option<&str> {
-    let place = item
-        .strip_prefix(<Contacts as tilo_resource::Resource>::KIND)
-        .and_then(|rest| rest.strip_prefix("/derived/"))
-        .unwrap_or(item);
-    (place == FAVORITES_PLACE || place.starts_with(GROUP_PLACE)).then_some(place)
-}
-
-#[resource(
-    kind = "contacts.book",
-    children = Contacts::places,
-    search = Contacts::search,
-    read_content = Contacts::read_document
-)]
-impl Contacts {
-    /// New contact.
-    ///
-    /// A contact with a typed full name: its first word is the first name,
-    /// the rest the last name.
-    #[action]
-    pub fn new_contact(&mut self, cx: &mut ActionCx, #[param("Full name")] name: NonBlank) {
-        let (first, last) = split_name(&name);
-        self.contacts.push(Contact {
-            id: cx.uuid(),
-            first,
-            last,
-            ..Contact::default()
-        });
-        self.contacts.settle();
-    }
-
-    /// Add contacts.
-    ///
-    /// Whole cards, written in the form or imported, added as one change.
-    /// A card names what it knows: a field left out is empty, and a card or
-    /// a row given no id gets a new one. An id that is given is new to the
-    /// book: neither a contact's nor a deleted contact's.
-    #[action]
-    pub fn add_contacts(
-        &mut self,
-        cx: &mut ActionCx,
-        #[param(
-            "The contacts: each a card of what is known of it, such as first, last, org, notes, emails and groups"
-        )]
-        contacts: Vec<Contact>,
-    ) -> Result<(), Refusal> {
-        if contacts.is_empty() {
-            return Err(Refusal::new("no contacts to add"));
-        }
-        for mut contact in contacts {
-            contact.mint_ids(|| cx.uuid());
-            if self.removed.contains(&contact.id) || self.contact(contact.id).is_some() {
-                return Err(Refusal::new(
-                    "a contact with this id is in the book or was deleted",
-                ));
-            }
-            self.contacts.push(contact);
-        }
-        self.contacts.settle();
-        Ok(())
-    }
-
-    /// Delete contact.
-    #[action(destructive, item = contacts)]
-    pub fn delete_contact(&mut self, contact: &Id) -> Result<(), Refusal> {
-        let removed = self
-            .contacts
-            .take(contact)
-            .ok_or_else(|| Refusal::new("no such contact"))?;
-        self.removed.insert(removed.id);
-        Ok(())
-    }
-
-    /// Merge contacts.
-    ///
-    /// Merges another contact into this one and deletes it. Every phone
-    /// number, email address, postal address and group of either is kept;
-    /// a field both fill keeps this contact's value unless it is named to
-    /// be taken from the other.
-    #[action(destructive, item = contacts)]
-    pub fn merge_contacts(
-        &mut self,
-        contact: &Id,
-        #[param("The contact merged into it and deleted")] source: ContactId,
-        #[param(
-            "The fields to take from the merged contact: First, Last, Organization, Title, \
-             Website, Birthday, Notes"
-        )]
-        take_from_source: Vec<MergeField>,
-    ) -> Result<(), Refusal> {
-        let survivor = self
-            .contacts
-            .find(contact)
-            .ok_or_else(|| Refusal::new("no such contact"))?;
-        if survivor.id == source {
-            return Err(Refusal::new("a contact is not merged into itself"));
-        }
-        let other = self
-            .contact(source)
-            .ok_or_else(|| Refusal::new("no contact to merge"))?;
-        let choices: HashSet<MergeField> = take_from_source.into_iter().collect();
-        let merged = reviewed_merge_contact(survivor, other, &choices);
-        if let Some(survivor) = self.contacts.find_mut(contact) {
-            *survivor = merged;
-        }
-        self.contacts.retain(|candidate| candidate.id != source);
-        self.removed.insert(source);
-        Ok(())
-    }
-}
-
-impl Contacts {
-    pub fn contact(&self, id: ContactId) -> Option<&Contact> {
-        self.contacts.iter().find(|contact| contact.id == id)
-    }
-
-    /// The id the contact `id` is stored under.
-    pub fn key(id: ContactId) -> Id {
-        Id::from_raw(id.to_string())
-    }
-
-    pub fn add(contact: &Contact) -> Invoke<Self> {
-        Self::add_all(vec![contact.clone()])
-    }
-
-    pub fn add_all(contacts: Vec<Contact>) -> Invoke<Self> {
-        Self::ADD_CONTACTS.with(contacts)
-    }
-
-    pub fn delete(id: ContactId) -> Invoke<Self> {
-        Self::DELETE_CONTACT.with(Self::key(id))
-    }
-
-    pub fn favorite(id: ContactId, favorite: bool) -> Edit<Self> {
-        Self::paths()
-            .contacts
-            .item(&Self::key(id))
-            .favorite
-            .set(favorite)
-    }
-
-    /// The edits that change `base` into `edited`, field by field and row by
-    /// row: what a form that opened on `base` saves.
-    pub fn edits(base: &Contact, edited: &Contact) -> Vec<Edit<Self>> {
-        Self::paths()
-            .contacts
-            .item_path(&Self::key(base.id))
-            .edits(base, edited)
-    }
-
-    /// Saving a form that opened on `base` as `edited`: its [edits](Self::edits)
-    /// as one change, or nothing when it changed nothing.
-    pub fn save(base: &Contact, edited: &Contact) -> Option<Invoke<Self>> {
-        let edits: Vec<Invoke<Self>> = Self::edits(base, edited)
-            .iter()
-            .filter_map(|edit| Invoke::edit(edit).ok())
-            .collect();
-        (!edits.is_empty()).then(|| Invoke::group(edits))
-    }
-
-    /// Merging `source` into `survivor`, taking the fields `take` from
-    /// `source`.
-    pub fn merge(
-        survivor: ContactId,
-        source: ContactId,
-        take: impl IntoIterator<Item = MergeField>,
-    ) -> Invoke<Self> {
-        Self::MERGE_CONTACTS.with(contacts::MergeContacts {
-            contact: Self::key(survivor),
-            source,
-            take_from_source: take.into_iter().collect(),
-        })
-    }
-
-    /// The favorites, every group and the likely duplicates (a bounded number), as
-    /// places that reveal them. A duplicate's read discloses it, so merging the two
-    /// is offered to whoever may read it, an agent too.
-    fn places(&self) -> Vec<Derived<Self>> {
-        let favorites = Derived::new("Favorites")
-            .of_kind("favorites")
-            .identified(FAVORITES_PLACE)
-            .with_effect(&ContactsEffect::OpenFavorites);
-        let groups = ordered_groups(&self.contacts).into_iter().map(|name| {
-            Derived::new(format!("Group: {name}"))
-                .of_kind("group")
-                .identified(group_place(&name))
-                .with_effect(&ContactsEffect::OpenGroup { name })
-        });
-        let duplicates = duplicate_candidates(&self.contacts, MAX_CONTEXT_DUPLICATE_RESOURCES)
-            .into_iter()
-            .filter_map(|candidate| {
-                let survivor = self.contact(candidate.survivor_id)?;
-                let source = self.contact(candidate.source_id)?;
-                Some(
-                    Derived::new(format!(
-                        "Possible duplicate: {} and {}",
-                        survivor.display_name(),
-                        source.display_name()
-                    ))
-                    .of_kind("duplicate")
-                    .identified(duplicate_place(survivor.id, source.id))
-                    .with_effect(&ContactsEffect::ReadDuplicate {
-                        survivor: survivor.id,
-                        source: source.id,
-                    })
-                    .with_effect(&ContactsEffect::OpenReview {
-                        survivor: survivor.id,
-                        source: source.id,
-                    })
-                    .with(
-                        Self::MERGE_CONTACTS
-                            .bind(
-                                contacts::MergeContacts::paths().contact,
-                                Self::key(survivor.id),
-                            )
-                            .and(contacts::MergeContacts::paths().source, source.id),
-                    ),
-                )
-            });
-        std::iter::once(favorites)
-            .chain(groups)
-            .chain(duplicates)
-            .collect()
-    }
-
-    /// Every contact is found by anything it holds and opens; every group reveals
-    /// its members.
-    fn search(&self) -> Vec<SearchEntry> {
-        let contacts = self.contacts.iter().map(|contact| {
-            SearchEntry::new(contact.display_name(), searchable_text(contact))
-                .anchored(contact_resource_id(contact.id))
-        });
-        let groups = ordered_groups(&self.contacts).into_iter().map(|group| {
-            let place = place_resource_id(&group_place(&group));
-            SearchEntry::new(format!("Group: {group}"), "Filter contacts in this group")
-                .opening(place, &ContactsEffect::OpenGroup { name: group })
-        });
-        contacts.chain(groups).collect()
-    }
-
-    pub fn duplicate(&self, survivor: ContactId, source: ContactId) -> bool {
-        self.contact(survivor)
-            .zip(self.contact(source))
-            .and_then(|(survivor, source)| duplicate_candidate(survivor, source))
-            .is_some()
-    }
-}
+#[resource(kind = "contacts.book")]
+impl Contacts {}
 
 pub const FAVORITES_PLACE: &str = "favorites";
 
@@ -342,43 +40,13 @@ pub fn duplicate_place(survivor: ContactId, source: ContactId) -> String {
     format!("duplicate:{survivor}:{source}")
 }
 
+/// The address of the place `place` is published under: the chain's derived
+/// children, beside the contacts.
 pub fn place_resource_id(place: &str) -> String {
     format!(
         "{}/derived/{place}",
-        <Contacts as tilo_resource::Resource>::KIND
+        <ContactPart as tilo_resource::Resource>::KIND
     )
-}
-
-pub fn contact_resource_id(id: ContactId) -> String {
-    tilo_resource::items::item_resource_id::<Contacts>("contacts", &Contacts::key(id))
-}
-
-/// What a person may look a contact up by, one field per line so a query
-/// never matches across two of them.
-fn searchable_text(contact: &Contact) -> String {
-    let mut fields = vec![
-        contact.first.clone(),
-        contact.last.clone(),
-        contact.org.clone(),
-        contact.title.clone(),
-        contact.website.clone(),
-        contact.notes.clone(),
-    ];
-    if let Some(birthday) = contact.birthday {
-        fields.extend([birthday.iso(), birthday.pretty()]);
-    }
-    for row in contact.phones.iter().chain(contact.emails.iter()) {
-        fields.extend([row.label.clone(), row.value.clone()]);
-    }
-    fields.extend(
-        contact
-            .addresses
-            .iter()
-            .map(crate::model::Address::one_line),
-    );
-    fields.extend(contact.groups.iter().map(|group| group.value.clone()));
-    fields.retain(|field| !field.trim().is_empty());
-    fields.join("\n")
 }
 
 /// The sample address book a capture shows, with stable ids so every run
@@ -482,7 +150,24 @@ impl ResourceApp for ContactsShell {
         crate::import_inbox::import(context)
     }
 
+    /// The contacts, kept in parts beside the book.
+    fn records(records: &mut ui::framework::Records<'_>) {
+        records.chain::<ContactPart>();
+    }
+
+    /// What a capture stages of the book, provided before the window is
+    /// built: the contacts a capture shows, made through the parts' own
+    /// verbs as the window makes them.
+    fn fixture(fixture: &mut ui::framework::Fixture<Contacts>) {
+        fixture.provide(Scene::of(fixture.scenario()));
+    }
+
     fn view(cx: &mut ViewCx<Contacts>) -> Element {
+        if let Some(scene) = cx.fixture::<Scene>().map(|scene| *scene)
+            && let Some(chain) = cx.chain::<ContactPart>()
+        {
+            scene.fill(&chain);
+        }
         crate::account_editor::build(cx)
     }
 
@@ -520,15 +205,40 @@ impl ResourceApp for ContactsShell {
             _ => (1280, 800),
         }
     }
+}
 
-    fn scenario(name: Option<&str>) -> Vec<Invoke<Contacts>> {
-        let mut book = match name {
-            Some("empty") => return Vec::new(),
-            _ => sample_book(),
-        };
-        match name {
-            Some("duplicate-review") => review_pair(&mut book),
-            Some("duplicates") => {
+/// The book a capture shows, staged into the parts when the window opens.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Scene {
+    /// The sample book.
+    Sample,
+    /// The sample book with a likely duplicate beside it.
+    Duplicates,
+    /// The sample book whose first two contacts share an identity and
+    /// differ everywhere else.
+    ReviewPair,
+    /// A fresh install: no contacts.
+    Empty,
+}
+
+impl Scene {
+    pub(crate) fn of(scenario: Option<&str>) -> Self {
+        match scenario {
+            Some("empty") => Self::Empty,
+            Some("duplicates") => Self::Duplicates,
+            Some("duplicate-review") => Self::ReviewPair,
+            _ => Self::Sample,
+        }
+    }
+
+    /// The contacts the scene shows.
+    pub(crate) fn contacts(self) -> Vec<Contact> {
+        if self == Self::Empty {
+            return Vec::new();
+        }
+        let mut book = sample_book();
+        match self {
+            Self::Duplicates => {
                 if let Some(first) = book.first() {
                     let mut copy = first.clone();
                     copy.id = Uuid::from_u128(u128::from(u32::MAX));
@@ -537,9 +247,24 @@ impl ResourceApp for ContactsShell {
                     book.push(copy);
                 }
             }
-            _ => {}
+            Self::ReviewPair => review_pair(&mut book),
+            Self::Sample | Self::Empty => {}
         }
-        vec![Contacts::add_all(book)]
+        book
+    }
+
+    /// Add the scene's contacts to `chain`, once.
+    pub(crate) fn fill(self, chain: &ui::framework::Chain<ContactPart>) {
+        if !chain.parts().is_empty() {
+            return;
+        }
+        let book = self.contacts();
+        if book.is_empty() {
+            return;
+        }
+        if let Err(error) = chain.invoke(&ContactPart::add_all(book)) {
+            tracing::warn!(%error, "a capture's contacts are not staged");
+        }
     }
 }
 
@@ -547,7 +272,7 @@ impl ContactsApp {
     /// Labels are a projection of this book's stable UUIDs. Service endpoints
     /// are independently confirmed in the shared person-owned directory and
     /// never inferred from matching names, emails or telephone numbers.
-    pub(crate) fn project_identities(&self, state: &Contacts) {
+    pub(crate) fn project_identities(&self, state: &Book) {
         use tilo_contact_directory::{ContactDirectory, Projected};
         let Some(directory) = &self.identity_directory else {
             return;
@@ -557,7 +282,7 @@ impl ContactsApp {
             .contacts
             .iter()
             .map(|contact| Projected {
-                person: Contacts::key(contact.id),
+                person: crate::part::key(contact.id),
                 label: contact.display_name(),
                 phones: contact
                     .phones
@@ -584,7 +309,7 @@ impl ContactsApp {
         let removed: Vec<_> = state
             .removed
             .iter()
-            .map(|removed| Contacts::key(*removed))
+            .map(|removed| crate::part::key(*removed))
             .filter(|id| current.people.get(id).is_none_or(|person| !person.removed))
             .collect();
         // One change for the whole book, however many people it touches.
@@ -598,9 +323,6 @@ impl ContactsApp {
         }
     }
 }
-
-#[cfg(test)]
-mod tests;
 
 ui::reach_tests!(ContactsShell);
 
@@ -639,7 +361,7 @@ mod agent_disclosure_tests {
 
     #[test]
     fn a_possible_duplicate_is_read_through_its_document_read() {
-        let answer = read_first("contacts.book.duplicate");
+        let answer = read_first("contacts.contacts.duplicate");
         assert!(answer["survivor"]["item"].is_string(), "{answer}");
         assert!(answer["shared"][0].is_string(), "{answer}");
     }

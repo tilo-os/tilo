@@ -11689,7 +11689,16 @@
         "required": [],
         "description": ""
       },
-      "contacts.book.new-contact.Arguments": {
+      "contacts.book.export-vcard-content.Arguments": {
+        "type": "object",
+        "properties": {
+          "contact": {},
+          "name": {}
+        },
+        "required": [],
+        "description": ""
+      },
+      "contacts.contacts.new-contact.Arguments": {
         "type": "object",
         "properties": {
           "name": {
@@ -11703,7 +11712,7 @@
         ],
         "description": ""
       },
-      "contacts.book.add-contacts.Arguments": {
+      "contacts.contacts.add-contacts.Arguments": {
         "type": "object",
         "properties": {
           "contacts": {
@@ -11918,7 +11927,7 @@
         ],
         "description": ""
       },
-      "contacts.book.delete-contact.Arguments": {
+      "contacts.contacts.delete-contact.Arguments": {
         "type": "object",
         "properties": {
           "contact": {
@@ -11930,7 +11939,7 @@
         ],
         "description": ""
       },
-      "contacts.book.merge-contacts.Arguments": {
+      "contacts.contacts.merge-contacts.Arguments": {
         "type": "object",
         "properties": {
           "contact": {
@@ -11954,6 +11963,240 @@
               "type": "string"
             },
             "type": "array"
+          },
+          "merged": {
+            "additionalProperties": false,
+            "properties": {
+              "addresses": {
+                "items": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "city": {
+                      "type": "string"
+                    },
+                    "country": {
+                      "type": "string"
+                    },
+                    "id": {
+                      "format": "uuid",
+                      "type": "string"
+                    },
+                    "label": {
+                      "type": "string"
+                    },
+                    "postal": {
+                      "type": "string"
+                    },
+                    "region": {
+                      "type": "string"
+                    },
+                    "street": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "label",
+                    "street",
+                    "city",
+                    "region",
+                    "postal",
+                    "country"
+                  ],
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              "birthday": {
+                "oneOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "oneOf": [
+                      {
+                        "additionalProperties": false,
+                        "properties": {
+                          "Full": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "day": {
+                                "maximum": 4294967295,
+                                "minimum": 0,
+                                "type": "integer"
+                              },
+                              "month": {
+                                "maximum": 4294967295,
+                                "minimum": 0,
+                                "type": "integer"
+                              },
+                              "year": {
+                                "maximum": 2147483647,
+                                "minimum": -2147483648,
+                                "type": "integer"
+                              }
+                            },
+                            "required": [
+                              "year",
+                              "month",
+                              "day"
+                            ],
+                            "type": "object"
+                          }
+                        },
+                        "required": [
+                          "Full"
+                        ],
+                        "type": "object"
+                      },
+                      {
+                        "additionalProperties": false,
+                        "properties": {
+                          "MonthDay": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "day": {
+                                "maximum": 4294967295,
+                                "minimum": 0,
+                                "type": "integer"
+                              },
+                              "month": {
+                                "maximum": 4294967295,
+                                "minimum": 0,
+                                "type": "integer"
+                              }
+                            },
+                            "required": [
+                              "month",
+                              "day"
+                            ],
+                            "type": "object"
+                          }
+                        },
+                        "required": [
+                          "MonthDay"
+                        ],
+                        "type": "object"
+                      }
+                    ]
+                  }
+                ]
+              },
+              "emails": {
+                "items": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "id": {
+                      "format": "uuid",
+                      "type": "string"
+                    },
+                    "label": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "label",
+                    "value"
+                  ],
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              "favorite": {
+                "type": "boolean"
+              },
+              "first": {
+                "type": "string"
+              },
+              "groups": {
+                "items": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "id": {
+                      "format": "uuid",
+                      "type": "string"
+                    },
+                    "value": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "value"
+                  ],
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              "id": {
+                "format": "uuid",
+                "type": "string"
+              },
+              "last": {
+                "type": "string"
+              },
+              "notes": {
+                "type": "string"
+              },
+              "org": {
+                "type": "string"
+              },
+              "phones": {
+                "items": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "id": {
+                      "format": "uuid",
+                      "type": "string"
+                    },
+                    "label": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "label",
+                    "value"
+                  ],
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              "photo": {
+                "type": "string"
+              },
+              "title": {
+                "type": "string"
+              },
+              "website": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "first",
+              "last",
+              "org",
+              "title",
+              "website",
+              "notes",
+              "phones",
+              "emails",
+              "addresses",
+              "groups",
+              "favorite"
+            ],
+            "type": [
+              "object",
+              "null"
+            ]
           }
         },
         "required": [
@@ -11961,15 +12204,6 @@
           "source",
           "take_from_source"
         ],
-        "description": ""
-      },
-      "contacts.book.export-vcard-content.Arguments": {
-        "type": "object",
-        "properties": {
-          "contact": {},
-          "name": {}
-        },
-        "required": [],
         "description": ""
       },
       "containers.engine.clear-create.Arguments": {
@@ -29392,32 +29626,32 @@
     {
       "app": "so.tilo.contacts",
       "resource": "contacts.book",
-      "action": "new-contact",
-      "arguments": "#/components/schemas/contacts.book.new-contact.Arguments"
-    },
-    {
-      "app": "so.tilo.contacts",
-      "resource": "contacts.book",
-      "action": "add-contacts",
-      "arguments": "#/components/schemas/contacts.book.add-contacts.Arguments"
-    },
-    {
-      "app": "so.tilo.contacts",
-      "resource": "contacts.book",
-      "action": "delete-contact",
-      "arguments": "#/components/schemas/contacts.book.delete-contact.Arguments"
-    },
-    {
-      "app": "so.tilo.contacts",
-      "resource": "contacts.book",
-      "action": "merge-contacts",
-      "arguments": "#/components/schemas/contacts.book.merge-contacts.Arguments"
-    },
-    {
-      "app": "so.tilo.contacts",
-      "resource": "contacts.book",
       "action": "export-vcard-content",
       "arguments": "#/components/schemas/contacts.book.export-vcard-content.Arguments"
+    },
+    {
+      "app": "so.tilo.contacts",
+      "resource": "contacts.contacts",
+      "action": "new-contact",
+      "arguments": "#/components/schemas/contacts.contacts.new-contact.Arguments"
+    },
+    {
+      "app": "so.tilo.contacts",
+      "resource": "contacts.contacts",
+      "action": "add-contacts",
+      "arguments": "#/components/schemas/contacts.contacts.add-contacts.Arguments"
+    },
+    {
+      "app": "so.tilo.contacts",
+      "resource": "contacts.contacts",
+      "action": "delete-contact",
+      "arguments": "#/components/schemas/contacts.contacts.delete-contact.Arguments"
+    },
+    {
+      "app": "so.tilo.contacts",
+      "resource": "contacts.contacts",
+      "action": "merge-contacts",
+      "arguments": "#/components/schemas/contacts.contacts.merge-contacts.Arguments"
     },
     {
       "app": "so.tilo.contacts",

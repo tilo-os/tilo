@@ -718,7 +718,8 @@ mod tests {
         let mut two = Contact::new();
         two.first = "Alex".into();
         for person in [&one, &two] {
-            app.invoke(crate::resource::Contacts::add(person)).unwrap();
+            app.chain_invoke(&crate::part::ContactPart::add(person))
+                .unwrap();
         }
         app.settle();
         (app, one.id.to_string(), two.id.to_string())
@@ -1108,7 +1109,7 @@ mod input_journey {
         let mut app = TestApp::<ContactsShell>::for_person("contacts-input-fixture").unwrap();
         let mut contact = Contact::new();
         contact.first = "Sam".into();
-        app.invoke(crate::resource::Contacts::add(&contact))
+        app.chain_invoke(&crate::part::ContactPart::add(&contact))
             .unwrap();
         app.settle();
         let open = AccountEffect::OpenAccounts {

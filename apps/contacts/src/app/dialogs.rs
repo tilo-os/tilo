@@ -530,7 +530,7 @@ impl ContactsApp {
         let Some(review) = &self.duplicate_review else {
             return;
         };
-        let merge = crate::resource::Contacts::merge(
+        let merge = crate::part::ContactPart::merge(
             review.survivor.id,
             review.source.id,
             review.take_from_source(),

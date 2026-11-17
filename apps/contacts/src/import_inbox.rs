@@ -5,10 +5,13 @@
 //! file and adds only cards the book does not already hold, so reopening a
 //! record is idempotent and a deleted contact is never revived.
 
+use std::rc::Rc;
+
 use ui::application::HostContext;
-use ui::tilo_resource::Replica;
+use ui::framework::Chain;
 
 use crate::model::Contact;
+use crate::part::{Book, ContactPart};
 use crate::resource::Contacts;
 
 const INBOX: &str = "personal-data-incoming/contacts";
@@ -48,33 +51,27 @@ pub(crate) fn import(context: &HostContext) -> Result<(), String> {
     if cards.is_empty() {
         return Ok(());
     }
-    let held = context
-        .read_resource(<Contacts as ui::tilo_resource::Resource>::read)
-        .map_err(|error| error.to_string())?
-        .map_err(|error| error.to_string())?;
+    // The cards join the parts beside the book, through their own verbs, as
+    // the window adds them.
+    let author = context.author().clone();
+    let chain = Chain::<ContactPart>::detached_in(
+        context.records().clone(),
+        ui::apps::CONTACTS,
+        &author,
+        || Rc::new(Contacts::default()),
+    )
+    .ok_or_else(|| "the address book cannot be opened".to_owned())?;
+    let book = Book::of(&chain.parts());
     let mut seen = std::collections::BTreeSet::new();
     cards.retain(|card| {
-        seen.insert(card.id) && held.contact(card.id).is_none() && !held.removed.contains(&card.id)
+        seen.insert(card.id) && book.contact(card.id).is_none() && !book.removed.contains(&card.id)
     });
     if cards.is_empty() {
         return Ok(());
     }
-    let author = context.author().clone();
-    context
-        .migrate_resource(move |doc| apply(doc, cards, author).map(|()| true))
-        .map(drop)
-}
-
-fn apply(
-    doc: &mut automerge::AutoCommit,
-    cards: Vec<Contact>,
-    author: ui::tilo_resource::MemberId,
-) -> Result<(), String> {
-    let mut replica = Replica::<Contacts>::from_doc(doc.clone()).as_member(author);
-    replica
-        .apply_confirmed(Contacts::add_all(cards))
+    chain
+        .invoke(&ContactPart::add_all(cards))
         .map_err(|error| error.to_string())?;
-    *doc = replica.doc_mut().clone();
     Ok(())
 }
 
@@ -87,15 +84,9 @@ mod tests {
         let parsed = crate::vcard::parse_vcards(
             "BEGIN:VCARD\r\nVERSION:4.0\r\nUID:ada@example.test\r\nFN:Ada Lovelace\r\nEMAIL:ada@example.test\r\nEND:VCARD\r\n",
         );
-        let mut replica = Replica::<Contacts>::new();
-        let mut doc = replica.doc_mut().clone();
-        apply(
-            &mut doc,
-            parsed,
-            ui::tilo_resource::MemberId::person("firstboot"),
-        )
-        .unwrap();
-        let held = <Contacts as ui::tilo_resource::Resource>::read(&doc).unwrap();
+        let mut part = ui::tilo_resource::Replica::<ContactPart>::new();
+        part.apply(ContactPart::add_all(parsed)).unwrap();
+        let held = part.state().unwrap();
         let card = held.contacts.iter().next().unwrap();
         assert_eq!(card.display_name(), "Ada Lovelace");
     }
