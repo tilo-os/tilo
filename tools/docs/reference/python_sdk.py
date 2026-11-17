@@ -40,7 +40,10 @@ GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("Transports", ("Transport", "HttpTransport", "NativeTransport")),
     ("Workspaces", ("Workspaces", "Workspace", "WorkspaceInfo", "WorkspaceList", "WorkspaceExport")),
     ("Resources", ("Resource", "Entry", "FieldMap", "Listing", "Row", "Hit")),
-    ("Runs", ("Run", "RunGroup", "RunOpening", "RunList", "RunInfo", "ProgramAnswer", "Event")),
+    ("Invocations", (
+        "Invocation", "InvocationGroup", "InvocationOpening", "InvocationList", "InvocationInfo",
+        "ProgramAnswer", "Event",
+    )),
     ("Files", ("Files",)),
     ("Keys", ("AccountKeys", "WorkspaceKeys", "Key", "MintedKey")),
     ("Members", ("Members", "Member", "Invitation", "Person")),
@@ -58,7 +61,7 @@ LEAD_NAMES = frozenset({"__version__"})
 # one is noticed rather than leaving a stale exemption behind.
 INTERNAL_MEMBERS = frozenset({
     ("AsyncTilo", "handoff"),
-    ("RunGroup", "note"),
+    ("InvocationGroup", "note"),
 })
 
 # A classmethod that reads the value out of the API's answer. Every model has
