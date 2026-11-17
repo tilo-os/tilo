@@ -14,7 +14,8 @@ use uuid::Uuid;
 use crate::actions::{EventData, TaskData};
 use crate::app::CalendarApp;
 use crate::model::{
-    Attendee, Calendar, Event, InviteStatus, Palette, Project, RemoteCopy, Removal, Upload, key,
+    Attendee, Calendar, Event, InviteStatus, MAX_CATEGORIES, Palette, Project, RemoteCopy, Removal,
+    Upload, category, key,
 };
 
 ui::embedded_catalog!(pub(crate) fn, ["de-DE", "en-US"]);
@@ -70,11 +71,12 @@ pub(crate) fn fingerprint(event: &Event) -> String {
     kind = "calendar.calendar",
     params = calendar,
     search = Calendar::search_entries,
-    read_content = Calendar::read_items,
+    read_content = Calendar::read_asked,
     document_child = Calendar::reads_child,
     scopes = Calendar::scopes,
     load = Calendar::load_notes,
     queue = Calendar::queue,
+    answer = Calendar::made,
 )]
 impl Calendar {
     #[action(local = calendar::NewEvent::stays_local)]
@@ -87,9 +89,11 @@ impl Calendar {
         if event.id.is_empty() {
             event.id = cx.uuid().to_string();
         }
-        let event = event
-            .to_event()
-            .ok_or_else(|| Refusal::new("that is not an event this calendar can hold"))?;
+        let event = event.event().map_err(|why| {
+            Refusal::new(format!(
+                "that is not an event this calendar can hold: {why}"
+            ))
+        })?;
         if self.event(event.id).is_some() {
             return Err(Refusal::new("the calendar already holds that event"));
         }
@@ -255,6 +259,96 @@ impl Calendar {
         Ok(())
     }
 
+    /// Set categories
+    ///
+    /// Files an event under the categories named, in place of the ones it
+    /// had: its person's own words for what kind of event it is. None takes
+    /// them all off. An event of a server's calendar keeps them in the
+    /// server's own field.
+    #[action(item = events)]
+    pub fn set_categories(
+        &mut self,
+        event: &Id,
+        #[param("The categories, each a few words; none to take them all off")] categories: Vec<
+            String,
+        >,
+    ) -> Result<(), Refusal> {
+        if categories.len() > MAX_CATEGORIES {
+            return Err(Refusal::new("an event has at most 32 categories"));
+        }
+        let categories = categories
+            .iter()
+            .map(|named| {
+                category(named).ok_or_else(|| {
+                    Refusal::new("a category is a few words of at most 64 characters")
+                })
+            })
+            .collect::<Result<Vec<String>, Refusal>>()?;
+        let event = self
+            .events
+            .find_mut(event)
+            .ok_or_else(|| Refusal::new("that event is gone"))?;
+        event.categories = categories.into_iter().collect();
+        Ok(())
+    }
+
+    /// Add invitation
+    ///
+    /// Puts the event an invitation describes into the calendar, from the
+    /// iCalendar text a message carried. A later version of the invitation
+    /// changes the event it made, and one that cancels takes that event
+    /// out: an invitation is one event, however often it comes. The same
+    /// invitation again is refused, saying the calendar holds it already.
+    /// Whoever sent it is told nothing. Answers the event and whether it
+    /// was created, updated or cancelled.
+    #[action(id = "add-invitation", answers, local, audience = "agents")]
+    pub fn add_invitation(
+        &mut self,
+        #[param("The invitation: the iCalendar text (text/calendar) the message carried")]
+        ics: String,
+    ) -> Result<(), Refusal> {
+        let crate::ics::Invitation { event, cancels } =
+            crate::ics::invitation(&ics).map_err(Refusal::new)?;
+        let id = key(event.id);
+        match (self.event(event.id).cloned(), cancels) {
+            (None, true) => {
+                return Err(Refusal::new(
+                    "the calendar holds no event of this invitation to cancel",
+                ));
+            }
+            (Some(_), true) => self.delete_event(&id)?,
+            (None, false) => {
+                self.notes.entry(event.id.to_string()).or_default();
+                self.events.push(event);
+            }
+            (Some(held), false) => {
+                // What its person made of it stays theirs: where it is
+                // kept and filed, its colour, when they are reminded.
+                let next = Event {
+                    color: held.color,
+                    project: held.project,
+                    calendar_id: held.calendar_id.clone(),
+                    reminder_min: held.reminder_min,
+                    categories: if event.categories.is_empty() {
+                        held.categories.clone()
+                    } else {
+                        event.categories.clone()
+                    },
+                    ..event
+                };
+                if held == next {
+                    return Err(Refusal::new(format!(
+                        "the calendar already holds this invitation as it is: event {id}"
+                    )));
+                }
+                if let Some(kept) = self.events.find_mut(&id) {
+                    *kept = next;
+                }
+            }
+        }
+        Ok(())
+    }
+
     #[action(item = tasks)]
     pub fn delete_task(&mut self, task: &Id) -> Result<(), Refusal> {
         let id = uuid(task)?;
@@ -327,8 +421,8 @@ impl Calendar {
                     data.id = cx.uuid().to_string();
                 }
                 let event = data
-                    .to_event()
-                    .ok_or_else(|| Refusal::new("an imported event is invalid"))?;
+                    .event()
+                    .map_err(|why| Refusal::new(format!("an imported event is invalid: {why}")))?;
                 self.project_exists(event.project)?;
                 Ok(event)
             })
@@ -517,6 +611,17 @@ impl Calendar {
         }))
     }
 
+    /// What a read is answered: a span of the calendar or the free time in
+    /// one when the item asks for it ([`crate::spans::Asked`]), else the
+    /// calendar or the one item named.
+    fn read_asked(&self, item: Option<&Id>) -> Result<serde_json::Value, String> {
+        if let Some(asked) = item.and_then(|item| crate::spans::Asked::named(item.as_str())) {
+            let events: Vec<&Event> = self.events.iter().collect();
+            return asked?.answer(&events);
+        }
+        self.read_items(item)
+    }
+
     fn read_items(&self, item: Option<&Id>) -> Result<serde_json::Value, String> {
         let event_line = |event: &Event| {
             serde_json::json!({
@@ -527,6 +632,7 @@ impl Calendar {
                 "all_day": event.all_day,
                 "location": event.location,
                 "repeats": format!("{:?}", event.recurrence),
+                "categories": event.categories.iter().collect::<Vec<_>>(),
             })
         };
         let task_line = |task: &crate::model::Task| {
@@ -555,6 +661,7 @@ impl Calendar {
             return Ok(serde_json::json!({
                 "events": events.into_iter().take(MOST_READ_ITEMS).map(event_line).collect::<Vec<_>>(),
                 "tasks": self.tasks.iter().take(MOST_READ_ITEMS).map(task_line).collect::<Vec<_>>(),
+                "between": crate::spans::HOW_TO_ASK,
             }));
         };
         if item.as_str().contains("/attendees/") {
@@ -618,6 +725,61 @@ impl Calendar {
 }
 
 impl Calendar {
+    /// What a verb that answers made: the event an invitation became, and
+    /// whether it was created, updated or cancelled.
+    fn made(doc: &Doc, action: &str, changes: &[automerge::Patch]) -> Option<serde_json::Value> {
+        if action != "add-invitation" {
+            return None;
+        }
+        let calendar = Self::read_whole(doc).ok()?;
+        let held = |named: &str| {
+            named
+                .parse::<Uuid>()
+                .ok()
+                .filter(|id| calendar.event(*id).is_some())
+        };
+        let gone = |named: &str| {
+            named
+                .parse::<Uuid>()
+                .ok()
+                .filter(|id| calendar.event(*id).is_none())
+        };
+        let (mut created, mut cancelled, mut updated) = (None, None, None);
+        for patch in changes {
+            match &patch.action {
+                // An event is put and deleted under its id; a change to one
+                // is somewhere under that id.
+                automerge::PatchAction::PutMap { key, .. } if held(key).is_some() => {
+                    created = created.or_else(|| held(key));
+                }
+                automerge::PatchAction::DeleteMap { key } if gone(key).is_some() => {
+                    cancelled = cancelled.or_else(|| gone(key));
+                }
+                _ => {
+                    updated = updated.or_else(|| {
+                        patch.path.iter().find_map(|(_, step)| match step {
+                            automerge::Prop::Map(named) => held(named),
+                            automerge::Prop::Seq(_) => None,
+                        })
+                    });
+                }
+            }
+        }
+        let made = |event: Uuid, made: &str| {
+            serde_json::json!({
+                "event": crate::actions::event_resource_id(event),
+                "id": event.to_string(),
+                "made": made,
+            })
+        };
+        match (created, cancelled, updated) {
+            (Some(event), _, _) => Some(made(event, "created")),
+            (None, Some(event), _) => Some(made(event, "cancelled")),
+            (None, None, Some(event)) => Some(made(event, "updated")),
+            (None, None, None) => None,
+        }
+    }
+
     fn queue(&mut self, _before: &Self, cx: &mut ActionCx) {
         let wanted_uploads: Vec<Upload> = self
             .events

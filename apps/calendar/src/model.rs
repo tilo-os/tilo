@@ -409,6 +409,9 @@ pub struct Event {
     /// sidebar's per-calendar visibility toggle can hide/show it on the spot,
     /// without a re-sync. Persisted in the CRDT under the `cal` key.
     pub calendar_id: Option<String>,
+    /// The categories it is filed under: its person's own words, kept as
+    /// its server's `CATEGORIES`.
+    pub categories: Set<String>,
 }
 
 impl Default for Event {
@@ -434,6 +437,7 @@ impl Default for Event {
             reminder_min: None,
             project: None,
             calendar_id: None,
+            categories: Set::default(),
         }
     }
 }
@@ -448,6 +452,23 @@ impl Identified for Event {
 }
 
 pub const REMINDERS: [i64; 7] = [0, 5, 10, 15, 30, 60, 1440];
+
+/// The most categories one event is filed under.
+pub const MAX_CATEGORIES: usize = 32;
+/// The longest a category may be, in characters.
+pub const MAX_CATEGORY_CHARS: usize = 64;
+
+/// A category as an event keeps it: its person's own words, trimmed. `None`
+/// for one no event holds: empty, longer than [`MAX_CATEGORY_CHARS`], or
+/// with a character nobody can read.
+#[must_use]
+pub fn category(text: &str) -> Option<String> {
+    let text = text.trim();
+    (!text.is_empty()
+        && text.chars().count() <= MAX_CATEGORY_CHARS
+        && !text.chars().any(char::is_control))
+    .then(|| text.to_owned())
+}
 
 impl Event {
     fn valid(&self) -> Result<(), Refusal> {
@@ -464,6 +485,16 @@ impl Event {
         }
         if self.recurrence_interval == 0 {
             return Err(Refusal::new("an event repeats every 1 or more"));
+        }
+        if self.categories.len() > MAX_CATEGORIES
+            || self
+                .categories
+                .iter()
+                .any(|held| category(held).as_deref() != Some(held.as_str()))
+        {
+            return Err(Refusal::new(
+                "an event has at most 32 categories, each a few words of at most 64 characters",
+            ));
         }
         if crate::actions::normalize_timezone(&self.timezone).as_deref()
             != Some(self.timezone.as_str())

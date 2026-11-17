@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.calendar@5da3833e465e4850";
+export const SURFACE = "so.tilo.calendar@6b00b2849166e65e";
 
 export interface Attendee {
   id: string;
@@ -59,6 +59,7 @@ export interface Event {
   reminder_min: number | null;
   project: string | null;
   calendar_id: string | null;
+  categories: string[];
 }
 
 export interface EventData {
@@ -82,6 +83,7 @@ export interface EventData {
   reminder: number;
   project: string;
   calendar_id: string;
+  categories: string[];
 }
 
 /** One of "NeedsAction", "Accepted", "Tentative", "Declined". */
@@ -350,6 +352,13 @@ export interface Calendar extends tilo.Resource {
     email: string;
     name: string;
   }): Promise<void>;
+  setCategories(args: {
+    event: string;
+    categories: string[];
+  }): Promise<void>;
+  addInvitation(args: {
+    ics: string;
+  }): Promise<unknown>;
   deleteTask(args: {
     task: string;
   }): Promise<void>;
@@ -390,7 +399,7 @@ export interface Calendar extends tilo.Resource {
 
 /** The actions `Calendar` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const CALENDAR_ACTIONS = ["newEvent", "newEventMany", "newTask", "newProject", "deleteEvent", "reschedule", "setStart", "moveToCalendar", "invite", "deleteTask", "deleteProject", "importItems", "adoptRemoteEvent", "adoptRemoteTask", "dropRemoteItem", "serverApplied", "serverRemoved", "pulled", "exportIcsContent"] as const;
+export const CALENDAR_ACTIONS = ["newEvent", "newEventMany", "newTask", "newProject", "deleteEvent", "reschedule", "setStart", "moveToCalendar", "invite", "setCategories", "addInvitation", "deleteTask", "deleteProject", "importItems", "adoptRemoteEvent", "adoptRemoteTask", "dropRemoteItem", "serverApplied", "serverRemoved", "pulled", "exportIcsContent"] as const;
 
 /** The `calendar.calendar` kind at `path`. */
 export function calendar(ws: tilo.Workspace, path: string): Calendar {

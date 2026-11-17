@@ -43,6 +43,7 @@ mod reminders;
 pub mod resource;
 pub mod setup;
 pub mod shown;
+pub mod spans;
 mod tasks;
 mod timeline_interaction;
 mod timeline_viewport;
