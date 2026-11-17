@@ -218,7 +218,9 @@ impl Reader {
         let route = route(&self.workspace, chunk);
         let workspace = tilo_relay_protocol::WorkspaceId::parse(&self.workspace).unwrap();
         self.link.send(Cmd::OpenRoute(route.clone())).unwrap();
-        self.link.send(Cmd::OpenDocumentAt(workspace, route)).unwrap();
+        self.link
+            .send(Cmd::OpenDocumentAt(workspace, route))
+            .unwrap();
         self.docs.entry(chunk).or_default();
         self.unread.insert(chunk);
     }

@@ -1,0 +1,102 @@
+//! The tools this server offers an agent, as their definitions: what a
+//! listing of its tools answers.
+
+use super::{MAX_CALLS, Value, json};
+
+/// The agent tools, built once.
+pub(crate) fn tool_definitions() -> &'static [Value] {
+    static TOOLS: std::sync::LazyLock<Vec<Value>> = std::sync::LazyLock::new(tools);
+    &TOOLS
+}
+
+fn tools() -> Vec<Value> {
+    let string = json!({"type":"string"});
+    let integer = json!({"type":"integer"});
+    let read = json!({"readOnlyHint":true,"openWorldHint":false});
+    let call = json!({
+        "type":"object",
+        "properties":{"path":string,"args":{"type":"object"}},
+        "required":["path"],
+        "additionalProperties":false
+    });
+    [
+        (
+            "tilo_ls",
+            "List what is in the workspace. No path: the apps. `notes`: an app's resources and actions; `notes/Todo`: a note's children and actions; `notes/Todo#rename`: an action's parameters. A path is app[@window]/resource names (title, kind or key, any case), stable across restarts. kind: resources or actions; limit and cursor page.",
+            json!({"path":string,"kind":{"enum":["resources","actions"]},"limit":integer,"cursor":string}),
+            json!([]),
+            read.clone(),
+        ),
+        (
+            "tilo_read",
+            "Read a resource as compact text. `notes/Todo`: markdown, each block ending in the id (`^c01e`) block actions take; a long read ends with a cursor to pass back. `notes`: what the app publishes. `record:<app>:<id>`: the record as JSON with its revision; after: a revision to wait past; parts: join its chain (Chat's messages: `record:so.tilo.chat:<id>` of a `chain:<id>` row of `tilo_ls chat`)",
+            json!({"path":string,"cursor":string,"max_chars":integer,"parts":{"type":"boolean"},"after":string}),
+            json!(["path"]),
+            read.clone(),
+        ),
+        (
+            "tilo_do",
+            "Run an action: `{path: \"notes/Todo#append-paragraph\", args: {text: \"Buy milk\"}}`; several in order, stopping at a failure: `calls: [{path, args}, …]`. `notes#open` starts an app; `terminal#run` runs a shell `command`. Answers `ok` with the result or `failed: why`; past wait_ms (default 5000), `pending <id>` for tilo_status. An invocation_id never runs twice.",
+            json!({"path":string,"args":{"type":"object"},"calls":{"type":"array","minItems":1,"maxItems":MAX_CALLS,"items":call},"wait_ms":integer,"invocation_id":string}),
+            json!([]),
+            json!({"readOnlyHint":false,"destructiveHint":true,"idempotentHint":false,"openWorldHint":true}),
+        ),
+        (
+            "tilo_link",
+            "A link a person opens to see what a path names (`notes/Todo`); only workspace members can open it. mode: app or desktop.",
+            json!({"path":string,"mode":{"enum":["app","desktop"]}}),
+            json!(["path"]),
+            read.clone(),
+        ),
+        (
+            "tilo_view",
+            "What a person's window shows for `path`: its labels, values and controls in reading order, each with its action. picture: the view as a PNG. Starts the app when it is not running.",
+            json!({"path":string,"picture":{"type":"boolean"},"scale":{"type":"number"}}),
+            json!(["path"]),
+            read.clone(),
+        ),
+        (
+            "tilo_find",
+            "Search the workspace by words, best first, as the palette does: `{query: \"my mails\"}`, optionally app: \"notes\". One line per hit: a path for tilo_ls and tilo_do, `path#action` for an action.",
+            json!({"query":string,"app":string,"limit":integer}),
+            json!(["query"]),
+            read,
+        ),
+        (
+            "tilo",
+            "Run a tilolang program as this task: `notes.notebook.notes.filter(.pinned)`. Lets and refs (n3) persist. Bulk or destructive programs preview: resend with confirm: true. `undo`, `undo task`, `history task` (across sessions).",
+            json!({"program":string,"confirm":{"type":"boolean"}}),
+            json!(["program"]),
+            json!({"readOnlyHint":false,"destructiveHint":true,"idempotentHint":false,"openWorldHint":false}),
+        ),
+        (
+            "tilo_watch",
+            "What changed since cursor: a resource's changes (`path`), runs starting and ending, who is in the workspace. Held until something happens, at most wait_ms (default 25000); pass back the cursor it answers.",
+            json!({"cursor":string,"path":string,"wait_ms":integer}),
+            json!([]),
+            json!({"readOnlyHint":true,"openWorldHint":false}),
+        ),
+        (
+            "tilo_status",
+            "How an invocation went, or with no id this session's (cancel: stop it, undo: take its run back).",
+            json!({"invocation_id":string,"cancel":{"type":"boolean"},"undo":{"type":"boolean"}}),
+            json!([]),
+            json!({"readOnlyHint":false,"destructiveHint":false,"idempotentHint":true,"openWorldHint":false}),
+        ),
+    ]
+    .into_iter()
+    .map(|(name, description, properties, required, annotations)| {
+        json!({
+            "name": name,
+            "description": description,
+            "inputSchema": {
+                "type": "object",
+                "properties": properties,
+                "required": required,
+                "additionalProperties": false
+            },
+            "annotations": annotations
+        })
+    })
+    .collect()
+}
