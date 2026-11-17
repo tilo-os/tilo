@@ -23,7 +23,7 @@ impl<M: ListModel> VirtualList<M> {
             let count = self.model.len();
             return mounted.start.min(count)..mounted.end.min(count);
         }
-        if near.end <= mounted.start || near.start >= mounted.end {
+        if self.fit_rows || near.end <= mounted.start || near.start >= mounted.end {
             return near;
         }
         let overscan = self.viewport.overscan();

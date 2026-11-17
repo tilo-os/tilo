@@ -655,6 +655,22 @@ enum AnchorFallback<K> {
     Predecessor(K),
 }
 
+/// How tall a view not yet given its height is taken to be when it says which
+/// items it shows: as tall as a tall screen, in logical pixels. A list is built
+/// before its first layout tells it its height; holding the items a screen
+/// this tall shows, rather than every item, keeps its first frame as cheap
+/// for a hundred thousand items as for a hundred. The height its layout then
+/// gives it narrows or widens what it holds, as a resize does.
+pub const UNPLACED_VIEWPORT: f64 = 2160.0;
+
+fn held_viewport(viewport: f64) -> f64 {
+    if viewport > 0.0 {
+        viewport
+    } else {
+        UNPLACED_VIEWPORT
+    }
+}
+
 /// Variable-height virtual collection geometry, keyed by model identity.
 #[derive(Clone, Debug)]
 pub struct VirtualViewport<K> {
@@ -874,11 +890,9 @@ where
         if self.items.is_empty() {
             return 0..0;
         }
-        if self.viewport <= 0.0 {
-            return 0..self.items.len();
-        }
+        let viewport = held_viewport(self.viewport);
         let start_y = (self.offset - self.overscan).max(0.0);
-        let end_y = (self.offset + self.viewport + self.overscan).min(self.content_extent());
+        let end_y = (self.offset + viewport + self.overscan).min(self.content_extent());
         let start = self.index_at_content_offset(start_y).unwrap_or(0);
         let end = if end_y >= self.content_extent() {
             self.items.len()
@@ -1366,12 +1380,29 @@ where
         if self.count == 0 {
             return 0..0;
         }
-        if self.viewport <= 0.0 {
-            return 0..self.count;
+        let viewport = held_viewport(self.viewport);
+        self.range_between(
+            self.offset - finite_non_negative(above),
+            self.offset + viewport + finite_non_negative(below),
+        )
+    }
+
+    /// Half-open item range reaching into `top..bottom` of the content, wherever the view
+    /// stands: the items a scroll view around the whole collection shows of it.
+    #[must_use]
+    pub fn range_between(&self, top: f64, bottom: f64) -> Range<usize> {
+        if self.count == 0 {
+            return 0..0;
         }
-        let start_y = (self.offset - finite_non_negative(above)).max(0.0);
-        let end_y =
-            (self.offset + self.viewport + finite_non_negative(below)).min(self.content_extent());
+        let start_y = finite_or_zero(top).max(0.0);
+        let end_y = finite_or_zero(bottom).min(self.content_extent());
+        // A band wholly above or below the content reaches none of it.
+        if finite_or_zero(bottom) < 0.0 {
+            return 0..0;
+        }
+        if start_y >= self.content_extent() {
+            return self.count..self.count;
+        }
         let start = self.index_at_content_offset(start_y).unwrap_or(0);
         let end = if end_y >= self.content_extent() {
             self.count

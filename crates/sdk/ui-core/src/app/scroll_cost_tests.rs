@@ -39,6 +39,10 @@ use std::rc::Rc;
 use vello::kurbo::Rect;
 use winit::event::{MouseScrollDelta, TouchPhase};
 
+/// What a long list builds as it opens and scrolls, through the same frame path.
+#[path = "long_list_tests.rs"]
+mod long_list;
+
 /// The window every scroller fills, in logical pixels.
 const WIDTH: f64 = 1280.0;
 const HEIGHT: f64 = 800.0;

@@ -80,6 +80,17 @@ const DEFAULT_VIEWPORT_HEIGHT: f64 = 320.0;
 const NATURAL_MOST: f64 = crate::tokens::Layout::BASE.natural_most as f64;
 const END_SLACK: f64 = 0.5;
 
+/// What a list as tall as its rows shows of them, in its own coordinates.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum FitShown {
+    /// Not laid out yet: the rows of a tall screen from its top.
+    Unplaced,
+    /// Nothing clips it: every row shows.
+    Whole,
+    /// The band of it the scroll view around it shows.
+    Band(f64, f64),
+}
+
 fn fit_needs_layout(box_height: f64, rows: f64, viewport: f64) -> bool {
     (box_height - rows).abs() > 0.5 && (viewport - rows).abs() > 0.5
 }
@@ -380,6 +391,9 @@ pub struct VirtualList<M: ListModel> {
     /// list takes that height and the node is only inside it.
     natural: Option<NodeId>,
     fit_rows: bool,
+    /// What of a list as tall as its rows ([`Self::fitting_rows`]) the scroll view around it
+    /// shows, as its last layout found.
+    fit_shown: FitShown,
     follow_end: bool,
     at_end: bool,
     last_tick: Option<Instant>,
@@ -544,6 +558,7 @@ impl<M: ListModel> VirtualList<M> {
             fill_height: false,
             natural: None,
             fit_rows: false,
+            fit_shown: FitShown::Unplaced,
             follow_end: false,
             at_end: false,
             last_tick: None,
@@ -968,8 +983,21 @@ impl<M: ListModel> VirtualList<M> {
     }
 
     fn rows_to_hold(&self) -> std::ops::Range<usize> {
-        let near = self.viewport.visible_range();
         let count = self.model.len();
+        let near = if self.fit_rows {
+            // A list as tall as its rows shows what the scroll view around it shows of it: the
+            // rows of a tall screen from its top until its first layout says where it stands.
+            let (top, bottom) = match self.fit_shown {
+                FitShown::Unplaced => (0.0, crate::virtual_viewport::UNPLACED_VIEWPORT),
+                FitShown::Whole => return 0..count,
+                FitShown::Band(top, bottom) => (top, bottom),
+            };
+            let overscan = self.viewport.overscan();
+            self.viewport
+                .range_between(top - overscan, bottom + overscan)
+        } else {
+            self.viewport.visible_range()
+        };
         near.start.min(count)..near.end.min(count)
     }
 
@@ -1723,6 +1751,11 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
             slack + self.layout_offset - self.viewport.offset(),
         );
         let child_origin = Point::new(self.rect.x0, self.rect.y0 + content);
+        if self.fit_rows {
+            self.fit_shown = crate::widget::layout_clip().map_or(FitShown::Whole, |clip| {
+                FitShown::Band(clip.y0 - child_origin.y, clip.y1 - child_origin.y)
+            });
+        }
         let near = self.mounted_near();
         let again = crate::widget::placing_again(taffy);
         let before = std::mem::replace(&mut self.near_placed, near.clone());
