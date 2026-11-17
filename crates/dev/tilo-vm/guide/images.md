@@ -65,6 +65,26 @@ channel publishes something newer; `tilo-vm vm upgrade` without an image returns
 to the channel at once. To see what exists:
 `skopeo list-tags docker://registry.tilo.so/tilo/tilo-vm`.
 
+## A disk of this tree, from t
+
+The published disk is main's, moved when the publishing lane passes; when you
+need a disk of the commit you are on (or the channel has not moved), `t`
+builds the same disk for this tree on the build server and fetches it:
+
+```sh
+t outputs os-dev-disk-x86_64 --to ~/tilo-disks
+tilo-vm vm create dev \
+  --image ~/tilo-disks/target/publish/os-dev-disk/x86_64/disk/disk.qcow2 --gl
+```
+
+It installs this tree's dev image onto a disk with `os/dev/build-image.sh` in a
+micro-VM step, the script the published disk comes from too; `--to` keeps the
+check's output path (`/target/...`) under the directory. `os-dev-disk-lean-x86_64`
+is the same disk from the development-loop image, which skips the local model
+runtimes and the commit, so it is the faster one to ask for while working on
+the disk or the desktop. Nothing is published and the disk is uncompressed (a
+64 GiB sparse qcow2); run the check once and reuse the file for every VM.
+
 ## Building somewhere else: `tilo-vm image build`
 
 The local builds below (`image build`, `--from local`, `--image <layout>`) are the
