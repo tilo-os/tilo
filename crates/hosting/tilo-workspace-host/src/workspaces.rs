@@ -985,6 +985,10 @@ struct WorkspacesInner {
     /// provider, model and key ([`person_model`]).
     #[cfg(not(target_arch = "wasm32"))]
     models: Arc<person_model::Models>,
+    /// The sessions this host holds with the mail servers of the accounts
+    /// its people keep ([`Workspaces::mail_session`]).
+    #[cfg(not(target_arch = "wasm32"))]
+    mail_session: std::sync::RwLock<person_settings::Session>,
     /// What the changes a record's repair kept wait for, by record, so a
     /// member's write to it is only tried against them when it could release
     /// one ([`repaired_documents`]).
@@ -1249,6 +1253,10 @@ impl Workspaces {
                 person_settings_moved: tokio::sync::watch::channel(0).0,
                 #[cfg(not(target_arch = "wasm32"))]
                 models: Arc::new(person_model::Models::new()),
+                #[cfg(not(target_arch = "wasm32"))]
+                mail_session: std::sync::RwLock::new(Arc::new(
+                    tilo_mail_session::LiveMailSession::default(),
+                )),
                 #[cfg(feature = "agents")]
                 repairs: repaired_documents::Repairs::default(),
                 content: content::ContentSlot::default(),

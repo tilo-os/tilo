@@ -59,6 +59,15 @@ pub const SEND: &str = "send";
 /// Tell one account's server what changed about a message ([`MarkMail`]):
 /// read, starred, moved or removed.
 pub const MARK: &str = "mark";
+/// Read one message whole ([`ReadMail`]), answering it as a
+/// [`FetchedMessage`].
+pub const READ: &str = "read";
+/// Search one account on its server ([`SearchMail`]), answering what it
+/// found as a [`FoundMail`].
+pub const SEARCH: &str = "search";
+/// Keep the message begun under an id ([`SendId`]) in the account's Drafts
+/// folder instead of sending it. Answers nothing.
+pub const SAVE_DRAFT: &str = "save-draft";
 
 /// The target of action `action` of [`RESOURCE`].
 #[must_use]
@@ -219,6 +228,11 @@ pub struct FetchedMessage {
     pub minutes: i64,
     pub read: bool,
     pub starred: bool,
+    /// Whether this carries only the start of the message's words, because
+    /// the whole would not fit the answer it came in. [`READ`] answers the
+    /// message whole.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub partial: bool,
 }
 
 /// What the reader did to a message the server no longer reports as such.
@@ -246,6 +260,12 @@ pub struct FetchMail {
     pub known_uid: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub known_uid_validity: Option<u32>,
+    /// The oldest `UID` the reader holds of this folder, when it asks for
+    /// the page before that one instead of for what arrived: a reader
+    /// scrolling past the oldest message it holds. Read under
+    /// `known_uid_validity`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub before_uid: Option<u32>,
 }
 
 /// A folder as its server answered it.
@@ -269,6 +289,68 @@ pub struct FetchedMail {
     /// the server reports differently.
     #[serde(default)]
     pub flags: Vec<MailFlag>,
+}
+
+/// Ask for one message, by where its server holds it.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ReadMail {
+    /// The account's id, as [`LIST`] names it.
+    pub account: String,
+    /// The folder's key, as [`FetchMail`] names one.
+    pub folder: String,
+    pub uid: u32,
+    /// The validity the `UID` was read under.
+    pub uid_validity: u32,
+}
+
+/// The most messages a search answers of one folder.
+pub const MAX_FOUND: u32 = 25;
+
+/// Ask an account's server which messages it holds that match. Every part
+/// that is given has to match; at least one is.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SearchMail {
+    /// The account's id, as [`LIST`] names it.
+    pub account: String,
+    /// The folders to look in, by their keys. The inbox and the archive
+    /// when none is named.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub folders: Vec<String>,
+    /// Words the message holds anywhere.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+    /// A name or address it came from.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from: Option<String>,
+    /// A name or address it went to.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub to: Option<String>,
+    /// Words of its subject.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subject: Option<String>,
+    /// The most messages answered of each folder, newest first:
+    /// [`MAX_FOUND`] when absent or larger.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit: Option<u32>,
+}
+
+/// What a search found, folder by folder.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct FoundMail {
+    pub folders: Vec<FoundFolder>,
+}
+
+/// The messages a search found in one folder, newest first.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct FoundFolder {
+    /// The folder's key, as the search named it.
+    pub folder: String,
+    pub uid_validity: u32,
+    pub messages: Vec<FetchedMessage>,
 }
 
 /// A message to send through one of the person's accounts. The host writes

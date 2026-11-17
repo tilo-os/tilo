@@ -491,7 +491,7 @@ impl MailApp {
         let content = content.unwrap_or_else(ContentStore::memory);
         // The accounts live where the workspace runs, and so does the mail
         // session: the host's answers are this window's engine events.
-        let (engine, host) = host_mail::engine();
+        let (engine, host) = host_mail::engine(content.clone());
         let mut app = Self::assemble(shared, content, Some(engine), AccountsPersist::Disabled);
         app.host_mail = Some(host);
         app
