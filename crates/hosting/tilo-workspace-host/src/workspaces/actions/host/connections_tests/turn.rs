@@ -38,7 +38,7 @@ use crate::connections::stand_in::StandIn;
 use crate::workspaces::Workspaces;
 use crate::workspaces::hosted_use::HostedTurn;
 use crate::workspaces::person_asking::Allowing;
-use crate::workspaces::person_asking::kept_asks::{KeptAsk, NewAsk};
+use crate::workspaces::person_asking::kept_asks::{CARRIED_OUT, KeptAsk, NewAsk};
 
 const SCOUT: &str = "scout";
 
@@ -181,6 +181,14 @@ impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for Lines {
     }
 }
 
+/// Who a team is, kept while its server is stopped and started again.
+struct Members {
+    workspace: String,
+    workspace_id: WorkspaceId,
+    ada: DeviceCert,
+    bo: DeviceCert,
+}
+
 /// One workspace on a server that calls services on its own machine, with
 /// two members: Ada, whose agent Scout the server keeps working, and Bo.
 struct Team<'a> {
@@ -213,6 +221,36 @@ impl<'a> Team<'a> {
             actions,
             ada,
             bo,
+        }
+    }
+
+    /// Who the team is, for the server that is started again on what this
+    /// one kept.
+    fn members(&self) -> Members {
+        Members {
+            workspace: self.workspace.clone(),
+            workspace_id: self.workspace_id,
+            ada: self.ada.clone(),
+            bo: self.bo.clone(),
+        }
+    }
+
+    /// The team `members` on `workspaces`, a server started again on what
+    /// the one before it kept: no workspace is made and nobody is admitted.
+    fn back(workspaces: &'a Workspaces, members: Members) -> Self {
+        workspaces.call_private_model_addresses(true);
+        let actions = Served::new();
+        actions.attach(workspaces.clone());
+        Self {
+            as_ada: caller(&members.ada),
+            keeper: hex::encode(members.ada.user_public_key),
+            scout: on_turn(&members.ada, &members.workspace, SCOUT),
+            workspaces,
+            workspace: members.workspace,
+            workspace_id: members.workspace_id,
+            actions,
+            ada: members.ada,
+            bo: members.bo,
         }
     }
 
@@ -609,6 +647,90 @@ async fn a_command_that_changes_something_asks_and_only_its_persons_answer_calls
     let planting = calling(&id, "plant_tree", json!({"kind": "apple", "row": 3}));
     asked(team.takes(&turn, &planting).await);
     assert!(calls(&service.seen()).is_empty());
+    started.shutdown().await;
+}
+
+/// What waits when the server stops: one question nobody answered, and one
+/// whose answer a reader claimed and had done nothing about yet.
+async fn two_questions_wait(team: &Team<'_>, id: &str) -> (KeptAsk, KeptAsk) {
+    let turn = team.turn();
+    let apple = calling(id, "plant_tree", json!({"kind": "apple", "row": 3}));
+    let waits = team.keeps(&asked(team.takes(&turn, &apple).await));
+    let pear = calling(id, "plant_tree", json!({"kind": "pear", "row": 4}));
+    let begun = team.keeps(&asked(team.takes(&turn, &pear).await));
+    assert_ne!(waits.ask, begun.ask, "each is a question of its own");
+    let claimed = team
+        .workspaces
+        .claim_ask(&begun.ask)
+        .expect("the first reader of its answer");
+    assert!(claimed.started);
+    (waits, begun)
+}
+
+/// A question about a command outlives its server's restart. What was asked
+/// is read back whole, and its person's yes after the restart calls the
+/// command with what they were shown, by one reader of their answer: a
+/// second reader does nothing. A question whose answer was being carried
+/// out when the server stopped is carried out by nobody afterwards.
+#[tokio::test]
+async fn a_question_about_a_command_outlives_a_restart_and_its_answer_is_carried_out_once() {
+    let dir = tempfile::tempdir().unwrap();
+    let (key, owner) = governor();
+    let service = StandIn::start("plain");
+    let started = start_serving(dir.path(), &key, &owner).await;
+    let team = Team::on(started.workspaces(), &owner).await;
+    let id = team.connects(&service).await;
+    let (waits, begun) = two_questions_wait(&team, &id).await;
+    let members = team.members();
+    assert!(
+        calls(&service.seen()).is_empty(),
+        "nothing is called before an answer"
+    );
+    started.shutdown().await;
+
+    let started = start_serving(dir.path(), &key, &owner).await;
+    let workspaces = started.workspaces();
+    let team = Team::back(workspaces, members);
+    let kept = workspaces.open_asks(&team.workspace);
+    assert_eq!(kept.len(), 2, "{kept:?}");
+    let still = kept.iter().find(|ask| ask.ask == waits.ask).unwrap();
+    assert!(!still.started && !still.interrupted, "{still:?}");
+    assert_eq!(still.kept, waits.kept, "what was asked is read back whole");
+    assert_eq!(still.always, waits.always);
+    assert_eq!(still.person, hex::encode(team.ada.user_public_key));
+
+    // Her yes, read after the restart: one reader claims it and carries it
+    // out, and the command is called with what she was shown.
+    let turn = team.turn();
+    let claimed = workspaces
+        .claim_ask(&waits.ask)
+        .expect("the first reader of her answer");
+    team.answered(&turn, &claimed, Some(Leave::Once))
+        .await
+        .expect("her yes calls the command after the restart");
+    assert_eq!(
+        calls(&service.seen()),
+        [("plant_tree".to_owned(), json!({"kind": "apple", "row": 3}))]
+    );
+    assert_eq!(
+        workspaces.claim_ask(&waits.ask),
+        Err(CARRIED_OUT.to_owned()),
+        "a second reader of the same answer does nothing"
+    );
+    let used = team.uses(&id).await;
+    assert_eq!(used.as_array().map(Vec::len), Some(1), "{used}");
+    assert_eq!(used[0]["command"], "plant_tree");
+    assert_eq!(used[0]["leave"], "once");
+
+    // The one whose answer was being carried out when the server stopped.
+    let was_begun = kept.iter().find(|ask| ask.ask == begun.ask).unwrap();
+    assert!(was_begun.started && was_begun.interrupted, "{was_begun:?}");
+    assert_eq!(
+        workspaces.claim_ask(&begun.ask),
+        Err(CARRIED_OUT.to_owned()),
+        "it is not carried out a second time"
+    );
+    assert!(calls(&service.seen()).is_empty(), "nothing more is called");
     started.shutdown().await;
 }
 
