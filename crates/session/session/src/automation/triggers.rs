@@ -1282,7 +1282,6 @@ mod tests {
     use tilo_automation::Weekday;
 
     use super::*;
-    use tilo_automation::Weekday;
 
     fn at(text: &str) -> DateTime<Utc> {
         DateTime::parse_from_rfc3339(text)
