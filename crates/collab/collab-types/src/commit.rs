@@ -7,7 +7,7 @@
 //! see half an action and leaves history without a name for the whole of it.
 //!
 //! A [`WorkspaceCommit`] is that name. It lists every unit the action wrote —
-//! the app and document, and the hash of each change it made there — under one
+//! the app and document, and the heads of the changes it made there — under one
 //! author, one time, and the invocation and run it was made in. A part's
 //! document frame carries the commit inside its signed payload
 //! ([`WorkspaceCommit::frame`]), so the device signature over that payload
@@ -35,7 +35,7 @@ use crate::op::DocumentMutation;
 /// The record kind of a workspace commit.
 pub const COMMIT_RECORD_KIND: &str = "tilo.workspace.commit";
 /// Version of the commit object; a receiver refuses one it does not know.
-pub const COMMIT_VERSION: u16 = 2;
+pub const COMMIT_VERSION: u16 = 3;
 /// Prefix of a document frame that carries an action's commit: the commit's
 /// byte length, the commit, then the document frame it belongs to.
 pub const COMMIT_FRAME_PREFIX: &[u8] = b"tilo-commit-frame-v1\0";
@@ -70,7 +70,7 @@ pub struct CommitGroup {
     pub kind: String,
 }
 
-/// One unit an action wrote: which app's document, and the hashes of the
+/// One unit an action wrote: which app's document, and the heads of the
 /// changes it made there.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -80,9 +80,11 @@ pub struct CommitPart {
     /// The document the unit belongs to; empty for the app's route without a
     /// document (one document per app and workspace).
     pub document: String,
-    /// The hash of every change the action made in this unit, in the order it
-    /// made them.
-    pub changes: Vec<[u8; 32]>,
+    /// The hash of each change the action made in this unit that no other
+    /// of them depends on: those changes and what they depend on hold every
+    /// change of the action, which the envelope carrying them names one by
+    /// one in its claims.
+    pub heads: Vec<[u8; 32]>,
 }
 
 impl CommitPart {
@@ -364,7 +366,7 @@ impl WorkspaceCommit {
             return Err(CommitError::NoParts);
         }
         for (index, part) in self.parts.iter().enumerate() {
-            if part.changes.is_empty() {
+            if part.heads.is_empty() {
                 return Err(CommitError::EmptyPart {
                     app: part.app.clone(),
                     document: part.document.clone(),
@@ -395,13 +397,6 @@ impl WorkspaceCommit {
     #[must_use]
     pub fn covers(&self, app: &str, document: &str) -> bool {
         self.part(app, document).is_some()
-    }
-
-    /// The change `hash` is, as this commit names it: the unit and the position
-    /// in it, when the action made that change.
-    #[must_use]
-    pub fn change(&self, hash: &[u8; 32]) -> Option<&CommitPart> {
-        self.parts.iter().find(|part| part.changes.contains(hash))
     }
 
     /// Frame the document payload `inner` under this commit: what one unit's
@@ -501,7 +496,7 @@ impl WorkspaceCommit {
 
 /// One unit's changes, read for the commit that names them.
 struct Read {
-    /// The unit as the commit names it: which app's document, which changes.
+    /// The unit as the commit names it: which app's document, which heads.
     part: CommitPart,
     /// The one invocation every change of the unit ran under, when they all
     /// ran under the same one: the action they are all part of.
@@ -528,18 +523,24 @@ impl Read {
             part: CommitPart {
                 app: unit.app.to_owned(),
                 document: unit.document_id.to_owned(),
-                changes: Vec::with_capacity(changes.len()),
+                heads: Vec::new(),
             },
             signature: None,
             run: None,
             actor: None,
             at_ms: 0,
         };
+        let depended: std::collections::HashSet<_> = changes
+            .iter()
+            .flat_map(|change| change.deps().iter().copied())
+            .collect();
         let mut one_action = true;
         let mut first = None;
         let mut entries = tilo_actions::EntryReader::default();
         for (position, change) in changes.iter().enumerate() {
-            read.part.changes.push(change.hash().0);
+            if !depended.contains(&change.hash()) {
+                read.part.heads.push(change.hash().0);
+            }
             read.at_ms = read.at_ms.max(
                 u64::try_from(change.timestamp())
                     .unwrap_or(0)
@@ -600,7 +601,7 @@ mod tests {
         CommitPart {
             app: app.to_owned(),
             document: document.to_owned(),
-            changes: vec![[change; 32]],
+            heads: vec![[change; 32]],
         }
     }
 
@@ -647,11 +648,6 @@ mod tests {
             assert!(commit.covers("tasks", "b"));
             assert!(!commit.covers("tasks", "c"));
             assert_eq!(commit.part("tasks", "b"), Some(&part("tasks", "b", 2)));
-            assert_eq!(
-                commit.change(&[2; 32]).map(|part| part.document.as_str()),
-                Some("b")
-            );
-            assert_eq!(commit.change(&[3; 32]), None);
             assert_eq!(commit.author, author([7; 32]));
             assert_eq!(commit.invocation, Some(uuid::Uuid::from_u128(9)));
             assert_eq!(
@@ -704,7 +700,7 @@ mod tests {
             );
 
             let mut empty = two_part();
-            empty.parts[1].changes.clear();
+            empty.parts[1].heads.clear();
             assert_eq!(
                 WorkspaceCommit::decode(&empty.encode()),
                 Err(CommitError::EmptyPart {
@@ -820,7 +816,7 @@ mod tests {
             );
             assert_eq!(action.parts.len(), 2);
             assert!(action.covers("tasks", "a") && action.covers("tasks", "b"));
-            assert_eq!(action.parts[0].changes, vec![change_of(&title)]);
+            assert_eq!(action.parts[0].heads, vec![change_of(&title)]);
             assert_eq!(action.invocation, Some(invocation.0));
             assert_eq!(action.author.actor, Some(tilo_action_policy::MemberId::person("alice").into()));
             assert_eq!(
@@ -891,7 +887,7 @@ mod tests {
             .unwrap();
             assert_eq!(commit.invocation, Some(invocation.0));
             assert_eq!(commit.author.actor, Some(tilo_action_policy::MemberId::person("alice").into()));
-            assert_eq!(commit.parts[0].changes, vec![hash.0]);
+            assert_eq!(commit.parts[0].heads, vec![hash.0]);
             assert_eq!(
                 commit.at_ms, 1_700_000_000_000,
                 "the action keeps the time its changes carry"
@@ -960,7 +956,8 @@ mod tests {
                     .unwrap()[0]
                     .clone()
                     .expect("both letters are one action");
-            assert_eq!(commit.parts[0].changes.len(), 2);
+            let last = doc.get_changes(&[])[1].hash();
+            assert_eq!(commit.parts[0].heads, vec![last.0], "the second letter is built on the first");
 
             let next = DocumentMutation::Incremental(doc.save_after(&[first]));
             assert!(matches!(
@@ -988,7 +985,7 @@ mod tests {
                 WorkspaceCommit::of_mutation("workspace", "tasks", "", &author([3; 32]), &mutation)
                     .unwrap()
                     .unwrap();
-            assert_eq!(commit.parts[0].changes, vec![claims[0].change]);
+            assert_eq!(commit.parts[0].heads, vec![claims[0].change]);
         }
 
         phase an_action_names_the_run_it_ran_in_across_its_units;

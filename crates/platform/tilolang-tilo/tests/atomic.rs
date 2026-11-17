@@ -158,7 +158,11 @@ tilo_test_env::scenario! {
         .unwrap()
         .expect("the calls are committed as one action");
         assert_eq!(commit.parts.len(), 1, "one document, one part");
-        assert_eq!(commit.parts[0].changes.len(), 2, "both calls are in it");
+        assert_eq!(
+            commit.parts[0].heads,
+            vec![doc.get_heads()[0].0],
+            "the second call is built on the first: both are in it"
+        );
         assert_eq!(
             commit.invocation,
             Some(invocation_id(&run).0),

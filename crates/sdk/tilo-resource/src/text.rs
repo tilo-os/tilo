@@ -45,11 +45,11 @@ pub fn mark_authored(
     tilo_automerge::mark_text_author(doc, obj, at, inserted, &author_mark(&author))
 }
 
-/// The value a text's author mark holds for `author`: the hex of the actor
-/// bytes their changes carry.
+/// The value a text's author mark holds for `author`: the actor bytes their
+/// changes carry, as the text they are (a person's key, `agent:<id>`).
 #[must_use]
 pub fn author_mark(author: &tilo_action_policy::MemberId) -> String {
-    automerge::ActorId::from(author.actor_bytes()).to_hex_string()
+    String::from_utf8_lossy(&author.actor_bytes()).into_owned()
 }
 
 /// The registry type id [`TextEdit`]s replay under.
@@ -415,8 +415,8 @@ mod tests {
             assert_eq!(
                 runs,
                 vec![
-                    (hex::encode("alice"), "héllo".to_owned()),
-                    (hex::encode("bob"), " wörld".to_owned()),
+                    ("alice".to_owned(), "héllo".to_owned()),
+                    ("bob".to_owned(), " wörld".to_owned()),
                 ],
                 "each person's typing carries the actor their changes are named by"
             );

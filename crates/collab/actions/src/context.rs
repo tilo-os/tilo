@@ -21,13 +21,14 @@ use tilo_action_policy::{Acting, Actor};
 pub const CHANGE_MESSAGE_PREFIX: &str = "tilo.entry/3 ";
 
 /// Prefix of a change message that continues its writer's open gesture
-/// (the next keystroke of a word): `tilo.cont/1 <gesture> <path> <payload>`.
-/// It is the gesture's first entry again but for the action's payload, so
-/// it carries only the gesture (simple hex), the edit's path (`body`,
-/// `rows/r1/title`; `-` for none) and the action's JSON payload, whose type
-/// is the first entry's. Readers fold it into that entry
+/// (the next keystroke of a word): `tilo.cont/2 <gesture> <claim> <kept>
+/// <tail> <middle>`. It is the gesture's first entry again but for the
+/// action's payload, so it carries only the gesture (simple hex), what the
+/// change claims to be ([`ContinuedAction`]) and how its payload differs
+/// from the first entry's: that payload's first `kept` and last `tail` bytes
+/// around `middle`. Readers fold it into that entry
 /// ([`ActionContext::continued`]).
-pub const CONTINUATION_PREFIX: &str = "tilo.cont/1 ";
+pub const CONTINUATION_PREFIX: &str = "tilo.cont/2 ";
 
 #[derive(Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(remote = "Self", default)]
@@ -495,26 +496,25 @@ impl ActionContext {
         {
             return None;
         }
-        let payload = std::str::from_utf8(&action.payload).ok()?;
-        let path = match &self.what {
-            Some(Did::Edit(edit)) if !edit.path.is_empty() => edit
-                .path
-                .iter()
-                .map(|step| match step {
-                    PathStep::Field(name) | PathStep::Item(name) | PathStep::Key(name) => {
-                        name.clone()
-                    }
-                    PathStep::Cell(row, column) => format!("{row}:{column}"),
-                })
-                .collect::<Vec<_>>()
-                .join("/"),
-            _ => "-".to_owned(),
-        };
-        if path.contains(' ') {
-            return None;
-        }
+        let claim = ContinuedAction::token(self.what.as_ref())?;
+        let now = std::str::from_utf8(&action.payload).ok()?;
+        let then = std::str::from_utf8(&earlier.payload).ok()?;
+        let kept = now
+            .char_indices()
+            .zip(then.chars())
+            .find(|((_, now), then)| now != then)
+            .map_or_else(|| now.len().min(then.len()), |((at, _), _)| at);
+        let (now_rest, then_rest) = (now.get(kept..)?, then.get(kept..)?);
+        let tail: usize = now_rest
+            .chars()
+            .rev()
+            .zip(then_rest.chars().rev())
+            .take_while(|(now, then)| now == then)
+            .map(|(now, _)| now.len_utf8())
+            .sum();
+        let middle = now_rest.get(..now_rest.len().checked_sub(tail)?)?;
         Some(format!(
-            "{CONTINUATION_PREFIX}{} {path} {payload}",
+            "{CONTINUATION_PREFIX}{} {claim} {kept} {tail} {middle}",
             gesture.0.simple()
         ))
     }
@@ -533,18 +533,54 @@ impl ActionContext {
         let rest = message.strip_prefix(CONTINUATION_PREFIX)?;
         let mut parts = rest.splitn(3, ' ');
         let gesture = uuid::Uuid::try_parse(parts.next()?).ok()?;
-        let _path = parts.next()?;
-        let payload = parts.next()?;
+        let _claim = parts.next()?;
         if first.gesture.map(|first| first.0) != Some(gesture) {
             return None;
         }
+        let mut diff = parts.next()?.splitn(3, ' ');
+        let kept = diff.next()?.parse::<usize>().ok()?;
+        let tail = diff.next()?.parse::<usize>().ok()?;
+        let earlier = first.action.as_ref()?;
+        let then = std::str::from_utf8(&earlier.payload).ok()?;
+        let payload = [
+            then.get(..kept)?,
+            diff.next()?,
+            then.get(then.len().checked_sub(tail)?..)?,
+        ]
+        .concat();
         Some(Self {
             action: Some(crate::EncodedAction {
-                type_id: first.action.as_ref()?.type_id.clone(),
-                payload: payload.as_bytes().to_vec(),
+                type_id: earlier.type_id.clone(),
+                payload: payload.into_bytes(),
             }),
             ..first.clone()
         })
+    }
+}
+
+/// What a continuation says its change is, in the terms a change's claim is
+/// written in: an edit at a path (the whole record for an empty one), or one
+/// of the record's verbs. A continuation writes it as JSON.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ContinuedAction {
+    Edit(Vec<PathStep>),
+    Verb(String),
+}
+
+impl ContinuedAction {
+    /// The claim a continuation of an entry that did `what` writes; `None`
+    /// for one whose JSON holds a blank, which ends the token.
+    fn token(what: Option<&Did>) -> Option<String> {
+        let action = match what {
+            None => Self::Edit(Vec::new()),
+            Some(Did::Edit(edit)) => Self::Edit(edit.path.clone()),
+            Some(Did::Verb(verb)) => Self::Verb(verb.action.action.clone()),
+            Some(_) => return None,
+        };
+        serde_json::to_string(&action)
+            .ok()
+            .filter(|token| !token.contains(' '))
     }
 }
 
@@ -1966,5 +2002,32 @@ mod tests {
                 Some("issue:42")
             );
         }
+    }
+
+    #[test]
+    fn a_keystroke_continues_its_gesture_with_the_bytes_it_changed_and_its_claim() {
+        let typed = |letter: &str| ActionContext {
+            action: Some(crate::EncodedAction {
+                type_id: "notes.notebook".into(),
+                payload: format!(
+                    r#"{{"SpliceText":{{"at":12,"ins":{letter}}},"path":[{{"item":"8dc4"}}]}}"#
+                )
+                .into_bytes(),
+            }),
+            ..ActionContext::default()
+                .with_described(starred())
+                .in_gesture(Some(crate::ActionId(uuid::Uuid::from_u128(7))))
+        };
+        let (first, next) = (typed(r#""n""#), typed(r#""é \"q\"""#));
+        let message = next.continuation_of(&first).unwrap();
+        assert_eq!(
+            message,
+            r#"tilo.cont/2 00000000000000000000000000000007 {"edit":[{"field":"snippets"},{"item":"s1"},{"field":"favorite"}]} 30 28 é \"q\""#
+        );
+        assert_eq!(
+            ActionContext::continued(&message, &first),
+            Some(next),
+            "read back byte for byte"
+        );
     }
 }

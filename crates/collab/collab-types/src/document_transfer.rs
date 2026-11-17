@@ -697,27 +697,19 @@ mod tests {
         doc.splice_text(&text, 0, 0, "Host line one.").unwrap();
         doc.commit();
         let before = doc.get_heads();
-        let author = hex::encode(person);
         for (at, letter) in (14..).zip(" ada0x".chars()) {
             doc.set_actor(automerge::ActorId::random());
             doc.splice_text(&text, at, 0, &letter.to_string()).unwrap();
             doc.mark(
                 &text,
-                automerge::marks::Mark::new(
-                    "author".into(),
-                    author.as_str(),
-                    at,
-                    at.saturating_add(1),
-                ),
+                automerge::marks::Mark::new("author".into(), person, at, at.saturating_add(1)),
                 automerge::marks::ExpandMark::None,
             )
             .unwrap();
             let message = format!(
-                "tilo.cont/1 01a1e8eb62e277f2a19bf41136d4b472 pages/12980f87-fbbb-446e-8620-ee255ff8498f/body \
-                 {{\"op\":{{\"action\":\"field-edit\",\"args\":{{\"op\":\"rich\",\"rich\":{{\"SpliceText\":\
-                 {{\"region\":\"Body\",\"block\":\"genesis.0\",\"at\":{at},\"del\":0,\"ins\":\"{letter}\"}}}},\
-                 \"path\":[{{\"field\":\"pages\"}},{{\"item\":\"12980f87-fbbb-446e-8620-ee255ff8498f\"}},\
-                 {{\"field\":\"body\"}}]}}}},\"at\":0}}"
+                "tilo.cont/2 01a1e8eb62e277f2a19bf41136d4b472 \
+                 {{\"edit\":[{{\"field\":\"pages\"}},{{\"item\":\"12980f87-fbbb-446e-8620-ee255ff8498f\"}},\
+                 {{\"field\":\"body\"}}]}} 113 105 {at},\"del\":0,\"ins\":\"{letter}"
             );
             doc.commit_with(
                 CommitOptions::default()
@@ -736,7 +728,7 @@ mod tests {
         phase a_typed_word_frame_stays_under_a_third_of_its_changes;
         {
             let changes = one_typed_word();
-            assert!(changes.len() > 3500, "six letters' changes are {} bytes", changes.len());
+            assert!(changes.len() > 2000, "six letters' changes are {} bytes", changes.len());
             let mutation = DocumentMutation::Incremental(changes);
             let frames = mutation.encode_frames().unwrap();
             let [frame] = frames.as_slice() else {
@@ -747,7 +739,7 @@ mod tests {
             // entry, the author mark and the earlier writer's actor every
             // letter repeats are carried once.
             assert!(
-                frame.len() < 1200,
+                frame.len() < 850,
                 "a typed word's frame is {} bytes of {} bytes of changes",
                 frame.len(),
                 mutation.data().len()

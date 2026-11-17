@@ -422,10 +422,9 @@ impl Core {
     /// writer id the mark holds.
     fn mark_writer(&self, target: &ResourceRef, mark: &str) -> Option<crate::ids::Actor> {
         let versions = self.store.borrow().versions(target).ok()?;
-        versions.into_iter().find_map(|v| {
-            v.who
-                .filter(|who| automerge::ActorId::from(who.actor_bytes()).to_hex_string() == mark)
-        })
+        versions
+            .into_iter()
+            .find_map(|v| v.who.filter(|who| who.actor_bytes() == mark.as_bytes()))
     }
 
     /// The lines of the text of `target` that `re` matches, each at its first match, leaving out

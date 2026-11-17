@@ -262,7 +262,8 @@ impl Walk<'_> {
                 .filter(|other| other.name() == AUTHOR_MARK)
                 .filter(|other| (other.start..other.end).contains(&mark.start))
                 .find_map(|other| match other.value() {
-                    ScalarValue::Str(author) if !author.is_empty() => Some(author.to_string()),
+                    ScalarValue::Str(author) => MemberId::of_actor_bytes(author.as_bytes())
+                        .map(|member| member.id().to_owned()),
                     _ => None,
                 });
             let block = path

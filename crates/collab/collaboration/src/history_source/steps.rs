@@ -648,23 +648,17 @@ impl StepIndex {
             // Only what a step keeps of its entry is read; a continuation is
             // its gesture's first entry again, read before it in causal order.
             let message = meta.message.as_deref();
-            let context = match message {
-                Some(text) if text.starts_with(tilo_actions::CONTINUATION_PREFIX) => {
-                    ActionContext::continued_gesture(text)
-                        .and_then(|gesture| self.firsts.get(&(actor, gesture)))
-                        .and_then(|&first| self.version_at(first as usize))
-                        .and_then(|first| first.context)
-                }
-                text => text.and_then(ActionContext::head_of_change_message),
+            let continued = message.and_then(ActionContext::continued_gesture);
+            let context = match continued {
+                Some(gesture) => self
+                    .firsts
+                    .get(&(actor, gesture))
+                    .and_then(|&first| self.version_at(first as usize))
+                    .and_then(|first| first.context),
+                None => message.and_then(ActionContext::head_of_change_message),
             };
-            if let Some(gesture) =
-                context
-                    .as_ref()
-                    .and_then(|context| context.gesture)
-                    .filter(|_| {
-                        !message
-                            .is_some_and(|text| text.starts_with(tilo_actions::CONTINUATION_PREFIX))
-                    })
+            if let Some(gesture) = context.as_ref().and_then(|context| context.gesture)
+                && continued.is_none()
             {
                 self.firsts.insert((actor, gesture), position);
             }

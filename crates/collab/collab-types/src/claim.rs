@@ -12,6 +12,7 @@
 
 use serde::{Deserialize, Serialize};
 pub use tilo_actions::FrameworkChange;
+use tilo_actions::context::ContinuedAction;
 use tilo_actions::{ActionContext, ActionKey, Did, HistoryOp, PathStep};
 
 /// A storage unit, as the path from the record's root to the unit's root
@@ -139,64 +140,21 @@ impl ClaimedAction {
         })
     }
 
-    /// What a continuation message (`tilo.cont/1 <gesture> <path>
-    /// <payload>`, the next keystroke of a gesture) does, read from its
-    /// action's payload: a field edit at the payload's path, or the verb the
-    /// payload names, of the record's own kind and app.
+    /// What a continuation message (the next keystroke of a gesture) says
+    /// its change is: a field edit at its path, or the verb it names, of the
+    /// record's own kind and app.
     #[must_use]
     pub fn of_continuation(message: &str) -> Option<Self> {
         let rest = message.strip_prefix(tilo_actions::context::CONTINUATION_PREFIX)?;
-        let mut parts = rest.splitn(3, ' ');
-        let _gesture = parts.next()?;
-        let path = parts.next()?;
-        let payload: serde_json::Value = serde_json::from_str(parts.next()?).ok()?;
-        // An action that is not a record's operation: the message's path
-        // says where it edits, or it edits the whole record.
-        let Some(action) = payload
-            .get("op")
-            .and_then(|operation| operation.get("action"))
-            .and_then(serde_json::Value::as_str)
-        else {
-            return Some(Self::Edit {
+        Some(match serde_json::from_str(rest.split(' ').nth(1)?).ok()? {
+            ContinuedAction::Edit(path) => Self::Edit {
                 kind: String::new(),
-                path: if path == "-" {
-                    Vec::new()
-                } else {
-                    path.split('/')
-                        .map(|key| PathStep::Field(key.to_owned()))
-                        .collect()
-                },
-            });
-        };
-        let operation = payload.get("op")?;
-        if action != "field-edit" {
-            return Some(Self::Verb {
+                path,
+            },
+            ContinuedAction::Verb(action) => Self::Verb {
                 action: ActionKey::new("", "", action),
                 item: None,
-            });
-        }
-        let path = operation
-            .get("args")?
-            .get("path")?
-            .as_array()?
-            .iter()
-            .map(|step| {
-                let (kind, value) = step.as_object()?.iter().next()?;
-                Some(match (kind.as_str(), value) {
-                    ("field", serde_json::Value::String(key)) => PathStep::Field(key.clone()),
-                    ("item", serde_json::Value::String(id)) => PathStep::Item(id.clone()),
-                    ("key", serde_json::Value::String(key)) => PathStep::Key(key.clone()),
-                    ("cell", cell) => PathStep::Cell(
-                        cell.get("row")?.as_str()?.to_owned(),
-                        cell.get("column")?.as_str()?.to_owned(),
-                    ),
-                    _ => return None,
-                })
-            })
-            .collect::<Option<Vec<_>>>()?;
-        Some(Self::Edit {
-            kind: String::new(),
-            path,
+            },
         })
     }
 
@@ -695,48 +653,36 @@ mod tests {
             );
         }
 
-        phase a_continuation_claims_from_its_payload;
-        // A continuation claims what its payload does: the field edit at its
-        // path, or the verb it names, of the record's own app and kind.
+        phase a_continuation_claims_what_it_says;
+        // A continuation claims what it says: the field edit at its path, or
+        // the verb it names, of the record's own app and kind.
         {
-            let edit = r#"tilo.cont/1 0123456789abcdef0123456789abcdef rows/r1/title {"op":{"action":"field-edit","args":{"op":"splice","path":[{"field":"rows"},{"item":"r1"},{"field":"title"}]}},"at":5}"#;
+            let claim = |message: &str| {
+                ChangeClaim::of_change([1; 32], Some(message), Vec::new()).map(|claim| claim.action)
+            };
             assert_eq!(
-                ChangeClaim::of_change([1; 32], Some(edit), Vec::new())
-                    .unwrap()
-                    .action,
-                ClaimedAction::Edit {
+                claim(r#"tilo.cont/2 0123456789abcdef0123456789abcdef {"edit":[{"field":"rows"},{"item":"r1"},{"field":"title"}]} 4 5 x"#),
+                Ok(ClaimedAction::Edit {
                     kind: String::new(),
                     path: vec![
                         PathStep::Field("rows".into()),
                         PathStep::Item("r1".into()),
                         PathStep::Field("title".into()),
                     ],
-                }
+                })
             );
-            let verb = r#"tilo.cont/1 0123456789abcdef0123456789abcdef - {"op":{"action":"type-text","args":{}},"at":5}"#;
             assert_eq!(
-                ChangeClaim::of_change([1; 32], Some(verb), Vec::new())
-                    .unwrap()
-                    .action,
-                ClaimedAction::Verb {
+                claim(r#"tilo.cont/2 0123456789abcdef0123456789abcdef {"verb":"type-text"} 1 5 x"#),
+                Ok(ClaimedAction::Verb {
                     action: ActionKey::new("", "", "type-text"),
                     item: None,
-                }
+                })
             );
             assert_eq!(
-                ChangeClaim::of_change([1; 32], Some("tilo.cont/1 g - not json"), Vec::new()),
-                Err(ClaimError::Unnamed)
+                claim(r#"tilo.cont/2 g {"edit":[]} 0 0 "#),
+                Ok(ClaimedAction::whole_resource_edit(String::new()))
             );
-            // An action of no record: where the message says it edits.
-            assert_eq!(
-                ChangeClaim::of_change([1; 32], Some(r#"tilo.cont/1 g body "a""#), Vec::new())
-                    .unwrap()
-                    .action,
-                ClaimedAction::Edit {
-                    kind: String::new(),
-                    path: vec![PathStep::Field("body".into())],
-                }
-            );
+            assert_eq!(claim(r#"tilo.cont/2 g {"cell":"r1"} 0 1 x"#), Err(ClaimError::Unnamed));
         }
     }
 

@@ -89,7 +89,7 @@ pub(crate) fn check(
     // changes the envelope does not claim would let an action smuggle units
     // past the receiver's claims decision. A cleartext envelope carries its
     // claims in the changes themselves, which the app decides.
-    if !claims.is_empty() && !part.changes.iter().all(|change| claims.contains(change)) {
+    if !claims.is_empty() && !part.heads.iter().all(|head| claims.contains(head)) {
         return Delivery::Refused("the commit names changes its envelope does not claim");
     }
     state.commits().arrive(commit, unit, event)
@@ -112,7 +112,7 @@ impl Commits {
             .find(|held| {
                 held.commit
                     .part(unit.0, unit.1)
-                    .is_some_and(|part| part.changes.iter().all(|change| claims.contains(change)))
+                    .is_some_and(|part| part.heads.iter().all(|head| claims.contains(head)))
             })
             .map(|held| held.commit.clone())
     }
@@ -531,7 +531,7 @@ mod tests {
             );
             assert_eq!(action.parts, commit.parts);
             assert_eq!(action.parts.len(), 2);
-            assert_eq!(action.parts[0].changes, vec![commit.parts[0].changes[0]]);
+            assert_eq!(action.parts[0].heads, vec![commit.parts[0].heads[0]]);
             assert!(state.commits().history("elsewhere").is_empty());
         }
 
@@ -699,12 +699,12 @@ mod tests {
                         CommitPart {
                             app: "tasks".to_owned(),
                             document: "a".to_owned(),
-                            changes: vec![first_change],
+                            heads: vec![first_change],
                         },
                         CommitPart {
                             app: "tasks".to_owned(),
                             document: "b".to_owned(),
-                            changes: vec![[u8::try_from(index).unwrap(); 32]],
+                            heads: vec![[u8::try_from(index).unwrap(); 32]],
                         },
                     ],
                 );

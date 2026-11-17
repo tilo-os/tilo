@@ -429,7 +429,7 @@ pub fn entry_message(doc: &Doc, actor: &ActorId, context: &ActionContext) -> Opt
             if meta.actor.as_ref() != actor {
                 return None;
             }
-            context.continuation_of(&entry_of(document, head)?)
+            context.continuation_of(&opening_entry(document, head)?)
         });
         if continuation.is_some() {
             return continuation;
@@ -469,6 +469,18 @@ thread_local! {
 pub fn entry_of(doc: &automerge::Automerge, hash: automerge::ChangeHash) -> Option<ActionContext> {
     let meta = doc.get_change_meta_by_hash(&hash)?;
     let message = meta.message.as_deref()?;
+    match ActionContext::from_change_message(message) {
+        Some(entry) => Some(entry),
+        None => ActionContext::continued(message, &opening_entry(doc, hash)?),
+    }
+}
+
+/// The entry that opened the gesture of the change `hash`: its own entry,
+/// or for a continuation its gesture's first, which a continuation is
+/// written and read against.
+fn opening_entry(doc: &automerge::Automerge, hash: automerge::ChangeHash) -> Option<ActionContext> {
+    let meta = doc.get_change_meta_by_hash(&hash)?;
+    let message = meta.message.as_deref()?;
     if let Some(entry) = ActionContext::from_change_message(message) {
         return Some(entry);
     }
@@ -482,7 +494,7 @@ pub fn entry_of(doc: &automerge::Automerge, hash: automerge::ChangeHash) -> Opti
             kept.push_back((hash, first.clone(), depth));
         }
     });
-    ActionContext::continued(message, &first)
+    Some(first)
 }
 
 /// The first entry of the gesture `gesture` the continuation `meta` is in,

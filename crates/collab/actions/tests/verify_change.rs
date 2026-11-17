@@ -285,7 +285,7 @@ tilo_test_env::scenario! {
                 continuation.starts_with(tilo_actions::CONTINUATION_PREFIX),
                 "{messages:?}"
             );
-            assert!(continuation.len() * 2 < messages[0].len(), "{messages:?}");
+            assert!(continuation.len() < messages[0].len(), "{messages:?}");
         }
 
         // Every change reads as the gesture's entry with its own action.

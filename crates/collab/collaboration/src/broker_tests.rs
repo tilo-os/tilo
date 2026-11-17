@@ -5240,7 +5240,7 @@ tilo_test_env::scenario! {
             vec![collab_types::CommitPart {
                 app: "chat".into(),
                 document: "main".into(),
-                changes: vec![[1; 32]],
+                heads: vec![[1; 32]],
             }],
         );
         let sealed_plaintext = commit.frame(&plaintext).unwrap();

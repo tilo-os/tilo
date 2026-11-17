@@ -742,15 +742,9 @@ fn author_runs(replica: &Replica<RichText>) -> Vec<(usize, usize, usize, String)
         .flat_map(|(index, block)| {
             tilo_doc::author_runs(&block.marks)
                 .into_iter()
-                .map(move |(start, end, author)| (index, start, end, writer(&author)))
+                .map(move |(start, end, author)| (index, start, end, author))
         })
         .collect()
-}
-
-/// The person whose author mark `mark` is.
-pub(crate) fn writer(mark: &str) -> String {
-    let actor = automerge::ActorId::try_from(mark).expect("an author mark is an actor id");
-    String::from_utf8(actor.to_bytes().to_vec()).expect("a person's id")
 }
 
 #[test]
