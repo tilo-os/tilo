@@ -26,7 +26,7 @@ use environments::Origin;
 pub(crate) use room::{Place, Room};
 pub(crate) use service_steps::invoke_service_step;
 use service_steps::{arguments_of, change_through, with_turn_beside};
-pub(crate) use task_hosts::TaskHosts;
+pub(crate) use task_hosts::SessionCatalogue;
 
 use std::collections::HashMap;
 use std::ffi::OsString;
@@ -2546,7 +2546,10 @@ fn serve_admitted(
     session: &Arc<SessionServices>,
     (requests, wake, sessions): (&Sender<Request>, &Wake, &Arc<AgentSessions>),
 ) {
-    let tasks = Arc::new(TaskHosts::new(&session.person, Arc::clone(session)));
+    let tasks = Arc::new(tilo_mcp::task_hosts::TaskHosts::new(
+        Some(&session.person),
+        Arc::new(SessionCatalogue::new(Arc::clone(session))),
+    ));
     let admitted = Arc::clone(&tasks);
     // The agent the person admitted: its workspace, its person and the agent member it is a
     // session of, from the answer to the host the connection is then served through.
@@ -2613,7 +2616,7 @@ fn serve_admitted(
                 agent_session.clone(),
             );
             if let Consent::Admit { person, .. } | Consent::Person { person, .. } = &consent {
-                *admitted.person.lock_recover() = Some(person.clone());
+                admitted.set_person(Some(person));
             }
             if let Consent::Admit {
                 workspace,

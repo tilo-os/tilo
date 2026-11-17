@@ -277,9 +277,21 @@ impl Session {
         let id = self.relay.enter(&self.connection, workspace).await?;
         let device = &self.connection.device;
         let actions = device.actions(id);
+        let cert = self.connection.key.cert();
+        let catalogue = tilo_mcp::task_hosts::WorkspaceCatalogue::new(
+            actions.clone(),
+            tilo_actions::remote::Caller::authenticated(
+                cert.user_public_key,
+                cert.device_public_key,
+            ),
+        );
         let server = McpServer::new(actions, workspace.to_owned(), self.person.clone())
             .with_surface(Surface::Agent)
-            .with_agent_session(&self.run, self.label.clone());
+            .with_agent_session(&self.run, self.label.clone())
+            .with_task_hosts(Some(Arc::new(tilo_mcp::task_hosts::TaskHosts::new(
+                Some(&self.person),
+                Arc::new(catalogue),
+            ))));
         let run = Arc::new(Served { server });
         *entered = Some(Arc::clone(&run));
         drop(entered);

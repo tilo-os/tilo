@@ -136,10 +136,22 @@ impl Entered {
     /// serves: the agent surface runs here over the host's actions, as the run called `name`.
     #[must_use]
     pub fn on_host(device: Device, workspace_id: WorkspaceId, workspace: &str, name: &str) -> Self {
-        let person = hex::encode(device.cert().user_public_key);
-        let server = McpServer::new(device.actions(workspace_id), workspace.to_owned(), person)
+        let cert = device.cert();
+        let (user, key) = (cert.user_public_key, cert.device_public_key);
+        let person = hex::encode(user);
+        let actions = device.actions(workspace_id);
+        // The apps the host lists for this workspace: what a task's programs compile against
+        // there.
+        let catalogue = crate::task_hosts::WorkspaceCatalogue::new(
+            actions.clone(),
+            tilo_actions::remote::Caller::authenticated(user, key),
+        );
+        let server = McpServer::new(actions, workspace.to_owned(), person.clone())
             .with_surface(Surface::Agent)
-            .with_agent_session(uuid::Uuid::new_v4().simple().to_string(), name.to_owned());
+            .with_agent_session(uuid::Uuid::new_v4().simple().to_string(), name.to_owned())
+            .with_task_hosts(Some(std::sync::Arc::new(
+                crate::task_hosts::TaskHosts::new(Some(&person), std::sync::Arc::new(catalogue)),
+            )));
         Self::Host {
             server: Box::new(server),
             device: Box::new(device),

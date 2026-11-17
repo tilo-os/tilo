@@ -11,6 +11,9 @@ description = "The MCP projection of an action host, and the APIs an MCP client 
 test-support = ["dep:tilo-test-env", "dep:tilo-resource"]
 
 [dependencies]
+# What every Tilo app publishes (its surface), for the apps a hosted workspace's programs compile
+# against: data only, no app links the server that serves them.
+app-fleet = { path = "../../packaging/app-fleet", features = ["surfaces"] }
 base64.workspace = true
 blake3.workspace = true
 collab-types = { path = "../../collab/collab-types" }
@@ -20,6 +23,11 @@ hex.workspace = true
 iroh.workspace = true
 libc.workspace = true
 postcard = { workspace = true, features = ["alloc"] }
+# A task's programs run in a tilolang host of this process: the host itself, and the sealed blob
+# its apps arrive in.
+runtime-portal = { path = "../../runtime/runtime-portal" }
+tilo-render-protocol = { path = "../../platform/tilo-render-protocol" }
+tilolang-host = { path = "../../platform/tilolang-host" }
 serde.workspace = true
 serde_json.workspace = true
 tilo-action-policy = { path = "../../collab/action-policy" }

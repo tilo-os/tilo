@@ -251,8 +251,19 @@ fn open(session: &Arc<Session>, device: &Device, run: &str) -> Result<Served, St
     // Every session of this agent, on any computer of the person's, is the one agent the host
     // and the workspace's record of its agents know it by.
     let agent = tilo_actions::remote::device_agent_id(&user, &device.agent);
+    // The apps the workspace's host lists: what this connection's task programs compile against
+    // there, so `tilo run` works where the workspace is hosted elsewhere.
+    let cert = session.device.cert();
+    let catalogue = tilo_mcp::task_hosts::WorkspaceCatalogue::new(
+        actions.clone(),
+        tilo_actions::remote::Caller::authenticated(cert.user_public_key, cert.device_public_key),
+    );
     let server = McpServer::for_agent(actions, device.workspace.clone(), &agent, &person)
-        .with_agent_session(run, device.agent.clone());
+        .with_agent_session(run, device.agent.clone())
+        .with_task_hosts(Some(Arc::new(tilo_mcp::task_hosts::TaskHosts::new(
+            Some(&person),
+            Arc::new(catalogue),
+        ))));
     Ok(Served {
         session: Arc::downgrade(session),
         server,

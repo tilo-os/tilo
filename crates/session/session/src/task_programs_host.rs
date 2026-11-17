@@ -67,9 +67,11 @@ impl TaskProgramHost {
                 request.person,
             )
             .with_work_group(request.group.clone())
-            .with_task_hosts(Some(Arc::new(crate::mcp_server::TaskHosts::new(
-                request.person.unwrap_or_else(|| self.services.person()),
-                Arc::clone(&self.services),
+            .with_task_hosts(Some(Arc::new(tilo_mcp::task_hosts::TaskHosts::new(
+                Some(request.person.unwrap_or_else(|| self.services.person())),
+                Arc::new(crate::mcp_server::SessionCatalogue::new(Arc::clone(
+                    &self.services,
+                ))),
             )))),
         );
         sessions.insert(key, (current, Arc::clone(&api)));

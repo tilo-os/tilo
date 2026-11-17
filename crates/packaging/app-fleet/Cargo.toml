@@ -8,6 +8,12 @@ description = "What every Tilo app's signed manifest says about it, compiled in:
 repository.workspace = true
 homepage.workspace = true
 
+[features]
+# Each app's whole signed `surface.toml` compiled in: what a server that runs a hosted
+# workspace's programs compiles them against. An app and the web desktop need only the
+# metadata above, and leave it off.
+surfaces = []
+
 [lib]
 name = "app_fleet"
 path = "src/lib.rs"

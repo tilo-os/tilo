@@ -177,7 +177,8 @@ Rust client the API server runs: no second implementation, no socket. File bytes
 ## tilolang
 
 A tilolang program runs on the host as a task, against the same catalogue, as the key's
-agent. `tilo run visa.tl -w jane-doe` runs a file. The `tilo` MCP tool runs a program sent
+agent: the apps the workspace lists, compiled against the surfaces the server ships. An app
+whose surface the server does not know is one a program cannot name. `tilo run visa.tl -w jane-doe` runs a file. The `tilo` MCP tool runs a program sent
 by an agent. An assignment compiles to a field edit, a method to the type's action, and one
 program is one step for undo.
 

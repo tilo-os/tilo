@@ -16,6 +16,10 @@ manifest:
 * `apps/<app>/search/*.ftl`: `search-keywords`, and `app-tagline` (English
   here), the tag line the packer signs into `[package.taglines]`.
 
+It also carries each app's whole `surface.toml`, so a server that runs no app
+of its own (the API server, serving a hosted workspace's programs) still
+compiles a program against the app's real declarations.
+
 Writes `crates/packaging/app-fleet/src/generated.rs`. With `--check`
 it fails when that file is out of date instead.
 """
@@ -154,6 +158,8 @@ def fleet(root: pathlib.Path) -> list[dict]:
                 actions=offers(manifest),
                 own=own_kinds(manifest),
                 window_kind=window_kind(app_dir),
+                surface=((app_dir / "surface.toml").read_text(encoding="utf-8")
+                         if (app_dir / "surface.toml").is_file() else ""),
             )
         )
     return apps
@@ -182,6 +188,12 @@ def text(value: str) -> str:
     return '"' + value.replace("\\", "\\\\").replace('"', '\\"') + '"'
 
 
+def blob(value: str) -> str:
+    """`value` as a Rust string literal, its lines kept one after another."""
+    return '"' + (value.replace("\\", "\\\\").replace('"', '\\"')
+                  .replace("\n", "\\n").replace("\t", "\\t")) + '"'
+
+
 def strings(items: list[str]) -> str:
     return "&[" + ", ".join(text(item) for item in items) + "]"
 
@@ -202,6 +214,14 @@ def render(apps: list[dict], own: list[tuple[str, str]]) -> str:
         "/// The apps whose window opens a kind each member keeps as their own.",
         "pub(super) const OWN_WINDOWS: &[&str] = &[",
         *(f"    {text(app['id'])}," for app in apps if app["window_kind"] and app["window_kind"] in app["own"]),
+        "];",
+        "",
+        "/// Each app's signed `surface.toml`, as its package ships it: what a task's programs",
+        "/// compile against there, by the app's id. The `surfaces` feature carries it; apps and",
+        "/// the web desktop leave it off.",
+        '#[cfg(feature = "surfaces")]',
+        "pub(super) const SURFACES: &[(&str, &str)] = &[",
+        *(f"    ({text(app['id'])}, {blob(app['surface'])})," for app in apps if app["surface"]),
         "];",
         "",
         "pub(super) const APPS: &[FleetApp] = &[",

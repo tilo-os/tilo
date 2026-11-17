@@ -20001,6 +20001,7 @@ dependencies = [
 name = "tilo-mcp"
 version = "0.1.0"
 dependencies = [
+ "app-fleet",
  "base64 0.22.1",
  "blake3",
  "collab-types",
@@ -20010,6 +20011,7 @@ dependencies = [
  "iroh",
  "libc",
  "postcard",
+ "runtime-portal",
  "serde",
  "serde_json",
  "tilo-action-policy",
@@ -20023,11 +20025,13 @@ dependencies = [
  "tilo-peer-state",
  "tilo-relay-protocol",
  "tilo-relay-session",
+ "tilo-render-protocol",
  "tilo-resource",
  "tilo-rt",
  "tilo-session-client",
  "tilo-test-env",
  "tilo-user-identity",
+ "tilolang-host",
  "tokio",
  "tracing",
  "uuid",

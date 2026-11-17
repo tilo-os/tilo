@@ -1281,9 +1281,10 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
 
     /// Start this task's host.
     async fn start_task(&self) -> Result<TaskLink, String> {
-        let hosts = self.task_hosts.clone().ok_or(
-            "this API runs no programs: it is no desktop session's, which starts a task's host",
-        )?;
+        let hosts = self
+            .task_hosts
+            .clone()
+            .ok_or("this connection runs no programs: the API serving it starts no task's host")?;
         let task = self
             .agent_session()
             .map(|run| run.id)

@@ -49,6 +49,9 @@ mod api_notebook;
 #[path = "workspace_actions/api_on_relay.rs"]
 pub mod api_on_relay;
 #[cfg(test)]
+#[path = "workspace_actions/api_programs.rs"]
+mod api_programs;
+#[cfg(test)]
 #[path = "workspace_actions/api_questions.rs"]
 mod api_questions;
 #[cfg(test)]

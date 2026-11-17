@@ -47,6 +47,18 @@ pub fn metadata(package_id: &str) -> Option<&'static FleetApp> {
     apps().iter().find(|app| app.id == wanted)
 }
 
+/// The signed `surface.toml` of `package_id`, as its package ships it: the declarations a
+/// program in a workspace compiles that app against there.
+#[cfg(feature = "surfaces")]
+#[must_use]
+pub fn surface(package_id: &str) -> Option<&'static str> {
+    let wanted = canonical(package_id);
+    generated::SURFACES
+        .iter()
+        .find(|(app, _)| *app == wanted)
+        .map(|(_, surface)| *surface)
+}
+
 /// Whose a record of `kind` kept by `package_id` is, as the app's manifest declares it
 /// (`[resources] own`): each member's own, or the workspace's. Read from a table apart from
 /// [`apps`], so a host that asks only this links none of the rest.

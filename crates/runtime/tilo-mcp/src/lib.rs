@@ -7,6 +7,7 @@ pub mod enter;
 mod images;
 pub mod lines;
 pub mod session_api;
+pub mod task_hosts;
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_hosts;
 
@@ -106,8 +107,8 @@ pub struct McpServer<H> {
     /// The `tilo` tool's session: the references its answers showed, and the steps its
     /// programs made, for `undo` and `history task`.
     programs: std::sync::Mutex<agent::Programs>,
-    /// Where this server starts its task's tilolang host; `None` for a server that runs no
-    /// programs (one outside a desktop session).
+    /// Where this server starts its task's tilolang host
+    /// ([`task_hosts::TaskHosts`]); `None` for a server that runs no programs.
     task_hosts: Option<std::sync::Arc<dyn TaskHosts>>,
     /// The program connection to the task's host, once its first program started it.
     task: tokio::sync::Mutex<Option<agent::TaskLink>>,
