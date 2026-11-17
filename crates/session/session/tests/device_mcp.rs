@@ -483,6 +483,22 @@ fn an_agent_the_person_lets_in_works_here_as_their_agent_via_its_device_until_th
     let done = b.answer(&agent).expect("an answer");
     assert_eq!(done["result"]["isError"], false, "{done}");
 
+    // The session's Stop is the person's: an agent asking for it is refused at once, with no
+    // question put to the person, and works on.
+    agent.send(tool(
+        5,
+        "tilo_do",
+        &json!({"path": "session#stop-agent", "args": {"agent": b.session_of(SHOWN)}}),
+    ));
+    let refused = b.answer(&agent).expect("an answer");
+    assert_eq!(refused["result"]["isError"], true, "{refused}");
+    assert!(b.questions.pending().is_empty(), "nobody is asked");
+    assert_eq!(
+        b.shown(),
+        [SHOWN.to_owned()],
+        "and the agent still works here"
+    );
+
     // The person's Stop on its state ends the connection on the other device.
     b.session
         .invoke(
@@ -492,7 +508,7 @@ fn an_agent_the_person_lets_in_works_here_as_their_agent_via_its_device_until_th
         )
         .expect("the person stops the agent");
     b.pump(|b| b.shown().is_empty());
-    agent.send(tool(5, "tilo_ls", &json!({})));
+    agent.send(tool(6, "tilo_ls", &json!({})));
     assert_eq!(b.answer(&agent), None, "the agent's connection ended");
 }
 

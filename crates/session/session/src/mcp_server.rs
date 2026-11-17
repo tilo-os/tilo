@@ -2061,6 +2061,12 @@ impl Host {
         {
             return Pending::ready(Err(ActionHostError::NotPermitted));
         }
+        // What the session offers people alone (ending an agent's session) is no agent's step: it
+        // is refused, never put to the person on a sheet that stands over the shell until they
+        // answer it.
+        if !person && own && !self.reaches_agents(&request) {
+            return Pending::ready(Err(ActionHostError::NotPermitted));
+        }
         if !person && let Some(session) = &self.agent_session {
             session.acting(&request);
         }
@@ -2096,6 +2102,18 @@ impl Host {
         rows.into_iter()
             .find(|placed| placed.action.address == request.target.address)
             .is_some_and(|placed| placed.action.kind == tilo_actions::OperationKind::View)
+    }
+
+    /// Whether agents are offered the session's own step `request` names. A step the session does
+    /// not publish is the broker's to refuse.
+    fn reaches_agents(&self, request: &InvokeRequest) -> bool {
+        let rows = match &self.session_actions {
+            Some(actions) => actions.offered(),
+            None => Vec::new(),
+        };
+        rows.into_iter()
+            .find(|placed| placed.action.address == request.target.address)
+            .is_none_or(|placed| placed.action.contract.reaches_agents())
     }
 
     /// An agent's read of the session's own actions: handed to the loop, which is where they
@@ -2211,9 +2229,14 @@ impl ActionHost for Host {
             };
             return page.map(move |page| {
                 page.map(|mut page| {
+                    // Nor is an action for people alone listed for it.
                     page.rows.retain(|row| {
                         !session.window_elsewhere(&row.resource.id, &workspace)
                             && !session.window_elsewhere(&row.parent_resource, &workspace)
+                            && row
+                                .action
+                                .as_ref()
+                                .is_none_or(|action| action.contract.reaches_agents())
                     });
                     if let Some(agent_session) = &agent_session {
                         agent_session.offered(&page.rows);
