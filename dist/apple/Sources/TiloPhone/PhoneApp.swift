@@ -6,6 +6,7 @@ import UIKit
 enum QuickAction: String {
     case dictate = "tilo.dictate"
     case openLink = "tilo.open-link"
+    case scanCode = "tilo.scan-code"
 }
 
 @MainActor
@@ -16,7 +17,11 @@ final class PhoneAppDelegate: UIResponder, UIApplicationDelegate {
             UIApplicationShortcutItem(type: action.rawValue, localizedTitle: words.said, localizedSubtitle: nil,
                                       icon: UIApplicationShortcutIcon(systemImageName: symbol), userInfo: nil)
         }
-        application.shortcutItems = [action(.dictate, .dictate, "mic"), action(.openLink, .openLink, "link")]
+        var items = [action(.dictate, .dictate, "mic"), action(.openLink, .openLink, "link")]
+        // The way in is in the site's door. These two reach it from anywhere, also where a
+        // page shows no door the app knows.
+        if RootViewController.readsCodes { items.insert(action(.scanCode, .scanCode, "qrcode.viewfinder"), at: 1) }
+        application.shortcutItems = items
         return true
     }
 

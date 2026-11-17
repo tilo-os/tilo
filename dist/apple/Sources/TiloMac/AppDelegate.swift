@@ -19,8 +19,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     private var statusLine: NSMenuItem?
     private var problem: ProblemView?
     private var hint: HintView?
-    private var wayIn: WayInBar?
-    private var pageBottom: NSLayoutConstraint?
+    /// The site keeps this Mac out, and the page shows the way in at its door.
+    private var atDoor = false
     /// The person is following a link from the door, and belongs where the app starts once in.
     private var returnsToStart = false
     private var settings: SettingsWindow?
@@ -74,15 +74,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     /// Open the site the settings name, in place of whatever was shown.
     private func openSite() {
         host?.view.removeFromSuperview()
-        wayIn?.removeFromSuperview()
-        wayIn = nil
         host = nil
         arrived = false
+        atDoor = false
         let window = window ?? makeWindow()
         self.window = window
         switch ShellSettings.load() {
         case .success(let settings):
-            let host = PageHost(settings: settings, permission: permission,
+            // A Mac reads no code: its one way in is the link, which the page offers at its door.
+            let offer = DoorOffer(said: Words.wayInMac.said, ways: [DoorOffer.Way(.paste, Words.pasteLink.said)])
+            let host = PageHost(settings: settings, permission: permission, offer: offer,
                                 inspectable: UserDefaults.standard.bool(forKey: "TiloInspect"))
             host.delegate = self
             self.host = host
@@ -111,45 +112,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         return window
     }
 
-    /// The page fills the window, down to its foot or to the bar that offers a way in.
+    /// The page fills the window. Nothing of the app stands beside it: the way in at the
+    /// site's door is in the door.
     private func place(_ page: NSView, in window: NSWindow) {
         guard let content = window.contentView else { return }
         page.translatesAutoresizingMaskIntoConstraints = false
         content.addSubview(page, positioned: .below, relativeTo: nil)
-        let bottom = page.bottomAnchor.constraint(equalTo: content.bottomAnchor)
         NSLayoutConstraint.activate([
             page.topAnchor.constraint(equalTo: content.topAnchor),
+            page.bottomAnchor.constraint(equalTo: content.bottomAnchor),
             page.leadingAnchor.constraint(equalTo: content.leadingAnchor),
             page.trailingAnchor.constraint(equalTo: content.trailingAnchor),
-            bottom,
         ])
-        pageBottom = bottom
-    }
-
-    /// While the site keeps this Mac out, a bar under the page offers the way in: the link
-    /// from a device where the person is signed in.
-    private func offerWayIn(_ wanted: Bool) {
-        guard wanted != (wayIn != nil), let content = window?.contentView, let page = host?.view else { return }
-        wayIn?.removeFromSuperview()
-        wayIn = nil
-        pageBottom?.isActive = false
-        var foot = content.bottomAnchor
-        if wanted {
-            let bar = WayInBar(words: Words.wayInMac.said, button: Words.pasteLink.said) { [weak self] in
-                self?.openLinkFromClipboard(nil)
-            }
-            bar.translatesAutoresizingMaskIntoConstraints = false
-            content.addSubview(bar, positioned: .above, relativeTo: page)
-            NSLayoutConstraint.activate([
-                bar.leadingAnchor.constraint(equalTo: content.leadingAnchor),
-                bar.trailingAnchor.constraint(equalTo: content.trailingAnchor),
-                bar.bottomAnchor.constraint(equalTo: content.bottomAnchor),
-            ])
-            wayIn = bar
-            foot = bar.topAnchor
-        }
-        pageBottom = page.bottomAnchor.constraint(equalTo: foot)
-        pageBottom?.isActive = true
     }
 
     private func cover(_ window: NSWindow, with view: NSView) {
@@ -183,14 +157,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     @objc func openLinkFromClipboard(_ sender: Any?) {
         guard let host else { return }
         guard let text = NSPasteboard.general.string(forType: .string), let link = host.policy.link(in: text)
-        else { return say(Words.noLink.said(site: host.policy.origin)) }
+        else { return refuse(Words.noLink.said(site: host.policy.origin)) }
         follow(link)
+    }
+
+    /// Say why a link was not followed: in the door while the page offers the way in there,
+    /// where the person pressed, and as a sheet anywhere else.
+    private func refuse(_ words: String) {
+        Task {
+            guard let host, atDoor, await host.say(atDoor: words) else { return say(words) }
+            showWindow(nil)
+            if let window {
+                NSAccessibility.post(element: window, notification: .announcementRequested,
+                                     userInfo: [.announcement: words])
+            }
+        }
     }
 
     /// Open a link into the site. From the door it is the way in, and the person belongs
     /// where the app starts afterwards; from anywhere else it is what they asked to see.
     private func follow(_ link: URL) {
-        returnsToStart = wayIn != nil
+        returnsToStart = atDoor
         showWindow(nil)
         show(nil)
         host?.open(link)
@@ -331,8 +318,12 @@ extension AppDelegate: PageHostDelegate {
         case .wordsInserted:
             hint?.removeFromSuperview()
             hint = nil
+        case .wayIn(let way):
+            // Pressed in the door. A Mac's one way is the link in the clipboard.
+            guard atDoor, way == .paste else { return }
+            openLinkFromClipboard(nil)
         case .entry(let entry):
-            offerWayIn(entry.wantsWayIn)
+            atDoor = entry.wantsWayIn
             guard entry.state == "open", returnsToStart else { return }
             returnsToStart = false
             Task {

@@ -8,7 +8,8 @@ import WebKit
 
 /// The iPhone app's one screen: Tilo's page to every edge, and what only the system can do
 /// around it. The page lays itself out for a phone; nothing native is drawn over it but a
-/// screen for when there is no page, and a line while words wait for a place to go.
+/// screen for when there is no page, and a line while words wait for a place to go. The way
+/// in at the site's door is in the door: the page shows what this iPhone offers there.
 @MainActor
 final class RootViewController: UIViewController {
     private var host: PageHost?
@@ -17,8 +18,8 @@ final class RootViewController: UIViewController {
     private var permission = NoticePermission.notAsked
     private var problem: UIView?
     private var hint: UIView?
-    private var wayIn: UIView?
-    private var pageBottom: NSLayoutConstraint?
+    /// The site keeps this iPhone out, and the page shows the way in at its door.
+    private var atDoor = false
     /// The person is following a link from the door, and belongs where the app starts once in.
     private var returnsToStart = false
     /// Asked for from the app's icon before the page was there.
@@ -65,6 +66,9 @@ final class RootViewController: UIViewController {
         case .openLink:
             guard host != nil else { asked = action; return }
             follow(UIPasteboard.general.string, else: .noLink)
+        case .scanCode:
+            guard host != nil else { asked = action; return }
+            scanCode()
         }
     }
 
@@ -73,7 +77,7 @@ final class RootViewController: UIViewController {
         guard let host else { return }
         guard let link = text.flatMap(host.policy.link(in:)) else { return say(refusal.said(site: host.policy.origin)) }
         // From the door a link is the way in; from anywhere else it is what they asked to see.
-        returnsToStart = wayIn != nil
+        returnsToStart = atDoor
         show(nil)
         host.open(link)
     }
@@ -82,30 +86,31 @@ final class RootViewController: UIViewController {
 
     private func openSite() {
         host?.view.removeFromSuperview()
-        wayIn?.removeFromSuperview()
-        wayIn = nil
         host = nil
         arrived = false
+        atDoor = false
         switch ShellSettings.load() {
         case .success(let settings):
-            let host = PageHost(settings: settings, permission: permission, frame: view.bounds,
-                                inspectable: UserDefaults.standard.bool(forKey: "TiloInspect"))
+            let host = PageHost(settings: settings, permission: permission, offer: RootViewController.offer,
+                                frame: view.bounds, inspectable: UserDefaults.standard.bool(forKey: "TiloInspect"))
             host.delegate = self
             self.host = host
             host.view.translatesAutoresizingMaskIntoConstraints = false
             view.insertSubview(host.view, at: 0)
             // To the screen's edges: the page keeps clear of the notch and the home bar itself.
-            let bottom = host.view.bottomAnchor.constraint(equalTo: view.bottomAnchor)
             NSLayoutConstraint.activate([
                 host.view.topAnchor.constraint(equalTo: view.topAnchor),
+                host.view.bottomAnchor.constraint(equalTo: view.bottomAnchor),
                 host.view.leadingAnchor.constraint(equalTo: view.leadingAnchor),
                 host.view.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-                bottom,
             ])
-            pageBottom = bottom
             show(nil)
             host.open()
-            if asked == .openLink { perform(asked); asked = nil }
+            // A link or a code needs only the site, not a page that has arrived.
+            if let asked, asked != .dictate {
+                self.asked = nil
+                perform(asked)
+            }
         case .failure(let why):
             show(problemView(title: Words.addressRefused.said,
                              body: (why == .notSecure ? Words.addressNotSecure : Words.addressNotAnAddress).said,
@@ -165,66 +170,27 @@ final class RootViewController: UIViewController {
 
     // MARK: The way in
 
-    /// While the site keeps this iPhone out, a bar under the page offers the way in: the code
-    /// or the link from a device where the person is signed in.
-    private func offerWayIn(_ wanted: Bool) {
-        guard wanted != (wayIn != nil), let page = host?.view else { return }
-        wayIn?.removeFromSuperview()
-        wayIn = nil
-        pageBottom?.isActive = false
-        var foot = view.bottomAnchor
-        if wanted {
-            let bar = wayInBar()
-            view.insertSubview(bar, aboveSubview: page)
-            NSLayoutConstraint.activate([
-                bar.leadingAnchor.constraint(equalTo: view.leadingAnchor),
-                bar.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-                bar.bottomAnchor.constraint(equalTo: view.bottomAnchor),
-            ])
-            wayIn = bar
-            foot = bar.topAnchor
-        }
-        pageBottom = page.bottomAnchor.constraint(equalTo: foot)
-        pageBottom?.isActive = true
+    /// What this iPhone offers at the site's door: the code or the link from a device where
+    /// the person is signed in, or an invitation's link. The page shows it in its door
+    /// (`Bridge`), so nothing of it is drawn here.
+    private static var offer: DoorOffer {
+        let paste = DoorOffer.Way(.paste, Words.pasteLink.said)
+        guard readsCodes else { return DoorOffer(said: Words.wayInMac.said, ways: [paste]) }
+        return DoorOffer(said: Words.wayInPhone.said, ways: [DoorOffer.Way(.scan, Words.scanCode.said), paste])
     }
 
-    private func wayInBar() -> UIView {
-        let bar = UIView()
-        bar.backgroundColor = .secondarySystemBackground
-        bar.translatesAutoresizingMaskIntoConstraints = false
-        let said = UILabel()
-        said.text = Words.wayInPhone.said
-        said.font = .preferredFont(forTextStyle: .subheadline)
-        said.adjustsFontForContentSizeCategory = true
-        said.numberOfLines = 0
-        var buttons: [UIView] = []
-        // A phone with a camera the system can read codes with: every iPhone, no simulator.
-        if DataScannerViewController.isSupported {
-            buttons.append(UIButton(configuration: .borderedProminent(),
-                                    primaryAction: UIAction(title: Words.scanCode.said) { [weak self] _ in self?.scanCode() }))
-        }
-        buttons.append(UIButton(configuration: buttons.isEmpty ? .borderedProminent() : .bordered(),
-                                primaryAction: UIAction(title: Words.pasteLink.said) { [weak self] _ in
-            self?.follow(UIPasteboard.general.string, else: .noLink)
-        }))
-        let row = UIStackView(arrangedSubviews: buttons)
-        row.spacing = 12
-        row.distribution = .fillEqually
-        let stack = UIStackView(arrangedSubviews: [said, row])
-        stack.axis = .vertical
-        stack.spacing = 10
-        stack.translatesAutoresizingMaskIntoConstraints = false
-        bar.addSubview(stack)
-        NSLayoutConstraint.activate([
-            stack.topAnchor.constraint(equalTo: bar.topAnchor, constant: 12),
-            stack.bottomAnchor.constraint(equalTo: bar.safeAreaLayoutGuide.bottomAnchor, constant: -12),
-            stack.leadingAnchor.constraint(equalTo: bar.layoutMarginsGuide.leadingAnchor),
-            stack.trailingAnchor.constraint(equalTo: bar.layoutMarginsGuide.trailingAnchor),
-        ])
-        return bar
+    /// A phone with a camera the system reads codes with: every iPhone. A simulator has no
+    /// camera and offers the button all the same, so that the door can be looked at there.
+    static var readsCodes: Bool {
+        #if targetEnvironment(simulator)
+        true
+        #else
+        DataScannerViewController.isSupported
+        #endif
     }
 
-    /// Read the pairing code another device shows, with the camera.
+    /// Read the pairing code another device shows, with the camera. The system asks for the
+    /// camera here, when the person asked to scan, and never before.
     private func scanCode() {
         Task { [weak self] in
             // The system asks the person once; after that this only reads their answer.
@@ -234,7 +200,8 @@ final class RootViewController: UIViewController {
     }
 
     private func showScanner(allowed: Bool) {
-        guard allowed, DataScannerViewController.isAvailable else { return say(Words.cameraNotAllowed.said) }
+        guard allowed, DataScannerViewController.isSupported, DataScannerViewController.isAvailable
+        else { return say(Words.cameraNotAllowed.said) }
         let scanner = DataScannerViewController(recognizedDataTypes: [.barcode(symbologies: [.qr])],
                                                 isHighlightingEnabled: true)
         scanner.delegate = self
@@ -247,10 +214,18 @@ final class RootViewController: UIViewController {
         }
     }
 
+    /// Say why nothing was opened: in the door while the page offers the way in there, where
+    /// the person pressed, and as an alert anywhere else.
     private func say(_ words: String) {
-        let alert = UIAlertController(title: words, message: nil, preferredStyle: .alert)
-        alert.addAction(UIAlertAction(title: Words.done.said, style: .default))
-        present(alert, animated: true)
+        Task {
+            if let host, atDoor, await host.say(atDoor: words) {
+                UIAccessibility.post(notification: .announcement, argument: words)
+                return
+            }
+            let alert = UIAlertController(title: words, message: nil, preferredStyle: .alert)
+            alert.addAction(UIAlertAction(title: Words.done.said, style: .default))
+            present(alert, animated: true)
+        }
     }
 
     // MARK: Words into the message field
@@ -361,8 +336,15 @@ extension RootViewController: PageHostDelegate {
         case .wordsInserted:
             hint?.removeFromSuperview()
             hint = nil
+        case .wayIn(let way):
+            // Pressed in the door.
+            guard atDoor else { return }
+            switch way {
+            case .scan: scanCode()
+            case .paste: follow(UIPasteboard.general.string, else: .noLink)
+            }
         case .entry(let entry):
-            offerWayIn(entry.wantsWayIn)
+            atDoor = entry.wantsWayIn
             guard entry.state == "open", returnsToStart else { return }
             returnsToStart = false
             Task {

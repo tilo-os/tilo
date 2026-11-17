@@ -49,8 +49,8 @@
 "share-nothing" = "Nothing here can go into a message.";
 "share-failed" = "{app} could not take this.";
 "done" = "Done";
-"way-in-mac" = "Paste an invitation link, or the link that “Pair a new device” gives on a device where you are signed in.";
-"way-in-phone" = "Scan the code or paste the link that “Pair a new device” gives on a device where you are signed in, or paste an invitation link.";
+"way-in-mac" = "The link comes from “Pair a new device” on a device where you are signed in.";
+"way-in-phone" = "Both come from “Pair a new device” on a device where you are signed in.";
 "paste-link" = "Paste link";
 "scan-code" = "Scan code";
 "code-no-link" = "That code is no link into {site}, the Tilo site this app opens.";

@@ -100,14 +100,28 @@ any case (see "Before the App Store"): then people pair once more, not twice.
 browser key that WebKit wraps with a key from the app's keychain, so a person who got in once
 stays in for as long as the app keeps its signature and its data. Getting in is the site's own
 flow (an invitation, a pairing link, its sign-in); nothing hands a native identity to a page.
-While the site keeps a device out, a bar under the page offers the way in: paste the link, or
-on a phone scan the code, that "Pair a new device" shows on a device where the person is
-signed in. The page says where it stands at the door on its root element
-(`data-entry`); the bar goes when it is in, and a person who came in by such a link is taken
-back to where the app starts. A link is also opened from the File menu on the Mac, from a long
-press on the phone's icon, or by sharing it to the app. It is taken out of whatever is written
-around it; a link into another site is refused with the name of the site the app opens, and
-the same computer under another name (`localhost` for `tilo.localhost`) is another site.
+
+**The way in, in the site's door.** While the site keeps a device out, its page shows a door:
+what the site says to someone it does not know, and what such a person can do. What only the
+system can do for them stands in that door, not beside the page: "Scan code" on a phone and
+"Paste link", for the code and the link that "Pair a new device" shows on a device where the
+person is signed in, with one sentence under them that says so. An invitation's link is
+pasted the same way. The door is the page's own markup, in one dark look and the system's
+type, and it scrolls; a native bar under it followed the system's appearance and looked like
+a strip stuck to a web page. So the script puts the two buttons into the door's own column,
+with the door's measures and colours (`Bridge.swift` says where in each of the page's doors,
+and why). A press comes back to the shell, which only then asks for the camera, or reads the
+clipboard. A link is taken out of whatever is written around it; a link into another site is
+refused in the door, under the buttons, with the name of the site the app opens, and the
+same computer under another name (`localhost` for `tilo.localhost`) is another site. The
+page says where it stands at the door on its root element (`data-entry`): the buttons go
+once it is in and while a device of the person's is being asked to approve this one, and a
+person who came in by a link is taken back to where the app starts.
+
+A link is also opened from the File menu on the Mac, by a long press on the phone's icon,
+which offers the scan too, or by sharing it to the app. A door that draws these options
+itself marks its element `data-way-in` and asks the shell through `__tiloShell.wayIn`; the
+shell then adds nothing.
 
 **One site.** The app shows the origin its settings name and nothing else
 (`SitePolicy.swift`). Any other address goes to the system's browser. The script below runs in
@@ -238,10 +252,14 @@ and name each native part above.
 Checked with no window: the tests (the settings and what a build of one app is held to, the
 policy, the hand-over, the sentences against their catalogue and under both apps' names, the
 script against a page that speaks as Tilo's does, and the web view of a one-app build against
-pages that leave the app), the Mac apps' `--check` in their real signature and sandbox, and
+pages that leave the app, and the way in against pages that stand at the door as Tilo's
+do), the Mac apps' `--check` in their real signature and sandbox, and
 the iPhone apps' in a simulator.
 
+`DoorShots` in the tests takes pictures of a site's door as the apps show it, with nothing on
+screen, when it is asked to (`TILO_SHOTS_DIR`, `TILO_SHOTS_SITE`).
+
 Not checked by anything here, because it needs a window or the system's own interface: how
-the page looks in the window, the menu-bar item, the settings window, dictation, the share
+the page looks in the window, the camera reading a code, the menu-bar item, the settings window, dictation, the share
 extension at run time, a notification shown and answered through the system, and Tilo
 Assistant against a site that has the Assistant app.
