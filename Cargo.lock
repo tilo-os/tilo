@@ -22704,6 +22704,7 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.21",
+ "tilo-action-policy",
  "workspace-hack",
 ]
 
@@ -22894,6 +22895,7 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.21",
+ "tilo-actions",
  "tilo-render-protocol",
  "tilo-ui-graph",
  "tilo-view-macros",

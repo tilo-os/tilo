@@ -333,7 +333,7 @@ tilo_test_env::scenario! {
                 .prop(
                     "author",
                     Value::Actor {
-                        identity: "ada".into(),
+                        identity: tilo_actions::MemberId::person("ada").into(),
                         name: "Ada".into(),
                     },
                 )

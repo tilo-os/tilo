@@ -3721,7 +3721,7 @@
       "bindings": [
         {
           "name": "value",
-          "doc": "The person's identity and the binding a pick writes (empty for nobody).",
+          "doc": "The binding a pick writes: the person picked, empty for nobody.",
           "type": "actor",
           "merge": "register"
         }

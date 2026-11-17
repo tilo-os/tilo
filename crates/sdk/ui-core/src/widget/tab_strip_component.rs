@@ -431,7 +431,7 @@ impl TabStrip {
                 let name = face.name.clone().unwrap_or_else(|| who.name.clone());
                 Some(TabHolder {
                     name,
-                    rgb: user_color(&who.identity),
+                    rgb: user_color(who.identity.id()),
                 })
             });
             self.bar.set_holder(*id, holder);

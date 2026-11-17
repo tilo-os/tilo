@@ -122,14 +122,14 @@ fn said(
             emoji,
             reactors: people
                 .into_iter()
-                .map(|person| {
-                    let reactor = Reactor {
-                        by: tilo_resource::MemberId::person(person.identity),
+                .filter_map(|person| {
+                    let by = person.identity.member_id()?.clone();
+                    names.insert(by.clone(), person.name);
+                    Some(Reactor {
+                        by,
                         persona: None,
                         name: None,
-                    };
-                    names.insert(reactor.by.clone(), person.name);
-                    reactor
+                    })
                 })
                 .collect(),
             first_at: i64::try_from(at).unwrap_or(i64::MAX),

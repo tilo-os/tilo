@@ -998,7 +998,7 @@ fn bare_row(
                 let value_free = props.value.is_none();
                 let mut row = ListRow::from_props(key, *props);
                 if let Some(person) = presence {
-                    row = row.presence(person.identity);
+                    row = row.presence(person.identity.id());
                 }
                 if removed {
                     row = row.struck();
@@ -1185,7 +1185,7 @@ fn message_of(
         let row = row_of(rows, key, feel, None, RowBuild::default());
         return page_row(under_unread(row, first_unread), RUN_GAP, measure);
     };
-    let avatar = Avatar::person(author.name.clone(), author.identity.clone());
+    let avatar = Avatar::person(author.name.clone(), author.identity.id());
     let message = Row::row().fill_width().align(Align::Start);
     let message = if continues {
         message.push(Box::new(avatar.placeholder()))
@@ -1255,7 +1255,7 @@ fn read_faces(key: &str, read: Vec<Person>) -> Element {
     let mut faces = Row::row().gap(Rhythm::Tight).align(Align::Center);
     for who in &read {
         faces = faces.push(Box::new(
-            Avatar::person(who.name.clone(), who.identity.clone()).size(AvatarSize::Small),
+            Avatar::person(who.name.clone(), who.identity.id()).size(AvatarSize::Small),
         ));
     }
     let names = read
@@ -1840,7 +1840,7 @@ mod tests {
                 key: format!("row-{index}"),
                 item: Some(ResourceId(format!("message-{index}"))),
                 author: Some(Person {
-                    identity: format!("person-{index}"),
+                    identity: tilo_actions::MemberId::person(format!("person-{index}")).into(),
                     name: format!("Writer {index}"),
                     hue: crate::tokens::PresenceHue::of_identity(&format!("person-{index}")),
                 }),
@@ -2007,12 +2007,12 @@ mod tests {
                     // shows beside their own words.
                     1 => vec![
                         Person {
-                            identity: "person-0".to_owned(),
+                            identity: tilo_actions::MemberId::person("person-0").into(),
                             name: "Mia".to_owned(),
                             hue: crate::tokens::PresenceHue::of_identity("person-0"),
                         },
                         Person {
-                            identity: "person-1".to_owned(),
+                            identity: tilo_actions::MemberId::person("person-1").into(),
                             name: "Writer 1".to_owned(),
                             hue: crate::tokens::PresenceHue::of_identity("person-1"),
                         },
@@ -2132,7 +2132,7 @@ mod tests {
                 })),
                 change: (at == 1).then(|| ChangeMarkProps {
                     by: Some(Person {
-                        identity: "bo".to_owned(),
+                        identity: tilo_actions::MemberId::person("bo").into(),
                         name: "Bo".to_owned(),
                         hue: crate::tokens::PresenceHue::of_identity("bo"),
                     }),

@@ -402,7 +402,7 @@ fn suggestion_with_value(candidate: &MentionCandidate, value: String) -> Suggest
         MemberId::Bot(_) => Some(widget_text("widget-mention-bot")),
     };
     let row = Suggestion::labelled(value, candidate.name.clone()).with_person(SuggestionPerson {
-        identity: candidate.id.key(),
+        identity: candidate.id.clone().into(),
         hue: candidate.hue,
         agent: !candidate.id.is_person(),
     });

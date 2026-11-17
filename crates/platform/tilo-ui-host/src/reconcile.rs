@@ -135,7 +135,7 @@ pub fn display(value: &Value) -> String {
         // A case by the name the runtime holds it by: a control that offers the cases finds its own
         // among them by the same name.
         Value::Enum(case) => case.clone(),
-        Value::Actor(who) => who.id.clone(),
+        Value::Actor(who) => who.name.clone(),
         Value::Opt(Some(inner)) => display(inner),
         // As the person reading reads it: each reference as its chip reads for them.
         Value::Rich(rich) => ui::widget::rich_doc::plain_text(rich),
@@ -1240,13 +1240,16 @@ impl Reconciler {
     /// would do is the action's own proposal view when it declares one, and otherwise the words it
     /// would say, each value as its type shows it (a day as the day fact).
     fn suggestion(&mut self, node: &UiNode) -> Element {
-        let (who, identity) = match prop(node, "author") {
-            Some(Value::Actor(who)) => (who.name.clone(), who.id.clone()),
+        let (who, hue) = match prop(node, "author") {
+            Some(Value::Actor(who)) => {
+                (who.name.clone(), ui::tokens::PresenceHue::of_actor(&who.id))
+            }
             Some(other) => {
                 let shown = display(other);
-                (shown.clone(), shown)
+                let hue = ui::tokens::PresenceHue::of_identity(&shown);
+                (shown, hue)
             }
-            None => (String::new(), String::new()),
+            None => (String::new(), ui::tokens::PresenceHue::of_identity("")),
         };
         let says = crate::i18n::word(
             "tilolang-suggestion-says",
@@ -1258,7 +1261,9 @@ impl Reconciler {
             .wrap()
             .with_id(format!("{}~says", node.key))
             .push(Box::new(
-                Avatar::person(who, identity).size(AvatarSize::Small),
+                Avatar::person(who, String::new())
+                    .with_hue(hue)
+                    .size(AvatarSize::Small),
             ))
             .push_part(self.fixed_text(&format!("{}~by", node.key), &says, TextRole::Body));
         let choices = Row::row()

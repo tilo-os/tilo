@@ -2427,6 +2427,16 @@ pub fn splice_between(before: &str, after: &str) -> (usize, usize, String) {
     (start, delete, insert)
 }
 
+/// The text a bound control holds `value` as: an actor as [`ui::component::actor_text`] spells
+/// it, so the edit it reports reads back as the same actor; anything else as it shows.
+fn bound_text(value: &Value) -> String {
+    match value {
+        Value::Actor(who) => ui::component::actor_text(&who.id),
+        Value::Opt(Some(inner)) => bound_text(inner),
+        other => crate::reconcile::display(other),
+    }
+}
+
 /// Show what each bound control under `node` is bound to, as `bound` holds it by key in the
 /// composed tree (each of `node`'s keys carrying `prefix` there), reporting whether any control was
 /// given a value other than the one it showed.
@@ -2449,7 +2459,7 @@ pub fn show_bound<S: std::hash::BuildHasher>(
                 Value::Int(number) => reconciler.set_count(&key, *number),
                 Value::Float(number) => reconciler.set_number(&key, *number),
                 Value::Rich(rich) => reconciler.set_rich(&key, rich),
-                other => reconciler.set_text(&key, &crate::reconcile::display(other)),
+                other => reconciler.set_text(&key, &bound_text(other)),
             };
         }
     }

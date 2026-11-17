@@ -274,6 +274,16 @@ impl PresenceHue {
         for_person.map_or(own, |person| own.apart_from(Self::of_identity(person)))
     }
 
+    /// The hue `actor` wears: a member's ([`Self::of_member`]), an automation's or an app's the
+    /// one its id derives.
+    #[must_use]
+    pub fn of_actor(actor: &tilo_action_policy::Actor) -> Self {
+        match actor.member_id() {
+            Some(member) => Self::of_member(member, None),
+            None => Self::of_identity(actor.id()),
+        }
+    }
+
     /// This hue worn clearly apart from `other`: itself, unless it sits on `other`'s hue or
     /// next to it, where it steps round the ring to the first entry two slots or more away, so
     /// software is never painted in the colour of the person it acts for. `other` stays where

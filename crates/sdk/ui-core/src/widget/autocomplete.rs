@@ -76,7 +76,7 @@ impl Suggestion {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SuggestionPerson {
-    pub identity: String,
+    pub identity: tilo_actions::Actor,
     pub hue: crate::tokens::PresenceHue,
     /// Software acting in the workspace rather than a person.
     pub agent: bool,
@@ -330,7 +330,7 @@ fn paint_item(
                 crate::agent_identity::AgentIdentityStyle::Solid,
             );
         } else {
-            crate::widget::AvatarFace::new(&s.label, &person.identity)
+            crate::widget::AvatarFace::new(&s.label, person.identity.id())
                 .presence(colour)
                 .paint(&mut PaintCtx::new(scene, transform, text, theme), mark);
         }

@@ -115,7 +115,7 @@ impl DrawerPeople {
             return None;
         }
         let said = |person: &Person| {
-            let user = MemberId::parse(&person.identity)?;
+            let user = person.identity.member_id()?.clone();
             let hue = presence.hue_for(&user);
             Some((user, hue))
         };
@@ -228,8 +228,8 @@ impl RichInput {
         {
             if let Some(reference) = &candidate.reference {
                 let view = match &candidate.person {
-                    Some(person) => InlineView::Person {
-                        identity: person.identity.clone(),
+                    Some(_) => InlineView::Person {
+                        identity: reference.clone(),
                         name: candidate.name.clone(),
                     },
                     None => InlineView::Resource {

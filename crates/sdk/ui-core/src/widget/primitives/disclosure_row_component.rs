@@ -53,7 +53,7 @@ fn leading(
     match (who, signal, icon) {
         (Some(who), _, _) => Some(Leading::Avatar {
             name: who.name.clone(),
-            identity: who.identity.clone(),
+            identity: who.identity.id().to_owned(),
         }),
         (None, Some(level), _) => Some(Leading::Signal(level)),
         (None, None, Some(icon)) => Some(Leading::Icon(icon)),

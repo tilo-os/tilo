@@ -53,8 +53,8 @@ impl BarChipProps {
             .map(|who| {
                 Face::new(
                     &who.name,
-                    &who.identity,
-                    crate::presence::identity_colour(&who.identity),
+                    who.identity.id(),
+                    crate::presence::identity_colour(who.identity.id()),
                 )
             })
             .collect()
@@ -111,7 +111,7 @@ impl BarChip {
             chip = chip.label_width(width);
         }
         if let Some(who) = &self.props.tone {
-            chip = chip.tone(crate::presence::identity_colour(&who.identity));
+            chip = chip.tone(crate::presence::identity_colour(who.identity.id()));
         }
         chip
     }

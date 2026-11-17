@@ -480,9 +480,9 @@ pub enum Value {
     Int(i64),
     Float(f64),
     Bool(bool),
-    /// A member: their identity, and what the room calls them.
+    /// Who acted, and what the workspace calls them.
     Actor {
-        identity: String,
+        identity: tilo_action_policy::Actor,
         name: String,
     },
     /// A resource, by its id.

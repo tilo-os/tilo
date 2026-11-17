@@ -59,10 +59,10 @@ impl TextInput {
         }
         let viewport = transform.transform_rect_bbox(self.rect);
         self.draw_invocations_written(scene, transform, text_renderer, theme, presence);
-        let (Some((identity, _)), Some((start, end))) = (&self.change, self.written_span()) else {
+        let (Some((by, _)), Some((start, end))) = (&self.change, self.written_span()) else {
             return;
         };
-        let Some(user) = MemberId::parse(identity) else {
+        let Some(user) = by.identity.member_id() else {
             return;
         };
         if start < end {
@@ -71,7 +71,7 @@ impl TextInput {
                 transform,
                 theme,
                 presence,
-                &user,
+                user,
                 (start, end),
                 viewport,
             );
@@ -80,7 +80,7 @@ impl TextInput {
         let Some(acting) = presence
             .visible_interactions(now)
             .into_iter()
-            .find(|interaction| interaction.actor.by.key() == *identity)
+            .find(|interaction| interaction.actor.by == by.identity)
         else {
             return;
         };
@@ -102,7 +102,7 @@ impl TextInput {
             theme,
             text_renderer,
             transform,
-            &user,
+            user,
             &words,
             crate::presence::LabeledCaret::within(self.caret_rect(theme, end), self.rect.y0).among(
                 self.selection_rects(theme, 0, self.text.len()),

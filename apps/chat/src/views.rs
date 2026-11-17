@@ -1345,7 +1345,7 @@ fn author_label(person: Option<&Person>, id: &MemberId) -> String {
 /// cannot name, never their id.
 fn actor(person: Option<&Person>, id: &MemberId) -> tilo_view::Actor {
     tilo_view::Actor {
-        id: person.map_or(id, |person| &person.id).key(),
+        id: person.map_or(id, |person| &person.id).clone().into(),
         name: author_label(person, id),
     }
 }
@@ -1380,7 +1380,7 @@ mod tests {
             channel.resource(),
             "page",
             tilo_view::Actor {
-                id: crate::model::ME.to_owned(),
+                id: MemberId::person(crate::model::ME).into(),
                 name: "Pat".to_owned(),
             },
             std::collections::BTreeMap::new(),
@@ -1579,7 +1579,7 @@ mod tests {
             assert_eq!(
                 avatar.props.get("who"),
                 Some(&Value::Actor(tilo_view::Actor {
-                    id: ME.to_owned(),
+                    id: MemberId::person(ME).into(),
                     name: "Quinn Davis".to_owned(),
                 })),
                 "the avatar is drawn for the person by name, not by id"

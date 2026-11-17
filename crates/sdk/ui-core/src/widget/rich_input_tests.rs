@@ -271,7 +271,7 @@ tilo_test_env::scenario! {
 fn person(identity: &str, name: &str) -> Person {
     Person {
         hue: crate::tokens::PresenceHue::of_identity(identity),
-        identity: identity.into(),
+        identity: tilo_actions::MemberId::person(identity).into(),
         name: name.into(),
     }
 }

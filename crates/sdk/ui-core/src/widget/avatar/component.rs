@@ -24,6 +24,7 @@ pub struct AvatarProps {
 }
 
 impl AvatarProps {
+    /// What it is called, and the identity its colour comes from.
     #[must_use]
     pub fn name_and_identity(&self) -> (String, String) {
         self.who.as_ref().map_or_else(
@@ -31,7 +32,7 @@ impl AvatarProps {
                 let name = self.name.clone().unwrap_or_default();
                 (name.clone(), name)
             },
-            |who| (who.name.clone(), who.identity.clone()),
+            |who| (who.name.clone(), who.identity.id().to_owned()),
         )
     }
 }

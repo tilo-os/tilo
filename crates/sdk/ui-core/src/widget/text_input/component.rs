@@ -128,7 +128,7 @@ impl Described for TextInput {
         let read_only = read_only || text.is_some();
         let change = changed_by.map(|by| {
             let note = change_note(&by, previous.as_deref());
-            (by.identity, note)
+            (by, note)
         });
         let placeholder = placeholder.unwrap_or_default();
         let name = if value.name.is_empty() {
@@ -207,7 +207,7 @@ impl Described for TextInput {
         self.path.clone_from(&value.path);
         self.change = changed_by.map(|by| {
             let note = change_note(&by, previous.as_deref());
-            (by.identity, note)
+            (by, note)
         });
         self.change_before = previous;
         let edits = value.clone();
