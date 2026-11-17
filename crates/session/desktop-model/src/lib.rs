@@ -12,6 +12,7 @@
 
 pub mod app;
 pub mod apps;
+pub mod asked;
 pub mod bots;
 pub mod branch;
 pub mod capability;

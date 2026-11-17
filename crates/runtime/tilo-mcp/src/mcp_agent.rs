@@ -34,6 +34,7 @@ mod answer;
 mod find;
 #[path = "mcp_agent_launch.rs"]
 mod launch;
+use launch::{opens_a_file, starts_app};
 #[path = "mcp_agent_link.rs"]
 mod link;
 #[path = "mcp_agent_record.rs"]
@@ -158,9 +159,14 @@ struct FindArgs {
 /// What an agent tool answers: the text and whether it reports a failure.
 /// How running one action by its path went.
 enum Done {
-    /// The app was not running and was started: what is in it now, and the
-    /// workspace's answer that started it.
-    Launched { value: Value, reply: Reply },
+    /// The app was started, or opened (its window put in front of the person): what is in it
+    /// now, the workspace's answer, and why its window is not in front of the person when it
+    /// could not be put there.
+    Launched {
+        value: Value,
+        reply: Reply,
+        not_shown: Option<Failure>,
+    },
     /// The action ran: the host's answer, the action at its resolved path,
     /// and the app it ran in.
     Invoked {
@@ -2494,7 +2500,11 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             Ok(answer) => answer,
         };
         match answer {
-            Done::Launched { value, mut reply } => {
+            Done::Launched {
+                value,
+                mut reply,
+                not_shown,
+            } => {
                 if let Some(id) = asked.as_deref() {
                     self.watch_invocation_ended(
                         id,
@@ -2504,9 +2514,10 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
                             .unwrap_or("failed"),
                     );
                 }
-                let link = self.opened_link(&value).await;
+                let mut shown = self.opened_link(&value).await;
+                shown.not_shown = not_shown;
                 let typed = structured.then(|| answer_of(&value));
-                reply.structured = link::linked(&mut reply, typed, link);
+                reply.structured = link::linked(&mut reply, typed, shown);
                 Ok(reply)
             }
             Done::Invoked {
@@ -2530,13 +2541,13 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
                             .unwrap_or("failed"),
                     );
                 }
-                let link = self
+                let shown = self
                     .invoked_link(asked.as_deref(), &value, &provider, &descriptor)
                     .await;
-                link::tell(&mut reply, link.as_deref());
+                link::tell(&mut reply, &shown);
                 if structured {
                     let mut typed = answer_of(&value);
-                    link::put(&mut typed, link);
+                    link::put(&mut typed, shown);
                     if let Some(fields) = typed.as_object_mut() {
                         // The path this call ran, as a caller writes one.
                         fields.insert(
@@ -2725,7 +2736,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
                 // There it names the app's own verb, never an action whose id only begins with it
                 // (Notes' `open-link`): one by its whole id was asked above.
                 if opens && starts_app(&action) {
-                    return Ok(self.running(&resolved, &action).await);
+                    return self.running(&resolved, &action).await;
                 }
                 // With arguments the word that starts an app is no other action's either: it names
                 // an action of the running app only where the app calls one that, by its id or its
@@ -2764,7 +2775,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             wait_ms,
         }))
         .await?;
-        self.show_activated(&descriptor, &value, &resolved).await;
+        self.show_activated(&descriptor, &value, &resolved).await?;
         Ok(Done::invoked(value, named_at, descriptor, &resolved))
     }
 
@@ -2935,17 +2946,6 @@ fn refused_as(code: &str, why: String) -> String {
     } else {
         why
     }
-}
-
-fn starts_app(action: &str) -> bool {
-    action == tilo_actions::remote::APPLICATION_OPEN_ACTION
-        || action == tilo_actions::remote::APPLICATION_START_ACTION
-}
-
-/// Whether `arguments` are those of an app's own `open` of a file: they name the file's
-/// content, as the workspace's open reads it.
-fn opens_a_file(arguments: &serde_json::Map<String, Value>) -> bool {
-    arguments.contains_key("content")
 }
 
 /// The one window `instance` (a provider an `open` or `tilo_ls` named) among `running`, which

@@ -1649,6 +1649,9 @@ impl Joined {
         // hold yet as this page's person's own: a window someone else opened would
         // read as one this person attributed to them.
         self.desktop_sending = DesktopSending::Changes;
+        // A view asked of this person's layout (an agent's open, from a device that holds no
+        // layout) is put on it here, as this person's change, and sent with the next one.
+        self.place_asked();
         let Some(value) = desktop_value(self.desktop.document()) else {
             return Ok(());
         };
@@ -1663,6 +1666,34 @@ impl Joined {
         }
         self.desktop_value = Some(value);
         Ok(())
+    }
+
+    /// Put the views asked of this page's person's layout on the layout this page holds
+    /// ([`tilo_desktop_model::asked`]), as that person's change. Says whether it placed any.
+    fn place_asked(&mut self) -> bool {
+        let Some(author) = self.mounts.values().find_map(|mounted| {
+            mounted
+                .attachment
+                .desktop
+                .as_ref()
+                .map(|_| mounted.attachment.author.clone())
+        }) else {
+            return false;
+        };
+        let doc = self.desktop.document_mut();
+        match tilo_desktop_model::asked::place_asked(doc, &author) {
+            Ok(true) => {
+                tilo_desktop_surface::history_log::commit(doc, &author, ui::time::unix_now_i64());
+                true
+            }
+            Ok(false) => false,
+            Err(error) => {
+                warn(&format!(
+                    "a view asked of this layout was not placed: {error}"
+                ));
+                false
+            }
+        }
     }
 
     fn send(&mut self) {
@@ -1888,13 +1919,30 @@ impl Joined {
         );
         if wrote {
             tilo_desktop_surface::history_log::commit(doc, &author, ui::time::unix_now_i64());
+            // A view asked before this page had a layout to put it on is put there now.
+            if self.place_asked()
+                && let Some(placed) = desktop_value(self.desktop.document())
+            {
+                for mounted in self.mounts.values() {
+                    if let Some((handle, shared)) = &mounted.attachment.desktop {
+                        if let Err(error) = crate::desktop::apply_shared(handle, shared, &placed) {
+                            warn(&format!("an asked view did not show: {error}"));
+                        }
+                        (mounted.attachment.notify)();
+                    }
+                }
+            }
         }
         if wrote && joined {
             // Windows opened, closed, moved or renamed: the person's own
             // work on the desktop.
             self.authored = self.authored.saturating_add(1);
         }
-        if !wrote && self.desktop_sending == DesktopSending::Changes {
+        // Nothing new from the shell, and nothing placed here since the last send either.
+        if !wrote
+            && self.desktop_sending == DesktopSending::Changes
+            && self.desktop.pending_outbound_delta().0.is_empty()
+        {
             self.local_value = Some(value);
             return;
         }

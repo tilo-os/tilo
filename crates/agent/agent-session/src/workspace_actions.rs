@@ -64,6 +64,7 @@ mod invocation_log;
 mod invocations;
 mod jobs;
 mod keys;
+mod layout_window;
 mod link;
 mod listing;
 mod member;
@@ -76,7 +77,6 @@ mod reads;
 mod run_context;
 mod session_voice;
 mod share;
-mod shows;
 mod terminal;
 mod tree_put;
 pub(super) use arguments::invoke_arguments;
@@ -1268,9 +1268,6 @@ struct Worker {
     /// Requests waiting for their workspace to be ready for them, oldest
     /// first, by workspace: the thread answers others meanwhile.
     joining: HashMap<WorkspaceId, VecDeque<Waiting>>,
-    /// Windows asked for on each workspace's layout, still to be placed
-    /// ([`shows`]).
-    shows: HashMap<WorkspaceId, Vec<shows::Show>>,
     clock: u64,
     /// What the apps call the records the host changes, read in a confined
     /// worker kept for the next ([`publish`]).
@@ -1414,7 +1411,6 @@ impl Worker {
             channels_opened: HashSet::new(),
             titles: crate::worker::ConfinedTitles::default(),
             joining: HashMap::new(),
-            shows: HashMap::new(),
             clock: 0,
             handed: HashMap::new(),
             canonical: canonical::CanonicalReads::default(),
@@ -1565,7 +1561,6 @@ impl Worker {
     /// those that are ready run here, and those still waiting for keys are
     /// held again with what they have waited so far.
     fn resume(&mut self, workspace_id: WorkspaceId) {
-        let _ = self.place_shows(workspace_id);
         let Some(waiting) = self.joining.remove(&workspace_id) else {
             return;
         };
@@ -1664,7 +1659,7 @@ impl Worker {
 
     /// Stop asking to be woken for `workspace_id` once nothing waits for it.
     fn stop_waiting_if_idle(&self, workspace_id: WorkspaceId) {
-        if !self.joining.contains_key(&workspace_id) && !self.shows.contains_key(&workspace_id) {
+        if !self.joining.contains_key(&workspace_id) {
             self.awaiting(workspace_id, false);
         }
     }
@@ -2543,95 +2538,6 @@ impl Worker {
             // Files is the workspace's own folder, not an app this host runs.
             .filter(|app| self.catalogue.has(app) || *app == tilo_fs::tree_document::FILES_APP)
             .map(str::to_owned)
-    }
-
-    /// Show the record an application's `open` names (its own record when it names none) as a
-    /// window on the workspace's shared desktop: what the device an agent acts through asks for
-    /// each record the agent makes or changes (`tilo mcp`, the API server), so every member sees
-    /// it open as they see a colleague's window, without anyone's view moving to it
-    /// ([`tilo_desktop_model::place`]). The window is the person's the caller acts for — the host's own, or a
-    /// member of the workspace — and names the agent run that opened it. A record a window
-    /// already shows is left where the people put it.
-    #[allow(
-        clippy::result_large_err,
-        reason = "the outcome becomes the receipt the host records"
-    )]
-    fn show_on_layout(
-        &mut self,
-        workspace_id: WorkspaceId,
-        caller: &Caller,
-        (named, app): (&str, &str),
-        request: &InvokeRequest,
-    ) -> Result<ActionOutput, Outcome> {
-        let unknown = || Outcome::Rejected(ActionHostError::UnknownAction);
-        let target = &request.target;
-        if target.address.action != APPLICATION_OPEN_ACTION
-            || WorkspaceId::parse(named) != Some(workspace_id)
-        {
-            return Err(unknown());
-        }
-        let person = if self.acts_for_owner(caller) {
-            self.member.clone()
-        } else {
-            self.bounded(caller)
-                .filter(|who| self.admits_bounded(workspace_id, who))
-                .ok_or_else(unknown)?
-                .person
-        };
-        let opened_by = caller_context(caller, request)
-            .and_then(|context| context.group)
-            .filter(|group| group.kind == tilo_actions::context::AGENT_SESSION_GROUP)
-            .map(|group| tilo_desktop_model::ownership::OpenedBy {
-                run: group.id,
-                // The agent, by its own name; the run, by the title it gave.
-                label: caller.agent_session().map_or(group.label, |run| run.label),
-                title: group.title.unwrap_or_default(),
-            });
-        let title = self
-            .catalogue
-            .get(app)
-            .map(|definition| definition.title().to_owned())
-            .ok_or_else(unknown)?;
-        let layout = crate::member::desktop_route(named);
-        // Read, not acted on: a layout this host cannot open yet refuses nothing, it only goes
-        // without the window.
-        let state = self
-            .refresh(
-                workspace_id,
-                Needs::Read {
-                    app_id: &layout.app_id,
-                    record: &layout.document,
-                },
-            )
-            .map_err(Outcome::Rejected)?;
-        let route = DocumentRoute {
-            app_id: app.to_owned(),
-            cluster_id: named.to_owned(),
-            document: application_provider_resource(&target.provider)
-                .unwrap_or_default()
-                .to_owned(),
-        };
-        if !state.holds(&route) && !self.held_or_owed(workspace_id, &route)? {
-            return Err(Outcome::Rejected(ActionHostError::Refused {
-                reason: format!("this workspace has no {app} record {}", route.document),
-            }));
-        }
-        // Answered at once whether or not the layout is here yet: an action never waits for a
-        // window, which is placed as soon as the layout is ([`shows`]).
-        self.shows
-            .entry(workspace_id)
-            .or_default()
-            .push(shows::Show::new(
-                named,
-                app,
-                title,
-                route.document,
-                person.to_string(),
-                opened_by,
-            ));
-        self.place_shows(workspace_id)
-            .map_err(|reason| commit_failed(reason, true))?;
-        Ok(ActionOutput::default())
     }
 
     /// Commit what the owner's action changed, each record on its own

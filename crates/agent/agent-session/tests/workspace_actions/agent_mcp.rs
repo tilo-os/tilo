@@ -347,50 +347,160 @@ async fn an_app_an_agent_opens_reaches_the_persons_layout() {
 /// all the same.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_app_an_agent_opens_on_another_persons_host_reaches_the_persons_layout() {
-    let (operator, _) = tilo_user_identity::UserIdentity::generate("Operator", 1);
-    let (guest, _) = tilo_user_identity::UserIdentity::generate("Grace", 1);
-    let host = enrol(&operator, "lounge", DeviceCapabilities::member());
-    let page_device = enrol(&guest, "browser", DeviceCapabilities::member());
-    let computer = enrol(
-        &guest,
-        "Claude Code on laptop",
-        DeviceCapabilities::member(),
+    let mut guest = Box::pin(Guest::new(true, true)).await;
+    agent_opens_notes(&guest.server, &mut guest.browser).await;
+}
+
+/// An agent opens Notes, which it started without a window: its open alone, before the agent
+/// changes anything, puts Notes' window in front of the person.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_agents_open_of_a_running_app_shows_its_window_on_the_persons_layout() {
+    let mut guest = Box::pin(Guest::new(false, true)).await;
+    let (started, failed) = tool(&guest.server, "tilo_do", json!({"path": "notes#start"})).await;
+    assert!(!failed, "{started}");
+    assert_eq!(
+        layout_windows(&mut guest.browser, ""),
+        0,
+        "a started app has no window"
     );
-    let state = crate::support::scratch_dir();
-    let hosted = start(&operator, &host, state.path()).await;
-    let workspace = hosted
-        .server
-        .workspaces()
-        .unwrap()
-        .create("Grace's workspace")
-        .await
-        .unwrap();
-    let cluster = workspace.workspace.clone();
-    for device in [&page_device, &computer] {
-        super::resource_support::admit_person(
-            &hosted,
-            &host,
-            &cluster,
-            device,
-            tilo_peer_state::join::Role::Editor,
-        )
-        .await;
+    let (opened, failed) = tool(&guest.server, "tilo_do", json!({"path": "notes#open"})).await;
+    assert!(!failed, "{opened}");
+    assert!(
+        opened.starts_with("ok: notes is running"),
+        "Notes ran already: {opened}"
+    );
+    let deadline = tilo_test_env::hang_deadline();
+    while layout_windows(&mut guest.browser, "") == 0 {
+        assert!(
+            Instant::now() < deadline,
+            "the open answered ({opened}) but no Notes window reached the person's layout"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
     }
-    let mut browser =
-        super::resource_support::open_admitted_peer(&hosted, &page_device, &host, &cluster).await;
-    // Notes runs already, with no window on the layout: the agent's open shows it.
-    browser.create("so.tilo.notes");
-    browser.put_layout();
-    browser.peer.barrier().unwrap().recv().unwrap().unwrap();
-    let agent =
-        super::resource_support::open_admitted_peer(&hosted, &computer, &host, &cluster).await;
-    let _ = tilo_session_client::device::session_as_agent(&agent.peer, "Claude Code").await;
-    let person = hex::encode(guest.verifying_key().to_bytes());
-    let actions = SessionActions::new(&agent.peer, agent.workspace, host.cert.device_public_key);
-    let server = McpServer::new(actions, cluster, person)
-        .with_surface(Surface::Agent)
-        .with_agent_session("session-guest", "Claude Code");
-    agent_opens_notes(&server, &mut browser).await;
+    assert_eq!(
+        layout_windows(&mut guest.browser, ""),
+        1,
+        "one Notes window"
+    );
+}
+
+/// An agent opens Notes in a workspace whose layout the serving device does not hold: the open
+/// answers at once, nothing waits for a window, and the view is asked for in the layout's document,
+/// where the person's page finds it and puts it on their layout when it holds one.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_agents_open_with_no_layout_asks_the_persons_page() {
+    let mut guest = Box::pin(Guest::new(false, false)).await;
+    let asked = Instant::now();
+    let answer = ask(
+        &guest.server,
+        json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": {"name": "tilo_do", "arguments": {"path": "notes#open"},
+                "_meta": {"so.tilo.mcp": {"structured": true}}}}),
+    )
+    .await;
+    let result = &answer["result"];
+    assert_eq!(result["isError"], false, "Notes is open: {answer}");
+    assert!(
+        result["structuredContent"].get("not_shown").is_none(),
+        "the view is asked for, which is no failure: {answer}"
+    );
+    assert!(
+        asked.elapsed() < Duration::from_secs(5),
+        "the open waited for a window: {:?}",
+        asked.elapsed()
+    );
+    let deadline = tilo_test_env::hang_deadline();
+    loop {
+        let views = guest.browser.asked_views();
+        if let Some(view) = views.iter().find(|view| view.app_id == "so.tilo.notes") {
+            assert_eq!(
+                view.opened_by
+                    .as_ref()
+                    .map(|session| session.label.as_str()),
+                Some("Claude Code"),
+                "named as the agent session's: {view:?}"
+            );
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the person's page never received the ask: {views:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
+/// A person on a host someone else runs (a Lounge's), which is no member of their workspace:
+/// their page holds Notes' document when `notes` and has written the workspace's layout when
+/// `layout` (with no window on it), and an agent on their computer is served over the computer's
+/// own session.
+struct Guest {
+    browser: Browser,
+    server: McpServer<SessionActions>,
+    _agent: Browser,
+    _hosted: Hosted,
+    _state: tempfile::TempDir,
+}
+
+impl Guest {
+    async fn new(notes: bool, layout: bool) -> Self {
+        let (operator, _) = tilo_user_identity::UserIdentity::generate("Operator", 1);
+        let (guest, _) = tilo_user_identity::UserIdentity::generate("Grace", 1);
+        let lounge = enrol(&operator, "lounge", DeviceCapabilities::member());
+        let page_device = enrol(&guest, "browser", DeviceCapabilities::member());
+        let computer = enrol(
+            &guest,
+            "Claude Code on laptop",
+            DeviceCapabilities::member(),
+        );
+        let state = crate::support::scratch_dir();
+        let hosted = start(&operator, &lounge, state.path()).await;
+        let workspace = hosted
+            .server
+            .workspaces()
+            .unwrap()
+            .create("Grace's workspace")
+            .await
+            .unwrap();
+        let cluster = workspace.workspace.clone();
+        for device in [&page_device, &computer] {
+            super::resource_support::admit_person(
+                &hosted,
+                &lounge,
+                &cluster,
+                device,
+                tilo_peer_state::join::Role::Editor,
+            )
+            .await;
+        }
+        let mut browser =
+            super::resource_support::open_admitted_peer(&hosted, &page_device, &lounge, &cluster)
+                .await;
+        if notes {
+            browser.create("so.tilo.notes");
+        }
+        if layout {
+            browser.put_layout();
+        }
+        browser.peer.barrier().unwrap().recv().unwrap().unwrap();
+        let agent =
+            super::resource_support::open_admitted_peer(&hosted, &computer, &lounge, &cluster)
+                .await;
+        let _ = tilo_session_client::device::session_as_agent(&agent.peer, "Claude Code").await;
+        let person = hex::encode(guest.verifying_key().to_bytes());
+        let actions =
+            SessionActions::new(&agent.peer, agent.workspace, lounge.cert.device_public_key);
+        let server = McpServer::new(actions, cluster, person)
+            .with_surface(Surface::Agent)
+            .with_agent_session("session-guest", "Claude Code");
+        Self {
+            browser,
+            server,
+            _agent: agent,
+            _hosted: hosted,
+            _state: state,
+        }
+    }
 }
 
 /// The agent behind `server` opens Notes and makes a note; `browser`'s layout gets one Notes

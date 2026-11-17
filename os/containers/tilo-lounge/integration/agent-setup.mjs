@@ -457,7 +457,7 @@ const call = async (name, args) => {
     sleep(stepLimit(4)).then(() => ({error: {message: 'no answer'}})),
   ]);
   const said = (answer.result?.content ?? []).map(block => block.text).join('\n') || JSON.stringify(answer);
-  (report.secondAgent ??= []).push({name, args, said: said.slice(0, 400), link: (said.match(/link: \S+/) ?? [null])[0]});
+  (report.secondAgent ??= []).push({name, args, said: said.slice(0, 400), link: (said.match(/link: \S+/) ?? [null])[0], notShown: (said.match(/not shown on the person's layout: .*/) ?? [null])[0]});
   if (answer.error || answer.result?.isError) await fail(`the second agent's ${name} ${JSON.stringify(args)} failed: ${said}`);
   return said;
 };

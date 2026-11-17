@@ -3,7 +3,7 @@
 //! whether or not the app runs already.
 
 use super::{ActionHost, Addressed, McpServer, OneCall, Value, json};
-use super::{Done, LsArgs, ParsedPath, Reply, app_names, outcome, starts_app};
+use super::{Done, LsArgs, ParsedPath, Reply, app_names, outcome};
 use std::fmt::Write as _;
 
 impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
@@ -42,17 +42,39 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
     ) -> Result<Done, super::Failure> {
         let (value, reply) =
             Box::pin(self.launch(parsed, app_id, action, arguments, invocation, wait_ms)).await?;
-        Ok(Done::Launched { value, reply })
+        // `open` puts the app's window in front of the person, on the document it opened; `start`
+        // starts it without one. The app is started either way: a window that cannot be put there is
+        // said beside what the open did.
+        let mut not_shown = None;
+        if action == tilo_actions::remote::APPLICATION_OPEN_ACTION && !reply.failed {
+            let opened = value
+                .pointer("/update/output/value/provider")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            not_shown = self.show(opened, app_id).await.err();
+        }
+        Ok(Done::Launched {
+            value,
+            reply,
+            not_shown,
+        })
     }
 
     /// `action` (`open` or `start`) of the app `resolved` names, which runs already: it is there,
     /// and what is in it. Running is not shown: `open` asks for the app's window on the person's
-    /// shell, or brings the one there into view.
-    pub(super) async fn running(&self, resolved: &super::Resolved, action: &str) -> Done {
+    /// shell, or brings the one there into view, and says why beside what it did when neither
+    /// can be done.
+    pub(super) async fn running(
+        &self,
+        resolved: &super::Resolved,
+        action: &str,
+    ) -> Result<Done, super::Failure> {
         let app_id = resolved.app_id.as_str();
-        if action == tilo_actions::remote::APPLICATION_OPEN_ACTION {
-            self.show(&resolved.provider, app_id).await;
-        }
+        let not_shown = if action == tilo_actions::remote::APPLICATION_OPEN_ACTION {
+            self.show(&resolved.provider, app_id).await.err()
+        } else {
+            None
+        };
         // What is in the window it answered with: the record the workspace lists
         // it on, so a caller opening an app that runs learns the window it
         // attached to and the record that window shows, as the open that made
@@ -85,7 +107,11 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             None => json!({"update": {"state": "succeeded", "output": {}}}),
         };
         let reply = self.opened_reply(app_id, &value).await;
-        Done::Launched { value, reply }
+        Ok(Done::Launched {
+            value,
+            reply,
+            not_shown,
+        })
     }
 
     /// What starting `app_id` answers once it runs: that it does, and what
@@ -162,4 +188,16 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         .await
         .map_err(String::from)
     }
+}
+
+/// Whether `action` is the word that starts an app: its `open` (with its window) or its `start`.
+pub(super) fn starts_app(action: &str) -> bool {
+    action == tilo_actions::remote::APPLICATION_OPEN_ACTION
+        || action == tilo_actions::remote::APPLICATION_START_ACTION
+}
+
+/// Whether `arguments` are those of an app's own `open` of a file: they name the file's
+/// content, as the workspace's open reads it.
+pub(super) fn opens_a_file(arguments: &serde_json::Map<String, Value>) -> bool {
+    arguments.contains_key("content")
 }

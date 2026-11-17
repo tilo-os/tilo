@@ -2248,7 +2248,7 @@ impl AgentMember {
         let view = tilo_desktop_model::place::View {
             app_id: &route.app_id,
             title,
-            record: &record,
+            document: &record,
             beside: beside
                 .as_ref()
                 .map(|(app, record)| (app.as_str(), record.as_str())),
@@ -2259,7 +2259,7 @@ impl AgentMember {
         let person = hex::encode(delegation.user_public_key);
         let opener = tilo_desktop_model::place::Opener {
             person: &person,
-            run: Some(tilo_desktop_model::ownership::OpenedBy {
+            opened_by: Some(tilo_desktop_model::ownership::OpenedBy {
                 run: self.running.as_ref().map_or_else(
                     || format!("agent:{}", crate::control::agent_id(delegation)),
                     |running| running.id.clone(),
@@ -2275,13 +2275,20 @@ impl AgentMember {
         let place = |doc: &automerge::AutoCommit| {
             tilo_desktop_model::place::place_view(doc, &opener, &view)
         };
-        let change = match (self.unopened.desktop(), self.apps.get(&desktop)) {
+        let placed = match (self.unopened.desktop(), self.apps.get(&desktop)) {
             (Some(doc), _) => place(&doc),
-            (None, Some(app)) => app.read(place).flatten(),
-            (None, None) => None,
+            (None, Some(app)) => app
+                .read(place)
+                .unwrap_or(Err(tilo_desktop_model::place::NotPlaced::NoLayout)),
+            (None, None) => Err(tilo_desktop_model::place::NotPlaced::NoLayout),
         };
-        let Some(change) = change else {
-            return;
+        let change = match placed {
+            Ok(Some(change)) => change,
+            Ok(None) => return,
+            Err(why) => {
+                tracing::warn!(%why, "agent: its view is not on the layout");
+                return;
+            }
         };
         let mutation = collab_types::DocumentMutation::Incremental(change);
         if let Err(error) = self.peer.write(desktop.clone(), &mutation) {

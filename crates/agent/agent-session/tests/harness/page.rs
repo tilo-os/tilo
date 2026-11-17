@@ -306,6 +306,31 @@ impl Page {
         tilo_desktop_model::shared_resource::read(&automerge::AutoCommit::load(&bytes).ok()?, None)
     }
 
+    /// The views asked of the workspace's layout, as the page has received its document
+    /// ([`tilo_desktop_model::asked`]).
+    pub fn asked_views(&mut self) -> Vec<tilo_desktop_model::asked::AskedView> {
+        self.pump();
+        let layout = self.layout_route();
+        let Some(bytes) = self
+            .peer
+            .engine()
+            .record(&layout.cluster_id, &layout.app_id, &layout.document)
+            .ok()
+            .flatten()
+        else {
+            return Vec::new();
+        };
+        automerge::AutoCommit::load(&bytes).map_or_else(
+            |_| Vec::new(),
+            |doc| {
+                tilo_desktop_model::asked::asked(&doc)
+                    .into_iter()
+                    .map(|(_, view)| view)
+                    .collect()
+            },
+        )
+    }
+
     /// Send `message` to the host.
     pub fn send(&self, message: RemoteActionMessage) {
         let frame = RemoteActionFrame::new(message).encode().unwrap();
