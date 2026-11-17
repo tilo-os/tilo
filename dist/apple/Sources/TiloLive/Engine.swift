@@ -99,6 +99,10 @@ public final class TiloEngine: NSObject {
     /// What was asked of the page and is not answered yet. A page that is loaded again under
     /// an ask never answers it, so these end when the page they were asked of is put away.
     private var asked: [UUID: CheckedContinuation<String?, Never>] = [:]
+    /// How long an ask may go unanswered before whoever asked is told that no answer came, and
+    /// can ask again. A person's server holds one kind of ask open on purpose, for ten seconds
+    /// at most; every other answers in a moment, or in seconds where the server is busy.
+    var askPatience: Duration = .seconds(30)
     /// How many frames inside the page were refused their content, for a check.
     private(set) var refusedFrames = 0
 
@@ -357,11 +361,22 @@ public final class TiloEngine: NSObject {
     func ask(_ script: String, _ arguments: [String: Any], hiding: String? = nil) async throws -> JSON {
         guard case .open = state else { throw Problem.notOpen }
         let id = UUID()
+        let patience = askPatience
         let answer: String? = await withCheckedContinuation { waiting in
             asked[id] = waiting
+            // An answer that never comes ends the ask as well: whoever asked is told that none
+            // came, and can ask again. Should the page answer after all, nobody waits for it.
+            let giveUp = Task { @MainActor [weak self] in
+                try? await Task.sleep(for: patience)
+                guard !Task.isCancelled else { return }
+                self?.asked.removeValue(forKey: id)?.resume(returning: nil)
+            }
             view.callAsyncJavaScript(script, arguments: arguments, in: nil, in: .page) { [weak self] result in
                 let text = (try? result.get()) as? String
-                Task { @MainActor in self?.asked.removeValue(forKey: id)?.resume(returning: text) }
+                Task { @MainActor in
+                    giveUp.cancel()
+                    self?.asked.removeValue(forKey: id)?.resume(returning: text)
+                }
             }
         }
         guard let text = answer else { throw Problem.noAnswer }
