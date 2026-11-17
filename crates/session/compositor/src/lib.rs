@@ -483,6 +483,21 @@ impl Compositor {
         })
     }
 
+    /// A headless compositor that offers its clients linear dma-bufs of the DRM fourcc `codes`
+    /// with default feedback, as a desktop on a GPU does, where the machine has none: the buffers
+    /// a test hands over are read on the CPU ([`Compositor::window_dmabuf_pixels`]). Every other
+    /// headless compositor keeps the renderer's own offer.
+    #[cfg(feature = "test-support")]
+    pub fn headless_with_linear_dmabufs(
+        policy: Box<dyn WindowPolicy>,
+        codes: &[u32],
+    ) -> Result<Self, Error> {
+        Self::new(policy, |_, state| {
+            state.enable_linear_dmabuf_for_tests(codes);
+            Ok(Box::new(HeadlessBackend::new(state)?))
+        })
+    }
+
     /// A compositor on a bare TTY (see [`backend::drm`]).
     pub fn drm(
         policy: Box<dyn WindowPolicy>,
@@ -2586,6 +2601,108 @@ impl Compositor {
             .into_iter()
             .map(|(info, rect)| (info, (rect.loc.x, rect.loc.y, rect.size.w, rect.size.h)))
             .collect()
+    }
+
+    /// The current buffer of the window `id`, if it is a linear dma-buf, read on the CPU: its
+    /// width, height and RGBA pixels. `None` for a shared-memory buffer or a format this does not
+    /// read. Lets a test see what a client handed over on a machine with no GPU.
+    #[cfg(feature = "test-support")]
+    #[must_use]
+    pub fn window_dmabuf_pixels(&self, id: u64) -> Option<(i32, i32, Vec<u8>)> {
+        use smithay::backend::allocator::Buffer as _;
+        let (_, dmabuf) = self.window_dmabuf(id)?;
+        if dmabuf.num_planes() != 1 || dmabuf.has_modifier() {
+            return None;
+        }
+        let width = dmabuf.width();
+        let height = dmabuf.height();
+        let stride = usize::try_from(dmabuf.strides().next()?).ok()?;
+        let offset = u64::from(dmabuf.offsets().next()?);
+        let fd = dmabuf.handles().next()?;
+        let row = usize::try_from(width).ok()?.checked_mul(4)?;
+        let height = usize::try_from(height).ok()?;
+        if stride < row {
+            return None;
+        }
+        // A dma-buf is read by mapping it, never with read(2).
+        let length = usize::try_from(offset)
+            .ok()?
+            .checked_add(stride.checked_mul(height)?)?;
+        // SAFETY: a fresh read-only shared mapping of `length` bytes, unmapped below; nothing
+        // else in this process holds it.
+        let mapped = unsafe {
+            rustix::mm::mmap(
+                std::ptr::null_mut(),
+                length,
+                rustix::mm::ProtFlags::READ,
+                rustix::mm::MapFlags::SHARED,
+                fd,
+                0,
+            )
+        }
+        .ok()?;
+        // SAFETY: the mapping above is `length` readable bytes.
+        let all = unsafe { std::slice::from_raw_parts(mapped.cast::<u8>(), length) };
+        let bytes = all.get(usize::try_from(offset).ok()?..).map(<[u8]>::to_vec);
+        // SAFETY: the mapping made above, no longer borrowed.
+        let _ = unsafe { rustix::mm::munmap(mapped, length) };
+        let bytes = bytes?;
+        let alpha = match dmabuf.format().code {
+            smithay::backend::allocator::Fourcc::Argb8888 => None,
+            smithay::backend::allocator::Fourcc::Xrgb8888 => Some(255),
+            _ => return None,
+        };
+        let mut rgba = Vec::with_capacity(row.checked_mul(height)?);
+        for line in 0..height {
+            let start = line.checked_mul(stride)?;
+            let line = bytes.get(start..start.checked_add(row)?)?;
+            for pixel in line.chunks_exact(4) {
+                let [blue, green, red, opacity] = <[u8; 4]>::try_from(pixel).ok()?;
+                rgba.push(red);
+                rgba.push(green);
+                rgba.push(blue);
+                rgba.push(alpha.unwrap_or(opacity));
+            }
+        }
+        Some((
+            i32::try_from(width).ok()?,
+            i32::try_from(height).ok()?,
+            rgba,
+        ))
+    }
+
+    /// The device and inode of the window's dma-buf. The same numbers on the client's and the
+    /// desktop's mean the keeper passed the buffer on instead of copying it.
+    #[cfg(feature = "test-support")]
+    #[must_use]
+    pub fn window_dmabuf_id(&self, id: u64) -> Option<(u64, u64)> {
+        let (_, dmabuf) = self.window_dmabuf(id)?;
+        let fd = dmabuf.handles().next()?;
+        let stat = rustix::fs::fstat(fd).ok()?;
+        Some((stat.st_dev, stat.st_ino))
+    }
+
+    /// The window `id`'s current buffer, if it is a dma-buf.
+    #[cfg(feature = "test-support")]
+    fn window_dmabuf(
+        &self,
+        id: u64,
+    ) -> Option<(
+        smithay::reexports::wayland_server::protocol::wl_buffer::WlBuffer,
+        smithay::backend::allocator::dmabuf::Dmabuf,
+    )> {
+        let surface =
+            smithay::wayland::seat::WaylandFocus::wl_surface(self.data.state.mapped_window(id)?)?
+                .into_owned();
+        // The buffer the renderer took from the last commit, the one on screen.
+        let buffer = smithay::wayland::compositor::with_states(&surface, |states| {
+            let data = states
+                .data_map
+                .get::<smithay::backend::renderer::utils::RendererSurfaceStateUserData>()?;
+            data.lock().ok()?.buffer().map(|buffer| (**buffer).clone())
+        })?;
+        let dmabuf = smithay::wayland::dmabuf::get_dmabuf(&buffer).ok()?.clone();
+        Some((buffer, dmabuf))
     }
 
     /// The colour the client of the window `id` says its content is in: the image description it

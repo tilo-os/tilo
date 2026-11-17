@@ -19,6 +19,9 @@ mod support;
 #[path = "clipboard.rs"]
 mod clipboard;
 
+#[path = "dmabuf.rs"]
+mod dmabuf;
+
 #[path = "input.rs"]
 mod input;
 

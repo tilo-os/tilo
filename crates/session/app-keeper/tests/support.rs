@@ -3,7 +3,7 @@
 
 use std::io::{IoSlice, Read as _, Write as _};
 use std::mem::MaybeUninit;
-use std::os::fd::{AsFd as _, OwnedFd};
+use std::os::fd::{AsFd as _, AsRawFd as _, FromRawFd as _, OwnedFd};
 use std::os::unix::net::UnixStream;
 use std::time::Duration;
 
@@ -60,6 +60,7 @@ use wayland_protocols::wp::keyboard_shortcuts_inhibit::zv1::client::{
     zwp_keyboard_shortcuts_inhibitor_v1::{self, ZwpKeyboardShortcutsInhibitorV1},
 };
 use wayland_protocols::wp::linux_dmabuf::zv1::client::{
+    zwp_linux_buffer_params_v1, zwp_linux_buffer_params_v1::ZwpLinuxBufferParamsV1,
     zwp_linux_dmabuf_feedback_v1, zwp_linux_dmabuf_feedback_v1::ZwpLinuxDmabufFeedbackV1,
     zwp_linux_dmabuf_v1, zwp_linux_dmabuf_v1::ZwpLinuxDmabufV1,
 };
@@ -137,9 +138,21 @@ pub fn desktop(width: i32, height: i32) -> Compositor {
     desktop_at_scale(width, height, 1.0)
 }
 
+/// `DRM_FORMAT_ARGB8888`: blue, green, red, alpha bytes, the order `buffer` and `dmabuf_plane` write.
+pub const ARGB8888: u32 = 0x3432_5241;
+/// `DRM_FORMAT_XRGB8888`.
+pub const XRGB8888: u32 = 0x3432_5258;
+
 /// A desktop whose output has `scale`.
 pub fn desktop_at_scale(width: i32, height: i32, scale: f64) -> Compositor {
-    let mut compositor = Compositor::headless(Box::new(StackPolicy)).expect("compositor");
+    desktop_with(width, height, scale, &[ARGB8888, XRGB8888])
+}
+
+/// A desktop whose output has `scale` and that takes linear dma-bufs of the fourcc `formats`,
+/// telling its clients so in its default feedback as a desktop on a GPU does.
+pub fn desktop_with(width: i32, height: i32, scale: f64, formats: &[u32]) -> Compositor {
+    let mut compositor = Compositor::headless_with_linear_dmabufs(Box::new(StackPolicy), formats)
+        .expect("compositor");
     compositor
         .add_output(&OutputConfig::new(OUTPUT, width, height).with_scale(scale))
         .expect("output");
@@ -191,7 +204,15 @@ impl Rig {
 
     /// A new desktop whose output has `scale`.
     pub fn attach_new_at_scale(&mut self, width: i32, height: i32, scale: f64) {
-        let mut compositor = desktop_at_scale(width, height, scale);
+        self.attach_desktop(desktop_at_scale(width, height, scale));
+    }
+
+    /// A new desktop that takes dma-bufs of only the fourcc `formats`.
+    pub fn attach_new_with_dmabufs(&mut self, formats: &[u32]) {
+        self.attach_desktop(desktop_with(640, 480, 1.0, formats));
+    }
+
+    fn attach_desktop(&mut self, mut compositor: Compositor) {
         let socket = compositor.connect_client().expect("desktop connection");
         self.keeper.attach(socket).expect("attach");
         self.desktop = Some(compositor);
@@ -402,6 +423,14 @@ pub struct Heard {
     pub icon_sizes: Vec<i32>,
     pub dmabuf_done: usize,
     pub surface_feedback_done: usize,
+    /// The fourcc codes the last complete default feedback named.
+    pub dmabuf_formats: Vec<u32>,
+    /// The fourcc codes the last complete per-surface feedback named.
+    pub surface_formats: Vec<u32>,
+    feedback_parts: FeedbackParts,
+    surface_feedback_parts: FeedbackParts,
+    /// The tags of the dma-buf buffers the app was given back, in order.
+    pub dmabufs_released: Vec<u32>,
     pub configures: Vec<(i32, i32, Vec<u32>)>,
     pub configured: usize,
     pub popup_configured: bool,
@@ -929,6 +958,44 @@ impl App {
         (icon, buffer)
     }
 
+    /// A buffer made from the dma-buf `fd` of `size`, one plane at `offset` rows of `stride`
+    /// bytes in the fourcc `format`. Its release is recorded under `tag`.
+    pub fn dmabuf_from(
+        &self,
+        fd: &OwnedFd,
+        (size, offset, stride): ((i32, i32), u32, u32),
+        format: u32,
+        tag: u32,
+    ) -> WlBuffer {
+        let factory = self
+            .heard
+            .dmabuf
+            .as_ref()
+            .expect("the keeper offers dma-bufs");
+        let qh = self.qh();
+        let params = factory.create_params(&qh, ());
+        // DRM_FORMAT_MOD_LINEAR is 0.
+        params.add(fd.as_fd(), 0, offset, stride, 0, 0);
+        let buffer = params.create_immed(
+            size.0,
+            size.1,
+            format,
+            zwp_linux_buffer_params_v1::Flags::empty(),
+            &qh,
+            DmabufTag(tag),
+        );
+        params.destroy();
+        buffer
+    }
+
+    /// Attach `buffer` to the window and commit all of it.
+    pub fn commit_buffer(&self, buffer: &WlBuffer, (width, height): (i32, i32)) {
+        let surface = self.surface.as_ref().expect("a window");
+        surface.attach(Some(buffer), 0, 0);
+        surface.damage_buffer(0, 0, width, height);
+        surface.commit();
+    }
+
     /// Ask for the next frame callback on the window.
     pub fn request_frame(&self) -> WlCallback {
         let qh = self.qh();
@@ -1340,6 +1407,141 @@ impl Dispatch<WlBuffer, ()> for Heard {
 /// The user data marking a surface's own dma-buf feedback request.
 pub struct SurfaceFeedbackSeen;
 
+/// The user data of a dma-buf buffer: what its release is recorded as.
+pub struct DmabufTag(pub u32);
+
+impl Dispatch<WlBuffer, DmabufTag> for Heard {
+    fn event(
+        heard: &mut Self,
+        _: &WlBuffer,
+        _: wayland_client::protocol::wl_buffer::Event,
+        tag: &DmabufTag,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        heard.dmabufs_released.push(tag.0);
+    }
+}
+
+impl Dispatch<ZwpLinuxBufferParamsV1, ()> for Heard {
+    fn event(
+        _: &mut Self,
+        _: &ZwpLinuxBufferParamsV1,
+        _: zwp_linux_buffer_params_v1::Event,
+        (): &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+    }
+}
+
+/// A feedback object's events until its `done`.
+#[derive(Default)]
+struct FeedbackParts {
+    table: Vec<u32>,
+    named: Vec<u32>,
+}
+
+impl FeedbackParts {
+    /// Take one event; the fourcc codes named once `done` arrives.
+    fn take(&mut self, event: zwp_linux_dmabuf_feedback_v1::Event) -> Option<Vec<u32>> {
+        use zwp_linux_dmabuf_feedback_v1::Event;
+        match event {
+            Event::FormatTable { fd, size } => {
+                let mut bytes = vec![0_u8; usize::try_from(size).expect("table size")];
+                let read = rustix::io::pread(&fd, &mut bytes, 0).expect("the format table");
+                // Each entry is a 32-bit fourcc, 32 bits of padding and a 64-bit modifier.
+                self.table = bytes
+                    .get(..read)
+                    .unwrap_or_default()
+                    .chunks_exact(16)
+                    .filter_map(|entry| Some(u32::from_ne_bytes(entry.get(..4)?.try_into().ok()?)))
+                    .collect();
+            }
+            Event::TrancheFormats { indices } => {
+                for pair in indices.chunks_exact(2) {
+                    let index = u16::from_ne_bytes([pair[0], pair[1]]);
+                    if let Some(code) = self.table.get(usize::from(index)) {
+                        self.named.push(*code);
+                    }
+                }
+            }
+            Event::Done => {
+                let mut named = std::mem::take(&mut self.named);
+                named.sort_unstable();
+                named.dedup();
+                return Some(named);
+            }
+            _ => {}
+        }
+        None
+    }
+}
+
+/// The plane of a buffer of `size` `rgba` pixels: a dma-buf made through `/dev/udmabuf` (the
+/// kernel pins a memfd's pages as the dma-buf; no driver is involved), or, where this machine
+/// has none, the memfd itself and why. Neither the keeper nor the desktop looks inside a plane
+/// (only the renderer does), so the memfd travels exactly as a dma-buf does.
+pub fn dmabuf_plane(
+    (width, height): (i32, i32),
+    [r, g, b, a]: [u8; 4],
+) -> (OwnedFd, Option<String>) {
+    #[repr(C)]
+    struct Create {
+        memfd: u32,
+        flags: u32,
+        offset: u64,
+        size: u64,
+    }
+    // _IOW('u', 0x42, struct udmabuf_create), whose fields are 24 bytes.
+    const UDMABUF_CREATE: libc::c_ulong = 0x4018_7542;
+    // A udmabuf is whole pages of a memfd that can no longer shrink.
+    const PAGE: usize = 4096;
+
+    let pixels: Vec<u8> = std::iter::repeat_n([b, g, r, a], (width * height) as usize)
+        .flatten()
+        .collect();
+    let size = pixels.len().div_ceil(PAGE) * PAGE;
+    let memfd = rustix::fs::memfd_create(
+        "plane",
+        rustix::fs::MemfdFlags::CLOEXEC | rustix::fs::MemfdFlags::ALLOW_SEALING,
+    )
+    .expect("memfd");
+    rustix::fs::ftruncate(&memfd, size as u64).expect("memfd size");
+    rustix::io::pwrite(&memfd, &pixels, 0).expect("memfd pixels");
+    rustix::fs::fcntl_add_seals(&memfd, rustix::fs::SealFlags::SHRINK).expect("memfd seal");
+    let device = match std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open("/dev/udmabuf")
+    {
+        Ok(device) => device,
+        Err(error) => {
+            return (
+                memfd,
+                Some(format!("/dev/udmabuf cannot be opened: {error}")),
+            );
+        }
+    };
+    let create = Create {
+        memfd: u32::try_from(memfd.as_raw_fd()).expect("a descriptor"),
+        flags: 0,
+        offset: 0,
+        size: size as u64,
+    };
+    // SAFETY: the ioctl reads the struct it documents and returns a new descriptor.
+    let made = unsafe { libc::ioctl(device.as_raw_fd(), UDMABUF_CREATE, &create) };
+    if made < 0 {
+        let error = std::io::Error::last_os_error();
+        return (
+            memfd,
+            Some(format!("/dev/udmabuf made no dma-buf: {error}")),
+        );
+    }
+    // SAFETY: the kernel just returned this descriptor, owned by nobody else.
+    (unsafe { OwnedFd::from_raw_fd(made) }, None)
+}
+
 impl Dispatch<ZwpLinuxDmabufV1, ()> for Heard {
     fn event(
         _: &mut Self,
@@ -1361,7 +1563,8 @@ impl Dispatch<ZwpLinuxDmabufFeedbackV1, ()> for Heard {
         _: &Connection,
         _: &QueueHandle<Self>,
     ) {
-        if matches!(event, zwp_linux_dmabuf_feedback_v1::Event::Done) {
+        if let Some(named) = heard.feedback_parts.take(event) {
+            heard.dmabuf_formats = named;
             heard.dmabuf_done = heard.dmabuf_done.saturating_add(1);
         }
     }
@@ -1376,7 +1579,8 @@ impl Dispatch<ZwpLinuxDmabufFeedbackV1, SurfaceFeedbackSeen> for Heard {
         _: &Connection,
         _: &QueueHandle<Self>,
     ) {
-        if matches!(event, zwp_linux_dmabuf_feedback_v1::Event::Done) {
+        if let Some(named) = heard.surface_feedback_parts.take(event) {
+            heard.surface_formats = named;
             heard.surface_feedback_done = heard.surface_feedback_done.saturating_add(1);
         }
     }

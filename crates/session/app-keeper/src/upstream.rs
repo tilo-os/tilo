@@ -95,6 +95,9 @@ pub(crate) struct Upstream {
         wayland_protocols::xdg::toplevel_tag::v1::client::xdg_toplevel_tag_manager_v1::XdgToplevelTagManagerV1,
     >,
     pub feedback: FeedbackParts,
+    /// The dma-buf formats this desktop's default feedback names, once it arrived: a held buffer
+    /// it cannot take is not made there (that would be a protocol error ending every window).
+    pub dmabuf_formats: Option<std::collections::HashSet<smithay::backend::allocator::Format>>,
     pub xdg_outputs: Option<zxdg_output_manager_v1::ZxdgOutputManagerV1>,
     pub seat: Option<c::wl_seat::WlSeat>,
     pub tablet_manager: Option<
@@ -178,6 +181,7 @@ impl Upstream {
                 presentation_version: 0,
                 toplevel_tag: None,
                 feedback: FeedbackParts::default(),
+                dmabuf_formats: None,
                 xdg_outputs: None,
                 seat: None,
                 tablet_manager: None,
@@ -426,10 +430,14 @@ impl Dispatch<c::wl_callback::WlCallback, SyncStage> for State {
                 if let Some(dmabuf) = &up.dmabuf {
                     dmabuf.get_default_feedback(qh, ());
                 }
+                // The windows are made once the default feedback above arrived, so a held
+                // dma-buf is made only in a format this desktop takes.
                 conn.display().sync(qh, SyncStage::Ready);
-                state.push_all();
             }
-            SyncStage::Ready => state.desktop_ready(),
+            SyncStage::Ready => {
+                state.push_all();
+                state.desktop_ready();
+            }
         }
     }
 }

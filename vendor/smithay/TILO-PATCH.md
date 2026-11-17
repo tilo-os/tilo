@@ -417,3 +417,12 @@ tag across a restart of the desktop. `src/wayland/xdg_toplevel_tag.rs` stores th
 its own field.
 
 Remove this once upstream stores the description apart.
+
+## A dma-buf plane that cannot be sized is refused
+
+`zwp_linux_buffer_params_v1` checked a plane's offset and stride against its size only when the
+descriptor could be sought; a pipe or a socket passed unchecked, and a software renderer (Mesa's
+on a machine with no GPU) crashed mapping it. Every dma-buf supports seeking to its end, so
+`src/wayland/dmabuf/mod.rs` now posts `out_of_bounds` for a plane that cannot be sized.
+
+Remove this once upstream refuses such planes.

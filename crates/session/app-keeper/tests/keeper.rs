@@ -587,47 +587,6 @@ fn subsurfaces_stack_as_the_app_places_them_and_one_destroyed_leaves() {
 }
 
 #[test]
-fn a_surface_gets_the_desktops_own_dmabuf_feedback_and_keeps_it_across_a_restart() {
-    use crate::support::SurfaceFeedbackSeen;
-
-    let mut rig = Rig::new(None);
-    let mut app = App::connect(&mut rig);
-    app.open_window(&mut rig, "Video", Some("video"));
-    app.show(&mut rig, (100, 80), GREEN);
-    rig.settle(&mut [&mut app]);
-    let Some(dmabuf) = app.heard.dmabuf.clone() else {
-        eprintln!(
-            "skipped: the headless desktop offers no linux-dmabuf with feedback (its renderer has \
-             no GPU), so the keeper offers the app none"
-        );
-        return;
-    };
-    assert!(
-        app.heard.dmabuf_done > 0,
-        "the desktop's default dma-buf feedback reached the app"
-    );
-
-    let surface = app.surface.clone().unwrap();
-    let qh = app.queue.handle();
-    let _feedback = dmabuf.get_surface_feedback(&surface, &qh, SurfaceFeedbackSeen);
-    rig.pump(&mut [&mut app], |_, apps| {
-        apps[0].heard.surface_feedback_done > 0
-    });
-
-    rig.drop_desktop();
-    rig.settle(&mut [&mut app]);
-    rig.attach_new(640, 480);
-    rig.pump(&mut [&mut app], |rig, _| !rig.windows().is_empty());
-    let seen = app.heard.surface_feedback_done;
-    let _again = dmabuf.get_surface_feedback(&surface, &qh, SurfaceFeedbackSeen);
-    rig.pump(&mut [&mut app], |_, apps| {
-        apps[0].heard.surface_feedback_done > seen
-    });
-    assert!(!app.broken);
-    assert_eq!(rig.keeper.describe().fault, None);
-}
-
-#[test]
 fn a_fault_is_attributed_to_the_window_that_caused_it_not_the_last_one_sent() {
     let mut rig = Rig::new(None);
     let mut first = App::connect(&mut rig);

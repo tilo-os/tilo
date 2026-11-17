@@ -14,6 +14,12 @@ license.workspace = true
 name = "it"
 path = "tests/it.rs"
 
+[features]
+# Lets a test read a window's dma-buf on the CPU and have the headless backend
+# advertise dma-bufs with feedback where the machine has no GPU. Production
+# builds never enable it.
+test-support = []
+
 [target.'cfg(target_os = "linux")'.dependencies]
 # The protocol server, the desktop element model and the renderers: pixman
 # composites headless outputs on the CPU, GLES real ones; the TTY backend's

@@ -583,8 +583,20 @@ impl Buffers {
             }
             Source::Dmabuf(dmabuf) => {
                 let factory = up.dmabuf.as_ref()?;
-                let params = factory.create_params(&up.qh, ());
                 let format = dmabuf.format();
+                if !up
+                    .dmabuf_formats
+                    .as_ref()
+                    .is_some_and(|formats| formats.contains(&format))
+                {
+                    tracing::warn!(
+                        ?format,
+                        "this desktop takes no dma-buf of the app's format; it shows on the next \
+                         commit in one it does"
+                    );
+                    return None;
+                }
+                let params = factory.create_params(&up.qh, ());
                 let modifier = u64::from(format.modifier);
                 for (plane, ((fd, offset), stride)) in dmabuf
                     .handles()
@@ -861,24 +873,33 @@ impl State {
     /// desktop's surface that mirrors it. The answer is kept while no desktop is attached and
     /// asked again on the next one.
     pub(crate) fn request_surface_feedback(&mut self, id: &ObjectId) {
+        let wanted = self.surfaces.get(id).is_some_and(|kept| {
+            with_states(&kept.surface, |states| {
+                smithay::wayland::dmabuf::SurfaceDmabufFeedbackState::from_states(states).is_some()
+            })
+        });
+        if wanted {
+            self.ask_surface_feedback(id);
+        }
+    }
+
+    /// Ask the desktop for the feedback of the surface mirroring `id`. Also called while
+    /// smithay holds the surface's state for the app's own request, so it reads none of it.
+    pub(crate) fn ask_surface_feedback(&mut self, id: &ObjectId) {
         let Some(up) = self.up.as_ref() else {
             return;
         };
         let Some(dmabuf) = up.dmabuf.clone() else {
             return;
         };
-        let Some(kept) = self.surfaces.get(id) else {
+        let Some(surface) = self
+            .surfaces
+            .get(id)
+            .and_then(|kept| kept.up.as_ref())
+            .map(|up| up.surface.clone())
+        else {
             return;
         };
-        let Some(surface) = kept.up.as_ref().map(|up| up.surface.clone()) else {
-            return;
-        };
-        let wanted = with_states(&kept.surface, |states| {
-            smithay::wayland::dmabuf::SurfaceDmabufFeedbackState::from_states(states).is_some()
-        });
-        if !wanted {
-            return;
-        }
         self.surface_feedback.entry(id.clone()).or_default();
         dmabuf.get_surface_feedback(&surface, &up.qh, SurfaceRef(id.clone()));
     }

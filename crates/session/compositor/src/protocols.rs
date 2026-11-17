@@ -159,6 +159,39 @@ impl State {
         crate::gpu_health::record_dmabuf(node.as_deref());
     }
 
+    /// Offer `linux-dmabuf` with default feedback for linear buffers of the DRM fourcc `codes`,
+    /// on a machine whose renderer has no GPU node to tell clients about. A test makes such
+    /// buffers from `/dev/udmabuf` and reads them back on the CPU; the backend's own offer that
+    /// follows finds the global made and adds nothing.
+    #[cfg(feature = "test-support")]
+    pub(crate) fn enable_linear_dmabuf_for_tests(&mut self, codes: &[u32]) {
+        use smithay::backend::allocator::{Fourcc, Modifier};
+        if self.protocols.dmabuf_global.is_some() {
+            return;
+        }
+        let formats: Vec<Format> = codes
+            .iter()
+            .filter_map(|code| Fourcc::try_from(*code).ok())
+            .map(|code| Format {
+                code,
+                modifier: Modifier::Linear,
+            })
+            .collect();
+        let display = self.display.clone();
+        let feedback = match DmabufFeedbackBuilder::new(0, formats).build() {
+            Ok(feedback) => feedback,
+            Err(error) => {
+                tracing::warn!(?error, "dmabuf feedback");
+                return;
+            }
+        };
+        let global = self
+            .protocols
+            .dmabuf
+            .create_global_with_default_feedback::<Self>(&display, &feedback);
+        self.protocols.dmabuf_global = Some(global);
+    }
+
     /// Whether a client keeps the session from idling: only while the surface asking is on screen,
     /// so a video left in a hidden tab or on a workspace nobody is looking at does not hold the
     /// machine awake.

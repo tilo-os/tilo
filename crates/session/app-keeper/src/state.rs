@@ -328,8 +328,9 @@ impl DmabufHandler for State {
         _global: &DmabufGlobal,
     ) -> Option<DmabufFeedback> {
         // The request itself is the moment to ask the desktop too, when the surface is
-        // already shown; a surface shown earlier asked when it was made.
-        self.request_surface_feedback(&surface.id());
+        // already shown; a surface shown later asks when it is made there. smithay holds the
+        // surface's state while it asks this, so nothing here may take it again.
+        self.ask_surface_feedback(&surface.id());
         self.surface_feedback
             .get(&surface.id())
             .and_then(|entry| entry.built.clone())
