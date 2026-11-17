@@ -23,6 +23,10 @@
 //! anywhere: the server keeps whom it would have written to
 //! ([`Server::mailed`]).
 //!
+//! What the server schedules is an entry every part of which, the event and
+//! each occurrence that stands apart, says who organises it (3.1). Somebody
+//! is named by any address, a mail address or another (RFC 5545, 3.3.3).
+//!
 //! An entry is known by its `UID`. Written over by one under another `UID`,
 //! it is refused (RFC 4791, 5.3.2.1, `no-uid-conflict`). A server that does
 //! not keep that rule ([`Server::takes_another_uid`]) reads what it is given
@@ -182,25 +186,55 @@ fn param<'a>(upper: &'a str, name: &str) -> Option<&'a str> {
     )
 }
 
+/// Whom the line `line` names: what it says after its name and parameters,
+/// which is all that follows the first colon no quoted parameter holds,
+/// without its `mailto:` and in lower case. Somebody may be named by another
+/// address than a mail address (RFC 5545, 3.3.3), and is written to there.
+fn address_named(line: &str) -> Option<String> {
+    let mut quoted = false;
+    let value = line.char_indices().find_map(|(at, letter)| match letter {
+        '"' => {
+            quoted = !quoted;
+            None
+        }
+        ':' if !quoted => line.get(at.saturating_add(1)..),
+        _ => None,
+    })?;
+    let value = value.trim();
+    let address = value
+        .get(..7)
+        .filter(|scheme| scheme.eq_ignore_ascii_case("mailto:"))
+        .and_then(|_| value.get(7..))
+        .unwrap_or(value)
+        .trim();
+    (!address.is_empty()).then(|| address.to_ascii_lowercase())
+}
+
 /// What the entry `ics` says to a server that schedules.
 fn read(ics: &str) -> Read {
     let mut read = Read::default();
+    // How many events and occurrences the entry holds, and who each of them
+    // says organises it.
+    let mut parts = 0_usize;
+    let mut organised: Vec<String> = Vec::new();
     for line in ics.replace("\r\n ", "").lines() {
         let upper = line.to_ascii_uppercase();
+        if upper.trim() == "BEGIN:VEVENT" {
+            parts = parts.saturating_add(1);
+            continue;
+        }
         let property = upper.split([';', ':']).next().unwrap_or_default();
         if property == "EXDATE" {
             let dates = upper.rsplit(':').next().unwrap_or_default();
             read.left_out = read.left_out.saturating_add(dates.split(',').count());
             continue;
         }
-        let Some(at) = upper.rfind("MAILTO:") else {
+        if property != "ORGANIZER" && property != "ATTENDEE" {
+            continue;
+        }
+        let Some(address) = address_named(line) else {
             continue;
         };
-        let address = line
-            .get(at.saturating_add("MAILTO:".len())..)
-            .unwrap_or_default()
-            .trim()
-            .to_ascii_lowercase();
         let writes = match param(&upper, "SCHEDULE-AGENT") {
             None | Some("SERVER") => Writes::Server,
             Some("CLIENT") => Writes::Client,
@@ -214,7 +248,10 @@ fn read(ics: &str) -> Read {
                 .to_owned(),
         };
         match property {
-            "ORGANIZER" => read.organizer = Some(named),
+            "ORGANIZER" => {
+                organised.push(named.address.clone());
+                read.organizer = Some(named);
+            }
             "ATTENDEE"
                 if !read
                     .invited
@@ -225,6 +262,13 @@ fn read(ics: &str) -> Read {
             }
             _ => {}
         }
+    }
+    // RFC 6638, 3.1: the server schedules an entry where every one of its
+    // parts says who organises it, and all of them say the same.
+    let throughout =
+        organised.len() == parts && organised.iter().all(|by| Some(by) == organised.first());
+    if !throughout {
+        read.organizer = None;
     }
     read
 }
@@ -1144,5 +1188,65 @@ mod tests {
         assert!(!lock(&told.state).any_uid);
         told.takes_another_uid();
         assert!(lock(&told.state).any_uid);
+    }
+
+    /// Somebody an entry names by another address than a mail address (RFC
+    /// 5545, 3.3.3) is written to like anybody else, by the same tables: a
+    /// line left to the server invites them, a line that is gone tells them
+    /// the event is off, and a line marked for the client sends nothing.
+    #[test]
+    fn somebody_named_by_another_address_than_a_mail_address_is_written_to_the_same() {
+        let by_other_address = |mark: Option<&str>| {
+            let line = mark
+                .map(|mark| format!("ATTENDEE{mark};CN=\"Fay: Ops\":urn:uuid:Fay-4\r\n"))
+                .unwrap_or_default();
+            entry(&format!("ORGANIZER:mailto:{ADA}\r\n{line}"))
+        };
+        let mut state = server();
+        asked(
+            &mut state,
+            "PUT",
+            &[("If-None-Match", "*")],
+            &by_other_address(Some(SERVER)),
+        );
+        assert_eq!(state.mailed, ["REQUEST to urn:uuid:fay-4"]);
+        state.mailed.clear();
+        asked(&mut state, "PUT", &[], &by_other_address(None));
+        assert_eq!(state.mailed, ["CANCEL to urn:uuid:fay-4"]);
+        state.mailed.clear();
+        asked(&mut state, "PUT", &[], &by_other_address(Some(CLIENT)));
+        asked(&mut state, "PUT", &[], &by_other_address(None));
+        assert_eq!(state.mailed, NOBODY, "the same with the line marked");
+    }
+
+    /// RFC 6638, 3.1: the server schedules an entry where every one of its
+    /// parts says who organises it. One occurrence that does not say so
+    /// makes the entry one the server does not schedule: stored over one it
+    /// scheduled, it is that entry's removal (3.2.3.1, 3.2.1.3), and stored
+    /// where nothing was, it invites nobody.
+    #[test]
+    fn an_entry_is_scheduled_only_where_each_of_its_parts_says_who_organises_it() {
+        let people = format!("ORGANIZER:mailto:{ADA}\r\nATTENDEE:mailto:{BO}\r\n");
+        let repeating = |moved: &str| {
+            format!(
+                "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VEVENT\r\nUID:a\r\n\
+                 DTSTART:20261116T090000Z\r\nRRULE:FREQ=WEEKLY\r\n{people}END:VEVENT\r\n\
+                 BEGIN:VEVENT\r\nUID:a\r\nRECURRENCE-ID:20261123T090000Z\r\n\
+                 DTSTART:20261123T100000Z\r\n{moved}END:VEVENT\r\nEND:VCALENDAR\r\n"
+            )
+        };
+        let mut state = server();
+        asked(&mut state, "PUT", &[], &repeating(&people));
+        assert_eq!(state.mailed, request(), "each part says who organises it");
+        state.mailed.clear();
+        asked(&mut state, "PUT", &[], &repeating(&people));
+        assert_eq!(state.mailed, request(), "stored again, it goes on");
+        state.mailed.clear();
+        asked(&mut state, "PUT", &[], &repeating(""));
+        assert_eq!(state.mailed, cancel(), "one part no longer says so");
+
+        let mut state = server();
+        asked(&mut state, "PUT", &[], &repeating(""));
+        assert_eq!(state.mailed, NOBODY, "stored where nothing was");
     }
 }
