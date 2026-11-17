@@ -848,7 +848,7 @@ async fn a_foreign_runtime_joins_a_hosted_workspace_as_an_editor_and_syncs_both_
             workspace: workspace.to_string(),
             operation: CommitOperation::Document {
                 app: "so.tilo.chat".into(),
-                record: String::new(),
+                document: String::new(),
                 envelope,
                 own: None,
             },
@@ -909,7 +909,7 @@ async fn a_foreign_runtime_joins_a_hosted_workspace_as_an_editor_and_syncs_both_
             workspace: workspace.to_string(),
             operation: CommitOperation::Document {
                 app: "so.tilo.chat".into(),
-                record: String::new(),
+                document: String::new(),
                 envelope,
                 own: None,
             },
@@ -1508,7 +1508,7 @@ fn signed_write(
         workspace,
         operation: CommitOperation::Document {
             app: app.into(),
-            record: RECORD.into(),
+            document: RECORD.into(),
             envelope: Box::new(envelope),
             own: None,
         },

@@ -12,7 +12,7 @@ use tilo_identity_host::identity_store::HostIdentity;
 #[cfg(target_os = "linux")]
 use tilo_peer_state::owner::NativeWorkspaceOwner;
 
-pub use tilo_session_client::membership_check::Ownership;
+pub use tilo_session_client::membership_check::MembershipCheck;
 
 /// This desktop's ownership: the device's own key proves it to the workspace's host.
 #[cfg(target_os = "linux")]

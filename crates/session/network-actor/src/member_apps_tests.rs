@@ -195,7 +195,7 @@ fn commit_entry(owner: &NativeWorkspaceOwner, workspace: Workspace, key: &Signin
                 workspace: workspace.to_string(),
                 operation: tilo_peer_state::owner_commit::CommitOperation::Document {
                     app: APP.into(),
-                    record: RECORD.into(),
+                    document: RECORD.into(),
                     envelope,
                     own: None,
                 },

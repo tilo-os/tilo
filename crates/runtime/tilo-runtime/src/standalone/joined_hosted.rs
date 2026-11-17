@@ -175,7 +175,7 @@ impl Joined {
         let binding = request.binding()?;
         let CommitOperation::Document {
             app,
-            record,
+            document: record,
             envelope,
             ..
         } = &request.operation
