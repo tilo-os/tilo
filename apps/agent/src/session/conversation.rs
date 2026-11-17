@@ -65,7 +65,7 @@ pub(super) struct Record {
     cause: Cause,
     /// The operations dispatched so far, each keyed by the id it was given
     /// when it was dispatched; every record repeats them whole.
-    steps: Vec<Value>,
+    pub(super) steps: Vec<Value>,
     /// The words the run answers with, when it has any: the reply's text.
     answer: Option<String>,
     /// Whether the run has already looked for the reply's `record-work`,
@@ -198,6 +198,31 @@ impl Session {
         {
             return title.to_owned();
         }
+        // A step that made something is about what it made ("New task: Call mum"), never the
+        // list it made it in, nor a neighbour an argument names: the made resource by its title
+        // as its app publishes it, else the title the step gave it.
+        if let Some(made) = done.and_then(|done| done.output.resources.first()) {
+            let catalogue = self.task_catalogue();
+            if let Some(label) = catalogue
+                .offers
+                .iter()
+                .find(|offer| offer.address().resource == *made)
+                .map(|offer| offer.descriptor.resource_label.trim().to_owned())
+                .filter(|label| !label.is_empty())
+            {
+                return label;
+            }
+            if let Some(title) = ["title", "name", "subject"].iter().find_map(|key| {
+                action
+                    .arguments
+                    .get(*key)
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|title| !title.is_empty())
+            }) {
+                return title.to_owned();
+            }
+        }
         let catalogue = self.task_catalogue();
         // The resource it shows or acts on first, then any other the arguments name: a `place`
         // names the conversation it stands beside too, which is not what it acted on.
@@ -230,6 +255,38 @@ impl Session {
             .filter(|title| !title.is_empty())
     }
 
+    /// A program's change as the person reads it: the action in its app's words (what it
+    /// declares it did, else its label) with the title of the record it changed, as the app
+    /// publishes both. A program names a change by its action's name and the record's id
+    /// ("check" on `tl:…/i…-12`), and the person read "check", never "Complete: Book a haircut".
+    fn change_line(&mut self, action: &str, resource: &str, label: &str) -> String {
+        let catalogue = self.task_catalogue();
+        let on_resource = || {
+            catalogue
+                .offers
+                .iter()
+                .filter(move |offer| offer.address().resource == resource)
+        };
+        let offered = on_resource().find(|offer| offer.address().action == action);
+        let title = Some(label.trim())
+            .filter(|label| !label.is_empty() && *label != action)
+            .map(str::to_owned)
+            .or_else(|| {
+                on_resource()
+                    .map(|offer| offer.descriptor.resource_label.trim().to_owned())
+                    .find(|label| !label.is_empty())
+            })
+            .unwrap_or_default();
+        match offered {
+            Some(offer) => crate::i18n::did(
+                &offer.descriptor.action_label,
+                offer.descriptor.did.as_deref(),
+                &title,
+            ),
+            None => crate::i18n::did(action, None, &title),
+        }
+    }
+
     /// Add one `tilo` program the run ran to the reply's step list.
     pub(super) fn record_program(
         &mut self,
@@ -243,7 +300,26 @@ impl Session {
         let label = step
             .changes
             .first()
-            .map(|row| crate::i18n::did(&row.action, None, &row.resource.reference.label))
+            .map(|row| {
+                // A change on an app's root record made something in it ("New task" on Tasks):
+                // the step is about what it made, the record the program's answer shows.
+                let root = crate::tools::canvas::tilolang_app_of(&row.resource.reference.id)
+                    .and_then(|app| {
+                        row.resource
+                            .reference
+                            .id
+                            .strip_prefix(&format!("tl:{app}:"))
+                    })
+                    .is_some_and(|record| !record.contains('/'));
+                let made = step
+                    .refs
+                    .iter()
+                    .find(|at| root && at.reference.id != row.resource.reference.id)
+                    .map(|at| at.reference.label.clone())
+                    .or_else(|| root.then(|| titled_in(&step.program)).flatten());
+                let label = made.unwrap_or_else(|| row.resource.reference.label.clone());
+                self.change_line(&row.action, &row.resource.reference.id, &label)
+            })
             .or_else(|| step.previews.first().map(|row| row.action.clone()))
             .unwrap_or_else(|| {
                 let app = step.refs.first().map(|at| at.app.clone());
@@ -320,6 +396,7 @@ impl Session {
             step.insert("why".into(), json!(why));
         }
         record.steps.push(Value::Object(step));
+        tracing::info!(sequence, %label, outcome, %resource, "turn step");
         self.record_state(run, "doing", json!({"did": label}), None)
     }
 
@@ -466,9 +543,30 @@ impl Session {
     }
 }
 
+/// The title a program gave what it made, as it wrote it (`new_task(tasks.tasks, title: "Call
+/// mum", …)`): what a step that made something on an app's root is about when its answer showed
+/// nothing it made.
+fn titled_in(program: &str) -> Option<String> {
+    let (_, rest) = program.split_once("title:")?;
+    let rest = rest.trim_start().strip_prefix('"')?;
+    let (title, _) = rest.split_once('"')?;
+    Some(title.trim().to_owned()).filter(|title| !title.is_empty())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A step that made a task on Tasks' root is about the task, by the title the program gave
+    /// it: "New task: Call mum", never "New task: Tasks".
+    #[test]
+    fn a_made_record_is_named_by_the_title_its_program_gave_it() {
+        assert_eq!(
+            titled_in("tasks.new_task(tasks.tasks, title: \"Call mum\", due: 2026-11-18)"),
+            Some("Call mum".to_owned())
+        );
+        assert_eq!(titled_in("tasks.check(t, done: true)"), None);
+    }
 
     /// A turn that answers the message at `message`.
     fn asked(message: &str) -> runtime_collab::TurnRequest {

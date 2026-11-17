@@ -162,7 +162,11 @@ fn apply_record_change(
 /// The person an agent acts for, when `caller` is one: an agent the host admitted as a member
 /// acting for its person, confined to a workspace.
 fn agent_person(caller: &Caller) -> Option<(&str, &str)> {
-    if !caller.acting().is_agent() || caller.is_session_delegated() {
+    // A device's own agents read nothing here; an agent answering a person's turn is the
+    // host's, admitted for that turn (`Caller::agent_turn`, which marks it session-delegated as
+    // it rides the person's authority), and reads and changes what the person may, each read and
+    // change still decided at the record's node like every other caller's.
+    if !caller.acting().is_agent() || (caller.is_session_delegated() && caller.turn().is_none()) {
         return None;
     }
     Some((caller.acting_for_person()?, caller.workspace()?))

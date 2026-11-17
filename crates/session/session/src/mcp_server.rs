@@ -1510,6 +1510,12 @@ impl SessionServices {
         &self.person
     }
 
+    /// Whether the session's services keep `app`'s records (a package it runs itself): those are
+    /// read and changed on the loop's pass, every other app's are the workspace's.
+    pub(crate) fn keeps(&self, app: &str) -> bool {
+        self.kept.lock_recover().contains(app)
+    }
+
     /// The seam `wake` wakes the loop on, shared by every connection that asks the session's own
     /// services, for the person sitting here.
     pub(crate) fn new(wake: Wake, person: &str) -> Self {

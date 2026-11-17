@@ -488,6 +488,8 @@ tilo_test_env::scenario! {
                 ),
                 turn(&[post("Hello is in Writer.")], 64),
                 turn(&[(tools::PLAN, serde_json::json!({}))], 64),
+                // Asked for its words, it still gives none.
+                turn(&[(tools::PLAN, serde_json::json!({}))], 64),
             ],
         );
         f.session.run_task(&f.run).unwrap();
@@ -496,9 +498,42 @@ tilo_test_env::scenario! {
             matches!(
                 terminal(&f.sent.borrow()),
                 TurnUpdate::Failed { message }
-                    if message == crate::i18n::t("agent-failure-no-answer")
+                    if message == crate::i18n::t("agent-failure-empty-answer")
             ),
-            "the run ends failed, never as a success with a line nobody wrote"
+            "the run ends failed, never as a success with a line nobody wrote, and never \
+             saying nothing was done after its steps ran: {:?}",
+            terminal(&f.sent.borrow())
+        );
+
+        // The closing turn breaks in the turn that would ask for the words ("put my notes
+        // next to the inbox": a place, then a `plan` that was not the turn's last call): the
+        // model is asked, and its next turn's words are the answer. The run used to end in the
+        // very turn that asked, telling the person the agent did nothing.
+        let mut f = fixture(
+            "write hello in Writer, then ping me in Chat",
+            World::default(),
+            vec![
+                turn(
+                    &[invoke("type-text", &serde_json::json!({"text": "Hello."}))],
+                    64,
+                ),
+                turn(&[post("Hello is in Writer.")], 64),
+                turn(
+                    &[
+                        finish("", true),
+                        invoke("type-text", &serde_json::json!({"text": "!"})),
+                    ],
+                    64,
+                ),
+                said_turn("I wrote hello in Writer and pinged you in Chat."),
+            ],
+        );
+        f.session.run_task(&f.run).unwrap();
+        assert_eq!(
+            terminal(&f.sent.borrow()),
+            TurnUpdate::Succeeded {
+                message: "I wrote hello in Writer and pinged you in Chat.".into()
+            }
         );
 
         // With a part still undone the same failure stays a failure.

@@ -98,7 +98,8 @@ impl RustApps {
                 text: Some("Worth a watch".to_owned()),
                 mentions: None,
             });
-        let _ = self.chat
+        let _ = self
+            .chat
             .apply_part_as(&tilo_resource::MemberId::person(chat::model::ME), invoke);
     }
 }

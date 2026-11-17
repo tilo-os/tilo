@@ -300,6 +300,13 @@ tilo_test_env::scenario! {
             .iter()
             .filter(|(action, _)| action == tilo_actions::remote::task_programs::RUN)
             .map(|(_, arguments)| arguments)
+            // What the task read of the apps' declarations (`describe`) is no program of the
+            // model's.
+            .filter(|arguments| {
+                !arguments["program"]
+                    .as_str()
+                    .is_some_and(|program| program.starts_with("describe("))
+            })
             .collect();
         assert_eq!(ran.len(), 3);
         assert!(ran[0].get("run").is_none(), "{:?}", ran[0]);
@@ -459,6 +466,176 @@ fn a_program_that_asks_a_field_for_when_a_note_changed_is_taught_the_filter_and_
         terminal(&f.sent.borrow()),
         TurnUpdate::Succeeded {
             message: "Only Groceries changed this week: you pinned it.".into()
+        }
+    );
+}
+
+/// "Remind me to call mum tomorrow at 6pm", done in one program: the program that made the task
+/// did the part the model lists for Tasks, so the finish that lists it is taken at once. A part
+/// done by a program used to stay undone, the finish was refused, and the model opened the Tasks
+/// app's window to have "an operation in Tasks" — the whole app on the canvas, and a run that
+/// ended as failed after it had made the task.
+#[test]
+fn a_part_done_by_a_program_lets_the_finish_through() {
+    const TASKS: &str = "so.tilo.lang.tasks";
+    let made = serde_json::json!({
+        "text": "t1 \"Call mum\"  due: 2026-11-17  at: 18:00\nstep 1: 1 change in tasks; `undo` takes it back",
+        "failed": false,
+        "answer": {"state": "done", "output": [], "changed": 1, "apps": [TASKS],
+            "steps": [{"app": TASKS, "action": "new_task",
+                "resources": [format!("tl:{TASKS}:root/items:m")], "destructive": false}]},
+        "refs": [["t1", "@tasks.Task:root/items:m"]],
+    });
+    let world = World {
+        tilolang: true,
+        tl_programs: vec![("new_task", made)],
+        ..World::default()
+    };
+    let mut f = fixture(
+        "remind me to call mum tomorrow at 6pm",
+        world,
+        vec![
+            turn(
+                &[tilo(
+                    "tasks.new_task(tasks, title: \"Call mum\", due: 2026-11-17, at: 18:00)",
+                )],
+                64,
+            ),
+            turn(
+                &[(
+                    tools::PLAN,
+                    serde_json::json!({
+                        "reply": "I added \"Call mum\" for tomorrow at 18:00.",
+                        "done": true,
+                        "parts": [{"part": "a task to call mum", "app": TASKS}],
+                    }),
+                )],
+                64,
+            ),
+        ],
+    );
+    f.session.run_task(&f.run).unwrap();
+    let bodies = f.script.bodies.lock().unwrap();
+    assert_eq!(
+        bodies.len(),
+        2,
+        "the program and the finish, no refusal; the last one read: {}",
+        said_last(bodies.last().unwrap())
+    );
+    drop(bodies);
+    assert_eq!(
+        terminal(&f.sent.borrow()),
+        TurnUpdate::Succeeded {
+            message: "I added \"Call mum\" for tomorrow at 18:00.".into()
+        }
+    );
+}
+
+/// One response, one model call: the program and the reply the person reads once it has run.
+/// "What's on my plate today?" is a program that prints the answer, and its reply is that
+/// answer; nothing asks the model again to read it first.
+#[test]
+fn a_program_with_its_reply_finishes_in_one_call() {
+    let today = serde_json::json!({
+        "text": "- Book a haircut (overdue since 29 Jun)\n- Call the landlord about the boiler",
+        "failed": false,
+        "answer": {"state": "done", "output": [], "steps": [], "changed": 0, "apps": []},
+    });
+    let world = World {
+        tilolang: true,
+        tl_programs: vec![("tasks.Task", today)],
+        ..World::default()
+    };
+    let mut f = fixture(
+        "what's on my plate today?",
+        world,
+        vec![turn(
+            &[(
+                crate::programs::TILO,
+                serde_json::json!({
+                    "program": "for t in find(tasks.Task, done: false) { print(\"- {t.title}\") }",
+                    "reply": "Today:\n{answer}",
+                }),
+            )],
+            64,
+        )],
+    );
+    f.session.run_task(&f.run).unwrap();
+    assert_eq!(f.script.bodies.lock().unwrap().len(), 1, "one model call");
+    assert_eq!(
+        terminal(&f.sent.borrow()),
+        TurnUpdate::Succeeded {
+            message: "Today:\n- Book a haircut (overdue since 29 Jun)\n- Call the landlord about \
+                      the boiler"
+                .into()
+        }
+    );
+}
+
+/// A program that did not run to its end is read again: its reply is never told for it.
+#[test]
+fn a_failed_program_keeps_its_reply_back() {
+    let failed = serde_json::json!({
+        "text": "error: the program does not compile; nothing ran\n1:7: `tasks` has no `nope`",
+        "failed": true,
+        "answer": {"state": "rejected", "detail": ["1:7: `tasks` has no `nope`"]},
+    });
+    let world = World {
+        tilolang: true,
+        tl_programs: vec![("nope", failed)],
+        ..World::default()
+    };
+    let mut f = fixture(
+        "what's on my plate today?",
+        world,
+        vec![
+            turn(
+                &[(
+                    crate::programs::TILO,
+                    serde_json::json!({"program": "tasks.nope", "reply": "All done: {answer}"}),
+                )],
+                64,
+            ),
+            turn(&[finish("Nothing is due today.", true)], 64),
+        ],
+    );
+    f.session.run_task(&f.run).unwrap();
+    assert_eq!(f.script.bodies.lock().unwrap().len(), 2);
+    assert_eq!(
+        terminal(&f.sent.borrow()),
+        TurnUpdate::Succeeded {
+            message: "Nothing is due today.".into()
+        }
+    );
+}
+
+/// A run that keeps looking without getting further ("make a note with groceries" when nothing
+/// writes a note's body: forty calls of describing and listing) is told after four such turns to
+/// finish, and ends with the readable failure when that turn does not: five calls, not dozens.
+#[test]
+fn a_run_that_gets_no_further_is_told_to_finish_and_ends() {
+    let looking = || turn(&[(tools::LIST_APPLICATIONS, serde_json::json!({}))], 64);
+    let mut f = fixture(
+        "make a note with the groceries",
+        World::default(),
+        (0..8).map(|_| looking()).collect(),
+    );
+    f.session.run_task(&f.run).unwrap();
+    let bodies = f.script.bodies.lock().unwrap();
+    assert_eq!(
+        bodies.len(),
+        5,
+        "four idle turns and the one told to finish"
+    );
+    assert!(
+        bodies[4].to_string().contains("Finish now"),
+        "the fifth call is told to finish"
+    );
+    drop(bodies);
+    assert_eq!(
+        terminal(&f.sent.borrow()),
+        TurnUpdate::Failed {
+            message: crate::i18n::t("agent-failure-stalled")
         }
     );
 }

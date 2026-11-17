@@ -288,7 +288,92 @@ impl Drop for Asking {
     }
 }
 
+/// The records an agent session reads and changes outside their apps (its programs' `find`,
+/// `read` and every action a program calls), as the session's own caller, while it goes: the
+/// broker's record api, decided by the workspace's policy for the session's agent and person as
+/// every other step of the session is. Without it a turn's programs ran no change at all ("this
+/// desktop applies no task's changes at a record's origin").
+struct SessionRecords {
+    connection: AgentConnection,
+    reads: Option<Arc<dyn tilo_actions::remote::RecordReads>>,
+    changes: Option<Arc<dyn tilo_actions::remote::RecordChanges>>,
+}
+
+impl tilo_actions::remote::RecordReads for SessionRecords {
+    fn read(
+        &self,
+        caller: &Caller,
+        address: &tilo_actions::remote::RecordAddress,
+    ) -> Result<tilo_actions::remote::RecordCopy, ActionHostError> {
+        self.connection.check(caller)?;
+        self.reads
+            .as_ref()
+            .ok_or(ActionHostError::NotPermitted)?
+            .read(&self.connection.0.caller, address)
+    }
+
+    fn answer_read(
+        self: Arc<Self>,
+        caller: &Caller,
+        correlation: u64,
+        read: tilo_actions::remote::RecordReadRequest,
+    ) -> Pending<tilo_actions::remote::RemoteActionMessage> {
+        // Every reading is answered through `read`, which checks the session goes and reads as
+        // its caller.
+        tilo_actions::remote::answer_read(self, caller, correlation, read)
+    }
+
+    fn watch(
+        &self,
+        caller: &Caller,
+        address: &tilo_actions::remote::RecordAddress,
+        wake: &tilo_actions::remote::RecordWake,
+    ) -> Result<(), ActionHostError> {
+        self.connection.check(caller)?;
+        self.reads
+            .as_ref()
+            .ok_or(ActionHostError::NotPermitted)?
+            .watch(&self.connection.0.caller, address, wake)
+    }
+}
+
+impl tilo_actions::remote::RecordChanges for SessionRecords {
+    fn apply(
+        &self,
+        caller: &Caller,
+        change: &tilo_actions::remote::RecordChange,
+    ) -> Result<serde_json::Value, ActionHostError> {
+        self.connection.check(caller)?;
+        self.changes
+            .as_ref()
+            .ok_or(ActionHostError::NotPermitted)?
+            .apply(&self.connection.0.caller, change)
+    }
+}
+
+impl AgentConnection {
+    fn session_records(&self) -> SessionRecords {
+        SessionRecords {
+            connection: self.clone(),
+            reads: self.state().record_reads(),
+            changes: self.state().record_changes(),
+        }
+    }
+}
+
 impl ActionHost for AgentConnection {
+    fn record_reads(&self) -> Option<Arc<dyn tilo_actions::remote::RecordReads>> {
+        let records = self.session_records();
+        records.reads.as_ref()?;
+        Some(Arc::new(records))
+    }
+
+    fn record_changes(&self) -> Option<Arc<dyn tilo_actions::remote::RecordChanges>> {
+        let records = self.session_records();
+        records.changes.as_ref()?;
+        Some(Arc::new(records))
+    }
+
     fn query(
         &self,
         caller: &Caller,

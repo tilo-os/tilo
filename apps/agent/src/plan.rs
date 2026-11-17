@@ -124,8 +124,22 @@ impl Instruction {
         };
         // Confirmation is invocation metadata, never an app argument. Strip
         // both reserved names even for actions that need no confirmation so
-        // they cannot collide with or sneak through strict schema binding.
-        arguments.remove("confirm");
+        // they cannot collide with or sneak through strict schema binding —
+        // except a `confirm` an operation that asks no confirmation declares
+        // as its own parameter: the session API's programs take `confirm` to
+        // run a program its preview showed, and stripping it left every
+        // previewed program previewed again, whatever the model sent.
+        let own_confirm = matches!(
+            offer.descriptor.contract.confirmation,
+            tilo_actions::ConfirmationPolicy::None
+        ) && offer
+            .descriptor
+            .params
+            .iter()
+            .any(|param| param.name == "confirm");
+        if !own_confirm {
+            arguments.remove("confirm");
+        }
         arguments.remove("confirmation_phrase");
         if !offer.wants_content() {
             tilo_actions::ActionArgs::bind_json(&offer.descriptor.params, &arguments)
@@ -475,6 +489,36 @@ mod tests {
                     Instruction::from_answer("sheets.range:r1#fill", "fill it", Some(&wrong), &offers,),
                     Err(Refused::Unusable(_))
                 ));
+            }
+
+            {
+                // An operation that asks no confirmation and declares `confirm` as its own
+                // parameter (the session API's programs) keeps it: it is the program's own
+                // "run what the preview showed", not invocation metadata.
+                let mut programs = offer("so.tilo.agent", "task", "run-program", "Run", None);
+                programs.descriptor.params = vec![
+                    tilo_actions::ActionParam::required(
+                        "program",
+                        tilo_actions::ParamType::Text,
+                        "The program",
+                    ),
+                    tilo_actions::ActionParam::optional(
+                        "confirm",
+                        tilo_actions::ParamType::Boolean,
+                        "Run what the preview showed",
+                    ),
+                ];
+                let offers = vec![programs];
+                let asked = serde_json::json!({"program": "tasks.x()", "confirm": true});
+                let Ok(Instruction::Perform { arguments, .. }) = Instruction::from_answer(
+                    "task#run-program",
+                    "run it",
+                    asked.as_object(),
+                    &offers,
+                ) else {
+                    panic!("the program is performed");
+                };
+                assert_eq!(arguments.get("confirm"), Some(&serde_json::json!(true)));
             }
 
             {

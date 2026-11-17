@@ -125,6 +125,13 @@ const ANSWER_AGAIN: &str = "None of its calls ran. Answer again from here, keepi
 /// neither a completed step nor words for the person is not an answer, whatever
 /// it says of itself; one that keeps making it ends the task as it began.
 const MOST_SILENT_FINISHES: usize = 2;
+/// Turns in a row that do nothing in any app after which a run is asked to finish
+/// ([`LoopState::stalled`]); it ends one turn later.
+const STALLED_TURNS: usize = 4;
+/// What a run that is not getting further is told.
+const FINISH_NOW: &str = "You have taken several responses without getting further. Finish \
+     now: call `plan` alone, saying in `reply` what you did, what you could not do and why. Call \
+     no other tool.";
 /// How many times in a row a turn cut off at the model's output limit is
 /// continued from where it stopped before the run fails. Reasoning models
 /// spend part of their answer's budget thinking; an answer that keeps being
@@ -246,6 +253,71 @@ impl ActiveTurn {
     }
 }
 
+/// The session API's programs (`tilo.task-programs`, `task#run-program`) as the step a turn
+/// takes them by, when the catalogue the agent's connection holds does not list them.
+///
+/// The broker lists an agent session's own steps only to a caller working in a session
+/// (`collab_app_broker`, "A step of an agent session's own ... is listed to an agent while it
+/// works in a session"); the agent's connection is not one, while every turn it answers is: the
+/// steps of a turn are requests on its connection served as the turn's. So the listing the
+/// agent keeps never carries the API its turns run their programs through, and without this
+/// every `tilo` call was answered "this session runs no programs" and the model fell back to
+/// looking operations up one by one. The broker still decides each call as a step of the
+/// turn's session; this only names the step the protocol defines.
+fn task_programs_offer(offers: &[surface::Offer]) -> Option<surface::Offer> {
+    use tilo_actions::remote::task_programs as wire;
+    if offers.iter().any(|offer| {
+        offer.descriptor.address.resource == wire::RESOURCE
+            && offer.descriptor.address.action == wire::RUN
+    }) {
+        return None;
+    }
+    Some(surface::Offer {
+        app: wire::APP.to_owned(),
+        broker_peer_id: None,
+        broker_provider: Some(wire::PROVIDER.to_owned()),
+        descriptor: tilo_actions::ActionDescriptor {
+            did: None,
+            state: tilo_actions::ActionState::default(),
+            semantic_identity: None,
+            address: tilo_actions::ActionAddress::new(wire::RESOURCE, wire::RUN),
+            resource_kind: wire::RESOURCE.into(),
+            resource_label: "Task programs".into(),
+            action_label: "Run a program".into(),
+            keywords: Vec::new(),
+            icon: None,
+            description: None,
+            locus: tilo_actions::ExecutionLocus::default(),
+            kind: tilo_actions::OperationKind::View,
+            contract: tilo_actions::ActionContract {
+                result: tilo_actions::ResultSpec::Json {
+                    schema: serde_json::json!({ "type": "object", "required": ["text", "failed"] }),
+                },
+                ..tilo_actions::ActionContract::view()
+            },
+            input: tilo_actions::InputSpec::None,
+            params: vec![
+                tilo_actions::ActionParam::required(
+                    "program",
+                    tilo_actions::ParamType::Text,
+                    "The program",
+                ),
+                tilo_actions::ActionParam::optional(
+                    "confirm",
+                    tilo_actions::ParamType::Boolean,
+                    "Send again a previewed program",
+                ),
+                tilo_actions::ActionParam::optional(
+                    "this",
+                    tilo_actions::ParamType::Text,
+                    "What the person pointed at",
+                ),
+            ],
+            view: None,
+        },
+    })
+}
+
 /// Whether `body` is a model turn the model itself cut off at its output
 /// limit: not a failed call, an answer that stopped early and is continued.
 fn is_output_limit(body: &str) -> bool {
@@ -254,8 +326,6 @@ fn is_output_limit(body: &str) -> bool {
     )
 }
 
-/// The longest prefix of `text` within `max` bytes, cut on a character
-/// boundary.
 /// The day the person asks on, as the model reads it: a program reads no clock, so a request
 /// about "this week" or "overdue" is answered from this, never found out by reading change times.
 fn today_line(today: ui::format::NaiveDate) -> String {
@@ -277,6 +347,37 @@ fn input_tokens(body: &str) -> Option<u64> {
         .filter(|tokens| *tokens > 0)
 }
 
+/// The moment the person asks at, and how a moment they name is written: a program's `Time` is an
+/// instant in UTC (`2026-11-17T17:00:00Z`; a time with no zone does not compile in a program,
+/// E121), so a time of day the person names ("at 6pm") is theirs, in their zone, and is written
+/// shifted by its offset. Without this a model leaves the time out, writes it as UTC, or spends
+/// a turn on the compiler's refusal.
+fn clock_line(local: ui::format::NaiveDateTime, utc: ui::format::NaiveDateTime) -> String {
+    let offset = local - utc;
+    let minutes = offset.num_minutes();
+    let sign = if minutes < 0 { '-' } else { '+' };
+    let zone = ui::format::machine!(
+        "the offset a model shifts a time of day by, in ISO 8601's own form",
+        format!(
+            "UTC{sign}{:02}:{:02}",
+            minutes.abs() / 60,
+            minutes.abs() % 60
+        )
+    );
+    let six = local.date().and_hms_opt(18, 0, 0).unwrap_or(local) - offset;
+    let now = ui::format::machine!(
+        "the clock a model reads to write an instant, in 24-hour ISO 8601 form",
+        local.format("%H:%M").to_string()
+    );
+    format!(
+        "It is {now} there now ({zone}). A `Time` in a program is an instant in UTC with a `Z`: 6 \
+         pm there today is `{}`. Keep every time they name.",
+        six.format("%Y-%m-%dT%H:%M:%SZ")
+    )
+}
+
+/// The longest prefix of `text` within `max` bytes, cut on a character
+/// boundary.
 fn head(text: &str, max: usize) -> &str {
     if text.len() <= max {
         return text;
@@ -382,6 +483,14 @@ pub(super) struct LoopState {
     /// The last turn's request as compaction estimated it, and the input
     /// tokens the provider counted for it, when it said.
     counted: Option<(usize, u64)>,
+    /// Turns in a row after which nothing more was done in any app: a run that keeps looking
+    /// without getting further is told to finish, then ends ([`Self::stalled`]).
+    idle_turns: usize,
+    /// How many operations had succeeded when the last turn ended.
+    done_before: usize,
+    /// Steps that got the run further without changing an app: a web search or page read, and
+    /// each item a many-item request said it finished.
+    progressed: usize,
 }
 
 /// An independent invoke running in its application while the turn goes on.
@@ -577,7 +686,52 @@ impl LoopState {
             reply: None,
             silent_finishes: 0,
             asked_for_words: false,
+            idle_turns: 0,
+            done_before: 0,
+            progressed: 0,
         }
+    }
+
+    /// After a turn that did not end the run: whether it got any further. A run whose turns
+    /// keep doing nothing in any app (looking operations up, programs that do not compile,
+    /// searching for a way the apps do not offer) is told after [`STALLED_TURNS`] of them to
+    /// finish with what it did and what is left, and ends one turn later with its own words,
+    /// or the readable failure without them: never dozens of calls that end in nothing. A run
+    /// that keeps doing things, item after item, is not stalled however long it runs.
+    fn stalled(&mut self, conversation: &mut Conversation) -> Option<LoopEnd> {
+        let done = self.done_apps.values().sum::<usize>() + self.progressed;
+        if done > self.done_before {
+            self.done_before = done;
+            self.idle_turns = 0;
+            return None;
+        }
+        self.idle_turns += 1;
+        if self.idle_turns == STALLED_TURNS {
+            tracing::info!(
+                turns = self.idle_turns,
+                "the run is not getting further; asking it to finish"
+            );
+            conversation.push_user(FINISH_NOW);
+            return None;
+        }
+        if self.idle_turns <= STALLED_TURNS {
+            return None;
+        }
+        tracing::info!(
+            turns = self.idle_turns,
+            "the run did not finish when asked; ending it"
+        );
+        Some(match self.reply.clone() {
+            Some(reply) => LoopEnd::Finished(
+                tools::Finish {
+                    reply: Some(reply),
+                    done: false,
+                    view: None,
+                },
+                self.completed,
+            ),
+            None => LoopEnd::Failed(Failure::said(crate::i18n::t("agent-failure-stalled"))),
+        })
     }
 
     /// Parts with no successful operation in their application that were
@@ -613,6 +767,39 @@ impl LoopState {
                 })
             })
             .collect()
+    }
+
+    /// Count a successful operation as done in its app: the app that published it, and the
+    /// tilolang app whose record it acted on. A tilolang app's record is published under the
+    /// session that serves it (`tl:<app>:<record>`): a step on it is a step in that app, which
+    /// is how the model names the part it does.
+    fn did_in(&mut self, offer: &surface::Offer) {
+        *self.done_apps.entry(offer.app.clone()).or_default() += 1;
+        if let Some(app) = tools::canvas::tilolang_app_of(&offer.address().resource)
+            && app != offer.app
+        {
+            *self.done_apps.entry(app.to_owned()).or_default() += 1;
+        }
+    }
+
+    /// Count what a `tilo` program changed as done in each app it changed: a program that
+    /// made the task the request asked for did that part, exactly as an `invoke` of the app's
+    /// own operation would have. Without this a part done by a program stays undone, the
+    /// finish is refused, and the model is pushed to open the app's window to satisfy it.
+    pub(super) fn program_did(&mut self, step: &ui::tilo_reference::ProgramStep) {
+        if step.outcome != ui::tilo_reference::StepOutcome::Done {
+            return;
+        }
+        let mut apps: Vec<&str> = step
+            .changes
+            .iter()
+            .map(|change| change.resource.app.as_str())
+            .filter(|app| !app.is_empty())
+            .collect();
+        apps.dedup();
+        for app in apps {
+            *self.done_apps.entry(app.to_owned()).or_default() += 1;
+        }
     }
 
     /// Record `parts`/`unable` a call carried; the first listing wins.
@@ -867,6 +1054,10 @@ impl Session {
                         .any(|tag| tag.starts_with(DEPRECATED_TAG))
             })
             .collect::<Vec<_>>();
+        let mut offers = offers;
+        if let Some(api) = task_programs_offer(&offers) {
+            offers.push(api);
+        }
         // Content-free: which applications, how many operations each.
         let mut per_app = BTreeMap::<&str, usize>::new();
         for offer in &offers {
@@ -998,11 +1189,13 @@ impl Session {
         tracing::info!(operations = %head(&summary, 12_000), "task operations");
         self.program_world(run, state)?;
         let place = program_steps::where_section(run, &state.programs);
+        let now = ui::clock::local_now();
         let first = FirstTurn {
             operations: format!("Operations published right now:\n\n{summary}\n"),
             task: format!(
-                "{place}\n{}\n\nThe request:\n\n{request}",
-                today_line(ui::clock::today())
+                "{place}\n{} {}\n\nThe request:\n\n{request}",
+                today_line(now.date_naive()),
+                clock_line(now.naive_local(), now.naive_utc())
             ),
         };
         let mut conversation = if self.chooser.uses_neutral_protocol() {
@@ -1025,6 +1218,9 @@ impl Session {
                 context.counted(sent, input_tokens);
             }
             context.compact(&mut conversation, &mut state.pages);
+            if let Some(end) = state.stalled(&mut conversation) {
+                return Ok(end);
+            }
             turn += 1;
         }
     }
@@ -1083,6 +1279,20 @@ impl Session {
                 catalogue,
                 &mut state.revealed,
                 tools::MOST_SUMMARISED,
+            );
+        }
+        // The apps' own records are read and changed by programs, whose apps the first turn lists
+        // with their types and actions: the operations every open window and record publishes
+        // beside them (hundreds, under long ids) would only make the first answer slower to come,
+        // and are a `list_operations` away for the request that needs one.
+        if catalogue.offers.iter().any(|offer| {
+            offer.descriptor.address.resource == tilo_actions::remote::task_programs::RESOURCE
+                && offer.descriptor.address.action == tilo_actions::remote::task_programs::RUN
+        }) {
+            return format!(
+                "{canvas}Other applications' operations (windows, settings, apps without \
+                 programs): ask `list_operations` with an application or `search` when the \
+                 request needs one.\n"
             );
         }
         let rest = tools::canvas::without_canvas(catalogue);
@@ -1293,9 +1503,16 @@ impl Session {
             Err(error) => {
                 self.chooser
                     .mark(tilo_model_client::TraceEvent::PlanFailed, turn);
+                let asked_before = state.asked_for_words;
                 if let Some(end) = state.finished_despite_failed_plan(conversation, error.detail())
                 {
                     return Ok(Some(end));
+                }
+                // It has just asked the model for its words: the next turn gives them. Ending the
+                // run here, in the turn that asked, told the person the agent did nothing after it
+                // had done every step.
+                if state.asked_for_words && !asked_before {
+                    return Ok(None);
                 }
                 if let Some(end) = state.failed_after_asking_for_words(error.detail()) {
                     // The closing turn failed even after the model was asked
@@ -1440,8 +1657,12 @@ impl Session {
                 conversation.continued();
                 self.chooser
                     .mark(tilo_model_client::TraceEvent::PlanFailed, turn);
+                let asked_before = state.asked_for_words;
                 if let Some(end) = state.finished_despite_failed_plan(conversation, &error) {
                     return Ok(Some(end));
+                }
+                if state.asked_for_words && !asked_before {
+                    return Ok(None);
                 }
                 if let Some(end) = state.failed_after_asking_for_words(&error) {
                     // The closing turn failed even after the model was asked
@@ -1775,6 +1996,7 @@ impl Session {
         }
         let line = progress.line();
         state.progress = Some(progress);
+        state.progressed += 1;
         state.steps_told = 0;
         self.report_task(run, TurnUpdate::Progress { message: line })
     }
@@ -1912,7 +2134,7 @@ impl Session {
         } else if let Some(operation) = call.input.get("operation").and_then(Value::as_str) {
             let catalogue = self.task_catalogue();
             if let Some(offer) = surface::find(&catalogue.offers, operation) {
-                *state.done_apps.entry(offer.app.clone()).or_default() += 1;
+                state.did_in(offer);
                 // Showing or arranging an app's thing on the canvas is what a
                 // request naming that app asked of it there.
                 if tools::canvas::is_canvas_step(offer) {
@@ -2022,6 +2244,9 @@ impl Session {
             Err(error) => refused_report(error),
         };
         self.record_web(run, &web_call, &report)?;
+        if report.succeeded {
+            state.progressed += 1;
+        }
         if !report.succeeded {
             tracing::info!(
                 tool = call.name,
@@ -2619,6 +2844,39 @@ mod today_tests {
                  2026-11-09 to Sunday 2026-11-15.",
                 ui::format::day_heading(friday, true)
             )
+        );
+    }
+
+    /// A turn's catalogue always carries the session API's programs: the listing an agent's
+    /// connection holds never does, and without it every `tilo` call was answered "this session
+    /// runs no programs". One the broker listed is kept as it came.
+    #[test]
+    fn a_turn_runs_its_programs_through_the_session_api() {
+        use tilo_actions::remote::task_programs as wire;
+        let api = super::task_programs_offer(&[]).expect("the API is named");
+        assert_eq!(api.id(), "broker:tilo.task-programs:task#run-program");
+        assert_eq!(api.app, wire::APP);
+        assert!(
+            api.descriptor
+                .params
+                .iter()
+                .any(|param| param.name == "program" && param.required)
+        );
+        assert!(super::task_programs_offer(&[api]).is_none());
+    }
+
+    /// The model is told the person's time and how a moment they name is written in a program:
+    /// an instant in UTC, shifted by the person's offset ("at 6pm" in UTC+01:00 is 17:00Z).
+    #[test]
+    fn the_request_names_the_time_and_how_a_moment_is_written() {
+        let day = ui::format::NaiveDate::from_ymd_opt(2026, 11, 16).unwrap();
+        assert_eq!(
+            super::clock_line(
+                day.and_hms_opt(22, 45, 0).unwrap(),
+                day.and_hms_opt(21, 45, 0).unwrap()
+            ),
+            "It is 22:45 there now (UTC+01:00). A `Time` in a program is an instant in UTC with \
+             a `Z`: 6 pm there today is `2026-11-16T17:00:00Z`. Keep every time they name."
         );
     }
 }
