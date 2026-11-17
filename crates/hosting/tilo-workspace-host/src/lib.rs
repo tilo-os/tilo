@@ -41,6 +41,7 @@ pub mod metrics;
 mod own_workspaces;
 pub mod payloads;
 pub mod peer;
+mod people_keys;
 #[doc(hidden)]
 pub mod persistence;
 pub mod presence_mailbox;

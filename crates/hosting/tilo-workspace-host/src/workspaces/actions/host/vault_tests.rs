@@ -824,6 +824,8 @@ fn copy_folder(from: &std::path::Path, to: &std::path::Path) {
 async fn a_copy_of_the_state_folder_alone_opens_nothing_of_a_persons_vault() {
     let dir = tempfile::tempdir().unwrap();
     let (state, keys) = (dir.path().join("state"), dir.path().join("keys"));
+    // The folder its operator made for the keys: a server makes none.
+    std::fs::create_dir(&keys).unwrap();
     let (key, owner) = governor();
     let server = test_server_keeping_keys_apart(&state, &keys, &key, &owner).await;
     let workspaces = server.workspaces();
@@ -873,4 +875,143 @@ async fn a_copy_of_the_state_folder_alone_opens_nothing_of_a_persons_vault() {
     let opened = accounts::vault_items::VaultItems::open_in(&hers_in(&copy))
         .expect("the copy opens with its keys");
     assert_eq!(opened.facts().len(), 1);
+}
+
+/// What a server is told whose operator named no folder for people's keys:
+/// nothing, as an environment without the setting, or with it empty, reads.
+fn no_folder() -> &'static std::path::Path {
+    std::path::Path::new("")
+}
+
+/// What a server in a test wrote to its log.
+#[derive(Clone, Default)]
+struct Logged(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+
+impl std::io::Write for Logged {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.0.lock().unwrap().extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for Logged {
+    type Writer = Self;
+    fn make_writer(&'a self) -> Self {
+        self.clone()
+    }
+}
+
+impl Logged {
+    /// How much was written so far.
+    fn written(&self) -> usize {
+        self.0.lock().unwrap().len()
+    }
+
+    /// The lines written after the first `from` bytes that say where
+    /// people's keys are kept.
+    fn said_since(&self, from: usize) -> Vec<String> {
+        String::from_utf8_lossy(&self.0.lock().unwrap()[from..])
+            .lines()
+            .filter(|line| line.contains("the keys of people's sealed stores"))
+            .map(str::to_owned)
+            .collect()
+    }
+}
+
+/// A server says as it starts where it keeps the keys of people's vaults:
+/// one line at every start, a warning for as long as they lie in its state.
+/// A folder it was named that is not there it does not make; it says so and
+/// goes on opening each vault with the key beside it. Nothing it logs, at
+/// any level, holds a key.
+#[tokio::test]
+async fn a_server_says_at_every_start_where_it_keeps_peoples_keys_and_logs_no_key() {
+    let logged = Logged::default();
+    let _subscribed = tracing::subscriber::set_default(
+        tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::TRACE)
+            .with_ansi(false)
+            .with_writer(logged.clone())
+            .finish(),
+    );
+    let dir = tempfile::tempdir().unwrap();
+    let (state, keys) = (dir.path().join("state"), dir.path().join("keys"));
+    let named = keys.display().to_string();
+    let (key, owner) = governor();
+    let asking = caller(&owner);
+    let hers = (&owner, &asking);
+
+    // No folder is named: the keys lie in the state, and the server says so.
+    let from = logged.written();
+    let server = test_server_keeping_keys_apart(&state, no_folder(), &key, &owner).await;
+    let said = logged.said_since(from);
+    assert_eq!(said.len(), 1, "{said:?}");
+    assert!(
+        said[0].contains("WARN")
+            && said[0].contains("are kept in the state folder")
+            && said[0].contains("TILO_PEOPLE_KEYS names no folder"),
+        "{said:?}"
+    );
+    let (_, workspace_id, actions) = governed(server.workspaces()).await;
+    let login = a_login("https://example.test");
+    ask(&actions, workspace_id, hers, person_vault::ADD, login)
+        .await
+        .expect("she keeps a login");
+    server.shutdown().await;
+    let beside = files_called(&state, "vault.key");
+    assert_eq!(beside.len(), 1, "her key lies beside her vault");
+    let her_key = std::fs::read(&beside[0]).unwrap();
+
+    // A folder is named that is not there: the server makes none, says so,
+    // and her vault opens with the key where it lies.
+    let from = logged.written();
+    let server = test_server_keeping_keys_apart(&state, &keys, &key, &owner).await;
+    let said = logged.said_since(from);
+    assert_eq!(said.len(), 1, "{said:?}");
+    assert!(
+        said[0].contains("WARN")
+            && said[0].contains("are kept in the state folder")
+            && said[0].contains("where no folder is")
+            && said[0].contains(&named),
+        "{said:?}"
+    );
+    let (_, workspace_id, actions) = governed(server.workspaces()).await;
+    let listed = ask(&actions, workspace_id, hers, person_vault::LIST, json!({}))
+        .await
+        .expect("her vault opens");
+    assert_eq!(
+        listed["items"].as_array().map(Vec::len),
+        Some(1),
+        "{listed}"
+    );
+    assert!(!keys.exists(), "the server made the folder it was named");
+    assert_eq!(files_called(&state, "vault.key"), beside);
+    server.shutdown().await;
+
+    // The folder is there: the server says the keys are kept apart, and
+    // warns of nothing.
+    std::fs::create_dir(&keys).unwrap();
+    let from = logged.written();
+    let server = test_server_keeping_keys_apart(&state, &keys, &key, &owner).await;
+    let said = logged.said_since(from);
+    assert_eq!(said.len(), 1, "{said:?}");
+    assert!(
+        said[0].contains("INFO")
+            && said[0].contains("are kept apart from the state folder")
+            && said[0].contains(&named),
+        "{said:?}"
+    );
+    server.shutdown().await;
+
+    let all = logged.0.lock().unwrap().clone();
+    assert!(
+        !all.windows(her_key.len()).any(|window| window == her_key),
+        "the log holds her key as it is kept"
+    );
+    let text = String::from_utf8_lossy(&all);
+    for spelled in [hex::encode(&her_key), hex::encode_upper(&her_key)] {
+        assert!(!text.contains(&spelled), "the log holds her key in hex");
+    }
 }

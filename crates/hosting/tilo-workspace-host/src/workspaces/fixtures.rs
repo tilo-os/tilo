@@ -161,8 +161,9 @@ pub async fn test_host_with_grants(
     host_on(state_root, key, cert, None, grants, None).await
 }
 
-/// The same server, keeping the keys of people's sealed stores under `keys`,
-/// apart from `state_root`.
+/// The same server, told to keep the keys of people's sealed stores under
+/// `keys`, apart from `state_root`: it does when `keys` is a folder that is
+/// there, and makes none.
 ///
 /// # Panics
 ///
