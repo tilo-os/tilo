@@ -21,7 +21,7 @@ use fs_protocol::files::FileNodeKind;
 use fs_protocol::tree::{FILES_APP, ROOT_ID, Tree};
 use serde_json::json;
 use tilo_fs::tree_document::document_id as tree_document;
-use tilo_mcp::{McpServer, Surface};
+use tilo_mcp::McpServer;
 use tilo_session_client::remote::SessionActions;
 
 /// The tree the workspace's host keeps, as the records its members read: the
@@ -170,8 +170,7 @@ async fn a_put_file_is_a_node_of_the_workspace_tree_and_no_app_record() {
         SessionActions::new(&agent.peer, agent.workspace, host.cert.device_public_key),
         WORKSPACE.into(),
         person,
-    )
-    .with_surface(Surface::Agent);
+    );
 
     // A PDF at the workspace's root: the node names its content, and the
     // workspace holds the bytes the node names.
@@ -286,8 +285,7 @@ async fn a_resumed_upload_of_a_large_file_lands_once_and_whole() {
         SessionActions::new(&agent.peer, agent.workspace, host.cert.device_public_key),
         WORKSPACE.into(),
         person,
-    )
-    .with_surface(Surface::Agent);
+    );
 
     // A file of many pieces, its upload interrupted after the first ones and
     // picked up where the host says it stands.
@@ -354,8 +352,7 @@ async fn a_put_file_makes_no_app_record_where_opening_it_in_an_app_does() {
         SessionActions::new(&agent.peer, agent.workspace, host.cert.device_public_key),
         WORKSPACE.into(),
         person,
-    )
-    .with_surface(Surface::Agent);
+    );
 
     // The same bytes put into the workspace make no app's record: the
     // workspace keeps the file, and the person decides what opens it.
@@ -463,8 +460,7 @@ async fn a_put_file_goes_into_the_tree_a_computer_wrote_first() {
         SessionActions::new(&agent.peer, agent.workspace, host.cert.device_public_key),
         WORKSPACE.into(),
         hex::encode(root.verifying_key().to_bytes()),
-    )
-    .with_surface(Surface::Agent);
+    );
     let notice = form_pdf("Notice of termination");
     let content = content_in(&put(&server, &notice).await);
     let said = tool(

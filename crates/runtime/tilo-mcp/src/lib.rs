@@ -13,7 +13,7 @@ pub mod test_hosts;
 mod turn;
 
 pub use images::MediaReader;
-use images::{IMAGES, MAX_IMAGE_BYTES, MAX_IMAGES, image_mime, take_images};
+use images::{IMAGES, MAX_IMAGE_BYTES, MAX_IMAGES, image_mime};
 
 #[path = "mcp_agent.rs"]
 mod agent;
@@ -29,23 +29,14 @@ mod page;
 mod providers;
 #[path = "mcp_put.rs"]
 mod put;
-#[path = "mcp_rows.rs"]
-mod rows;
-#[path = "mcp_schema.rs"]
-mod schema;
 #[path = "mcp_step.rs"]
 mod step;
 use step::batch_invocation;
-#[path = "mcp_tool_definitions.rs"]
-mod tool_definitions;
 #[path = "mcp_turns.rs"]
 mod turns;
 
 #[path = "mcp_refusal.rs"]
 mod refusal;
-#[cfg(test)]
-use rows::{browsed_row_json, row_json};
-use rows::{page_json, resolved_row_json};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use step::{DeclaredInvocation, STEP, STEP_INVOCATION, SURFACE_STRUCTURED};
@@ -111,8 +102,6 @@ pub struct McpServer<H> {
     working: tokio::sync::Semaphore,
     /// Places for the session's requests that work or wait for a turn.
     admitted: tokio::sync::Semaphore,
-    /// Which tools the session offers.
-    surface: Surface,
     /// The content uploads this session has open; dropped with it, they
     /// store nothing.
     uploads: std::sync::Mutex<put::Uploads>,
@@ -155,19 +144,6 @@ pub struct ActedRecord {
     pub app: String,
     /// The workspace's record id, which a provider's own token names.
     pub record: String,
-}
-
-/// The tools a session offers.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Surface {
-    /// `tilo_list_apps`, `tilo_query`, `tilo_resolve`, `tilo_invoke`,
-    /// `tilo_status`, `tilo_cancel`: a directory browsed by peer and
-    /// resource id, for clients that parse it.
-    Classic,
-    /// `tilo_ls`, `tilo_read`, `tilo_do`, `tilo_find`, `tilo_link`, `tilo_status`: apps and
-    /// resources addressed by name, answered as text. What an AI agent in a
-    /// terminal is served.
-    Agent,
 }
 
 /// What an agent is told as it connects: what the tools reach, and the one
@@ -403,51 +379,7 @@ enum Detail {
     /// Every row with its descriptor and contracts, as first published.
     Full,
 }
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct TargetArgs {
-    peer_id: Option<u64>,
-    app_id: Option<String>,
-    #[serde(default)]
-    workspace: bool,
-    /// Omitted: the directory as it is now.
-    revision: Option<String>,
-    resource: String,
-    action: String,
-}
 /// One action inside a `calls` batch. It runs on the call's peer.
-#[derive(Deserialize, Clone)]
-#[serde(deny_unknown_fields)]
-struct InvokeCall {
-    resource: String,
-    action: String,
-    #[serde(default)]
-    arguments: serde_json::Map<String, Value>,
-}
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct InvokeArgs {
-    peer_id: Option<u64>,
-    app_id: Option<String>,
-    #[serde(default)]
-    workspace: bool,
-    /// Omitted: the directory as it is now.
-    revision: Option<String>,
-    /// The single-call form. Absent when `calls` names the batch.
-    resource: Option<String>,
-    action: Option<String>,
-    #[serde(default)]
-    arguments: serde_json::Map<String, Value>,
-    /// Several actions in order, on this same peer. Stops at the first
-    /// failure; the single-call form leaves this absent.
-    calls: Option<Vec<InvokeCall>>,
-    /// Caller-chosen id; retrying with the same id never starts twice.
-    #[serde(default)]
-    invocation_id: Option<String>,
-    /// How long to wait for a terminal update before answering with the
-    /// current one.
-    wait_ms: Option<u64>,
-}
 /// One action of either form, after the batch has been split apart.
 #[derive(Clone)]
 struct OneCall {
@@ -460,11 +392,6 @@ struct OneCall {
     arguments: serde_json::Map<String, Value>,
     invocation_id: Option<String>,
     wait_ms: Option<u64>,
-}
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct StatusArgs {
-    invocation_id: String,
 }
 /// One `tools/call`'s parameters.
 #[derive(Deserialize)]
@@ -491,17 +418,6 @@ fn parse<T: serde::de::DeserializeOwned>(value: Value) -> Result<T, String> {
 }
 fn error(id: &Value, code: i32, message: &str) -> Value {
     json!({"jsonrpc":"2.0","id":id,"error":{"code":code,"message":message}})
-}
-fn tool_result(result: Result<Value, String>) -> Value {
-    match result {
-        Ok(mut value) => {
-            let images = take_images(&mut value);
-            let mut content = vec![json!({"type":"text","text":value.to_string()})];
-            content.extend(images);
-            json!({"content":content,"structuredContent":value,"isError":false})
-        }
-        Err(message) => json!({"content":[{"type":"text","text":message}],"isError":true}),
-    }
 }
 impl<H> Drop for McpServer<H> {
     fn drop(&mut self) {
@@ -613,7 +529,6 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             .delegated_to(agent_id)
             .in_new_execution();
         Self::from_caller(host, workspace, format!("agent:{agent_id}"), caller)
-            .with_surface(Surface::Agent)
     }
 
     /// One session of `person` themselves in `workspace`: a REPL the host admitted because
@@ -625,7 +540,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         let caller = Caller::local_person(person)
             .in_workspace(workspace.clone())
             .in_new_execution();
-        Self::from_caller(host, workspace, person.to_owned(), caller).with_surface(Surface::Agent)
+        Self::from_caller(host, workspace, person.to_owned(), caller)
     }
 
     /// The host has already bound this exact authenticated run to its action
@@ -668,7 +583,6 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             seen: std::sync::Mutex::default(),
             working: tokio::sync::Semaphore::new(MAX_WORKING),
             admitted: tokio::sync::Semaphore::new(MAX_ADMITTED),
-            surface: Surface::Classic,
             uploads: std::sync::Mutex::default(),
             programs: std::sync::Mutex::default(),
             task_hosts: None,
@@ -709,13 +623,6 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
     #[must_use]
     pub fn agent_named(mut self, name: &str) -> Self {
         self.caller = self.caller.clone().named(name);
-        self
-    }
-
-    /// Offer the tools `surface` names.
-    #[must_use]
-    pub fn with_surface(mut self, surface: Surface) -> Self {
-        self.surface = surface;
         self
     }
 
@@ -1244,43 +1151,8 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             page::compact_described(page, Some(&mut self.handles()), describe)
         }
     }
-    /// The row `tilo_resolve` answers. A compact session's names its long
-    /// resource id by a handle, as its pages do, and says each schema once
-    /// ([`schema::compact`]); a session that pinned `full` reads the row as
-    /// version 1 published it.
-    fn resolved(&self, row: &CatalogueRow, provider: &str) -> Value {
-        let mut value = resolved_row_json(row);
-        if self.detail() == Detail::Full {
-            return value;
-        }
-        let Some(fields) = value.as_object_mut() else {
-            return value;
-        };
-        if fields.get("has_children") == Some(&Value::Bool(false)) {
-            fields.remove("has_children");
-        }
-        if tilo_actions::remote::provider_workspace(provider).is_none() {
-            fields.insert(
-                "resource".into(),
-                self.handles().short(&row.resource.id).into(),
-            );
-        }
-        if let Some(Value::Array(params)) = fields
-            .get_mut("descriptor")
-            .and_then(|descriptor| descriptor.get_mut("params"))
-        {
-            for param in params.iter_mut().filter_map(Value::as_object_mut) {
-                let optional = param.get("required") != Some(&Value::Bool(true));
-                if let Some(schema) = param.get_mut("schema") {
-                    schema::compact(schema, optional);
-                }
-            }
-        }
-        value
-    }
     fn tools(&self) -> Vec<Value> {
         definitions(
-            self.surface,
             self.host.content_puts().is_some(),
             self.host.content_gets().is_some(),
             self.devices.is_some(),
@@ -1432,22 +1304,13 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
                 None => Err("Unknown tool".into()),
             },
             Ok(call)
-                if self.surface == Surface::Agent
-                    && agent::tool_definitions().iter().any(|definition| {
-                        definition["name"].as_str() == Some(call.name.as_str())
-                    }) =>
+                if agent::tool_definitions()
+                    .iter()
+                    .any(|definition| definition["name"].as_str() == Some(call.name.as_str())) =>
             {
                 Ok(self
                     .agent_call(&call.name, call.arguments, structured)
                     .await)
-            }
-            Ok(call)
-                if self.surface == Surface::Classic
-                    && tool_definitions().iter().any(|definition| {
-                        definition["name"].as_str() == Some(call.name.as_str())
-                    }) =>
-            {
-                Ok(tool_result(self.call(&call.name, call.arguments).await))
             }
             Ok(_) => Err("Unknown tool".into()),
             Err(e) => Err(e),
@@ -1540,9 +1403,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             fields.insert("agent".into(), json!(agent));
         }
         let mut answer = json!({"protocolVersion":selected,"capabilities":{"tools":{},"resources":{},"experimental":{SURFACE:{"version":3,"session":run,"execution_id":self.caller.execution_id()}}},"serverInfo":server});
-        if self.surface == Surface::Agent
-            && let Some(fields) = answer.as_object_mut()
-        {
+        if let Some(fields) = answer.as_object_mut() {
             fields.insert("instructions".into(), json!(AGENT_INSTRUCTIONS));
         }
         Ok(answer)
@@ -1696,28 +1557,6 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         self.addressed(peer_id, app_id, workspace)
             .await
             .map(|addressed| addressed.provider)
-    }
-    /// [`Self::addressed`] for an invocation: an instance this session's
-    /// last instance list named is taken as it was, without listing them
-    /// again. One that has gone since is refused by the host, and
-    /// [`Self::invoke_one`] asks then. A browse still lists them, so a gone
-    /// instance's empty page never reads as "no actions".
-    async fn invoked(
-        &self,
-        peer_id: Option<u64>,
-        app_id: Option<&str>,
-        workspace: bool,
-    ) -> Result<Addressed, String> {
-        let seen = peer_id
-            .filter(|_| app_id.is_none() && !workspace)
-            .and_then(|peer| Some((peer, self.seen().get(&peer)?.clone())));
-        if let Some((peer, app_id)) = seen {
-            return Ok(Addressed {
-                provider: peer.to_string(),
-                app_id,
-            });
-        }
-        self.addressed(peer_id, app_id, workspace).await
     }
     /// [`Self::provider`], with the app of the instance it names, read from
     /// the one listing of live instances it takes.
@@ -1961,61 +1800,6 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         }
         Ok(())
     }
-    /// The row offering one action to this caller: the resource it names by
-    /// id, kind or label, at the revision the caller named or the directory
-    /// as it is now.
-    ///
-    /// A revision refuses only when it is not the directory's current one,
-    /// and a directory moves whenever the app's page does: a caller that
-    /// named a revision it read a few calls ago is asking about the action,
-    /// not about a snapshot it wants restored. So a named revision that
-    /// moved on is resolved once more as the directory is now, and the
-    /// answer names the revision it was resolved against — the one to pass
-    /// to `tilo_invoke`. Only a directory that moves between those two
-    /// reads (or one that keeps refusing) is reported, with what to do.
-    async fn resolve_target(&self, a: TargetArgs) -> Result<Value, String> {
-        if a.revision.as_deref() == Some("") {
-            return Err("revision must not be empty".into());
-        }
-        let provider = self
-            .provider(a.peer_id, a.app_id.as_deref(), a.workspace)
-            .await?;
-        let named = a.revision.clone().unwrap_or_default();
-        let (revision, _) = self.revision_for(&provider, a.revision).await?;
-        let mut target = RemoteActionTarget {
-            provider,
-            address: tilo_actions::ActionAddress::new(self.full_id(a.resource), a.action),
-        };
-        let mut page = self
-            .ask(CatalogueQuery::resolve(&target, revision.clone()))
-            .await?;
-        if page.rows.is_empty()
-            && !page.stale_cursor
-            && let Some(resolved) = self.named_resource(&target).await?
-        {
-            target.address.resource = resolved;
-            page = self
-                .ask(CatalogueQuery::resolve(&target, revision.clone()))
-                .await?;
-        }
-        if page.stale_cursor {
-            // The directory moved between reading its revision and asking
-            // it: read it as it is now, once, and answer with the revision
-            // it was resolved against.
-            let current = self.current_revision(&target.provider).await?;
-            page = self
-                .ask(CatalogueQuery::resolve(&target, current.clone()))
-                .await?;
-            if page.stale_cursor {
-                let before = if named.is_empty() { revision } else { named };
-                return Err(stale_revision_error(&before, &current));
-            }
-        }
-        match page.rows.first() {
-            Some(row) => Ok(json!({"row":self.resolved(row, &target.provider)})),
-            None => Err(self.not_offered(&target).await?),
-        }
-    }
     /// The revision `provider`'s directory is at now, for a caller that
     /// named none.
     async fn current_revision(&self, provider: &str) -> Result<String, BridgeError> {
@@ -2056,138 +1840,12 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             .map(|(peer, _)| peer)
             .collect())
     }
-    async fn call(&self, name: &str, args: Value) -> Result<Value, String> {
-        match name {
-            "tilo_list_apps" => self.apps(parse(args)?).await,
-            "tilo_query" => self.query(parse(args)?).await,
-            "tilo_resolve" => self.resolve_target(parse(args)?).await,
-            "tilo_invoke" => self.invoke(parse(args)?).await,
-            "tilo_status" => {
-                let a: StatusArgs = parse(args)?;
-                let invocation = invocation_id(&a.invocation_id)?;
-                let mut value = self.status(invocation).await?;
-                self.attach_images(invocation, &mut value, true, None).await;
-                Ok(value)
-            }
-            "tilo_cancel" => {
-                let a: StatusArgs = parse(args)?;
-                let invocation = invocation_id(&a.invocation_id)?;
-                self.host()
-                    .cancel(&self.caller(), &invocation)
-                    .await
-                    .ok_or("the host dropped the request")?
-                    .map_err(BridgeError::Host)?;
-                self.status(invocation).await
-            }
-            _ => Err("Unknown tool".into()),
-        }
-    }
-    /// Start one action, or `calls` in order. A batch answers `results` and,
-    /// when one did not succeed, `stopped` at that index; nothing after it
-    /// runs. The single-call form answers that action alone, as before.
-    async fn invoke(&self, mut a: InvokeArgs) -> Result<Value, String> {
-        if a.revision.as_deref() == Some("") {
-            return Err("revision must not be empty".into());
-        }
-        if let Some(calls) = a.calls.take() {
-            if a.resource.is_some() || a.action.is_some() {
-                return Err("name resource and action, or calls, not both".into());
-            }
-            if calls.is_empty() || calls.len() > MAX_CALLS {
-                return Err(format!("calls must hold 1 to {MAX_CALLS} actions"));
-            }
-            let _running = self.hold_invocation(a.invocation_id.as_deref()).await;
-            return self.invoke_calls(a, calls).await;
-        }
-        let resource = a
-            .resource
-            .take()
-            .filter(|resource| !resource.is_empty())
-            .ok_or("name resource and action, or calls")?;
-        let action = a
-            .action
-            .take()
-            .filter(|action| !action.is_empty())
-            .ok_or("name resource and action, or calls")?;
-        let _running = self.hold_invocation(a.invocation_id.as_deref()).await;
-        let provider = self
-            .invoked(a.peer_id, a.app_id.as_deref(), a.workspace)
-            .await?;
-        // Boxed: an invocation's future is large, and every tool call's
-        // future would otherwise carry it.
-        Box::pin(self.invoke_one(OneCall {
-            provider,
-            workspace: a.workspace,
-            revision: a.revision,
-            resource,
-            action,
-            arguments: a.arguments,
-            invocation_id: a.invocation_id,
-            wait_ms: a.wait_ms,
-        }))
-        .await
-        .map_err(String::from)
-    }
     /// Wait until no other call of this session runs the caller-chosen
     /// `invocation`, then hold it for this one. An id that is no UUID holds
     /// nothing: the call refuses it where it always has.
     async fn hold_invocation(&self, invocation: Option<&str>) -> Option<Running<'_>> {
         let id = invocation_id(invocation?).ok()?;
         Some(self.invoking.hold(id).await)
-    }
-    /// `calls` in order on one peer. The first keeps the caller's revision
-    /// and invocation id; each later call reads the directory as it is then,
-    /// under an id derived from that one, so a retry does not run twice.
-    async fn invoke_calls(&self, a: InvokeArgs, calls: Vec<InvokeCall>) -> Result<Value, String> {
-        let provider = match self
-            .invoked(a.peer_id, a.app_id.as_deref(), a.workspace)
-            .await
-        {
-            Ok(provider) => provider,
-            // As the first step would have stopped on it.
-            Err(error) => return Ok(json!({ "results": [{ "error": error }], "stopped": 0 })),
-        };
-        let mut results = Vec::with_capacity(calls.len());
-        let mut stopped = None;
-        for (index, call) in calls.into_iter().enumerate() {
-            let value = Box::pin(self.invoke_one(OneCall {
-                provider: provider.clone(),
-                workspace: a.workspace,
-                revision: if index == 0 { a.revision.clone() } else { None },
-                resource: call.resource,
-                action: call.action,
-                arguments: call.arguments,
-                invocation_id: batch_invocation(a.invocation_id.as_deref(), index)?,
-                wait_ms: a.wait_ms,
-            }))
-            .await;
-            let failed = match &value {
-                Ok(value) => call_failed(value),
-                Err(_) => true,
-            };
-            results.push(match value {
-                Ok(value) if !failed => succeeded_step(value),
-                Ok(value) => value,
-                Err(error) => json!({ "error": String::from(error) }),
-            });
-            if failed {
-                stopped = Some(index);
-                break;
-            }
-        }
-        let mut answer = json!({ "results": results });
-        if let Some(index) = stopped
-            && let Some(fields) = answer.as_object_mut()
-        {
-            fields.insert("stopped".into(), json!(index));
-            if index > 0 {
-                fields.insert(
-                    "kept".into(),
-                    format!("steps 0..{index} stayed applied; undo takes them back, a group action applies all or nothing").into(),
-                );
-            }
-        }
-        Ok(answer)
     }
     /// The Tilo app a workspace call launches, when it is one: opening an
     /// application resource from the workspace. A host application
@@ -3171,44 +2829,6 @@ const LISTED_RESOURCES: usize = 16;
 fn empty_object() -> Value {
     json!({})
 }
-/// Whether a finished call should stop a batch: it did not succeed, it is
-/// still running, or the file it tried to open did not.
-/// A batch step that succeeded, said once: its output (`value`, `resources`)
-/// and any note on it, without the invocation id and update wrapping every
-/// step repeats. Every step before `stopped` succeeded, so the state needs
-/// no saying; a step that did not keeps its whole update.
-fn succeeded_step(mut value: Value) -> Value {
-    let Some(fields) = value.as_object_mut() else {
-        return value;
-    };
-    fields.remove("invocation_id");
-    if let Some(Value::Object(output)) = fields
-        .remove("update")
-        .and_then(|mut update| update.get_mut("output").map(Value::take))
-    {
-        for (key, item) in output {
-            fields.entry(key).or_insert(item);
-        }
-    }
-    // Content the value already names (`"content": "tilo.content:…"`)
-    // need not be listed twice.
-    let said = fields
-        .get("value")
-        .map(Value::to_string)
-        .unwrap_or_default();
-    if fields
-        .get("resources")
-        .and_then(Value::as_array)
-        .is_some_and(|listed| {
-            listed
-                .iter()
-                .all(|item| item.as_str().is_some_and(|item| said.contains(item)))
-        })
-    {
-        fields.remove("resources");
-    }
-    value
-}
 /// `rows`' resources as `label (kind)`, each once.
 fn resource_list(rows: &[CatalogueRow]) -> String {
     let mut seen = Vec::<&str>::new();
@@ -3229,21 +2849,6 @@ fn resource_list(rows: &[CatalogueRow]) -> String {
     } else {
         listed.join(", ")
     }
-}
-/// What a caller is told when a directory moved on under a resolve: which
-/// revision it named, which the directory is at, and what to do next.
-fn stale_revision_error(named: &str, current: &str) -> String {
-    format!(
-        "the resource changed since revision {named}, which you read; it is at {current} now. \
-         The directory moved while it was being read: re-run tilo_query for the resource and \
-         resolve it again, or omit revision to resolve against the directory as it is now"
-    )
-}
-fn call_failed(value: &Value) -> bool {
-    if value.get("pending").is_some() || value.pointer("/opened/error").is_some() {
-        return true;
-    }
-    value.pointer("/update/state").and_then(Value::as_str) != Some("succeeded")
 }
 /// The `path` an application `open` names, taken out of its arguments: the
 /// workspace launches the app empty and this bridge hands the path to the
@@ -3275,26 +2880,57 @@ fn offer_open_path(page: &mut CataloguePage) {
         }
     }
 }
-/// The `tilo_*` tools, built once: every `tools/call` checks its name
-/// against them.
-fn tool_definitions() -> &'static [Value] {
-    static TOOLS: std::sync::LazyLock<Vec<Value>> =
-        std::sync::LazyLock::new(tool_definitions::tilo_tools);
-    &TOOLS
+fn page_json(page: &CataloguePage) -> Value {
+    json!({"revision":page.revision,"rows":page.rows.iter().map(browsed_row_json).collect::<Vec<_>>(),"next_cursor":page.next_cursor,"exhausted":page.exhausted,"stale_cursor":page.stale_cursor,"budget_exhausted":page.budget_exhausted})
+}
+/// A parameter schema larger than this is left to `tilo_resolve` in a
+/// browsed page: one rich-text `apply` schema is tens of kilobytes, and an
+/// agent pays for every byte of every page it reads.
+const BROWSED_SCHEMA_BYTES: usize = 1024;
+/// [`row_json`] with large parameter schemas replaced by a pointer to
+/// `tilo_resolve`, which returns them in full.
+fn browsed_row_json(row: &CatalogueRow) -> Value {
+    let mut value = row_json(row);
+    if let Some(params) = value
+        .pointer_mut("/descriptor/params")
+        .and_then(Value::as_array_mut)
+    {
+        for param in params {
+            let large = param
+                .get("schema")
+                .is_some_and(|schema| schema.to_string().len() > BROWSED_SCHEMA_BYTES);
+            if large && let Some(param) = param.as_object_mut() {
+                param.remove("schema");
+                param.insert(
+                    "schema_omitted".into(),
+                    json!("large schema: tilo_resolve this action to read it"),
+                );
+            }
+        }
+    }
+    value
+}
+fn row_json(row: &CatalogueRow) -> Value {
+    let descriptor = row.action.as_ref().map(|action| {
+        json!({"resource":action.address.resource,"action":action.address.action,"resource_kind":action.resource_kind,"resource_label":action.resource_label,"action_label":action.action_label,"description":action.description,"operation_kind":action.kind,"params":action.params,"contract":action.contract})
+    });
+    json!({
+        "parent_resource":row.parent_resource,
+        "resource":row.resource.id,
+        "resource_kind":row.resource.kind,
+        "resource_label":row.resource.label,
+        "action":row.action.as_ref().map(|action| &action.address.action),
+        "descriptor":descriptor,
+        "has_children":row.has_children,
+        "visibility_action":row.visibility.as_ref().map(|visibility| &visibility.action),
+        "visibility_contract":row.visibility.as_ref().map(|visibility| &visibility.contract),
+    })
 }
 
 /// Every tool a session offers: its surface's, then the ones its host and its
 /// server add.
-fn definitions(
-    surface: Surface,
-    content_puts: bool,
-    content_gets: bool,
-    devices: bool,
-) -> Vec<Value> {
-    let mut tools = match surface {
-        Surface::Classic => tool_definitions().to_vec(),
-        Surface::Agent => agent::tool_definitions().to_vec(),
-    };
+fn definitions(content_puts: bool, content_gets: bool, devices: bool) -> Vec<Value> {
+    let mut tools = agent::tool_definitions().to_vec();
     if content_puts {
         tools.extend(put::tool_definitions());
     }
@@ -3314,17 +2950,13 @@ fn definitions(
 /// a machine with neither.
 #[must_use]
 pub fn tools_json() -> Value {
-    json!({"tools": definitions(Surface::Agent, true, true, true)})
+    json!({"tools": definitions(true, true, true)})
 }
 #[cfg(test)]
-#[path = "mcp_open_tests.rs"]
-mod open_tests;
 #[cfg(test)]
 #[path = "mcp_serve_tests.rs"]
 mod serve_tests;
 #[cfg(test)]
-#[path = "mcp_settle_tests.rs"]
-mod settle_tests;
 #[cfg(test)]
 #[path = "mcp_tests.rs"]
 mod tests;

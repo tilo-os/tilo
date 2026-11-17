@@ -29,7 +29,7 @@ use tilo_session_client::device::Device;
 use tilo_session_client::remote::SessionActions;
 use tilo_user_identity::DeviceCert;
 
-use crate::{McpServer, Surface};
+use crate::McpServer;
 use collab_types::WorkspaceId;
 
 /// A key of the person's: its signing key and the certificate their root (or
@@ -147,7 +147,6 @@ impl Entered {
             tilo_actions::remote::Caller::authenticated(user, key),
         );
         let server = McpServer::new(actions, workspace.to_owned(), person.clone())
-            .with_surface(Surface::Agent)
             .with_agent_session(uuid::Uuid::new_v4().simple().to_string(), name.to_owned())
             .with_task_hosts(Some(std::sync::Arc::new(
                 crate::task_hosts::TaskHosts::new(Some(&person), std::sync::Arc::new(catalogue)),

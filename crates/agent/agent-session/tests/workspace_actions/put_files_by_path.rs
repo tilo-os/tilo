@@ -99,8 +99,7 @@ async fn a_devices_agent_keeps_a_folder_for_a_task_by_paths_in_the_workspace() {
         SessionActions::new(&agent.peer, agent.workspace, host.cert.device_public_key),
         WORKSPACE.into(),
         person,
-    )
-    .with_surface(Surface::Agent);
+    );
 
     // Two files arrive in the workspace's folder.
     let visa = form_pdf("Application for Schengen Visa");

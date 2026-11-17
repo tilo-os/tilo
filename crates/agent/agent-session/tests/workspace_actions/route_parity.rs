@@ -866,7 +866,6 @@ async fn an_agent_through_tilo_mcp_is_seen_once_as_the_hosts_run() {
         host.cert.device_public_key,
     );
     let server = tilo_mcp::McpServer::new(actions, WORKSPACE.into(), person)
-        .with_surface(tilo_mcp::Surface::Agent)
         .with_agent_session("session-codex", "Codex");
     let listed = super::hosted_documents::tool(&server, "tilo_ls", serde_json::json!({})).await;
     assert!(listed.contains("notes"), "{listed}");
@@ -956,7 +955,6 @@ async fn an_agent_is_seen_once_on_a_host_another_person_runs() {
         host.cert.device_public_key,
     );
     let server = tilo_mcp::McpServer::new(actions, cluster.clone(), person)
-        .with_surface(tilo_mcp::Surface::Agent)
         .with_agent_session("session-guest", "Claude Code");
     let listed = super::hosted_documents::tool(&server, "tilo_ls", serde_json::json!({})).await;
 

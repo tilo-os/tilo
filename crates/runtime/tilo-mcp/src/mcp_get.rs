@@ -5,7 +5,7 @@
 use base64::Engine as _;
 use tilo_actions::remote::{ActionCallError, CONTENT_GETS_UNAVAILABLE, ContentGets};
 
-use super::{ActionProvider, Deserialize, McpServer, Surface, Value, json, parse};
+use super::{ActionProvider, Deserialize, McpServer, Value, json, parse};
 
 /// The get tool's name.
 const GET: &str = "tilo_get";
@@ -71,7 +71,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         };
         match result {
             Ok((answer, text)) => {
-                if structured || self.surface == Surface::Classic {
+                if structured {
                     json!({
                         "content":[{"type":"text","text":text}],
                         "structuredContent":answer,

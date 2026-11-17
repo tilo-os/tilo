@@ -37,6 +37,8 @@ mod launch;
 use launch::{names_files, opens_a_file, starts_app};
 #[path = "mcp_agent_link.rs"]
 mod link;
+#[path = "mcp_agent_list.rs"]
+mod list;
 #[path = "mcp_agent_record.rs"]
 mod record;
 #[path = "mcp_render.rs"]
@@ -620,7 +622,7 @@ enum AppRef {
 }
 
 /// An app installed for the workspace, as the workspace lists it.
-struct InstalledApp {
+pub(super) struct InstalledApp {
     app_id: String,
     label: String,
     /// Whether this caller may open it: the workspace names an app it may
@@ -1447,7 +1449,7 @@ fn listed_as<'a>(installed: &'a [InstalledApp], name: &str) -> Option<&'a Instal
     named.next().filter(|_| named.next().is_none())
 }
 
-fn app_names(ids: &[String]) -> Vec<String> {
+pub(super) fn app_names(ids: &[String]) -> Vec<String> {
     let mut names: Vec<String> = ids
         .iter()
         .map(|id| id.rsplit('.').next().unwrap_or(id).to_lowercase())
@@ -1766,116 +1768,6 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
                 "rows": rows,
                 "kinds": kinds,
             });
-            if let (Some(fields), Some(next)) = (answer.as_object_mut(), next) {
-                fields.insert("next_cursor".into(), json!(next));
-            }
-            reply.structured = Some(answer);
-        }
-        Ok(reply)
-    }
-
-    /// The apps: running ones first, then the installed ones to open. An
-    /// installed list that could not be read is said, with why: read as
-    /// empty it would tell the agent there are no apps.
-    async fn list_apps(
-        &self,
-        offset: usize,
-        limit: usize,
-        structured: bool,
-    ) -> Result<Reply, Failure> {
-        let (_, running) = self.providers().await?;
-        let mut lines: Vec<String> = Vec::new();
-        let mut rows: Vec<Value> = Vec::new();
-        let mut running_ids: Vec<String> = Vec::new();
-        for (_, app) in &running {
-            let Some(app_id) = app["app_id"].as_str() else {
-                continue;
-            };
-            if !running_ids.iter().any(|seen| seen == app_id) {
-                running_ids.push(app_id.to_owned());
-            }
-        }
-        let (installed, unread) = match self.installed().await {
-            Ok(installed) => (installed, None),
-            Err(reason) => (Vec::new(), Some(reason)),
-        };
-        for app_id in &running_ids {
-            let label = installed
-                .iter()
-                .find(|app| app.app_id == *app_id)
-                .map_or("", |app| app.label.as_str());
-            // A host service (the desktop's layout) runs with the session,
-            // and has no window.
-            let windowed = running.iter().any(|(provider, app)| {
-                (provider.parse::<u64>().is_ok()
-                    || tilo_actions::remote::is_resource_provider(provider))
-                    && app["app_id"].as_str() == Some(app_id)
-            });
-            let name = app_names(std::slice::from_ref(app_id)).join("");
-            let state = if windowed { "running" } else { "service" };
-            lines.push(format!("{name}  {label}  {state}"));
-            rows.push(json!({
-                "path": name,
-                "name": name,
-                "label": label,
-                "kind": "app",
-                "state": state,
-                "has_children": true,
-                "actions": [],
-            }));
-        }
-        let mut unopened = false;
-        for app in &installed {
-            if !running_ids.contains(&app.app_id) {
-                let state = if app.opens {
-                    "installed"
-                } else {
-                    unopened = true;
-                    "installed, not yours to open"
-                };
-                let name = app_names(std::slice::from_ref(&app.app_id)).join("");
-                lines.push(format!("{name}  {}  {state}", app.label));
-                rows.push(json!({
-                    "path": name,
-                    "name": name,
-                    "label": app.label,
-                    "kind": "app",
-                    "state": state,
-                    "has_children": true,
-                    "actions": [],
-                }));
-            }
-        }
-        let total = lines.len();
-        let mut text = String::from("apps");
-        for line in lines.into_iter().skip(offset).take(limit) {
-            text.push('\n');
-            text.push_str(&line);
-        }
-        let end = offset.saturating_add(limit);
-        let next = (end < total).then(|| end.to_string());
-        if let Some(next) = &next {
-            let _ = write!(
-                text,
-                "\n… {} more: cursor \"{next}\"",
-                total.saturating_sub(end)
-            );
-        }
-        if let Some(reason) = unread {
-            let _ = write!(
-                text,
-                "\nthe installed apps could not be read: {}",
-                answer::words(&reason)
-            );
-        } else if total == 0 {
-            text.push_str("\nnone: no app runs in this workspace and none is installed");
-        }
-        if unopened {
-            text.push_str("\nthe person decides which apps an agent may open in this workspace");
-        }
-        let mut reply = Reply::ok(text);
-        if structured {
-            let mut answer = json!({"path":"apps","kind":"apps","actions":[],"rows":rows});
             if let (Some(fields), Some(next)) = (answer.as_object_mut(), next) {
                 fields.insert("next_cursor".into(), json!(next));
             }

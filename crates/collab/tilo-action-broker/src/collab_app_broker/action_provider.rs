@@ -727,14 +727,12 @@ impl AppBrokerState {
             // A retired verb: nothing asks for a reading this way, and
             // nothing is answered.
             | RemoteActionMessage::RetiredResourceWatch { .. }
-            // An application puts content through its own store, not into
-            // another device's over this api; nor does it read another
-            // device's workspace content through it.
+            // An application puts content through its own store, not into or out of another
+            // device's workspace over this api.
             | RemoteActionMessage::ContentPutRequest { .. }
             | RemoteActionMessage::ContentGetRequest { .. }
             | RemoteActionMessage::ContentLinkRequest { .. }
-            // Nor does it search or follow another device's workspace
-            // through it: those are an agent's and the person's.
+            // Nor does it search or follow another device's workspace: those are an agent's.
             | RemoteActionMessage::SearchRequest { .. }
             | RemoteActionMessage::ChangesRequest { .. }
             // Nor does it wait for another device's workspace to change.

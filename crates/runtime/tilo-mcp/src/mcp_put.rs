@@ -16,7 +16,7 @@ use tilo_actions::remote::{
 };
 use tilo_lock::MutexRecover as _;
 
-use super::{ActionProvider, Deserialize, McpServer, Surface, Value, json, parse, tool_result};
+use super::{ActionProvider, Deserialize, McpServer, Value, json, parse};
 
 /// The longest base64 text of a chunk within [`MAX_CONTENT_PUT_CHUNK`].
 const MAX_CHUNK_TEXT: usize = MAX_CONTENT_PUT_CHUNK.div_ceil(3) * 4;
@@ -125,16 +125,11 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             },
             _ => Err("Unknown tool".to_owned()),
         };
-        match self.surface {
-            Surface::Classic => tool_result(result),
-            Surface::Agent => {
-                let (text, failed) = match result {
-                    Ok(value) => (value.to_string(), false),
-                    Err(message) => (message, true),
-                };
-                json!({"content":[{"type":"text","text":text}],"isError":failed})
-            }
-        }
+        let (text, failed) = match result {
+            Ok(value) => (value.to_string(), false),
+            Err(message) => (message, true),
+        };
+        json!({"content":[{"type":"text","text":text}],"isError":failed})
     }
 
     async fn put_begin(&self, args: BeginArgs) -> Result<Value, String> {

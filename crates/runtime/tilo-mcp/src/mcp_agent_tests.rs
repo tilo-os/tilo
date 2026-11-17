@@ -1234,15 +1234,17 @@ fn an_agent_is_offered_nine_small_tools_and_no_classic_ones() {
         );
         let size = serde_json::to_string(tools).unwrap().len();
         assert!(size < 5_000, "the tool list is {size} bytes");
-        let classic = McpServer::new(host.clone(), "workspace".into(), "owner".into())
+        // One tool set: a session that names no surface offers the agent's.
+        let other = McpServer::new(host.clone(), "workspace".into(), "owner".into())
             .handle(json!({"jsonrpc":"2.0","id":1,"method":"tools/list"}))
             .await
             .unwrap();
-        let classic = serde_json::to_string(&classic["result"]["tools"])
-            .unwrap()
-            .len();
-        assert!(size < classic, "{size} against {classic}");
-        // An agent's session answers no classic tool; a classic session no agent tool.
+        assert_eq!(
+            serde_json::to_value(tools).unwrap(),
+            other["result"]["tools"],
+            "one tool set"
+        );
+        // The old tool is not one of them.
         let refused = agent(&host)
             .handle(json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"tilo_query","arguments":{}}}))
             .await

@@ -4,7 +4,7 @@
 //! session as one of the person's devices.
 use super::*;
 use serde_json::{Value, json};
-use tilo_mcp::{McpServer, Surface};
+use tilo_mcp::McpServer;
 use tilo_session_client::Outbox;
 use tilo_session_client::remote::SessionActions;
 
@@ -72,7 +72,6 @@ async fn an_agents_computer_lists_the_workspace_and_writes_what_another_device_s
     let person = hex::encode(root.verifying_key().to_bytes());
     let actions = SessionActions::new(&agent.peer, agent.workspace, host.cert.device_public_key);
     let server = McpServer::new(actions, WORKSPACE.into(), person)
-        .with_surface(Surface::Agent)
         .with_agent_session("session-1", "Claude Code");
 
     let listed = ask(
@@ -336,7 +335,6 @@ async fn an_app_an_agent_opens_reaches_the_persons_layout() {
     let person = hex::encode(root.verifying_key().to_bytes());
     let actions = SessionActions::new(&agent.peer, agent.workspace, host.cert.device_public_key);
     let server = McpServer::new(actions, WORKSPACE.into(), person)
-        .with_surface(Surface::Agent)
         .with_agent_session("session-1", "Claude Code");
 
     agent_opens_notes(&server, &mut browser).await;
@@ -491,7 +489,6 @@ impl Guest {
         let actions =
             SessionActions::new(&agent.peer, agent.workspace, lounge.cert.device_public_key);
         let server = McpServer::new(actions, cluster, person)
-            .with_surface(Surface::Agent)
             .with_agent_session("session-guest", "Claude Code");
         Self {
             browser,
@@ -601,7 +598,6 @@ async fn an_agent_runs_a_command_in_its_workspace_in_one_step() {
         WORKSPACE.into(),
         person,
     )
-    .with_surface(Surface::Agent)
     .with_agent_session("session-7", "Claude Code");
 
     let (listed, _) = tool(&server, "tilo_ls", json!({"path": "terminal"})).await;
@@ -764,7 +760,6 @@ async fn an_agents_command_lands_after_another_devices_terminal_closed() {
         WORKSPACE.into(),
         person,
     )
-    .with_surface(Surface::Agent)
     .with_agent_session("session-8", "Claude Code");
 
     let (ran, failed) = tool(
@@ -823,7 +818,6 @@ async fn an_agents_long_run_shows_its_output_and_its_cancel_ends_it() {
         WORKSPACE.into(),
         person,
     )
-    .with_surface(Surface::Agent)
     .with_agent_session("session-9", "Claude Code");
 
     // A build that prints, then takes a long time: the call answers pending
@@ -996,7 +990,6 @@ async fn leaves_who_is_here(ending: Ending) {
         .expect("the computer's session is the agent's run");
     let actions = SessionActions::new(&agent.peer, agent.workspace, host.cert.device_public_key);
     let server = McpServer::new(actions, WORKSPACE.into(), person)
-        .with_surface(Surface::Agent)
         .with_agent_session("session-1", "Claude Code");
     let (_, failed) = tool(&server, "tilo_ls", json!({})).await;
     assert!(!failed, "the agent lists the workspace");
@@ -1103,7 +1096,6 @@ async fn an_agent_that_comes_back_is_heard_by_an_open_page_every_time() {
         let actions =
             SessionActions::new(&agent.peer, agent.workspace, host.cert.device_public_key);
         let server = McpServer::new(actions, WORKSPACE.into(), person.clone())
-            .with_surface(Surface::Agent)
             .with_agent_session(format!("session-{run}"), "Claude Code");
         let opened = Instant::now();
         let (_, failed) = tool(&server, "tilo_ls", json!({})).await;
@@ -1175,7 +1167,6 @@ async fn a_quiet_agent_stays_while_its_session_lasts() {
         let actions =
             SessionActions::new(&agent.peer, agent.workspace, host.cert.device_public_key);
         let server = McpServer::new(actions, WORKSPACE.into(), person.clone())
-            .with_surface(Surface::Agent)
             .with_agent_session(format!("session-{run}"), "Claude Code");
         let (_, failed) = tool(&server, "tilo_ls", json!({})).await;
         assert!(!failed, "run {run}: the agent lists the workspace");
@@ -1273,7 +1264,6 @@ async fn an_agent_is_present_waiting_as_soon_as_it_connects() {
 
     let actions = SessionActions::new(&agent.peer, agent.workspace, host.cert.device_public_key);
     let server = McpServer::new(actions, WORKSPACE.into(), person)
-        .with_surface(Surface::Agent)
         .with_agent_session("session-0", "Claude Code");
     let (_, failed) = tool(&server, "tilo_ls", json!({})).await;
     assert!(!failed, "the agent lists the workspace");
@@ -1326,7 +1316,6 @@ async fn the_run_after_one_that_ended_is_on_the_page_at_once() {
         let actions =
             SessionActions::new(&agent.peer, agent.workspace, host.cert.device_public_key);
         let server = McpServer::new(actions, WORKSPACE.into(), person.clone())
-            .with_surface(Surface::Agent)
             .with_agent_session(format!("session-{run}"), "Claude Code");
         let opened = Instant::now();
         let (_, failed) = tool(&server, "tilo_ls", json!({})).await;
@@ -1386,7 +1375,6 @@ async fn an_agents_writes_answer_without_waiting_out_a_timeout() {
     let person = hex::encode(root.verifying_key().to_bytes());
     let actions = SessionActions::new(&agent.peer, agent.workspace, host.cert.device_public_key);
     let server = McpServer::new(actions, WORKSPACE.into(), person)
-        .with_surface(Surface::Agent)
         .with_agent_session("session-1", "Claude Code");
     // Reads warm the agent's session up; what is timed below is the writes.
     let (apps, failed) = tool(&server, "tilo_ls", json!({})).await;

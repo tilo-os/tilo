@@ -49,7 +49,7 @@ use std::{
     sync::{Arc, Mutex},
     time::Instant,
 };
-use tilo_mcp::{McpServer, Surface};
+use tilo_mcp::McpServer;
 
 /// The header naming an MCP session (Streamable HTTP).
 pub const SESSION_HEADER: &str = "mcp-session-id";
@@ -398,7 +398,6 @@ impl Session {
         let catalogue =
             tilo_mcp::task_hosts::WorkspaceCatalogue::new(actions.clone(), self.caller());
         let server = McpServer::new(actions, workspace.to_owned(), self.person.clone())
-            .with_surface(Surface::Agent)
             .with_agent_session(&self.id, self.label.clone())
             .with_task_hosts(Some(Arc::new(tilo_mcp::task_hosts::TaskHosts::new(
                 Some(&self.person),

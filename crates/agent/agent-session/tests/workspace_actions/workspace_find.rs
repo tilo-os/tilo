@@ -6,7 +6,7 @@
 use super::own_agent::{listed_resources, notes_resource};
 use super::*;
 use serde_json::{Value, json};
-use tilo_mcp::{McpServer, Surface};
+use tilo_mcp::McpServer;
 use tilo_session_client::remote::SessionActions;
 
 const NOTES: &str = "so.tilo.notes";
@@ -90,7 +90,6 @@ async fn an_agent_finds_a_note_by_its_title_and_by_its_words_and_reads_that_note
     let person = hex::encode(root.verifying_key().to_bytes());
     let actions = SessionActions::new(&agent.peer, agent.workspace, host.cert.device_public_key);
     let server = McpServer::new(actions, WORKSPACE.into(), person)
-        .with_surface(Surface::Agent)
         .with_agent_session("session-find", "Claude Code");
 
     // Two notes, as the walk-through left them: one the agent made and the
@@ -201,7 +200,6 @@ async fn an_agent_finds_a_conversation_by_its_name() {
     let person = hex::encode(root.verifying_key().to_bytes());
     let actions = SessionActions::new(&agent.peer, agent.workspace, host.cert.device_public_key);
     let server = McpServer::new(actions, WORKSPACE.into(), person)
-        .with_surface(Surface::Agent)
         .with_agent_session("session-find", "Claude Code");
 
     // The conversation, named by the path a read takes, and read back.

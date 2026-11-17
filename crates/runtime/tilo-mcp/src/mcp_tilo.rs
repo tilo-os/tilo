@@ -904,7 +904,6 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         }
         let caller = caller.in_workspace(workspace.clone()).in_new_execution();
         Self::from_caller(host, workspace, format!("agent:{agent_id}"), caller)
-            .with_surface(crate::Surface::Agent)
     }
 
     /// Attribute every invocation of this session to `group`, the run of a task whose own

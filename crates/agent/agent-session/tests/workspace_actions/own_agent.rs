@@ -6,7 +6,7 @@
 //! for the person; and an action that asks first goes to the person.
 use super::*;
 use serde_json::{Value, json};
-use tilo_mcp::{McpServer, Surface};
+use tilo_mcp::McpServer;
 use tilo_session_client::Outbox;
 use tilo_session_client::remote::SessionActions;
 
@@ -121,7 +121,6 @@ async fn a_persons_own_agent_runs_what_it_lists_as_an_agent_and_asks_them_first(
         WORKSPACE.into(),
         person.clone(),
     )
-    .with_surface(Surface::Agent)
     .with_agent_session("session-3", "Claude Code");
 
     // Terminal: what it lists, it runs, as listed; a session first, then
@@ -418,7 +417,6 @@ async fn a_persons_own_agent_starts_a_stopped_app_writes_and_reads_as_one_run() 
         WORKSPACE.into(),
         person,
     )
-    .with_surface(Surface::Agent)
     .with_agent_session("session-7", "Claude Code");
 
     // Nobody started Notes: the listing says how to, and that works.
@@ -577,7 +575,6 @@ fn agent_runs(
     runs.iter()
         .map(|run| {
             McpServer::new(session.clone(), WORKSPACE.into(), person.to_owned())
-                .with_surface(Surface::Agent)
                 .with_agent_session(*run, "Claude Code")
         })
         .collect()

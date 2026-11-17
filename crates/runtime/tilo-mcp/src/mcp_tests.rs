@@ -38,53 +38,6 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase a_resolved_row_says_each_thing_once;
-    {
-        let mut row = action_row(
-            "doc:1",
-            "save-as",
-            vec![tilo_actions::ActionParam::required(
-                "path",
-                tilo_actions::ParamType::Text,
-                "Where",
-            )],
-        );
-        row.parent_resource = "doc:1".into();
-        row.visibility = Some(tilo_actions::remote::RowVisibility {
-            governing_kind: Some(tilo_actions::OperationKind::Document),
-            action: "save-as".into(),
-            contract: tilo_actions::ActionContract::default(),
-        });
-        let resolved = resolved_row_json(&row);
-        assert_eq!(resolved["resource"], "doc:1");
-        assert_eq!(resolved["descriptor"]["params"][0]["name"], "path");
-        assert_eq!(
-            resolved["descriptor"]["contract"],
-            row_json(&row)["descriptor"]["contract"]
-        );
-        for key in [
-            "parent_resource",
-            "visibility_action",
-            "visibility_contract",
-        ] {
-            assert!(resolved.get(key).is_none(), "{key}: {resolved}");
-        }
-        for key in ["resource", "resource_kind", "resource_label"] {
-            assert!(
-                resolved["descriptor"].get(key).is_none(),
-                "{key}: {resolved}"
-            );
-        }
-
-        // A visibility other than the action's own contract is kept.
-        row.visibility = Some(tilo_actions::remote::RowVisibility {
-            governing_kind: Some(tilo_actions::OperationKind::View),
-            action: "read".into(),
-            contract: tilo_actions::ActionContract::view(),
-        });
-        assert_eq!(resolved_row_json(&row)["visibility_action"], "read");
-    }
-
     phase query_rows_carry_the_schema_of_the_generic_apply_argument;
     {
         use schema_rows::Note;
@@ -501,61 +454,4 @@ fn described_row(action: &str, label: &str, description: &str) -> CatalogueRow {
     row.resource.kind = "browser.page".into();
     row.resource.label = "Page".into();
     row
-}
-
-tilo_test_env::scenario! {
-    fn an_answer_is_the_output_alone_or_says_what_to_do;
-
-    phase a_succeeded_batch_step_is_its_output_alone;
-    {
-        let step = succeeded_step(json!({
-            "invocation_id": "a",
-            "update": {"state": "succeeded", "invocation": "a", "output": {
-                "value": {"content": "tilo.content:ab"}, "resources": ["tilo.content:ab"]
-            }},
-            "unchanged": "note"
-        }));
-        assert_eq!(
-            step,
-            json!({"value": {"content": "tilo.content:ab"}, "unchanged": "note"})
-        );
-        let empty = succeeded_step(
-            json!({"invocation_id": "b", "update": {"state": "succeeded", "invocation": "b", "output": {}}}),
-        );
-        assert_eq!(empty, json!({}));
-    }
-
-    phase a_stale_revision_says_what_happened_and_what_to_do;
-    {
-        let refusal = String::from(BridgeError::Host(
-            tilo_actions::remote::ActionCallError::StaleRevision,
-        ));
-        for said in [
-            "changed since the revision",
-            "tilo_query",
-            "omit revision",
-            // The bare code the caller used to be left with is gone.
-        ] {
-            assert!(refusal.contains(said), "{refusal}");
-        }
-        assert_ne!(refusal, "StaleRevision");
-        let mut moved = stale_revision_error("v5:old", "v5:new");
-        assert!(
-            moved.contains("v5:old") && moved.contains("v5:new"),
-            "{moved}"
-        );
-        // Another refusal says the code the API documents, then the words it
-        // always had.
-        assert_eq!(
-            String::from(BridgeError::Host(
-                tilo_actions::remote::ActionCallError::NotPermitted
-            )),
-            format!(
-                "not_permitted: {}",
-                tilo_actions::remote::ActionCallError::NotPermitted
-            )
-        );
-        moved.clear();
-        assert!(moved.is_empty());
-    }
 }
