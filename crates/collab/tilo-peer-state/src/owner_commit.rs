@@ -22,7 +22,7 @@ pub struct OwnerCommitRequest {
 pub enum CommitOperation {
     Document {
         app: String,
-        record: String,
+        document: String,
         envelope: Box<collab_types::SignedOp>,
         /// The member's own record `record` is, when it is one: the write
         /// carries it on the wire.
@@ -187,7 +187,7 @@ impl OwnerCommitRequest {
             } => membership_binding(*invocation, caller, command)?,
             CommitOperation::Document {
                 app,
-                record,
+                document: record,
                 envelope,
                 ..
             } => {
@@ -341,13 +341,13 @@ impl OwnerCommitReceipt {
         let (
             CommitOperation::Document {
                 app,
-                record,
+                document: record,
                 envelope,
                 ..
             },
             CommitOperation::Document {
                 app: taken_app,
-                record: taken_document,
+                document: taken_document,
                 envelope: taken,
                 ..
             },

@@ -208,7 +208,7 @@ impl Worker {
         if puts_into_the_tree(request) {
             return Keys::Record {
                 app_id: tilo_fs::tree_document::FILES_APP.to_owned(),
-                record: tilo_fs::tree_document::record(),
+                record: tilo_fs::tree_document::document_id(),
                 act: false,
             };
         }

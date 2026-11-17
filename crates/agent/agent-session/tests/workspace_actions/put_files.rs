@@ -20,7 +20,7 @@ use collab_types::DocumentMutation;
 use fs_protocol::files::FileNodeKind;
 use fs_protocol::tree::{FILES_APP, ROOT_ID, Tree};
 use serde_json::json;
-use tilo_fs::tree_document::record as tree_document;
+use tilo_fs::tree_document::document_id as tree_document;
 use tilo_mcp::{McpServer, Surface};
 use tilo_session_client::remote::SessionActions;
 

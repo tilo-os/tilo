@@ -19,7 +19,7 @@ use serde::{Deserialize, Serialize};
 use tilo_desktop_model::WorkspaceId;
 
 use super::journal;
-use super::record::{StoredPendingEnrollment, StoredWorkspace};
+use super::stored::{StoredPendingEnrollment, StoredWorkspace};
 use super::{Change, MAX_AUTHORITY_BYTES, NativeAuthorityStorage, limits::preflight_document};
 
 /// The index's place among the parts.
@@ -339,7 +339,7 @@ fn journal_name(workspace: WorkspaceId, revision: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::owner::record::StoredWorkspace;
+    use crate::owner::stored::StoredWorkspace;
     use crate::owner::{Change, NativeAuthorityStorage};
     use ed25519_dalek::SigningKey;
     use std::sync::Mutex;
@@ -414,7 +414,7 @@ mod tests {
     ) -> Result<NativeAuthorityStorage, String> {
         let cert = certificate()?;
         let stored = StoredWorkspace {
-            version: crate::owner::record::WORKSPACE_VERSION,
+            version: crate::owner::stored::WORKSPACE_VERSION,
             workspace,
             workspace_host: cert.clone(),
             device: cert,

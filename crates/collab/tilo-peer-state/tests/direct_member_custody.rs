@@ -437,7 +437,7 @@ fn commit_sealed(hosted: &Hosted, keys: &key_group::ContentKeys, when: SystemTim
                 workspace: hosted.workspace.to_string(),
                 operation: tilo_peer_state::owner_commit::CommitOperation::Document {
                     app: APP.into(),
-                    record: RECORD.into(),
+                    document: RECORD.into(),
                     envelope,
                     own: None,
                 },

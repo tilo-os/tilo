@@ -25,7 +25,7 @@ use crate::owner::journal;
 use crate::owner::{
     Change, LimitedWriter, MAX_AUTHORITY_BYTES, NativeAuthorityStorage, NativeWorkspaceOwner,
     Store,
-    record::{StoredPendingEnrollment, StoredWorkspace, format},
+    stored::{StoredPendingEnrollment, StoredWorkspace, format},
 };
 use parking_lot::{Mutex, RwLock};
 use serde::{Deserialize, Serialize};

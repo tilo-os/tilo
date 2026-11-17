@@ -439,7 +439,7 @@ mod owner_commit_tests {
                         workspace: fixture.route.cluster_id.clone(),
                         operation: tilo_peer_state::owner_commit::CommitOperation::Document {
                             app: fixture.route.app_id.clone(),
-                            record: fixture.route.document_id.clone(),
+                            document: fixture.route.document_id.clone(),
                             envelope: Box::new(owner_snapshot(&fixture)),
                             own: None,
                         },
@@ -490,7 +490,7 @@ mod owner_commit_tests {
                     workspace: uuid::Uuid::new_v4().to_string(),
                     operation: tilo_peer_state::owner_commit::CommitOperation::Document {
                         app: fixture.route.app_id.clone(),
-                        record: fixture.route.document_id.clone(),
+                        document: fixture.route.document_id.clone(),
                         envelope: Box::new(owner_snapshot(&fixture)),
                         own: None,
                     },
@@ -1426,7 +1426,7 @@ mod owner_commit_tests {
                 workspace: f.route.cluster_id.clone(),
                 operation: tilo_peer_state::owner_commit::CommitOperation::Document {
                     app: f.route.app_id.clone(),
-                    record: f.route.document_id.clone(),
+                    document: f.route.document_id.clone(),
                     envelope: Box::new(owner_snapshot(&f)),
                     own: None,
                 },

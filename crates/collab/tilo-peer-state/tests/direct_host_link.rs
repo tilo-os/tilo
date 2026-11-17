@@ -538,7 +538,7 @@ async fn a_device_serves_the_workspace_its_engine_holds() {
             workspace: workspace.to_string(),
             operation: tilo_peer_state::owner_commit::CommitOperation::Document {
                 app: APP.into(),
-                record: RECORD.into(),
+                document: RECORD.into(),
                 envelope,
                 own: None,
             },
@@ -1508,7 +1508,7 @@ pub(crate) fn commit_entry_at(
                 workspace: workspace.to_string(),
                 operation: tilo_peer_state::owner_commit::CommitOperation::Document {
                     app: APP.into(),
-                    record: RECORD.into(),
+                    document: RECORD.into(),
                     envelope,
                     own: None,
                 },

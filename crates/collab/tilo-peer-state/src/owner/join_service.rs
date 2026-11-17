@@ -6,7 +6,7 @@
 //! bootstrap, published by this device like any other change it makes. No
 //! device answers for another, and no device holds a privilege the workspace's
 //! governance does not give it.
-use super::record::{self, StoredJoinReceipt};
+use super::stored::{self, StoredJoinReceipt};
 use super::{NativeWorkspaceOwner, WorkspaceId, publication};
 use crate::StatePeer;
 use crate::join::TransportHint;
@@ -69,7 +69,7 @@ struct OwnerWorkspace<'a> {
     named: String,
     /// The workspace state this exchange decides on and answers with.
     peer: StatePeer,
-    record: record::StoredWorkspace,
+    record: stored::StoredWorkspace,
     /// This device's live replica, which the answer is installed into.
     replica: Replica,
     staged: bool,

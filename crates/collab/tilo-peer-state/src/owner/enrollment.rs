@@ -2,9 +2,9 @@ use crate::owner::{
     Change, NativeAuthorityStorage, NativeCommittedView, NativeWorkspaceOwner, NeighbourMsg,
     PendingEnrollmentId, PendingEnrollmentStatus, StatePeer, SystemTime, TransportOrigin,
     VerifiedNativeEnrollment, VerifiedNativeEnrollmentIntent, WorkspaceId, limits, publication,
-    record,
+    stored,
 };
-use record::{StoredPendingEnrollment, StoredWorkspace};
+use stored::{StoredPendingEnrollment, StoredWorkspace};
 
 pub(crate) fn validate_pending(
     workspace: WorkspaceId,
@@ -25,7 +25,7 @@ pub(crate) fn restore(
     record: &StoredWorkspace,
     now: SystemTime,
 ) -> Result<NativeCommittedView, String> {
-    if record.version != crate::owner::record::WORKSPACE_VERSION
+    if record.version != crate::owner::stored::WORKSPACE_VERSION
         || workspace != record.workspace
         || record.generation == 0
         || record.continuity == 0
@@ -81,7 +81,7 @@ pub(crate) fn restore(
 fn validate_enrollment(
     workspace: WorkspaceId,
     record: &StoredWorkspace,
-    enrollment: &crate::owner::record::StoredEnrollment,
+    enrollment: &crate::owner::stored::StoredEnrollment,
 ) -> Result<(), String> {
     let intent = VerifiedNativeEnrollmentIntent::restore(&enrollment.enrollment_intent)?;
     let join = intent.verified_join();
@@ -371,11 +371,11 @@ impl NativeWorkspaceOwner {
         }
 
         let record = StoredWorkspace {
-            version: crate::owner::record::WORKSPACE_VERSION,
+            version: crate::owner::stored::WORKSPACE_VERSION,
             workspace,
             workspace_host: bootstrap.host.clone(),
             device: enrollment.local_device().clone(),
-            enrollment: Some(crate::owner::record::StoredEnrollment {
+            enrollment: Some(crate::owner::stored::StoredEnrollment {
                 invitation: enrollment.verified_join().signed_invitation().to_vec(),
                 enrollment_intent: pending.intent.clone(),
                 enrolled_at_ns: ns(now)?,

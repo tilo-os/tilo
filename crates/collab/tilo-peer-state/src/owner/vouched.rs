@@ -7,7 +7,7 @@
 //! with the replay that follows and is admitted like any other.
 use crate::StatePeer;
 use crate::join::JoinTransportResponse;
-use crate::owner::record::{StoredVouch, StoredWorkspace};
+use crate::owner::stored::{StoredVouch, StoredWorkspace};
 use crate::owner::{NativeCommittedView, NativeWorkspaceOwner, WorkspaceId, publication};
 use tilo_delivery_protocol::workspace_join::WorkspaceDeviceHintV1;
 use tilo_user_identity::{DeviceCert, RevocationEntry};
@@ -124,7 +124,7 @@ impl NativeWorkspaceOwner {
             now,
         )?;
         let record = StoredWorkspace {
-            version: crate::owner::record::WORKSPACE_VERSION,
+            version: crate::owner::stored::WORKSPACE_VERSION,
             workspace,
             workspace_host: answer.host,
             device: device.clone(),
@@ -218,7 +218,7 @@ impl NativeWorkspaceOwner {
         ))
         .map_err(|error| error.to_string())?;
         let record = StoredWorkspace {
-            version: crate::owner::record::WORKSPACE_VERSION,
+            version: crate::owner::stored::WORKSPACE_VERSION,
             workspace,
             workspace_host: bootstrap.host.clone(),
             device: device.clone(),

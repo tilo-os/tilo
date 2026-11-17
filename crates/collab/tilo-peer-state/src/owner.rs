@@ -31,10 +31,10 @@ mod journal;
 mod journaled;
 mod limits;
 mod publication;
-mod record;
 pub mod renewal;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod session;
+mod stored;
 #[cfg(any(test, feature = "test-support"))]
 pub mod testing;
 #[cfg(test)]
@@ -59,7 +59,7 @@ pub use publication::{
     DocumentWrites, HostAnswer, NativeOutgoing, NativeOutgoingEntry, SealedHistoryKeys,
     custody_run_name, outgoing_bytes, validate_file_layout,
 };
-pub use record::{
+pub use stored::{
     NativeAuthorityStorage, PendingEnrollmentId, PendingEnrollmentStatus, StoredPendingEnrollment,
 };
 pub use write::{Committed, WriteRefusal};
@@ -258,7 +258,7 @@ pub struct NativeCommittedView {
     peer: StatePeer,
     /// This device's live replica, shared with the workspace's direct links.
     replica: Replica,
-    record: record::StoredWorkspace,
+    record: stored::StoredWorkspace,
     /// Who holds the workspace's keys, as [`Self::key_holders`] last
     /// answered and for which instant.
     holders: Arc<std::sync::Mutex<Option<KeyHolders>>>,
@@ -271,7 +271,7 @@ pub struct NativeCommittedView {
 /// asked for.
 type KeyHolders = (u64, std::collections::BTreeSet<[u8; 32]>);
 impl NativeCommittedView {
-    fn new(peer: StatePeer, record: record::StoredWorkspace) -> Self {
+    fn new(peer: StatePeer, record: stored::StoredWorkspace) -> Self {
         Self {
             replica: Replica::new(peer.clone()),
             peer,
@@ -324,8 +324,8 @@ impl NativeCommittedView {
     /// refusal changes nothing and no admission of a link interleaves.
     fn change<T>(
         &self,
-        change: impl FnOnce(&mut StatePeer, &mut record::StoredWorkspace) -> Result<T, String>,
-    ) -> Result<(T, record::StoredWorkspace), String> {
+        change: impl FnOnce(&mut StatePeer, &mut stored::StoredWorkspace) -> Result<T, String>,
+    ) -> Result<(T, stored::StoredWorkspace), String> {
         let mut live = self.live();
         let mut next = live.clone();
         let mut record = self.record.clone();
@@ -367,7 +367,7 @@ impl NativeCommittedView {
     pub fn enrollment_invitation(&self) -> Result<&[u8], String> {
         Ok(&self.enrollment()?.invitation)
     }
-    fn enrollment(&self) -> Result<&record::StoredEnrollment, String> {
+    fn enrollment(&self) -> Result<&stored::StoredEnrollment, String> {
         self.record
             .enrollment
             .as_ref()
@@ -406,7 +406,7 @@ impl NativeCommittedView {
     /// Whether a publication of `peer` and `record` leaves everything
     /// authorization reads from this view as it is: the replica's governance
     /// ([`StatePeer::same_policy`]) and the record's standing in the workspace.
-    fn same_policy(&self, peer: &StatePeer, record: &record::StoredWorkspace) -> bool {
+    fn same_policy(&self, peer: &StatePeer, record: &stored::StoredWorkspace) -> bool {
         self.peer.same_policy(peer) && self.record.same_standing(record)
     }
     fn security_digest(&self) -> Result<[u8; 32], String> {
@@ -754,7 +754,7 @@ impl NativeWorkspaceOwner {
         let durable = {
             let live = view.live();
             publication::refresh_governance_checkpoint(&live, &mut record)?;
-            record::DurablePeer::from(live.durable_parts()?)
+            stored::DurablePeer::from(live.durable_parts()?)
         };
         if durable == record.peer && record.publication == previous {
             return Ok(());
@@ -895,7 +895,7 @@ impl NativeWorkspaceOwner {
             publication::settle(&mut record, self.0.store.as_ref())?;
             publication::retire_member_changes(&live, &mut record, &governed)?;
             publication::refresh_governance_checkpoint(&live, &mut record)?;
-            let durable = record::DurablePeer::from(live.durable_parts()?);
+            let durable = stored::DurablePeer::from(live.durable_parts()?);
             // Authentication and causal admission still run for every replay.
             // Reuse the actual committed barrier only when both durable peer
             // state and outgoing custody are byte-for-byte unchanged. In
@@ -991,7 +991,7 @@ impl NativeWorkspaceOwner {
     fn change_document<T>(
         &self,
         workspace: WorkspaceId,
-        change: impl FnOnce(&NativeCommittedView, &mut record::StoredWorkspace) -> Result<T, String>,
+        change: impl FnOnce(&NativeCommittedView, &mut stored::StoredWorkspace) -> Result<T, String>,
     ) -> Result<T, String> {
         let view = self.view(workspace)?;
         let mut record = view.record.clone();
@@ -1006,7 +1006,7 @@ impl NativeWorkspaceOwner {
         &self,
         workspace: WorkspaceId,
         view: &NativeCommittedView,
-        record: record::StoredWorkspace,
+        record: stored::StoredWorkspace,
         enrollment: Option<&StoredPendingEnrollment>,
     ) -> Result<(), String> {
         self.publish(workspace, &view.replica, record, enrollment)
@@ -1021,7 +1021,7 @@ impl NativeWorkspaceOwner {
         &self,
         workspace: WorkspaceId,
         replica: &Replica,
-        mut record: record::StoredWorkspace,
+        mut record: stored::StoredWorkspace,
         enrollment: Option<&StoredPendingEnrollment>,
     ) -> Result<(), String> {
         // One snapshot, taken under the replica's lock: what is published is
@@ -1041,7 +1041,7 @@ impl NativeWorkspaceOwner {
     /// `record` holds: the effect history root, and the replica as published.
     fn snapshot(
         live: &StatePeer,
-        record: &mut record::StoredWorkspace,
+        record: &mut stored::StoredWorkspace,
     ) -> Result<StatePeer, String> {
         // The signed root is the replica's, and the store's blocks follow
         // it: the record mirrors it rather than deciding it, so a
@@ -1063,7 +1063,7 @@ impl NativeWorkspaceOwner {
         &self,
         workspace: WorkspaceId,
         replica: &Replica,
-        mut record: record::StoredWorkspace,
+        mut record: stored::StoredWorkspace,
         published: StatePeer,
         enrollment: Option<&StoredPendingEnrollment>,
     ) -> Result<(), String> {

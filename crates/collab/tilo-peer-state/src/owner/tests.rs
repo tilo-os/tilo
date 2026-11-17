@@ -169,7 +169,7 @@ fn edit_from_view(
         workspace: WORKSPACE.into(),
         operation: CommitOperation::Document {
             app: APP.into(),
-            record: String::new(),
+            document: String::new(),
             envelope,
             own: None,
         },
@@ -554,7 +554,7 @@ fn unordered_edit(joined: &Enrolled, topic: &str) -> OwnerCommitRequest {
         workspace: WORKSPACE.into(),
         operation: CommitOperation::Document {
             app: APP.into(),
-            record: String::new(),
+            document: String::new(),
             envelope: Box::new(envelope),
             own: None,
         },
@@ -957,7 +957,7 @@ fn commit_sealed_as(
                 workspace: WORKSPACE.into(),
                 operation: CommitOperation::Document {
                     app: APP.into(),
-                    record: String::new(),
+                    document: String::new(),
                     envelope: envelope.clone(),
                     own: None,
                 },

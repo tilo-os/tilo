@@ -30,7 +30,7 @@ use serde_json::{Map, Value, json};
 use tilo_actions::remote::{Caller, InvokeArgument, InvokeRequest, RemoteActionTarget};
 use tilo_actions::{ActionAddress, InvocationId};
 use tilo_fs::namespace::{Namespace, ROOT_INO};
-use tilo_fs::tree_document::{FILES_APP, record as tree_document};
+use tilo_fs::tree_document::{FILES_APP, document_id as tree_document};
 use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_relay_protocol::WorkspaceId;
 

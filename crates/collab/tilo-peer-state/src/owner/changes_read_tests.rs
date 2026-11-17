@@ -28,7 +28,7 @@ fn commit(joined: &Enrolled, edit: impl FnOnce(&mut AutoCommit)) {
                 workspace: WORKSPACE.into(),
                 operation: CommitOperation::Document {
                     app: APP.into(),
-                    record: String::new(),
+                    document: String::new(),
                     envelope,
                     own: None,
                 },

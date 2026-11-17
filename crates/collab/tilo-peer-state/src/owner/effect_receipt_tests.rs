@@ -617,7 +617,7 @@ fn effect_hot_cache_archives_beyond_128_and_reopens_exact_original_retry() {
                     160
                 );
                 assert_eq!(view.generation(), 161);
-                assert_eq!(view.record.version, crate::owner::record::WORKSPACE_VERSION);
+                assert_eq!(view.record.version, crate::owner::stored::WORKSPACE_VERSION);
                 assert!(
                     !view
                         .record

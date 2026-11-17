@@ -45,15 +45,15 @@ impl<W: Write> Write for LimitedWriter<W> {
 /// # Errors
 /// `stored` pretty-prints to more than `limit` bytes.
 pub(crate) fn preflight_document(
-    stored: &super::record::StoredWorkspace,
+    stored: &super::stored::StoredWorkspace,
     limit: usize,
 ) -> io::Result<()> {
     let peer = stored.peer.len().div_ceil(3).saturating_mul(4);
     let rest = limit
         .checked_sub(peer)
         .ok_or_else(|| io::Error::other("native encoded state refusal cap exceeded"))?;
-    let fields = super::record::StoredWorkspace {
-        peer: super::record::DurablePeer::default(),
+    let fields = super::stored::StoredWorkspace {
+        peer: super::stored::DurablePeer::default(),
         ..stored.clone()
     };
     let mut writer = LimitedWriter::new(io::sink(), rest);

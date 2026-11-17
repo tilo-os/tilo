@@ -390,7 +390,7 @@ impl NativeWorkspaceOwner {
                 let outgoing = publication::prepare(&request)?;
                 let CommitOperation::Document {
                     app,
-                    record,
+                    document: record,
                     envelope,
                     ..
                 } = &request.operation
@@ -513,7 +513,7 @@ fn numbered(
         let mut request = kept.clone();
         let CommitOperation::Document {
             app,
-            record,
+            document: record,
             envelope,
             ..
         } = &mut request.operation

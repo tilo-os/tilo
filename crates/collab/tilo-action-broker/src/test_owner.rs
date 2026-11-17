@@ -291,7 +291,7 @@ impl SessionOwner {
         match &request.operation {
             CommitOperation::Document {
                 app,
-                record,
+                document: record,
                 envelope,
                 ..
             } => {

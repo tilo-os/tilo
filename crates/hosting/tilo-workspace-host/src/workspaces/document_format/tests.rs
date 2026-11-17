@@ -200,9 +200,9 @@ const WORKSPACE: &str = "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71";
 /// publication and one administration record not filed beside it yet.
 /// Kept so a workspace's file goes on reading the same way; a field
 /// added, removed or reordered changes these bytes.
-const GOLDEN: &str = include_str!("../../../golden/governed-workspace-record/v5.hex");
+const GOLDEN: &str = include_str!("../../../golden/governed-workspace-document/v5.hex");
 /// The same record as version 4 wrote it, with its name beside it.
-const GOLDEN_V4: &str = include_str!("../../../golden/governed-workspace-record/v4.hex");
+const GOLDEN_V4: &str = include_str!("../../../golden/governed-workspace-document/v4.hex");
 
 fn golden() -> Vec<u8> {
     hex::decode(GOLDEN.split_whitespace().collect::<String>()).unwrap()

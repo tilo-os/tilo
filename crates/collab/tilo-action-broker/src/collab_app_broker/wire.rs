@@ -376,7 +376,7 @@ impl JoinedChannel {
                         workspace: route.cluster_id.clone(),
                         operation: tilo_peer_state::owner_commit::CommitOperation::Document {
                             app: route.app_id.clone(),
-                            record: route.document_id.clone(),
+                            document: route.document_id.clone(),
                             envelope: Box::new(envelope),
                             own: collab_types::OwnResource::recognise(
                                 &route.app_id,

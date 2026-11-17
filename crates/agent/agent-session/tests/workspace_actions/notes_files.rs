@@ -7,7 +7,7 @@ use super::api_on_relay::{api_on_relay, approved_key, headers, json_of};
 use super::*;
 use fs_protocol::tree::FILES_APP;
 use serde_json::{Value, json};
-use tilo_fs::tree_document::record as tree_document;
+use tilo_fs::tree_document::document_id as tree_document;
 
 /// `POST path` with `body` under the key `token`, answered `200`.
 async fn post(api: &Arc<tilo_api::Server>, token: &str, path: &str, body: &Value) -> Value {

@@ -143,8 +143,14 @@ impl OwnerCommitService for NativeOwnerCommits {
             )?;
             // What search holds of the record is read again from what it now
             // holds.
-            if let (Some(changes), CommitOperation::Document { app, record, .. }) =
-                (&changes, &committed.operation)
+            if let (
+                Some(changes),
+                CommitOperation::Document {
+                    app,
+                    document: record,
+                    ..
+                },
+            ) = (&changes, &committed.operation)
             {
                 changes.changed(&committed.workspace, app, record);
             }

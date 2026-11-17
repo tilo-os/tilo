@@ -146,7 +146,7 @@ async fn write_all(
                     workspace: WORKSPACE.into(),
                     operation: CommitOperation::Document {
                         app: APP.into(),
-                        record: String::new(),
+                        document: String::new(),
                         envelope: Box::new(op),
                         own: None,
                     },

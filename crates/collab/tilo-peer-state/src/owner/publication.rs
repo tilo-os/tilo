@@ -1,6 +1,6 @@
 //! Same-barrier native outgoing custody; relay queue acceptance is never an ACK.
 use crate::StatePeer;
-use crate::owner::{NativeCommittedView, NativeWorkspaceOwner, WorkspaceId, enrollment, record};
+use crate::owner::{NativeCommittedView, NativeWorkspaceOwner, WorkspaceId, enrollment, stored};
 use crate::owner_commit::{CommitBinding, CommitOperation, OwnerCommitRequest};
 use collab_types::signer::DeviceSigner;
 use collab_types::{EncryptionMetadata, OpKind, SignedOp};
@@ -210,7 +210,7 @@ impl Hosted {
 }
 /// A write of a [`HostedHistory`], as postcard bytes.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-struct HostedWrite(#[serde(with = "crate::owner::record::base64_bytes")] Vec<u8>);
+struct HostedWrite(#[serde(with = "crate::owner::stored::base64_bytes")] Vec<u8>);
 impl HostedHistory {
     /// Keep all but the newest writes in runs, as custody keeps its backlog.
     fn spill(&mut self, (store, workspace): Runs<'_>) -> Result<(), String> {
@@ -299,7 +299,7 @@ pub(crate) struct StoredOutgoing {
     /// opaque bytes; entries written before that held JSON arrays of
     /// numbers, one line per byte pretty-printed, and still read back.
     #[serde(
-        serialize_with = "crate::owner::record::base64_bytes::serialize",
+        serialize_with = "crate::owner::stored::base64_bytes::serialize",
         deserialize_with = "read_message_bytes"
     )]
     pub(crate) bytes: Vec<u8>,
@@ -473,7 +473,7 @@ pub(crate) fn state(view: &NativeCommittedView) -> Result<&StoredPublication, St
 }
 
 /// The outgoing custody of a record, published or in the making.
-pub(crate) fn state_of(record: &record::StoredWorkspace) -> Result<&StoredPublication, String> {
+pub(crate) fn state_of(record: &stored::StoredWorkspace) -> Result<&StoredPublication, String> {
     record
         .publication
         .as_ref()
@@ -580,11 +580,11 @@ fn allowed(
 /// records came in with layout 4; later layouts carry them as it does.
 pub fn validate_file_layout(
     version: u32,
-    storage: &record::NativeAuthorityStorage,
+    storage: &stored::NativeAuthorityStorage,
 ) -> Result<(), String> {
     for workspace in storage.workspaces.values() {
         match (version, workspace.version, workspace.publication.is_some()) {
-            (4.., record::WORKSPACE_VERSION, true) => {}
+            (4.., stored::WORKSPACE_VERSION, true) => {}
             _ => return Err("native publication record/file layout mismatch".into()),
         }
         if let Some(publication) = &workspace.publication {
@@ -638,7 +638,7 @@ pub(crate) fn request(message: &NeighbourMsg) -> Result<OwnerCommitRequest, Stri
         workspace: cluster_id.clone(),
         operation: CommitOperation::Document {
             app: app_id.clone(),
-            record: document_id.clone(),
+            document: document_id.clone(),
             envelope: envelope.clone(),
             own: own.clone(),
         },
@@ -716,7 +716,7 @@ pub fn outgoing_bytes(request: &OwnerCommitRequest) -> Result<Vec<u8>, String> {
 pub(crate) fn prepare(request: &OwnerCommitRequest) -> Result<Vec<u8>, String> {
     let CommitOperation::Document {
         app,
-        record,
+        document: record,
         envelope,
         own,
     } = &request.operation
@@ -747,7 +747,7 @@ pub(crate) fn prepare(request: &OwnerCommitRequest) -> Result<Vec<u8>, String> {
 }
 pub(crate) fn replace_governance_checkpoint(
     live: &StatePeer,
-    view: &mut record::StoredWorkspace,
+    view: &mut stored::StoredWorkspace,
     binding: CommitBinding,
     now: SystemTime,
 ) -> Result<(), String> {
@@ -800,7 +800,7 @@ pub(crate) fn replace_governance_checkpoint(
 /// ([`retire_member_changes`]).
 pub(crate) fn add_member_changes(
     live: &StatePeer,
-    view: &mut record::StoredWorkspace,
+    view: &mut stored::StoredWorkspace,
     changes: Vec<Vec<u8>>,
     binding: CommitBinding,
     now: SystemTime,
@@ -892,7 +892,7 @@ pub(crate) fn change_hashes(
 /// changes of its own waiting.
 pub(crate) fn retire_member_changes(
     live: &StatePeer,
-    view: &mut record::StoredWorkspace,
+    view: &mut stored::StoredWorkspace,
     governed: &[Vec<Vec<u8>>],
 ) -> Result<(), String> {
     let Some(existing) = state_of(view)?.governance.first() else {
@@ -921,7 +921,7 @@ pub(crate) fn retire_member_changes(
 
 pub(crate) fn refresh_governance_checkpoint(
     live: &StatePeer,
-    view: &mut record::StoredWorkspace,
+    view: &mut stored::StoredWorkspace,
 ) -> Result<(), String> {
     let Some(existing) = state_of(view)?.governance.first().cloned() else {
         return Ok(());
@@ -959,7 +959,7 @@ pub(crate) fn refresh_governance_checkpoint(
 /// Take `bytes`, one of this device's writes, into custody: at its head while the head has room
 /// and nothing waits behind it, else at its tail, which the store keeps in runs once it is long
 /// ([`settle`]). Custody refuses no write for how many it holds.
-fn append(view: &mut record::StoredWorkspace, bytes: Vec<u8>) -> Result<(), String> {
+fn append(view: &mut stored::StoredWorkspace, bytes: Vec<u8>) -> Result<(), String> {
     let id = *blake3::hash(&bytes).as_bytes();
     let workspace = view.workspace;
     let custody = state_of(view)?;
@@ -1051,7 +1051,7 @@ fn spill<T: Serialize>(
 /// # Errors
 /// A run could not be kept or read back.
 pub(crate) fn settle(
-    view: &mut record::StoredWorkspace,
+    view: &mut stored::StoredWorkspace,
     store: &dyn super::Store,
 ) -> Result<(), String> {
     let workspace = view.workspace;
@@ -1123,7 +1123,7 @@ pub(crate) fn settle(
 }
 
 /// The runs of custody's backlog `view` names, which its store keeps while it does.
-pub(crate) fn kept_runs(view: &record::StoredWorkspace) -> impl Iterator<Item = [u8; 32]> + '_ {
+pub(crate) fn kept_runs(view: &stored::StoredWorkspace) -> impl Iterator<Item = [u8; 32]> + '_ {
     view.publication.iter().flat_map(|publication| {
         publication.spilled.iter().map(|run| run.hash).chain(
             publication
@@ -1144,7 +1144,7 @@ pub fn custody_run_name(workspace: WorkspaceId, hash: [u8; 32]) -> String {
     )
 }
 
-impl record::NativeAuthorityStorage {
+impl stored::NativeAuthorityStorage {
     /// The name of every run of outgoing custody this record names: what its store keeps
     /// beside it, and may let go of once a record it publishes no longer names it.
     pub fn custody_runs(&self) -> impl Iterator<Item = String> + '_ {
@@ -1189,7 +1189,7 @@ fn spilled_writes(
     Ok(writes)
 }
 pub(crate) fn append_local(
-    view: &mut record::StoredWorkspace,
+    view: &mut stored::StoredWorkspace,
     bytes: Vec<u8>,
 ) -> Result<(), String> {
     if !view.hosted_here() {
@@ -1216,7 +1216,7 @@ pub(crate) fn append_local(
     Ok(())
 }
 pub(crate) fn has_exact(
-    view: &record::StoredWorkspace,
+    view: &stored::StoredWorkspace,
     bytes: &[u8],
     store: &dyn super::Store,
 ) -> Result<bool, String> {
@@ -1422,7 +1422,7 @@ fn validate_member_changes(
 /// is no retirement or checkpoint refresh to publish.
 pub(crate) fn exact_replay_unchanged(
     live: &StatePeer,
-    view: &record::StoredWorkspace,
+    view: &stored::StoredWorkspace,
 ) -> Result<bool, String> {
     let publication = state_of(view)?;
     let device = view.device.device_public_key;
@@ -1566,7 +1566,7 @@ impl StoredPublication {
         }
     }
 }
-pub(crate) fn retire(live: &StatePeer, view: &mut record::StoredWorkspace) -> Result<bool, String> {
+pub(crate) fn retire(live: &StatePeer, view: &mut stored::StoredWorkspace) -> Result<bool, String> {
     let publication = state_of(view)?;
     let mut remove = BTreeSet::new();
     for entry in &publication.entries {
@@ -1592,7 +1592,7 @@ pub(crate) fn retire(live: &StatePeer, view: &mut record::StoredWorkspace) -> Re
 }
 pub(crate) fn retry_covered(
     live: &StatePeer,
-    view: &record::StoredWorkspace,
+    view: &stored::StoredWorkspace,
     bytes: &[u8],
 ) -> Result<bool, String> {
     let message: NeighbourMsg = postcard::from_bytes(bytes).map_err(|e| e.to_string())?;
@@ -2600,7 +2600,7 @@ fn with_envelope(message: &NeighbourMsg, envelope: SignedOp) -> NeighbourMsg {
 /// compaction there, and answer its own entry's id. Behind it a store keeps a segment in the
 /// tail of the compaction it continues.
 fn append_after(
-    view: &mut record::StoredWorkspace,
+    view: &mut stored::StoredWorkspace,
     after: [u8; 32],
     bytes: Vec<u8>,
 ) -> Result<[u8; 32], String> {
@@ -2623,7 +2623,7 @@ fn append_after(
 /// Put `bytes`, a compaction drafted for the host, where the compaction custody held the
 /// place of as `id` stands: it goes in that compaction's turn.
 fn in_place(
-    view: &mut record::StoredWorkspace,
+    view: &mut stored::StoredWorkspace,
     id: [u8; 32],
     bytes: Vec<u8>,
 ) -> Result<(), String> {

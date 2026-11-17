@@ -5,7 +5,7 @@
 //! device that keeps only its ciphertext, another member's device — has it
 //! from the moment it exists.
 use crate::join::TransportHint;
-use crate::owner::record::StoredWorkspace;
+use crate::owner::stored::StoredWorkspace;
 use crate::owner::{NativeCommittedView, NativeWorkspaceOwner, WorkspaceId, publication};
 use crate::workspace_membership::valid_founding_name;
 use crate::{StatePeer, workspace_seed};
@@ -94,7 +94,7 @@ impl NativeWorkspaceOwner {
             let mut view = NativeCommittedView::new(
                 peer.clone(),
                 StoredWorkspace {
-                    version: crate::owner::record::WORKSPACE_VERSION,
+                    version: crate::owner::stored::WORKSPACE_VERSION,
                     workspace: id,
                     workspace_host: device.clone(),
                     device: device.clone(),

@@ -1227,7 +1227,7 @@ impl Engine {
                 workspace: workspace.to_string(),
                 operation: tilo_peer_state::owner_commit::CommitOperation::Document {
                     app: app.to_owned(),
-                    record: record.to_owned(),
+                    document: record.to_owned(),
                     envelope: Box::new(op),
                     own: view.peer().own_write(app, record, &device),
                 },

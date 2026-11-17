@@ -162,7 +162,7 @@ impl Task {
                         workspace: route.cluster_id.clone(),
                         operation: tilo_peer_state::owner_commit::CommitOperation::Document {
                             app: route.app_id.clone(),
-                            record: route.document.clone(),
+                            document: route.document.clone(),
                             envelope: Box::new(op),
                             own: view.peer().own_write(written.0, written.1, &author),
                         },
