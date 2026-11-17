@@ -1,12 +1,12 @@
 //! An agent's step makes an issue in Tasks while no Tasks window is open on the person's device:
 //! the host runs the package the device installed with no window, the step reaches that instance,
-//! and the issue is in the workspace's tracker record — read there by another device of the
-//! person, and shown by the window a person opens afterwards.
+//! and the issue is among the tracker's issues in the workspace — read there by another device of
+//! the person, and shown by the window a person opens afterwards.
 //!
 //! Nothing opens Tasks first. The step is the agent's own: the workspace's `start` of the closed
 //! app runs it without a window and names the instance (`run_windowless`), and the tracker's
 //! `create` is then delivered to that instance's own published action. The claims are read back
-//! off the workspace's record, off the shell, and off the controls the app's window exposes, never
+//! off the workspace's records, off the shell, and off the controls the app's window exposes, never
 //! off the step's answer alone.
 
 #![cfg(target_os = "linux")]
@@ -45,15 +45,23 @@ fn start_action(workspace: &str) -> (String, String) {
     )
 }
 
-/// The tracker record `device` reads now, or once it differs from `after`: its value, and the
-/// revision an answer names so the next read can wait on the next write.
+/// The first part of the tracker's issues, kept beside its record: where a new issue goes.
+fn first_part() -> String {
+    ui::resource::DocumentId::derived("issues", &ui::resource::DocumentId::workspace_default())
+        .part(0)
+        .to_string()
+}
+
+/// The first part of the tracker's issues as `device` reads it now, or once it differs from
+/// `after`: its value, and the revision an answer names so the next read can wait on the next
+/// write.
 fn tracker(device: &Device, after: Option<&str>) -> (Value, String) {
     let deadline = tilo_test_env::hang_deadline();
     let wait = deadline.saturating_duration_since(Instant::now());
     let answer = device.ask(&json!({
         "op": "resource_read",
         "app": APP,
-        "records": [""],
+        "records": [first_part()],
         "after": after,
         "wait_ms": u64::try_from(wait.as_millis()).unwrap_or(u64::MAX),
     }));
@@ -73,7 +81,7 @@ fn tracker(device: &Device, after: Option<&str>) -> (Value, String) {
     )
 }
 
-/// The titles the tracker's issues carry, as the record holds them.
+/// The titles of the issues a part of the tracker holds.
 fn titles(record: &Value) -> Vec<String> {
     record["issues"]
         .as_object()
