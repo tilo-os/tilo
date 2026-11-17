@@ -1481,6 +1481,7 @@ impl State {
     /// its popups done.
     pub(crate) fn hold_all(&mut self) {
         self.buffers.detached();
+        self.hold_activation();
         for kept in self.surfaces.values_mut() {
             kept.up = None;
             match &mut kept.role {

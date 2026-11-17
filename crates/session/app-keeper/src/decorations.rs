@@ -77,13 +77,12 @@ impl State {
             "zxdg_decoration_manager_v1" if self.xdg_decorations.is_none() => {
                 self.xdg_decorations = Some(XdgDecorationState::new::<Self>(&self.dh));
             }
-            "org_kde_kwin_server_decoration_manager" if self.kde_decorations.is_none() => {
+            "org_kde_kwin_server_decoration_manager" if self.kde_decorations.get().is_none() => {
                 // A client that never states a preference is decorated by the desktop, as every
                 // other window is.
-                self.kde_decorations = Some(KdeDecorationState::new::<Self>(
-                    &self.dh,
-                    KdeDefaultMode::Server,
-                ));
+                self.kde_decorations.get_or_init(|| {
+                    KdeDecorationState::new::<Self>(&self.dh, KdeDefaultMode::Server)
+                });
             }
             _ => {}
         }
@@ -272,9 +271,9 @@ impl XdgDecorationHandler for State {
 
 impl KdeDecorationHandler for State {
     fn kde_decoration_state(&self) -> &KdeDecorationState {
+        // Only a desktop offering the global creates it, and its objects exist only after that.
         self.kde_decorations
-            .as_ref()
-            .expect("a KDE decoration manager was offered")
+            .get_or_init(|| KdeDecorationState::new::<Self>(&self.dh, KdeDefaultMode::Server))
     }
 
     fn new_decoration(&mut self, surface: &WlSurface, decoration: &ServerKdeDecoration) {

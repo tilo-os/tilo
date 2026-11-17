@@ -626,6 +626,73 @@ fn a_fault_is_attributed_to_the_window_that_caused_it_not_the_last_one_sent() {
 }
 
 #[test]
+fn an_activation_token_is_the_desktops_and_activation_reaches_it() {
+    let mut rig = Rig::new(None);
+    let mut first = App::connect(&mut rig);
+    first.open_window(&mut rig, "First", Some("first"));
+    first.show(&mut rig, (100, 80), GREEN);
+    let mut second = App::connect(&mut rig);
+    second.open_window(&mut rig, "Second", Some("second"));
+    second.show(&mut rig, (100, 80), BLUE);
+    rig.pump(&mut [&mut first, &mut second], |rig, _| {
+        rig.windows().len() == 2
+    });
+    let id_of = |rig: &mut Rig, title: &str| {
+        rig.desktop()
+            .windows()
+            .into_iter()
+            .find(|(info, _)| info.title.as_deref() == Some(title))
+            .map(|(info, _)| info.id)
+            .expect("a window")
+    };
+    let first_id = id_of(&mut rig, "First");
+    assert_eq!(
+        rig.desktop().focused_window().map(|info| info.id),
+        Some(id_of(&mut rig, "Second")),
+        "the window mapped last has the keyboard"
+    );
+
+    // The token the app gets is the desktop's, and activating with it is the desktop's decision.
+    let token = first.activation_token(&mut rig);
+    assert!(!token.is_empty(), "the desktop made a token");
+    first.activate(token.clone());
+    rig.pump(&mut [&mut first, &mut second], |rig, _| {
+        rig.desktop().focused_window().map(|info| info.id) == Some(first_id)
+    });
+
+    // A token from before a restart names nothing on the next desktop.
+    rig.drop_desktop();
+    rig.settle(&mut [&mut first, &mut second]);
+    rig.attach_new(640, 480);
+    rig.pump(&mut [&mut first, &mut second], |rig, _| {
+        rig.windows().len() == 2
+    });
+    rig.settle(&mut [&mut first, &mut second]);
+    let before = rig.desktop().focused_window().map(|info| info.id);
+    first.activate(token);
+    rig.settle(&mut [&mut first, &mut second]);
+    assert_eq!(
+        rig.desktop().focused_window().map(|info| info.id),
+        before,
+        "a stale token activates nothing"
+    );
+    assert_eq!(rig.keeper.describe().fault, None);
+}
+
+#[test]
+fn a_token_requested_while_the_desktop_is_away_is_empty() {
+    let mut rig = Rig::new(None);
+    let mut app = App::connect(&mut rig);
+    app.open_window(&mut rig, "Waiting", Some("waiting"));
+    app.show(&mut rig, (100, 80), GREEN);
+    rig.drop_desktop();
+    rig.settle(&mut [&mut app]);
+    let token = app.activation_token(&mut rig);
+    assert!(token.is_empty(), "no desktop can act on a token made now");
+    assert!(!app.broken);
+}
+
+#[test]
 fn the_apps_decoration_request_and_the_desktops_answer_travel_both_ways_across_a_restart() {
     use wayland_protocols::xdg::decoration::zv1::client::zxdg_toplevel_decoration_v1::Mode;
 

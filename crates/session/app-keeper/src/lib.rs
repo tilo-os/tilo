@@ -43,6 +43,7 @@
 
 #![cfg(target_os = "linux")]
 
+mod activation;
 mod child;
 mod control;
 mod data_device;

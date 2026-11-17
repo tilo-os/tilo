@@ -78,6 +78,10 @@ use wayland_protocols::wp::text_input::zv3::client::{
 use wayland_protocols::wp::viewporter::client::{
     wp_viewport::WpViewport, wp_viewporter::WpViewporter,
 };
+use wayland_protocols::xdg::activation::v1::client::{
+    xdg_activation_token_v1::{self, XdgActivationTokenV1},
+    xdg_activation_v1::XdgActivationV1,
+};
 use wayland_protocols::xdg::decoration::zv1::client::{
     zxdg_decoration_manager_v1::ZxdgDecorationManagerV1,
     zxdg_toplevel_decoration_v1::{self, Mode as DecorationMode, ZxdgToplevelDecorationV1},
@@ -337,6 +341,8 @@ pub struct Heard {
     pub decoration_modes: Vec<DecorationMode>,
     pub kde_decoration: Option<OrgKdeKwinServerDecorationManager>,
     pub kde_modes: Vec<KdeMode>,
+    pub activation: Option<XdgActivationV1>,
+    pub activation_tokens: Vec<String>,
     pub dmabuf_done: usize,
     pub surface_feedback_done: usize,
     pub configures: Vec<(i32, i32, Vec<u32>)>,
@@ -621,6 +627,38 @@ impl App {
         decoration
     }
 
+    /// Ask the keeper for an activation token for this window, and wait for the desktop's answer.
+    pub fn activation_token(&mut self, rig: &mut Rig) -> String {
+        let qh = self.qh();
+        let token = self
+            .heard
+            .activation
+            .as_ref()
+            .expect("an activation manager")
+            .get_activation_token(&qh, ());
+        if let Some(surface) = &self.surface {
+            token.set_surface(surface);
+        }
+        token.commit();
+        let seen = self.heard.activation_tokens.len();
+        rig.pump(&mut [self], |_, apps| {
+            apps[0].heard.activation_tokens.len() > seen
+        });
+        self.heard
+            .activation_tokens
+            .last()
+            .cloned()
+            .expect("a token")
+    }
+
+    /// Ask to be activated with `token` on the window.
+    pub fn activate(&self, token: String) {
+        let (Some(activation), Some(surface)) = (&self.heard.activation, &self.surface) else {
+            panic!("an activation manager and a window");
+        };
+        activation.activate(token, surface);
+    }
+
     /// Ask for the next frame callback on the window.
     pub fn request_frame(&self) -> WlCallback {
         let qh = self.qh();
@@ -762,6 +800,9 @@ impl Dispatch<WlRegistry, ()> for Heard {
                 }
                 "org_kde_kwin_server_decoration_manager" => {
                     heard.kde_decoration = Some(registry.bind(name, 1, qh, ()));
+                }
+                "xdg_activation_v1" => {
+                    heard.activation = Some(registry.bind(name, 1, qh, ()));
                 }
                 "zwp_linux_dmabuf_v1" if version >= 4 => {
                     let dmabuf: ZwpLinuxDmabufV1 = registry.bind(name, version.min(5), qh, ());
@@ -1104,6 +1145,22 @@ impl Dispatch<OrgKdeKwinServerDecoration, ()> for Heard {
     }
 }
 
+impl Dispatch<XdgActivationTokenV1, ()> for Heard {
+    fn event(
+        heard: &mut Self,
+        _: &XdgActivationTokenV1,
+        event: xdg_activation_token_v1::Event,
+        (): &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        if let xdg_activation_token_v1::Event::Done { token } = event {
+            heard.activation_tokens.push(token);
+        }
+    }
+}
+
+delegate_noop!(Heard: ignore XdgActivationV1);
 delegate_noop!(Heard: ignore ZxdgDecorationManagerV1);
 delegate_noop!(Heard: ignore OrgKdeKwinServerDecorationManager);
 

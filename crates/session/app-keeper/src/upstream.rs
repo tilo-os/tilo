@@ -65,6 +65,9 @@ pub(crate) struct Upstream {
     pub kde_decoration: Option<
         wayland_protocols_misc::server_decoration::client::org_kde_kwin_server_decoration_manager::OrgKdeKwinServerDecorationManager,
     >,
+    pub activation: Option<
+        wayland_protocols::xdg::activation::v1::client::xdg_activation_v1::XdgActivationV1,
+    >,
     pub feedback: FeedbackParts,
     pub xdg_outputs: Option<zxdg_output_manager_v1::ZxdgOutputManagerV1>,
     pub seat: Option<c::wl_seat::WlSeat>,
@@ -132,6 +135,7 @@ impl Upstream {
                 content_type: None,
                 xdg_decoration: None,
                 kde_decoration: None,
+                activation: None,
                 feedback: FeedbackParts::default(),
                 xdg_outputs: None,
                 seat: None,
@@ -291,6 +295,9 @@ impl Dispatch<c::wl_registry::WlRegistry, ()> for State {
             }
             "org_kde_kwin_server_decoration_manager" => {
                 up.kde_decoration = Some(registry.bind(name, 1, qh, ()));
+            }
+            "xdg_activation_v1" => {
+                up.activation = Some(registry.bind(name, 1, qh, ()));
             }
             "wl_output" => {
                 let wl: c::wl_output::WlOutput = registry.bind(name, version.min(4), qh, name);
