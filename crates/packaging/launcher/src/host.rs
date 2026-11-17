@@ -184,7 +184,16 @@ fn spawn_kept(launch: &HostLaunch, keep: &Keep) -> Result<ExitStatus, HostError>
         .arg("--dir")
         .arg(&keep.dir)
         .arg("--launch")
-        .arg(&keep.launch)
+        .arg(&keep.launch);
+    // An app the session serves X11 gets a display of its keeper's instead of the desktop's,
+    // whose server would end with the desktop and take the app's X11 windows with it.
+    if cmd
+        .get_envs()
+        .any(|(key, value)| key == "DISPLAY" && value.is_some())
+    {
+        keeper.arg("--x11");
+    }
+    keeper
         .arg("--")
         .arg(program)
         .args(args)
@@ -390,7 +399,7 @@ mod tests {
             let keeper = dir.path().join("keeper");
             std::fs::write(
                 &keeper,
-                "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$0.argv\"\nshift 5\n\"$@\"\n\
+                "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$0.argv\"\nwhile [ \"$1\" != -- ]; do shift; done\nshift\n\"$@\"\n\
                  printf '{\"exited\":{\"code\":%s}}' $? > \"$KEPT/ended\"\nexit 0\n",
             )
             .expect("write the keeper");
@@ -414,6 +423,17 @@ mod tests {
                 argv.get(..5),
                 Some(&["--dir", kept.to_str().unwrap_or_default(), "--launch", "{\"app\":\"org.example.Kept\"}", "--"][..]),
                 "the keeper is told its directory and the launch, then the app's command"
+            );
+            // An app the session serves X11 gets the keeper's own display.
+            launch.env.insert("DISPLAY".into(), ":5".into());
+            let status = spawn_with(&launch, None, Duration::from_millis(20), Some(&keep))
+                .expect("the launch runs");
+            assert_eq!(status.code(), Some(7));
+            let argv = std::fs::read_to_string(dir.path().join("keeper.argv")).expect("handed");
+            assert_eq!(
+                argv.lines().nth(4),
+                Some("--x11"),
+                "an app with a display is served one by its keeper: {argv}"
             );
         }
 

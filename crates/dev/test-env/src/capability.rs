@@ -28,6 +28,7 @@ pub enum Capability {
     Swtpm,
     KernelKeyring,
     NetworkTunnel,
+    XServer,
 }
 
 impl Capability {
@@ -47,6 +48,7 @@ impl Capability {
         Self::Swtpm,
         Self::KernelKeyring,
         Self::NetworkTunnel,
+        Self::XServer,
     ];
 
     #[must_use]
@@ -67,6 +69,7 @@ impl Capability {
             Self::Swtpm => "TILO_REQUIRE_SWTPM",
             Self::KernelKeyring => "TILO_REQUIRE_KEYRING",
             Self::NetworkTunnel => "TILO_REQUIRE_TUN",
+            Self::XServer => "TILO_REQUIRE_XSERVER",
         }
     }
 
@@ -94,6 +97,7 @@ impl fmt::Display for Capability {
             Self::Swtpm => "an emulated TPM",
             Self::KernelKeyring => "the kernel keyring",
             Self::NetworkTunnel => "TUN devices with ip and nft",
+            Self::XServer => "an X server for Wayland (xwayland-satellite and Xwayland)",
         })
     }
 }

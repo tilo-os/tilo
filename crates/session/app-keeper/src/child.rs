@@ -10,6 +10,17 @@ use std::process::{Child, Command};
 
 use crate::wire::End;
 
+/// What the app is told of X11.
+pub(crate) enum X11 {
+    /// The launch's own display, `:N`, and the file its cookie is in.
+    Display(u32, std::path::PathBuf),
+    /// The keeper was to serve one and could not: no display at all, never one the app's
+    /// environment named before.
+    Missing,
+    /// Whatever its environment says.
+    Unchanged,
+}
+
 pub(crate) struct App {
     child: Child,
     pub pid: u32,
@@ -19,8 +30,8 @@ pub(crate) struct App {
 }
 
 impl App {
-    /// Start `argv` with `socket` as its Wayland display.
-    pub(crate) fn spawn(argv: &[OsString], socket: &Path) -> io::Result<Self> {
+    /// Start `argv` with `socket` as its Wayland display, and `x11` as its X11 one.
+    pub(crate) fn spawn(argv: &[OsString], socket: &Path, x11: X11) -> io::Result<Self> {
         let Some((program, rest)) = argv.split_first() else {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -36,6 +47,17 @@ impl App {
             .env("WAYLAND_DISPLAY", socket)
             .env_remove("WAYLAND_SOCKET")
             .process_group(0);
+        match x11 {
+            X11::Display(number, authority) => {
+                command
+                    .env("DISPLAY", format!(":{number}"))
+                    .env("XAUTHORITY", authority);
+            }
+            X11::Missing => {
+                command.env_remove("DISPLAY").env_remove("XAUTHORITY");
+            }
+            X11::Unchanged => {}
+        }
         // SAFETY: only async-signal-safe calls between fork and exec: signal, prctl, getppid and
         // _exit.
         unsafe {
@@ -93,7 +115,7 @@ impl App {
     }
 }
 
-fn pidfd_open(pid: u32) -> io::Result<OwnedFd> {
+pub(crate) fn pidfd_open(pid: u32) -> io::Result<OwnedFd> {
     let pid = libc::pid_t::try_from(pid).map_err(io::Error::other)?;
     // SAFETY: pidfd_open takes a pid and flags and returns a new descriptor or -1.
     let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, pid, 0) };

@@ -36,3 +36,6 @@ mod process;
 
 #[path = "text_input.rs"]
 mod text_input;
+
+#[path = "x11.rs"]
+mod x11;

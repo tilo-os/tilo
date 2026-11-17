@@ -24,7 +24,8 @@ test-support = []
 [target.'cfg(target_os = "linux")'.dependencies]
 # The app's side: a Wayland server with smithay's protocol state (surfaces,
 # shared memory, dma-bufs, xdg-shell, outputs) and no renderer.
-smithay = { version = "0.7", default-features = false, features = ["wayland_frontend"] }
+# Its `xwayland` feature binds an X11 display (`--x11`); the X server is xwayland-satellite.
+smithay = { version = "0.7", default-features = false, features = ["wayland_frontend", "xwayland"] }
 # The desktop's side: one ordinary Wayland client.
 wayland-client = { workspace = true }
 wayland-protocols = { version = "0.32.12", features = ["client", "server", "unstable", "staging"] }
@@ -42,7 +43,7 @@ tilo-files = { version = "0.1.0", path = "../../platform/tilo-files" }
 # pid of 0, which rustix's credentials type cannot hold.
 libc.workspace = true
 # The descriptor the session hands with Attach (SCM_RIGHTS).
-rustix = { workspace = true, features = ["net", "fs", "process"] }
+rustix = { workspace = true, features = ["net", "fs", "process", "event", "rand"] }
 tracing.workspace = true
 tracing-subscriber.workspace = true
 workspace-hack = { version = "0.1" }
@@ -57,6 +58,8 @@ tilo-test-env = { path = "../../dev/test-env" }
 tempfile.workspace = true
 wayland-client = { workspace = true }
 wayland-protocols = { version = "0.32.12", features = ["client", "staging"] }
+# An X client of the keeper's own X11 display.
+x11rb = { version = "0.13", default-features = false }
 
 [lints]
 workspace = true

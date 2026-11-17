@@ -1,9 +1,11 @@
-//! `tilo-app-keeper --dir <private dir> --launch <opaque> [--app-id-prefix <p>] -- <argv...>`
+//! `tilo-app-keeper --dir <private dir> --launch <opaque> [--app-id-prefix <p>] [--x11] -- <argv...>`
 //!
 //! Keeps one app's Wayland windows open while the desktop restarts (crate docs). It binds
 //! `<dir>/wayland-0` and `<dir>/control`, starts the app with `WAYLAND_DISPLAY` set to the
 //! socket's absolute path once a desktop is attached, and exits when the app ended and a
-//! session heard it (or none came within a minute; `<dir>/ended` says how it ended).
+//! session heard it (or none came within a minute; `<dir>/ended` says how it ended). With
+//! `--x11` the app also gets an X11 display of its own as `DISPLAY`, whose server is a client of
+//! the keeper.
 
 #[cfg(target_os = "linux")]
 fn main() -> std::process::ExitCode {

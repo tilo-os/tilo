@@ -8,7 +8,7 @@
 use std::env;
 use std::ffi::OsStr;
 use std::fs::{self, File, OpenOptions};
-use std::io::{self, Write as _};
+use std::io;
 use std::os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitCode, Stdio};
@@ -238,30 +238,8 @@ fn reserve_display(runtime: &Path) -> Result<(u16, DisplayReservation), String> 
 fn write_xauthority(path: &Path, display: u16) -> Result<(), String> {
     let mut cookie = [0_u8; 16];
     UnwrapErr(SysRng).fill_bytes(&mut cookie);
-    let mut contents = Vec::with_capacity(64);
-    push_u16(&mut contents, u16::MAX); // FamilyWild
-    push_field(&mut contents, &[]);
-    push_field(&mut contents, display.to_string().as_bytes());
-    push_field(&mut contents, b"MIT-MAGIC-COOKIE-1");
-    push_field(&mut contents, &cookie);
-    let mut file = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
-        .open(path)
-        .map_err(|error| format!("could not create private X authority: {error}"))?;
-    file.write_all(&contents)
-        .and_then(|()| file.sync_all())
+    tilo_files::native::x11_authority::write(path, display.into(), &cookie)
         .map_err(|error| format!("could not write private X authority: {error}"))
-}
-
-fn push_field(buffer: &mut Vec<u8>, field: &[u8]) {
-    push_u16(buffer, u16::try_from(field.len()).unwrap_or(u16::MAX));
-    buffer.extend_from_slice(field);
-}
-
-fn push_u16(buffer: &mut Vec<u8>, value: u16) {
-    buffer.extend_from_slice(&value.to_be_bytes());
 }
 
 fn wait_for_xwayland(child: &mut Child, socket: &Path) -> Result<(), String> {
@@ -338,15 +316,7 @@ mod tests {
             let directory = tempfile::tempdir().unwrap();
             let path = directory.path().join("authority");
             write_xauthority(&path, 1234).unwrap();
-            let bytes = fs::read(path).unwrap();
-            assert_eq!(&bytes[0..2], &u16::MAX.to_be_bytes());
-            assert!(bytes.windows(4).any(|window| window == b"1234"));
-            assert!(
-                bytes
-                    .windows(b"MIT-MAGIC-COOKIE-1".len())
-                    .any(|window| window == b"MIT-MAGIC-COOKIE-1")
-            );
-            assert_eq!(bytes.len(), 48);
+            assert_eq!(fs::read(path).unwrap().len(), 48);
         }
         {
             let directory = tempfile::tempdir().unwrap();

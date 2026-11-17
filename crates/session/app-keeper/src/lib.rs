@@ -71,6 +71,7 @@ mod toplevel_icon;
 mod upstream;
 mod viewporter;
 pub mod wire;
+mod x11;
 
 use std::collections::HashMap;
 use std::ffi::OsString;
@@ -120,6 +121,8 @@ pub struct Options {
     pub app_id_prefix: Option<String>,
     /// The app's command; none starts nothing (an app connects to the socket itself).
     pub command: Vec<OsString>,
+    /// Serve the app an X11 display of its own (`x11`), its server a client of the keeper.
+    pub x11: bool,
     /// [`GRACE`], shorter in a test.
     pub grace: Duration,
     /// [`DESKTOP_GONE`], shorter in a test.
@@ -134,6 +137,7 @@ impl Options {
             launch: launch.into(),
             app_id_prefix: None,
             command: Vec::new(),
+            x11: false,
             grace: GRACE,
             desktop_gone: DESKTOP_GONE,
         }
@@ -149,6 +153,7 @@ impl Options {
         let mut dir = None;
         let mut launch = None;
         let mut prefix = None;
+        let mut x11 = false;
         let mut command: Vec<OsString> = Vec::new();
         while let Some(arg) = args.next() {
             match arg.to_str() {
@@ -157,13 +162,14 @@ impl Options {
                 Some("--app-id-prefix") => {
                     prefix = args.next().and_then(|value| value.into_string().ok());
                 }
+                Some("--x11") => x11 = true,
                 Some("--") => command.extend(args.by_ref()),
                 _ => return Err(format!("unexpected argument {}", arg.to_string_lossy())),
             }
         }
         let (Some(dir), Some(launch)) = (dir, launch) else {
             return Err(
-                "usage: tilo-app-keeper --dir <private dir> --launch <name> [--app-id-prefix <prefix>] -- <command...>"
+                "usage: tilo-app-keeper --dir <private dir> --launch <name> [--app-id-prefix <prefix>] [--x11] -- <command...>"
                     .to_owned(),
             );
         };
@@ -173,6 +179,7 @@ impl Options {
         let mut options = Self::new(dir, launch);
         options.app_id_prefix = prefix;
         options.command = command;
+        options.x11 = x11;
         Ok(options)
     }
 }
@@ -197,6 +204,10 @@ struct Data {
     created: Instant,
     app: Option<child::App>,
     app_token: Option<RegistrationToken>,
+    /// The launch's X11 display, when it serves one.
+    x11: Option<x11::XDisplay>,
+    /// The keeper was asked for an X11 display and has none: the app gets no `DISPLAY`.
+    x11_missing: bool,
     ended: Option<End>,
     ended_at: Option<Instant>,
     /// Since when the running app has had no desktop, and whether it was asked to end for it.
@@ -242,7 +253,15 @@ impl Keeper {
         insert(&handle, control, |listener, data: &mut Data| {
             data.accept_session(listener);
         })?;
-        Ok(Self {
+        let x11 = if options.x11 {
+            x11::XDisplay::bind(&options.dir)
+                .inspect_err(|error| tracing::warn!(%error, "no X11 display: no X11 programs"))
+                .ok()
+        } else {
+            None
+        };
+        let x11_missing = options.x11 && x11.is_none();
+        let mut keeper = Self {
             event_loop,
             data: Data {
                 state,
@@ -258,13 +277,17 @@ impl Keeper {
                 created: Instant::now(),
                 app: None,
                 app_token: None,
+                x11,
+                x11_missing,
                 ended: None,
                 ended_at: None,
                 desktop_lost: None,
                 delivered: false,
                 finished: false,
             },
-        })
+        };
+        x11::watch(&mut keeper.data);
+        Ok(keeper)
     }
 
     /// Run until the app ended and that was heard (or nobody came to hear it).
@@ -304,6 +327,12 @@ impl Keeper {
     #[must_use]
     pub fn socket(&self) -> &Path {
         &self.data.socket
+    }
+
+    /// `N` of the X11 display `:N` the app is given, when it is given one.
+    #[must_use]
+    pub fn x11_display(&self) -> Option<u32> {
+        self.data.x11.as_ref().map(x11::XDisplay::number)
     }
 
     /// The app ended and that was heard, or nobody came to hear it in time.
@@ -806,7 +835,14 @@ impl Data {
     }
 
     fn start_app(&mut self) {
-        let app = match child::App::spawn(&self.options.command, &self.socket) {
+        let x11 = match (&self.x11, self.x11_missing) {
+            (Some(display), _) => {
+                child::X11::Display(display.number(), display.authority().to_path_buf())
+            }
+            (None, true) => child::X11::Missing,
+            (None, false) => child::X11::Unchanged,
+        };
+        let app = match child::App::spawn(&self.options.command, &self.socket, x11) {
             Ok(app) => app,
             Err(error) => {
                 tracing::warn!(%error, "the app could not be started");

@@ -17720,6 +17720,7 @@ dependencies = [
  "wayland-protocols-misc",
  "wire-frame",
  "workspace-hack",
+ "x11rb",
 ]
 
 [[package]]

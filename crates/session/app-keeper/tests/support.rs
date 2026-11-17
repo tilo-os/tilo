@@ -175,6 +175,11 @@ impl Rig {
         Self::configured(prefix, command, |_| {})
     }
 
+    /// A keeper that serves an X11 display of its own.
+    pub fn with_x11() -> Self {
+        Self::configured(None, Vec::new(), |options| options.x11 = true)
+    }
+
     /// A rig whose keeper's options `configure` changes last.
     pub fn configured(
         prefix: Option<&str>,
