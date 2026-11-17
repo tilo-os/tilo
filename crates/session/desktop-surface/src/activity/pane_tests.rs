@@ -648,7 +648,12 @@ mod tests {
         pane
     }
 
-    fn agent_task_fixture() -> (WorkspaceTree, ResourceStore, WorkspaceActivityPane, DocumentId) {
+    fn agent_task_fixture() -> (
+        WorkspaceTree,
+        ResourceStore,
+        WorkspaceActivityPane,
+        DocumentId,
+    ) {
         let mut tree = WorkspaceTree::bootstrap_demo();
         let workspace = tree.desktop.active_workspace().expect("workspace").id();
         let records = ResourceStore::in_memory();

@@ -785,6 +785,16 @@ impl ChatPart {
     /// `answers` are the buttons under it; the one they press on a `choice`
     /// is posted as their own message. Only they answer it, and
     /// `withdraw-question` takes it back.
+    ///
+    /// For a password, a key or any other secret, ask with the kind `secret`
+    /// and never in words. `detail` says what it is: its `kind` (`login`,
+    /// `key`, `code-generator`, `ssh-key` or `value`), the places it
+    /// `belongsTo` (a site as `https://example.com`, a server as
+    /// `imap://mail.example.com:993` or `ssh://git.example.com`) and, when
+    /// you know it, the `username`. Your person types it into a protected
+    /// field. You are answered `filled` with a `reference` in the answer's
+    /// detail, which the actions that sign in take in place of the secret,
+    /// or `declined`. You never see what was typed.
     #[action(incoming_message, audience = "agents")]
     pub fn ask(
         &mut self,
@@ -793,13 +803,20 @@ impl ChatPart {
         #[param("What is asked, in words")] text: NonBlank,
         #[param("The answers offered, in order: each an id and what its button says")]
         answers: Option<Vec<Choice>>,
-        #[param("The kind of question; a choice when absent")] kind: Option<String>,
-        #[param("What the kind keeps with the question; leave it out for a choice")] detail: Option<
-            serde_json::Value,
-        >,
+        #[param("The kind of question: `secret` asks for a secret; a choice when absent")]
+        kind: Option<String>,
+        #[param(
+            "What the kind keeps with the question: for a secret what it is and where it belongs; leave it out for a choice"
+        )]
+        detail: Option<serde_json::Value>,
         #[param("The message it answers in a thread")] parent: Option<Id>,
     ) -> Result<(), Refusal> {
         let person = crate::question::asked_person(cx)?;
+        // A question for a secret says what is asked for and where it
+        // belongs before its person is shown a field.
+        if kind.as_deref() == Some(crate::question::SECRET) {
+            crate::secret_ask::Asked::read(detail.as_ref()).map_err(Refusal::new)?;
+        }
         let question = Question::asked(person, kind, answers.unwrap_or_default(), detail)?;
         let id = cx.id();
         let ts = seconds(cx);
