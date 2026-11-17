@@ -117,6 +117,8 @@ pub mod workspace_agents;
 pub mod workspace_bots;
 pub mod workspace_join;
 mod workspace_keys;
+#[cfg(feature = "agents")]
+pub mod workspace_telling;
 
 #[cfg(test)]
 #[cfg(not(target_arch = "wasm32"))]

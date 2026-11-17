@@ -572,3 +572,467 @@ async fn a_device_that_waits_is_answered_when_something_is_told() {
     assert_eq!(nothing.newest, heard.newest);
     assert!(started.elapsed() >= Duration::from_millis(150));
 }
+
+/// A reminder Ada's agent tells her: a thing that reaches her and waits.
+async fn reminded(desk: &Desk) -> Told {
+    told_by_agent(
+        desk,
+        "Call Jo.",
+        json!({"kind": "reminder", "label": "Call Jo", "key": "r-1"}),
+    )
+    .await
+}
+
+#[tokio::test]
+async fn only_the_person_acknowledges_and_the_first_time_stands() {
+    let desk = Desk::new().await;
+    let ada = (desk.own, &desk.ada);
+    let reminder = reminded(&desk).await;
+    assert!(reminder.waits());
+
+    // Her agent told it. Whether she saw it is not her agent's to say,
+    // wherever it asks from.
+    for workspace in [desk.own, desk.shared] {
+        nobody(
+            "an agent acknowledging for its person",
+            ask_told(
+                &desk,
+                (workspace, &desk.ada),
+                &agent_of(&desk.ada),
+                person_telling::ACKNOWLEDGE,
+                json!({"told": reminder.id}),
+            )
+            .await,
+        );
+    }
+    // Another member who names her thing reaches nothing: their own log
+    // holds nothing of that id.
+    let (_, bo) = guest_device();
+    let theirs = ask_told(
+        &desk,
+        (desk.shared, &bo),
+        &caller(&bo),
+        person_telling::ACKNOWLEDGE,
+        json!({"told": reminder.id}),
+    )
+    .await;
+    assert!(
+        matches!(theirs, Err(ActionHostError::Refused { .. })),
+        "{theirs:?}"
+    );
+    assert!(listed(&desk, 0).await.told[0].waits());
+
+    // She puts it away on her phone: it waits no more, says where and how,
+    // and takes a new place so each device of hers hears of it.
+    let seen: Told = serde_json::from_value(
+        ask_told(
+            &desk,
+            ada,
+            &caller(&desk.ada),
+            person_telling::ACKNOWLEDGE,
+            json!({"told": reminder.id, "device": "Ada's phone", "by": "dismissed"}),
+        )
+        .await
+        .unwrap(),
+    )
+    .unwrap();
+    assert!(!seen.waits());
+    let acknowledged = seen.acknowledged.clone().unwrap();
+    assert_eq!(
+        (acknowledged.device.as_str(), acknowledged.by.as_str()),
+        ("Ada's phone", "dismissed")
+    );
+    assert!(seen.seq > reminder.seq);
+    assert_eq!(
+        listed(&desk, reminder.seq).await.told,
+        std::slice::from_ref(&seen)
+    );
+
+    // Opening it later on another device changes nothing: the first stands.
+    let again: Told = serde_json::from_value(
+        ask_told(
+            &desk,
+            ada,
+            &caller(&desk.ada),
+            person_telling::ACKNOWLEDGE,
+            json!({"told": reminder.id, "device": "Ada's laptop"}),
+        )
+        .await
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(again, seen);
+    // And a thing nobody told her is not acknowledged into being.
+    let nothing = ask_told(
+        &desk,
+        ada,
+        &caller(&desk.ada),
+        person_telling::ACKNOWLEDGE,
+        json!({"told": "nothing"}),
+    )
+    .await;
+    assert!(
+        matches!(nothing, Err(ActionHostError::Refused { .. })),
+        "{nothing:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_device_that_asks_is_looking_for_as_long_as_it_waits() {
+    let desk = Desk::new().await;
+    let ada = desk.ada.user_public_key;
+    let lately = Duration::from_secs(8);
+    assert!(!desk.workspaces.looking(&ada, lately));
+
+    // Reading her log is looking, and only hers.
+    listed(&desk, 0).await;
+    assert!(desk.workspaces.looking(&ada, lately));
+    let (_, bo) = guest_device();
+    assert!(!desk.workspaces.looking(&bo.user_public_key, lately));
+    // A look is over once it is longer ago than asked about.
+    tokio::time::sleep(Duration::from_millis(80)).await;
+    let just_now = Duration::from_millis(40);
+    assert!(!desk.workspaces.looking(&ada, just_now));
+
+    // A device that waits for the log to move looks until its wait is
+    // over, however lately that began.
+    let her = caller(&desk.ada);
+    let waiting = ask_told(
+        &desk,
+        (desk.own, &desk.ada),
+        &her,
+        person_telling::LIST,
+        json!({"after": 99, "waitMs": 400}),
+    );
+    let during = async {
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        desk.workspaces.looking(&ada, just_now)
+    };
+    let (heard, looking) = tokio::join!(waiting, during);
+    assert!(looking, "a device waiting for news is looking");
+    let heard: ToldList = serde_json::from_value(heard.unwrap()).unwrap();
+    assert!(heard.told.is_empty());
+}
+
+#[tokio::test]
+async fn whoever_tells_outside_reads_who_changed_and_writes_down_what_it_told() {
+    let desk = Desk::new().await;
+    let ada = desk.ada.user_public_key;
+    assert!(desk.workspaces.people_told().is_empty());
+    assert!(desk.workspaces.told_changed_people().is_empty());
+
+    let reminder = reminded(&desk).await;
+    assert_eq!(desk.workspaces.people_told(), [ada]);
+    assert_eq!(desk.workspaces.told_changed_people(), [ada]);
+    assert!(
+        desk.workspaces.told_changed_people().is_empty(),
+        "a change is handed over once"
+    );
+
+    // What was told outside is written down on the thing, which keeps its
+    // place: a device has nothing new to show for it.
+    let pushed = desk
+        .workspaces
+        .told_outside(&ada, &reminder.id, "web-push", 2)
+        .unwrap();
+    assert_eq!(pushed.seq, reminder.seq);
+    assert_eq!(pushed.pushed.len(), 1);
+    assert_eq!(
+        (pushed.pushed[0].by.as_str(), pushed.pushed[0].took),
+        ("web-push", 2)
+    );
+    assert!(desk.workspaces.told_changed_people().is_empty());
+    assert_eq!(listed(&desk, 0).await.told, [pushed]);
+
+    // What is taken back waits no more, and every device hears of it.
+    let gone = desk.workspaces.withdraw_told(&ada, &reminder.id).unwrap();
+    assert!(!gone.waits() && gone.withdrawn_at_ms.is_some());
+    assert!(gone.seq > reminder.seq);
+    assert_eq!(desk.workspaces.told_changed_people(), [ada]);
+    assert!(
+        desk.workspaces
+            .told_outside(&ada, "nothing", "web-push", 1)
+            .is_err(),
+        "nothing is written down for a thing nobody told"
+    );
+}
+
+/// What `answer` carries, read as a thing told.
+fn a_told(answer: Result<Value, ActionHostError>) -> Told {
+    serde_json::from_value(answer.expect("the host answers")).expect("a thing told")
+}
+
+#[tokio::test]
+async fn a_person_who_comes_back_reads_what_happened_while_they_were_away() {
+    let desk = Desk::new().await;
+    let ada = desk.ada.user_public_key;
+    let own = (desk.own, &desk.ada);
+    // A device of hers looked half an hour ago, and none since.
+    let half_an_hour = 30 * 60 * 1000;
+    desk.workspaces
+        .device_looked_at(&ada, tilo_clock::unix_now_ms().saturating_sub(half_an_hour));
+
+    // Meanwhile: an event's turn told what it did alone, something came
+    // in, a reminder fell due, and a question waits for her.
+    let did = told_by_agent(&desk, "I answered Kim in the usual way.", event("mail-1")).await;
+    let came = a_told(
+        ask_told(
+            &desk,
+            own,
+            &agent_of(&desk.ada),
+            person_telling::TELL,
+            json!({"words": "Harbor posted new prices.", "cause": {"kind": "competitors", "key": "c-1"}}),
+        )
+        .await,
+    );
+    let reminder = reminded(&desk).await;
+    let question = desk
+        .workspaces
+        .tell(
+            &ada,
+            ToTell {
+                id: Some("question:m1".into()),
+                kind: Kind::Question,
+                tell: Tell {
+                    words: "Two versions of the deck exist. Which one?".into(),
+                    ..Tell::default()
+                },
+                ..ToTell::default()
+            },
+        )
+        .await
+        .unwrap();
+
+    // Her device asks, which is her coming back.
+    let ask = || async {
+        let answer = ask_told(
+            &desk,
+            own,
+            &caller(&desk.ada),
+            person_telling::SINCE_YOU_LEFT,
+            json!({}),
+        )
+        .await;
+        serde_json::from_value::<person_telling::Stretch>(answer.unwrap()).unwrap()
+    };
+    let stretch = ask().await;
+    assert!(stretch.left_at_ms.is_some() && stretch.back_at_ms > stretch.left_at_ms);
+    assert_eq!(stretch.did_alone, std::slice::from_ref(&did));
+    assert_eq!(stretch.came_in, [came.clone(), reminder.clone()]);
+    assert_eq!(stretch.waits, std::slice::from_ref(&question));
+
+    // What she answers waits no more, and the stretch stands while she
+    // stays: asking again is no new coming back.
+    desk.workspaces
+        .acknowledge_told(&ada, &question.id, "Ada's laptop", "answered")
+        .unwrap();
+    let later = ask().await;
+    assert_eq!(
+        (later.left_at_ms, later.back_at_ms),
+        (stretch.left_at_ms, stretch.back_at_ms)
+    );
+    assert!(later.waits.is_empty());
+    assert_eq!(later.came_in.len(), 3);
+
+    // It is hers alone: her agent is not answered, and another member
+    // reads their own, which holds nothing.
+    nobody(
+        "an agent reading what happened while its person was away",
+        ask_told(
+            &desk,
+            own,
+            &agent_of(&desk.ada),
+            person_telling::SINCE_YOU_LEFT,
+            json!({}),
+        )
+        .await,
+    );
+    let (_, bo) = guest_device();
+    let theirs: person_telling::Stretch = serde_json::from_value(
+        ask_told(
+            &desk,
+            (desk.shared, &bo),
+            &caller(&bo),
+            person_telling::SINCE_YOU_LEFT,
+            json!({}),
+        )
+        .await
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(theirs, person_telling::Stretch::default());
+}
+
+#[tokio::test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "each way a thing is made to insist, by its teller and by its person"
+)]
+async fn only_its_person_makes_a_quiet_thing_insist() {
+    let desk = Desk::new().await;
+    let own = (desk.own, &desk.ada);
+    let agent = agent_of(&desk.ada);
+    let her = caller(&desk.ada);
+    desk.ada(
+        person_telling::SET_INSISTING,
+        json!({"everySecs": 120, "times": 3}),
+    )
+    .await
+    .unwrap();
+
+    // News her rule keeps quiet is not made loud by whoever tells it:
+    // neither told as not to be missed, nor marked so afterwards.
+    let quiet = a_told(
+        ask_told(
+            &desk,
+            own,
+            &agent,
+            person_telling::TELL,
+            json!({"words": MAIL, "cause": event("mail-1"), "insists": true}),
+        )
+        .await,
+    );
+    assert!(!quiet.reaches && quiet.insists.is_none());
+    let refused = ask_told(
+        &desk,
+        own,
+        &agent,
+        person_telling::INSIST,
+        json!({"told": quiet.id, "insists": true}),
+    )
+    .await;
+    assert!(
+        matches!(refused, Err(ActionHostError::Refused { .. })),
+        "{refused:?}"
+    );
+    assert!(!listed(&desk, 0).await.told[0].reaches);
+
+    // A reminder she said must not be missed insists by her own rhythm,
+    // from the moment it is told.
+    let must = a_told(
+        ask_told(
+            &desk,
+            own,
+            &agent,
+            person_telling::TELL,
+            json!({
+                "words": "File the tax return.",
+                "cause": {"kind": "reminder", "label": "Tax return", "key": "tax-1"},
+                "insists": true,
+            }),
+        )
+        .await,
+    );
+    let insists = must.insists.unwrap();
+    assert_eq!(
+        (insists.every_secs, insists.times, insists.raised),
+        (120, 3, 1)
+    );
+    assert_eq!(
+        insists.next_at_ms,
+        Some(must.at_ms.saturating_add(120 * 1000))
+    );
+    // Her agent marks a thing that reaches her as not to be missed, when
+    // she says so of it later.
+    let reminder = reminded(&desk).await;
+    let marked = a_told(
+        ask_told(
+            &desk,
+            own,
+            &agent,
+            person_telling::INSIST,
+            json!({"told": reminder.id, "insists": true}),
+        )
+        .await,
+    );
+    assert_eq!(marked.insists.map(|insists| insists.raised), Some(1));
+    assert!(marked.seq > reminder.seq);
+
+    // She herself says the quiet mail must not be missed: it reaches her
+    // now, and insists. And she takes that back.
+    let loud = a_told(
+        ask_told(
+            &desk,
+            own,
+            &her,
+            person_telling::INSIST,
+            json!({"told": quiet.id, "insists": true}),
+        )
+        .await,
+    );
+    assert!(loud.reaches && loud.insists.is_some());
+    assert!(!loud.mark.important, "her rule's mark stands as it was");
+    let calm = a_told(
+        ask_told(
+            &desk,
+            own,
+            &her,
+            person_telling::INSIST,
+            json!({"told": quiet.id, "insists": false}),
+        )
+        .await,
+    );
+    assert!(calm.insists.is_none());
+
+    // What she acknowledges insists no more.
+    let seen = a_told(
+        ask_told(
+            &desk,
+            own,
+            &her,
+            person_telling::ACKNOWLEDGE,
+            json!({"told": must.id, "by": "opened"}),
+        )
+        .await,
+    );
+    assert_eq!(seen.insists.map(|insists| insists.next_at_ms), Some(None));
+}
+
+#[tokio::test]
+async fn a_thing_may_break_do_not_disturb_only_where_its_person_let_its_kind_through() {
+    let desk = Desk::new().await;
+    // Nothing breaks do-not-disturb until she says so: a reminder reaches
+    // her, and her devices hold it back while they are quiet.
+    let held = reminded(&desk).await;
+    assert!(held.reaches && !held.through_quiet);
+
+    // She lets reminders through. From then on a reminder says it may
+    // break do-not-disturb; what reaches her another way still may not.
+    desk.ada(
+        person_telling::LET_THROUGH,
+        json!({"kind": "reminder", "may": true}),
+    )
+    .await
+    .unwrap();
+    let through = told_by_agent(
+        &desk,
+        "Leave for the airport.",
+        json!({"kind": "reminder", "label": "Airport", "key": "r-2"}),
+    )
+    .await;
+    assert!(through.reaches && through.through_quiet);
+    let brief = told_by_agent(
+        &desk,
+        "At ten: the landlord, about the lease.",
+        json!({"kind": "brief", "label": "Morning rundown", "key": "b-1"}),
+    )
+    .await;
+    assert!(brief.reaches && !brief.through_quiet);
+    // What was told before she said so stands as it was told.
+    assert!(!listed(&desk, 0).await.told[0].through_quiet);
+
+    // She takes it back, and the next reminder is held again.
+    desk.ada(
+        person_telling::LET_THROUGH,
+        json!({"kind": "reminder", "may": false}),
+    )
+    .await
+    .unwrap();
+    let again = told_by_agent(
+        &desk,
+        "Water the plants.",
+        json!({"kind": "reminder", "label": "Plants", "key": "r-3"}),
+    )
+    .await;
+    assert!(again.reaches && !again.through_quiet);
+}

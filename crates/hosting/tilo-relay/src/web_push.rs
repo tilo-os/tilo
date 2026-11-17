@@ -363,6 +363,41 @@ impl crate::certification::QuestionNotifier for WebPush {
     }
 }
 
+/// What a person's assistant told them, pushed to the browsers they
+/// subscribed. A push message is encrypted for the browser it goes to, so
+/// the push service between reads none of it.
+#[cfg(feature = "agents")]
+impl crate::workspace_telling::Outside for WebPush {
+    fn name(&self) -> &'static str {
+        "web-push"
+    }
+
+    fn tell(
+        &self,
+        person: [u8; 32],
+        told: tilo_actions::remote::person_telling::Told,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = u32> + Send>> {
+        let push = self.clone();
+        Box::pin(async move {
+            let (title, body) = crate::workspace_telling::words_outside(&told);
+            // One notification a thing: telling it again takes its place.
+            let tag = format!("tilo-told-{}", told.id);
+            let delivered = push
+                .notify(
+                    &person,
+                    &Message {
+                        title: &title,
+                        body: &body,
+                        tag: &tag,
+                        url: "/",
+                    },
+                )
+                .await;
+            u32::try_from(delivered).unwrap_or(u32::MAX)
+        })
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, reason = "in a test this is the assertion")]
 mod tests {

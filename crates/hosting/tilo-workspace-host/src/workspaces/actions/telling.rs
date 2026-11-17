@@ -69,13 +69,22 @@ const CHANGES: [Verb; 5] = [
 ];
 
 /// What an agent adds to the log of what its person was told.
-const TELLS: [Verb; 1] = [Verb {
-    id: person_telling::TELL,
-    label: "Tell the person",
-    gate: "",
-    kind: ActionKind::Undoable,
-    params: tell_params,
-}];
+const TELLS: [Verb; 2] = [
+    Verb {
+        id: person_telling::TELL,
+        label: "Tell the person",
+        gate: "",
+        kind: ActionKind::Undoable,
+        params: tell_params,
+    },
+    Verb {
+        id: person_telling::INSIST,
+        label: "Mark as not to be missed",
+        gate: "",
+        kind: ActionKind::Undoable,
+        params: insist_params,
+    },
+];
 
 /// The rows an agent of a person's is offered: the read of the rule, its
 /// changes where it asks through a workspace its person owns (`own`), and
@@ -92,6 +101,17 @@ pub(super) fn agent_rows(own: bool) -> Vec<CatalogueRow> {
             .map(|verb| verb.row(TELLING, person_telling::TOLD, "Told")),
     );
     rows
+}
+
+fn insist_params() -> Vec<ActionParam> {
+    vec![
+        ActionParam::required("told", ParamType::Text, "The thing told, by its id."),
+        ActionParam::required(
+            "insists",
+            ParamType::Boolean,
+            "Whether it must not be missed: raised again, by the person's own rhythm, until they acknowledge it.",
+        ),
+    ]
 }
 
 fn tell_params() -> Vec<ActionParam> {
@@ -116,6 +136,11 @@ fn tell_params() -> Vec<ActionParam> {
             "task",
             ParamType::Object,
             "The task it belongs to: { record, issue }.",
+        ),
+        ActionParam::optional(
+            "insists",
+            ParamType::Boolean,
+            "Whether it must not be missed, when its person said so of this thing.",
         ),
         ActionParam::optional(
             "actions",

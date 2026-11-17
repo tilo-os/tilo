@@ -15,21 +15,22 @@
 //! the caller of a turn this host runs for them is. The agent reads the
 //! rule and tells its person wherever it works for them; it changes the
 //! rule, when its person tells it to, only in a workspace that person
-//! owns. The log is read by the person alone. What a device does with a
+//! owns. The log is read and acknowledged by the person alone. What a device does with a
 //! notification (whether a kind breaks do-not-disturb, whether a
 //! workspace's words leave the host in a push) only the person says.
 //! Everybody else is told what a caller asking for something that does not
 //! exist is told.
 
+use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use serde_json::Value;
 use tilo_actions::remote::person_telling::{
-    self, Fact, ForgetFact, Importance, Insisting, KeepOnHost, Kind, LetThrough, Line, ListAfter,
-    MAX_FACT_NAME_BYTES, MAX_FACT_VALUE_BYTES, MAX_FACTS, MAX_LINE_BYTES, MAX_LINES, Say, SetFact,
-    Tell, Teller, Unsay,
+    self, Acknowledge, Fact, ForgetFact, Importance, Insist, Insisting, KeepOnHost, Kind,
+    LetThrough, Line, ListAfter, MAX_FACT_NAME_BYTES, MAX_FACT_VALUE_BYTES, MAX_FACTS,
+    MAX_LINE_BYTES, MAX_LINES, Say, SetFact, Tell, Teller, Unsay,
 };
 use tilo_actions::remote::{ActionHostError, Caller, InvokeArgument, InvokeRequest};
 use tilo_lock::MutexRecover as _;
@@ -56,6 +57,14 @@ pub(super) struct Telling {
     told: tokio::sync::watch::Sender<u64>,
     /// What knows whose day a judgement is counted on.
     spenders: OnceLock<Arc<dyn Spenders>>,
+    /// The people whose logs changed since whoever tells outside Tilo
+    /// last asked.
+    changed: Mutex<HashSet<[u8; 32]>>,
+    /// Until when a device of each person is known to look for what they
+    /// were told.
+    looks: Mutex<HashMap<[u8; 32], told::Look>>,
+    /// Whether something tells this host's people outside Tilo already.
+    told_outside: std::sync::atomic::AtomicBool,
 }
 
 impl Default for Telling {
@@ -65,6 +74,9 @@ impl Default for Telling {
             moved: tokio::sync::watch::channel(0).0,
             told: tokio::sync::watch::channel(0).0,
             spenders: OnceLock::new(),
+            changed: Mutex::default(),
+            looks: Mutex::default(),
+            told_outside: std::sync::atomic::AtomicBool::new(false),
         }
     }
 }
@@ -498,6 +510,18 @@ impl Workspaces {
                 let after: ListAfter = argument_or_default(request, "a place in the log")?;
                 answer(&Ok::<_, String>(self.told_listed(person, &after).await))
             }
+            (person_telling::ACKNOWLEDGE, Asking::Person(person)) => {
+                let seen: Acknowledge = argument(request, "the thing by its id")?;
+                answer(&self.acknowledge_told(person, &seen.told, &seen.device, &seen.by))
+            }
+            (person_telling::SINCE_YOU_LEFT, Asking::Person(person)) => {
+                answer(&Ok::<_, String>(self.since_left_for_device(person)))
+            }
+            (person_telling::INSIST, asking) => {
+                let insist: Insist = argument(request, "the thing by its id, and whether")?;
+                let theirs = matches!(asking, Asking::Person(_));
+                answer(&self.insist_told(asking.person(), &insist.told, insist.insists, theirs))
+            }
             _ => Err(ActionHostError::UnknownAction),
         }
     }
@@ -540,6 +564,17 @@ impl Workspaces {
     #[must_use]
     pub fn importance_told(&self, person: &[u8; 32]) -> String {
         told_in_a_turn(&self.importance_of(person))
+    }
+
+    /// Keep `rule` as `person`'s, whole, as their own changes would have
+    /// left it: what a test of whatever reads the rule states it with.
+    ///
+    /// # Errors
+    /// The rule could not be written.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn keep_importance(&self, person: &[u8; 32], rule: &Importance) -> Result<(), String> {
+        let _writing = self.inner.telling.writing.lock_recover();
+        write_rule(&self.person_settings_root(person), rule)
     }
 
     /// Moves whenever anybody's rule changed.

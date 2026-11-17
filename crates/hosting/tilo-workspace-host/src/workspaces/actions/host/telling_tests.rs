@@ -422,11 +422,16 @@ async fn a_persons_agent_reads_their_rule_and_writes_it_down_only_in_a_workspace
             person_telling::FORGET_FACT,
             person_telling::SET_INSISTING,
             person_telling::TELL,
+            person_telling::INSIST,
         ]
     );
     assert_eq!(
         desk.offered(desk.shared, &agent).await,
-        [person_telling::READ, person_telling::TELL]
+        [
+            person_telling::READ,
+            person_telling::TELL,
+            person_telling::INSIST
+        ]
     );
     assert!(desk.offered(desk.own, &caller(&desk.ada)).await.is_empty());
 }

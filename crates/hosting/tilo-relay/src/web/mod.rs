@@ -105,7 +105,23 @@ impl Web {
             .or(public_origin)
             .map_or_else(|| format!("https://{addr}"), str::to_owned);
         match crate::web_push::WebPush::open(state, &contact) {
-            Ok(push) => self.context.certification.set_notifier(Arc::new(push)),
+            Ok(push) => {
+                // What a person's assistant told them reaches the same
+                // browsers, while no device of theirs is looking.
+                #[cfg(feature = "agents")]
+                if let (Some(workspaces), Ok(runtime)) =
+                    (&self.workspaces, tokio::runtime::Handle::try_current())
+                {
+                    runtime.spawn(
+                        crate::workspace_telling::Teller::new(
+                            workspaces.clone(),
+                            Arc::new(push.clone()),
+                        )
+                        .run(),
+                    );
+                }
+                self.context.certification.set_notifier(Arc::new(push));
+            }
             Err(error) => {
                 tracing::warn!(%error, "this host tells nobody outside Tilo that a question waits");
             }
