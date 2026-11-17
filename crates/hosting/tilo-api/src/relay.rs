@@ -451,7 +451,7 @@ pub struct Connection {
     pub device: Device,
     pub key: GrantKey,
     /// The host this session answers on: where the workspace it reaches is
-    /// served, and the one the front door forwarded the call to.
+    /// served, and the one the API server forwarded the call to.
     relay: Arc<Relay>,
     host: String,
     /// The workspaces it entered or is entering, by id: each joined once,

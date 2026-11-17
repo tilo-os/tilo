@@ -38,10 +38,10 @@ use crate::workspaces::{AsksPeople, PersonAnswer, Workspaces};
 const ACCOUNT: &str = "ada@example.test";
 const ASSISTANT: &str = "assistant";
 
-/// Ada's desk: a host whose mail servers answer and keep what they were
+/// Ada's setup: a host whose mail servers answer and keep what they were
 /// asked, a device of hers, the workspace its page is in, and one account
 /// she keeps signed in.
-struct Desk {
+struct Setup {
     servers: Arc<Watched>,
     workspaces: Workspaces,
     host: HostWorkspaceActions,
@@ -51,7 +51,7 @@ struct Desk {
     _dir: tempfile::TempDir,
 }
 
-impl Desk {
+impl Setup {
     async fn new() -> Self {
         let dir = tempfile::tempdir().unwrap();
         let (key, owner) = governor();
@@ -231,60 +231,60 @@ impl AsksPeople for Asked {
 /// is nobody again.
 #[tokio::test]
 async fn a_person_names_the_agent_that_may_read_an_account() {
-    let desk = Desk::new().await;
-    let (ada, agent) = (desk.ada(), desk.agent(ASSISTANT));
+    let setup = Setup::new().await;
+    let (ada, agent) = (setup.ada(), setup.agent(ASSISTANT));
     keep(
-        &desk
+        &setup
             .workspaces
-            .person_settings_root(&desk.device.user_public_key),
+            .person_settings_root(&setup.device.user_public_key),
         "ada@other.test",
         "another-password",
     );
     let hers = || json!({"account": ACCOUNT});
 
     // Nobody is named yet: her own agent is nobody to her mail.
-    let named = desk.ask(&ada, person_accounts::ASSISTANTS, hers()).await;
+    let named = setup.ask(&ada, person_accounts::ASSISTANTS, hers()).await;
     assert!(read::<AccountAssistants>(named).agents.is_empty());
-    let unnamed = desk.ask(&agent, person_accounts::LIST, json!({})).await;
+    let unnamed = setup.ask(&agent, person_accounts::LIST, json!({})).await;
     nobody("her agent before she named it", unnamed);
-    assert!(offered(&desk.page(), &agent).await.is_empty());
+    assert!(offered(&setup.page(), &agent).await.is_empty());
 
     // An account she does not keep names nobody.
     let stranger = json!({"account": "eve@example.test", "agent": ASSISTANT, "may": true});
-    let refused = desk.ask(&ada, person_accounts::ASSISTANT, stranger).await;
+    let refused = setup.ask(&ada, person_accounts::ASSISTANT, stranger).await;
     assert!(
         matches!(refused, Err(ActionHostError::Refused { .. })),
         "{refused:?}"
     );
 
-    assert_eq!(desk.name(ASSISTANT, true).await, [ASSISTANT]);
-    let listed: MailAccounts = read(desk.ask(&agent, person_accounts::LIST, json!({})).await);
+    assert_eq!(setup.name(ASSISTANT, true).await, [ASSISTANT]);
+    let listed: MailAccounts = read(setup.ask(&agent, person_accounts::LIST, json!({})).await);
     let ids: Vec<&str> = listed.accounts.iter().map(|one| one.id.as_str()).collect();
     assert_eq!(ids, [ACCOUNT], "the account it was named for alone");
-    let rows = offered(&desk.page(), &agent).await;
+    let rows = offered(&setup.page(), &agent).await;
     for verb in READS_AND_DRAFTS {
         assert!(rows.iter().any(|row| row == verb), "{verb}: {rows:?}");
     }
     for verb in THE_PERSONS_ALONE {
         assert!(!rows.iter().any(|row| row == verb), "{verb}: {rows:?}");
     }
-    let hers_directly = offered(&desk.page(), &ada).await;
+    let hers_directly = offered(&setup.page(), &ada).await;
     assert!(hers_directly.is_empty(), "a page asks the host directly");
 
     // Her other account, and another agent of hers.
     let other = json!({"account": "ada@other.test", "folder": "inbox"});
-    let unread = desk.ask(&agent, person_accounts::FETCH, other).await;
+    let unread = setup.ask(&agent, person_accounts::FETCH, other).await;
     nobody("an account it was not named for", unread);
-    let writer = desk.agent("writer");
-    let unlisted = desk.ask(&writer, person_accounts::LIST, json!({})).await;
+    let writer = setup.agent("writer");
+    let unlisted = setup.ask(&writer, person_accounts::LIST, json!({})).await;
     nobody("an agent of hers she did not name", unlisted);
 
     // She takes it back.
-    assert!(desk.name(ASSISTANT, false).await.is_empty());
-    let after = desk.ask(&agent, person_accounts::LIST, json!({})).await;
+    assert!(setup.name(ASSISTANT, false).await.is_empty());
+    let after = setup.ask(&agent, person_accounts::LIST, json!({})).await;
     nobody("her agent after she took it back", after);
-    assert!(offered(&desk.page(), &agent).await.is_empty());
-    assert!(desk.servers.asked().is_empty(), "no server was asked");
+    assert!(offered(&setup.page(), &agent).await.is_empty());
+    assert!(setup.servers.asked().is_empty(), "no server was asked");
 }
 
 /// What a named agent is offered among the mail actions.
@@ -314,43 +314,48 @@ const THE_PERSONS_ALONE: [&str; 5] = [
 /// is not there for it.
 #[tokio::test]
 async fn the_persons_assistant_reads_searches_and_drafts_through_the_host() {
-    let desk = Desk::new().await;
-    let agent = desk.agent(ASSISTANT);
-    desk.name(ASSISTANT, true).await;
+    let setup = Setup::new().await;
+    let agent = setup.agent(ASSISTANT);
+    setup.name(ASSISTANT, true).await;
     let inbox = json!({"account": ACCOUNT, "folder": "inbox"});
     let message = json!({"account": ACCOUNT, "folder": "inbox", "uid": 4, "uidValidity": 7});
 
-    let folder: FetchedMail = read(desk.ask(&agent, person_accounts::FETCH, inbox).await);
+    let folder: FetchedMail = read(setup.ask(&agent, person_accounts::FETCH, inbox).await);
     assert_eq!(folder.messages[0].subject, "Lunch");
-    let whole = desk
+    let whole = setup
         .ask(&agent, person_accounts::READ, message.clone())
         .await;
     assert_eq!(read::<FetchedMessage>(whole).body, "Friday at one?");
     let search = json!({"account": ACCOUNT, "text": "lunch"});
-    let found: FoundMail = read(desk.ask(&agent, person_accounts::SEARCH, search).await);
+    let found: FoundMail = read(setup.ask(&agent, person_accounts::SEARCH, search).await);
     assert_eq!(found.folders[0].messages[0].uid, 4);
-    let arrived = desk.ask(&agent, person_accounts::ARRIVED, json!({})).await;
+    let arrived = setup.ask(&agent, person_accounts::ARRIVED, json!({})).await;
     assert!(read::<MailArrivals>(arrived).arrivals.is_empty());
-    assert_eq!(desk.servers.running().len(), 1, "its asking is listening");
-    let begun: StartedSend = read(desk.ask(&agent, person_accounts::BEGIN_SEND, lunch()).await);
+    assert_eq!(setup.servers.running().len(), 1, "its asking is listening");
+    let begun: StartedSend = read(
+        setup
+            .ask(&agent, person_accounts::BEGIN_SEND, lunch())
+            .await,
+    );
     let keeping = json!({"send": begun.send});
-    desk.ask(&agent, person_accounts::SAVE_DRAFT, keeping)
+    setup
+        .ask(&agent, person_accounts::SAVE_DRAFT, keeping)
         .await
         .unwrap();
 
     // In a turn this host runs for her: her agent with a device of hers
     // behind it, as the host hands it the session.
-    let in_turn = desk
+    let in_turn = setup
         .ada()
         .delegated_to(ASSISTANT)
         .on_turn(Turn::new("chat/main", "message-1"), Vec::new());
     assert!(in_turn.turn().is_some(), "the turn is the caller's");
     let sent = json!({"account": ACCOUNT, "folder": "sent"});
-    let turned = desk.ask(&in_turn, person_accounts::FETCH, sent).await;
+    let turned = setup.ask(&in_turn, person_accounts::FETCH, sent).await;
     assert_eq!(read::<FetchedMail>(turned).folder, "sent");
 
     assert_eq!(
-        desk.servers.asked(),
+        setup.servers.asked(),
         [
             "fetch ada@example.test inbox",
             "read ada@example.test inbox 4",
@@ -360,7 +365,7 @@ async fn the_persons_assistant_reads_searches_and_drafts_through_the_host() {
         ]
     );
     for action in THE_PERSONS_ALONE {
-        nobody(action, desk.ask(&agent, action, message.clone()).await);
+        nobody(action, setup.ask(&agent, action, message.clone()).await);
     }
 }
 
@@ -371,10 +376,10 @@ async fn the_persons_assistant_reads_searches_and_drafts_through_the_host() {
 /// sending their own message is asked nothing.
 #[tokio::test]
 async fn a_message_the_assistant_would_send_waits_for_its_person() {
-    let desk = Desk::new().await;
-    let page = desk.page();
-    let agent = desk.agent(ASSISTANT);
-    desk.name(ASSISTANT, true).await;
+    let setup = Setup::new().await;
+    let page = setup.page();
+    let agent = setup.agent(ASSISTANT);
+    setup.name(ASSISTANT, true).await;
 
     let unasked = send_lunch(&page, &agent).await;
     assert!(
@@ -383,7 +388,7 @@ async fn a_message_the_assistant_would_send_waits_for_its_person() {
     );
 
     let silent = Asked::answering(None);
-    desk.workspaces.ask_people(silent.clone());
+    setup.workspaces.ask_people(silent.clone());
     let unanswered = send_lunch(&page, &agent).await;
     assert!(
         matches!(
@@ -393,7 +398,7 @@ async fn a_message_the_assistant_would_send_waits_for_its_person() {
         "with no answer: {unanswered:?}"
     );
     let (person, question) = silent.questions.lock().unwrap()[0].clone();
-    assert_eq!(person, desk.device.user_public_key, "her mail, her answer");
+    assert_eq!(person, setup.device.user_public_key, "her mail, her answer");
     assert_eq!(question.agent_id, ASSISTANT);
     assert_eq!(question.action_label, "send this message");
     assert_eq!(question.resource_label, ACCOUNT);
@@ -406,24 +411,25 @@ async fn a_message_the_assistant_would_send_waits_for_its_person() {
         assert!(question.arguments.contains(&shown), "{label} is shown");
     }
 
-    desk.workspaces
+    setup
+        .workspaces
         .ask_people(Asked::answering(Some(ConfirmationAnswer::Deny)));
     let denied = send_lunch(&page, &agent).await;
     assert!(
         matches!(denied, Err(ActionHostError::Refused { .. })),
         "{denied:?}"
     );
-    assert!(desk.servers.asked().is_empty(), "nothing left unallowed");
+    assert!(setup.servers.asked().is_empty(), "nothing left unallowed");
 
     let allowing = Asked::answering(Some(ConfirmationAnswer::AllowOnce));
-    desk.workspaces.ask_people(allowing.clone());
+    setup.workspaces.ask_people(allowing.clone());
     send_lunch(&page, &agent).await.unwrap();
     let sent = "send ada@example.test to bo@example.test: Lunch";
-    assert_eq!(desk.servers.asked(), [sent]);
+    assert_eq!(setup.servers.asked(), [sent]);
     assert_eq!(allowing.count(), 1, "one question for one message");
 
-    send_lunch(&page, &desk.ada()).await.unwrap();
-    assert_eq!(desk.servers.asked(), [sent, sent]);
+    send_lunch(&page, &setup.ada()).await.unwrap();
+    assert_eq!(setup.servers.asked(), [sent, sent]);
     assert_eq!(allowing.count(), 1, "her own message asks her nothing");
 }
 
@@ -435,17 +441,17 @@ async fn a_message_the_assistant_would_send_waits_for_its_person() {
 /// server is asked for any of them.
 #[tokio::test]
 async fn nobody_elses_agent_reads_a_persons_mail() {
-    let desk = Desk::new().await;
-    desk.name(ASSISTANT, true).await;
+    let setup = Setup::new().await;
+    setup.name(ASSISTANT, true).await;
     let bo = key_of(&SigningKey::from_bytes(&rand::random()), "laptop");
-    let bos_page = desk.host.in_workspace_as(desk.workspace_id, &bo);
+    let bos_page = setup.host.in_workspace_as(setup.workspace_id, &bo);
     let bos_agent = Caller::delegated_agent(ASSISTANT, bo.user_public_key, bo.device_public_key);
     let bos_turn = Caller::agent_turn(
         ASSISTANT,
         hex::encode(bo.user_public_key),
         Turn::new("chat/main", "message-1"),
     );
-    let line = desk.host.in_workspace(desk.workspace_id);
+    let line = setup.host.in_workspace(setup.workspace_id);
     let hers = || json!({"account": ACCOUNT, "folder": "inbox"});
     let fetch = person_accounts::FETCH;
 
@@ -455,31 +461,36 @@ async fn nobody_elses_agent_reads_a_persons_mail() {
     nobody("listing on its own person's device", listing);
     nobody(
         "over the other person's page",
-        desk.ask(&bos_agent, fetch, hers()).await,
+        setup.ask(&bos_agent, fetch, hers()).await,
     );
     nobody(
         "in a turn of its own person's",
         asked_of(&line, &bos_turn, fetch, hers()).await,
     );
     let unowned = Caller::local_agent(ASSISTANT);
-    nobody("under no person", desk.ask(&unowned, fetch, hers()).await);
+    nobody("under no person", setup.ask(&unowned, fetch, hers()).await);
     // Her own named agent is hers only with a device of hers behind it,
     // and only in the workspace she named it in: its id means something
     // among that workspace's agents alone.
     let bare_turn = Caller::agent_turn(
         ASSISTANT,
-        hex::encode(desk.device.user_public_key),
+        hex::encode(setup.device.user_public_key),
         Turn::new("chat/main", "message-2"),
     );
     nobody(
         "her agent's id with no device of hers behind it",
         asked_of(&line, &bare_turn, fetch, hers()).await,
     );
-    let elsewhere = desk.workspaces.create("Shared").await.unwrap().workspace_id;
-    let other_page = desk.host.in_workspace_as(elsewhere, &desk.device);
+    let elsewhere = setup
+        .workspaces
+        .create("Shared")
+        .await
+        .unwrap()
+        .workspace_id;
+    let other_page = setup.host.in_workspace_as(elsewhere, &setup.device);
     nobody(
         "the same id in another workspace",
-        asked_of(&other_page, &desk.agent(ASSISTANT), fetch, hers()).await,
+        asked_of(&other_page, &setup.agent(ASSISTANT), fetch, hers()).await,
     );
     assert!(offered(&bos_page, &bos_agent).await.is_empty());
 
@@ -489,10 +500,10 @@ async fn nobody_elses_agent_reads_a_persons_mail() {
         matches!(his, Err(ActionHostError::Refused { .. })),
         "{his:?}"
     );
-    assert!(desk.servers.asked().is_empty(), "no server was asked");
+    assert!(setup.servers.asked().is_empty(), "no server was asked");
 
     // The named agent of the person whose mail it is does read it.
-    let own = desk.ask(&desk.agent(ASSISTANT), fetch, hers()).await;
+    let own = setup.ask(&setup.agent(ASSISTANT), fetch, hers()).await;
     assert_eq!(read::<FetchedMail>(own).folder, "inbox");
 }
 
@@ -500,26 +511,27 @@ async fn nobody_elses_agent_reads_a_persons_mail() {
 /// kept again names nobody.
 #[tokio::test]
 async fn removing_an_account_forgets_the_agents_named_for_it() {
-    let desk = Desk::new().await;
-    let (ada, agent) = (desk.ada(), desk.agent(ASSISTANT));
-    desk.name(ASSISTANT, true).await;
+    let setup = Setup::new().await;
+    let (ada, agent) = (setup.ada(), setup.agent(ASSISTANT));
+    setup.name(ASSISTANT, true).await;
     let hers = || json!({"account": ACCOUNT});
 
-    desk.ask(&ada, person_accounts::REMOVE, hers())
+    setup
+        .ask(&ada, person_accounts::REMOVE, hers())
         .await
         .unwrap();
-    let gone = desk.ask(&agent, person_accounts::LIST, json!({})).await;
+    let gone = setup.ask(&agent, person_accounts::LIST, json!({})).await;
     nobody("her agent once the account is gone", gone);
 
     keep(
-        &desk
+        &setup
             .workspaces
-            .person_settings_root(&desk.device.user_public_key),
+            .person_settings_root(&setup.device.user_public_key),
         ACCOUNT,
         "adas-password",
     );
-    let named = desk.ask(&ada, person_accounts::ASSISTANTS, hers()).await;
+    let named = setup.ask(&ada, person_accounts::ASSISTANTS, hers()).await;
     assert!(read::<AccountAssistants>(named).agents.is_empty());
-    let again = desk.ask(&agent, person_accounts::LIST, json!({})).await;
+    let again = setup.ask(&agent, person_accounts::LIST, json!({})).await;
     nobody("her agent for the account kept again", again);
 }

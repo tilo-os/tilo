@@ -5,13 +5,13 @@
 //!   records of the key's person: each key it admitted, what it is called, the
 //!   workspace it reaches and until when;
 //! - `workspace/keys#revoke {grant}` records the key's revocation there, and
-//!   every holder and front door that reads the workspace refuses it from then
+//!   every holder and API server that reads the workspace refuses it from then
 //!   on.
 //!
 //! The record is the workspace's own (`grants_v1` in its governance), written
 //! by the host that admitted the key and read by every holder, so a key is
 //! listed and revoked the same wherever the workspace is held and whichever
-//! front door the caller reaches.
+//! API server the caller reaches.
 
 use crate::account::{Outcome, failed};
 use crate::relay::Connection;

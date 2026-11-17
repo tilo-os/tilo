@@ -97,7 +97,7 @@ pub(crate) const MEMBERS: &str = "member.list";
 /// governance records, its name, the workspace it reaches and until when.
 pub(crate) const KEYS: &str = "key.list";
 /// Revoke a key the caller holds or one it minted: the workspace records the
-/// revocation, and every holder and front door refuses the key from then on.
+/// revocation, and every holder and API server refuses the key from then on.
 pub(crate) const REVOKE_KEY: &str = "key.revoke";
 /// The calling person's own name in the workspace: what its member list and
 /// the invitations they make show for them, from any of their devices or
@@ -331,7 +331,7 @@ const VERBS: [Verb; 22] = [
         id: KEYS,
         label: "List the keys this workspace admitted",
         // Nothing gates it: a key lists the grants of its own person's, and
-        // the front door shows it only the key itself and the keys it minted.
+        // the API server shows it only the key itself and the keys it minted.
         gate: "",
         kind: ActionKind::Read,
         params: Vec::new,
@@ -1359,7 +1359,7 @@ impl Workspaces {
             let workspace = governed.lock().await;
             // A key its person revoked acts no longer: the workspace's record
             // of the revocation refuses every call it would make here, from
-            // whichever front door it comes.
+            // whichever API server it comes.
             let revoked_ms = workspace
                 .peer()
                 .governance()
@@ -1435,8 +1435,8 @@ impl Workspaces {
     }
 
     /// Revoke the key `grant` names, the caller's own or one it minted: the
-    /// workspace records its person's revocation, and every holder and front
-    /// door refuses it from then on.
+    /// workspace records its person's revocation, and every holder and API
+    /// server refuses it from then on.
     async fn governance_revoke_key(
         &self,
         call: GovernanceCall<'_>,

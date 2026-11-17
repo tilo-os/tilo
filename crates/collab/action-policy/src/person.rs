@@ -9,7 +9,7 @@
 //! names software. Storing `person:<root>` beside the bare root made one
 //! person two strings, and every comparison, roster row and presence entry had
 //! to guess which spelling it was looking at. [`PersonId`] refuses that
-//! spelling at the door.
+//! spelling when it is parsed.
 
 use serde::de::Error as _;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};

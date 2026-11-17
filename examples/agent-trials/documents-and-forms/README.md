@@ -63,7 +63,7 @@ The installer:
   `http://127.0.0.1:8471/` on the loopback interface only, with its state in
   `~/.local/state/tilo-trial/documents-and-forms`.
 
-Run it again to update the pack; it keeps the participant's outputs and the
+Run it again to update the pack; it keeps the tester's outputs and the
 portal's state. `install.sh --no-service` skips the service and prints the
 command that starts the portal by hand. Without a running user manager, an
 administrator can keep one for the account with `loginctl enable-linger tester`.
@@ -77,10 +77,10 @@ ssh tester@HOST .local/share/tilo-trial/documents-and-forms/reset.sh
 This stops the portal, deletes its applications and uploads, deletes all of
 `~/Documents/Trial`, writes the documents again and restarts the portal. It
 does not touch the desktop: close the last attempt's windows (the Browser tab,
-open documents) and remove the last participant's agent from the workspace
+open documents) and remove the last tester's agent from the workspace
 before the next one starts.
 
-## Before the participant starts: the desktop
+## Before the tester starts: the desktop
 
 Someone at the desktop does three things once.
 
@@ -96,7 +96,7 @@ Someone at the desktop does three things once.
    own folder, `~/.local/share/tilo-workspaces/<workspace or personal>/so.tilo.browser/`,
    which it sees as `/run/tilo/app/`; copying the upload files there and
    telling the agent those paths is the fallback.
-2. **Admit the agent.** When the participant's agent first connects, the
+2. **Admit the agent.** When the tester's agent first connects, the
    desktop asks whether to admit it to the workspace. Admit it once.
 3. **Set its access.** In the workspace's settings, under agent access, choose
    the agent and allow Outside effects for Browser, PDF and Files (reading a
@@ -104,10 +104,10 @@ Someone at the desktop does three things once.
    Changes for Word Processor and PDF. Sending, publishing and deleting for
    good still ask the person at the desktop first.
 
-## How the participant's agent connects
+## How the tester's agent connects
 
 The agent reaches the desktop through `tilo-runtime-mcp --connect` over ssh;
-the participant needs ssh access as `tester`. For Claude Code:
+the tester needs ssh access as `tester`. For Claude Code:
 
 ```bash
 claude mcp add tilo -- ssh -T tester@HOST tilo-runtime-mcp --connect

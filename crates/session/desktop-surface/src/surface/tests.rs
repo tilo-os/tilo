@@ -2862,8 +2862,8 @@ fn a_tab_dragged_onto_the_other_display_opens_its_window_there() {
     );
 }
 
-/// The desk is a real `<main>` of strips: each strip a widget row of its own, never one picture of
-/// the desktop.
+/// The desktop is a real `<main>` of strips: each strip a widget row of its own, never one picture
+/// of the desktop.
 #[test]
 fn the_desktop_composes_as_its_strips() {
     let (surface, _handle) = desktop(2);
@@ -2874,15 +2874,18 @@ fn the_desktop_composes_as_its_strips() {
         Theme::dark(),
     );
     frame.relayout();
-    frame.poll_frame().expect("a frame draws the desk");
+    frame.poll_frame().expect("a frame draws the desktop");
     let composition = frame.composition();
-    let desks = collect(&composition.root, "DesktopSurface");
-    let desk = desks
+    let surfaces = collect(&composition.root, "DesktopSurface");
+    let desktop = surfaces
         .first()
-        .unwrap_or_else(|| panic!("the desk: {composition:#?}"));
-    assert_eq!(desk.tag, Some("main"));
-    assert!(desk.own.is_none(), "the desk is not a picture of itself");
-    assert!(!desk.children.is_empty(), "the strips stand in it");
+        .unwrap_or_else(|| panic!("the desktop: {composition:#?}"));
+    assert_eq!(desktop.tag, Some("main"));
+    assert!(
+        desktop.own.is_none(),
+        "the desktop is not a picture of itself"
+    );
+    assert!(!desktop.children.is_empty(), "the strips stand in it");
     assert!(
         !collect(&composition.root, "GroupRow").is_empty(),
         "a row per display, composed as what it holds"

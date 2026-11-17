@@ -1,8 +1,8 @@
-//! The hosts a front door may forward a call to, and which one serves it.
+//! The hosts an API server may forward a call to, and which one serves it.
 //!
-//! A front door keeps no workspace: which host holds the workspace, and which
+//! An API server keeps no workspace: which host holds the workspace, and which
 //! of its holders can read it, is the workspace's. Every host that answers is
-//! a candidate, and the front door picks among the ones that answer the grant
+//! a candidate, and the API server picks among the ones that answer the grant
 //! as the workspace's own devices pick among themselves
 //! ([`tilo_peer_state::placement`]): the measured round trip, then the
 //! host's own key, so equal candidates always resolve the same way. A host
@@ -24,7 +24,7 @@ use tilo_peer_state::placement::{self, Answer, Decline, Power, Rank, Work};
 /// How long one host may take to answer with a session.
 const ANSWERING: Duration = Duration::from_secs(12);
 
-/// The hosts a front door may forward to, in the order it was configured.
+/// The hosts an API server may forward to, in the order it was configured.
 pub struct Hosts {
     relays: Vec<Arc<Relay>>,
 }
@@ -113,7 +113,7 @@ fn choose(answers: &[([u8; 32], Answer)]) -> Option<[u8; 32]> {
         offload: None,
     };
     let choice = placement::pick(answers.iter().cloned(), &work);
-    tracing::debug!(%choice, "a front door chose the host serving a key");
+    tracing::debug!(%choice, "an API server chose the host serving a key");
     choice.worker
 }
 

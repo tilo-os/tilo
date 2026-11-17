@@ -2094,7 +2094,7 @@ fn an_apps_own_row_leads_a_record_of_the_app_it_names() {
     );
 }
 
-/// The search chord opens the search with a window in front: the press is the desk's wherever it
+/// The search chord opens the search with a window in front: the press is the desktop's wherever it
 /// is pressed, never the window's under it, and it is the window's keyboard the chord crosses.
 #[test]
 fn the_search_chord_opens_the_search_with_a_window_in_front() {

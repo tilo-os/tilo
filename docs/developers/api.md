@@ -10,7 +10,7 @@ Two things serve it:
 - **An API server** (`tilo-api`, `https://api.tilo.sh` for hosted Tilo), which you call with a
   key (`Authorization: Bearer tilo_sk_…`). It holds no authority and no workspace of its own: each
   key carries the grant the person approved — a device key of theirs, certified by their root (or
-  by a key of theirs it was minted from) — so any front door accepts it. Every call is forwarded to
+  by a key of theirs it was minted from) — so any API server accepts it. Every call is forwarded to
   the Tilo host that serves the workspace best right now, and that host decides it. When no host
   that can read the workspace is online, the call answers `503 unavailable` saying so.
 - **Any Tilo host directly**, from the SDKs and the `tilo` command, as a device of the person
@@ -93,7 +93,7 @@ an invocation of its own, named for the key ("Visa backend #3").
 | `DELETE /v1/workspaces/{workspace}` | `{"deleted": "…", "revoked_keys": [...]}`: final, with everything in it and every key minted for it |
 | `GET /v1/keys` | `{"keys": [{"grant", "name", "scope", "expires_at_ms", "last_used_at_ms", "created_by"}]}`: this key and the keys it minted, read from the workspace's own record when the key reaches one |
 | `POST /v1/keys` `{workspace, name?, expires_in?}` | `201` a key for one workspace, minted from this one: `{"grant", "token", "mcp_url", "expires_at_ms"}`; the person is not asked |
-| `DELETE /v1/keys/{grant}` | revokes this key or one it minted, and every key it minted; the workspace a revoked key reaches records the revocation, so every front door and holder refuses it |
+| `DELETE /v1/keys/{grant}` | revokes this key or one it minted, and every key it minted; the workspace a revoked key reaches records the revocation, so every API server and holder refuses it |
 
 ## Resources
 

@@ -1,0 +1,122 @@
+import contextlib
+import importlib.util
+import io
+import subprocess
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+
+
+SCRIPT = Path(__file__).resolve().parents[1] / "policy/check_glossary_words.py"
+SPEC = importlib.util.spec_from_file_location("check_glossary_words", SCRIPT)
+words = importlib.util.module_from_spec(SPEC)
+assert SPEC.loader is not None
+sys.modules[SPEC.name] = words
+SPEC.loader.exec_module(words)
+
+GLOSSARY = """# Glossary
+
+## Not used
+
+Old names: room, channel (except Chat's channels), host.
+
+Vague metaphors: door, gate. Name the thing.
+
+The check reads this list.
+"""
+
+ALLOWED = """
+[[allow]]
+reason = "Chat's channels."
+words = ["channel"]
+paths = ["apps/chat/*"]
+
+[[allow]]
+reason = "A test identifier."
+words = ["host"]
+identifiers = ["host_key"]
+"""
+
+
+class MatcherTests(unittest.TestCase):
+    def test_reads_the_lists_without_their_exceptions_or_prose(self):
+        self.assertEqual(words.not_used(GLOSSARY), ["room", "channel", "host", "door", "gate"])
+
+    def test_finds_whole_words_and_identifier_parts(self):
+        matcher = words.Matcher(["room", "gate"])
+        found = lambda text: [word for _, _, word in matcher.find(text)]
+        self.assertEqual(found("room_id RoomId ChatRoom ROOM_ID rooms"), ["room"] * 5)
+        self.assertEqual(found("bathroom gateway navigate delegate GATEWAY Roomba"), [])
+        self.assertEqual(found("gates GateKeeper"), ["gate", "gate"])
+
+    def test_judges_only_the_key_of_a_toml_line(self):
+        self.assertEqual(words.toml_key('room = "host"'), "room ")
+        self.assertEqual(words.toml_key("[rooms.host]"), "[rooms.host]")
+        self.assertEqual(words.toml_key('  "room door",'), "")
+
+
+class TreeTests(unittest.TestCase):
+    def repository(self, baseline: str) -> Path:
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name)
+        files = {
+            words.GLOSSARY: GLOSSARY,
+            words.ALLOWED: ALLOWED,
+            words.BASELINE: baseline,
+            "apps/chat/src/lib.rs": "struct Channel;\n",
+            "crates/a/src/lib.rs": "// The host and its host_key.\nfn open_room() {}\n",
+        }
+        for name, text in files.items():
+            (root / name).parent.mkdir(parents=True, exist_ok=True)
+            (root / name).write_text(text)
+        self.git(root, "init", "-q")
+        self.git(root, "add", ".")
+        self.git(root, "-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false",
+                 "commit", "-q", "-m", "init")
+        self.root = root
+        old = words.ROOT
+        words.ROOT = root
+        self.addCleanup(setattr, words, "ROOT", old)
+        return root
+
+    @staticmethod
+    def git(root: Path, *args: str) -> None:
+        subprocess.run(["git", *args], cwd=root, check=True, capture_output=True)
+
+    def run_mode(self, function) -> tuple[int, str]:
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            code = function()
+        return code, err.getvalue()
+
+    def test_counts_against_the_baseline_and_skips_what_is_allowed(self):
+        self.repository(words.BASELINE_HEADER + "room 1\nhost 1\n")
+        self.assertEqual(self.run_mode(words.judge_tree), (0, ""))
+        (self.root / "crates/a/src/lib.rs").write_text("fn open_room() {}\nfn door() {}\n")
+        code, out = self.run_mode(words.judge_tree)
+        self.assertEqual(code, 1)
+        self.assertIn("'door' is not used", out)
+        self.assertIn("crates/a/src/lib.rs:2: fn door() {}", out)
+        self.assertIn("'host': 0 uses, the baseline still allows 1", out)
+
+    def test_a_commit_may_not_add_uses_and_lowers_the_count_it_removes(self):
+        root = self.repository(words.BASELINE_HEADER + "room 1\nhost 1\n")
+        (root / "crates/a/src/lib.rs").write_text("fn open_room() {}\nfn other_room() {}\n")
+        self.git(root, "add", ".")
+        code, out = self.run_mode(words.judge_staged)
+        self.assertEqual(code, 1)
+        self.assertIn("crates/a/src/lib.rs:2: fn other_room() {}", out)
+        self.assertNotIn("open_room", out)
+
+        (root / "crates/a/src/lib.rs").write_text("fn open_room() {}\n")
+        self.git(root, "add", ".")
+        self.assertEqual(self.run_mode(words.judge_staged)[0], 0)
+        staged = subprocess.run(["git", "show", f":{words.BASELINE}"], cwd=root,
+                                capture_output=True, text=True).stdout
+        self.assertEqual(staged, words.BASELINE_HEADER + "room 1\n")
+
+
+if __name__ == "__main__":
+    unittest.main()

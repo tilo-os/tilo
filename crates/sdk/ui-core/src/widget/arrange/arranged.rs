@@ -626,7 +626,7 @@ impl<L: Layout> crate::widget::RowContentBox for Arranged<L> {
 }
 
 impl<L: Layout + 'static> Widget for Arranged<L> {
-    /// What it holds, each slot where the arrangement puts it.
+    /// What it holds, each where the layout puts it.
     fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
         cx.children();
     }

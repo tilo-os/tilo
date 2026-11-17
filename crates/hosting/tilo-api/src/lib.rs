@@ -85,10 +85,10 @@ pub struct Config {
     pub issuer: String,
     /// The person's Tilo on the web, which signs them in to the server.
     pub web_entry: String,
-    /// The public origins of the hosts this front door may forward a call
+    /// The public origins of the hosts this API server may forward a call
     /// to (`https://eu1.tilo.sh`), best-known first. Every one that answers
     /// is a candidate, and the call goes to the one that serves it best
-    /// ([`hosts::Hosts`]); a front door keeps no workspace of its own.
+    /// ([`hosts::Hosts`]); an API server keeps no workspace of its own.
     pub hosts: Vec<String>,
 }
 

@@ -35,6 +35,7 @@ vendor/git/** -text
 /Cargo.lock merge=generated
 /crates/workspace-hack/** merge=generated
 /docs/codemap.md merge=generated
+/tools/policy/glossary_words_baseline.txt merge=generated
 /crates/browser/tilo-web-desktop/Cargo.toml merge=generated-blocks
 /crates/browser/tilo-web-desktop/apps.json merge=generated
 /crates/browser/tilo-web-desktop/src/apps.rs merge=generated

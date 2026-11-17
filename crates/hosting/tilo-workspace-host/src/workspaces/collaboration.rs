@@ -357,7 +357,7 @@ impl Workspaces {
         let workspace = self.workspace(workspace).await?;
         let mut workspace = workspace.lock().await;
         // A key whose grant this workspace records as revoked never enters it
-        // again, whichever front door it comes through.
+        // again, whichever API server it comes through.
         let revoked_ms = workspace
             .peer()
             .governance()
@@ -394,7 +394,7 @@ impl Workspaces {
         })?;
         self.settle(&mut workspace).await?;
         // The workspace keeps the grant it admitted, so every holder and every
-        // front door reads the same grant from the workspace itself.
+        // API server reads the same grant from the workspace itself.
         if let Some(scope) = device.capabilities.agent {
             self.record_grant(&mut workspace, device, scope, now)
                 .await?;
@@ -404,7 +404,7 @@ impl Workspaces {
 
     /// Record the grant `cert` was admitted under in `workspace`'s governance,
     /// reaching `scope`, authored by this host: the workspace's holders and
-    /// the front doors that read them see it from then on.
+    /// the API servers that read them see it from then on.
     async fn record_grant(
         &self,
         workspace: &mut GovernedWorkspace,
@@ -481,7 +481,7 @@ impl Workspaces {
     }
 
     /// Mark the grant `id` of `workspace` revoked at `now_ms`, authored by
-    /// this host: every holder and front door that reads the workspace refuses
+    /// this host: every holder and API server that reads the workspace refuses
     /// the key from then on. Answers whether it changed the workspace.
     pub async fn revoke_grant(
         &self,

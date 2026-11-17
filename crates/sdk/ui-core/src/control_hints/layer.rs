@@ -890,7 +890,10 @@ mod place_tests {
             bar.contains(card.center()),
             "{card:?} is not on the handle {bar:?}"
         );
-        assert!(spare_holds(area, card), "{card:?} inside the desk {area:?}");
+        assert!(
+            spare_holds(area, card),
+            "{card:?} inside the free area {area:?}"
+        );
         assert!(
             card.y0 >= bar.y0 && card.y1 <= bar.y1,
             "{card:?} covers neither the body under the handle {bar:?} nor what is above it"

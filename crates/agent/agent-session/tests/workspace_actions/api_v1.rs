@@ -359,7 +359,7 @@ async fn a_backend_key_works_through_the_api_on_a_relay_host() {
         .await;
     assert!(status >= 400, "a minted key mints none: {minting}");
 
-    // The workspace records the key it admitted, so a front door that never
+    // The workspace records the key it admitted, so an API server that never
     // saw the approval lists it from the workspace itself.
     let second = Server::new(
         &tilo_api::Config {
@@ -381,7 +381,7 @@ async fn a_backend_key_works_through_the_api_on_a_relay_host() {
         "the workspace lists the key it admitted: {listed}"
     );
 
-    // Revoking it writes the workspace's own record, so the front door that
+    // Revoking it writes the workspace's own record, so the API server that
     // never saw the approval refuses it too.
     let (status, revoked) = json_of(
         backend
@@ -742,10 +742,10 @@ async fn a_file_larger_than_one_request_goes_up_in_pieces_that_resume() {
     );
 }
 
-/// A front door that never approved the key serves it anyway: the key is the
-/// grant the person signed, so every front door reads the same one.
+/// An API server that never approved the key serves it anyway: the key is the
+/// grant the person signed, so every API server reads the same one.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_key_works_at_every_front_door() {
+async fn a_key_works_at_every_api_server() {
     let on_relay = api_on_relay(ISSUER).await;
     let (ada, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
     let page = enrol(&ada, "Ada's browser", DeviceCapabilities::member());
@@ -768,7 +768,7 @@ async fn a_key_works_at_every_front_door() {
     assert_eq!(status, 200, "{listed}");
     assert!(listed["workspaces"].is_array(), "{listed}");
 
-    // The door that approved it serves the same key, and the same grant.
+    // The API server that approved it serves the same key, and the same grant.
     let home = V1 {
         api: &on_relay.api,
         token,

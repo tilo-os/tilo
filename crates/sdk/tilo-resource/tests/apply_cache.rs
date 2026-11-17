@@ -613,7 +613,7 @@ fn writing_one_cell_writes_only_that_cell() {
 
 /// A group of many members runs on one copy of the record: it is read once, each member's
 /// verb changes it in turn, and it is written once at the end. The change it makes is still
-/// the one a replica with nothing kept makes replaying the group, after a collaborator's
+/// the one a replica with nothing kept makes replaying the group, after a member's
 /// changes and raw writes merged in, and a group a member refuses writes nothing at all.
 #[test]
 fn a_group_reads_and_writes_its_record_once_and_replays_identically() {

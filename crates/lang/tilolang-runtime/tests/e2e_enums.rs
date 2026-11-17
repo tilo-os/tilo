@@ -332,19 +332,19 @@ type Booking {
     note: Text
 }
 
-type Desk {
+type Calendar {
     bookings: Collection<Booking>
 }
 
-root Desk
+root Calendar
 
-default view desk for Desk
+default view calendar for Calendar
 
-view desk(d: Desk) {
+view calendar(d: Calendar) {
     text("Bookings")
 }
 
-action book(d: Desk) {
+action book(d: Calendar) {
     d.bookings.insert(Booking(note: "Bring the key"))
 }
 "#;
@@ -352,13 +352,16 @@ action book(d: Desk) {
         let app = App::compile(ROOMS, &[]);
         let rt = Runtime::new(store, SimpleAuthority::new()).unwrap();
         app.load(&rt);
-        let desk = rt.create("Desk").unwrap();
+        let calendar = rt.create("Calendar").unwrap();
         rt.invoke_action(
             &me(),
-            (app.action("book").as_str(), vec![Value::resource(&desk)]),
+            (
+                app.action("book").as_str(),
+                vec![Value::resource(&calendar)],
+            ),
         )
         .unwrap();
-        let Value::List(bookings) = rt.read(&desk, "bookings").unwrap() else {
+        let Value::List(bookings) = rt.read(&calendar, "bookings").unwrap() else {
             panic!("a list");
         };
         let Some(Value::Ref(booking)) = bookings.first() else {

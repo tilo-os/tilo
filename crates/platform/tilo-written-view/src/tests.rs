@@ -18,7 +18,7 @@ const TASKS: &str = "so.tilo.tasks";
 /// A workspace as a test holds it: each app's record as the app stores it, what the person may
 /// not read, and everything a view sent.
 #[derive(Clone, Default)]
-struct Desk(Rc<RefCell<Held>>);
+struct TestWorkspace(Rc<RefCell<Held>>);
 
 #[derive(Default)]
 struct Held {
@@ -30,7 +30,7 @@ struct Held {
     invoked: Vec<(String, String, String, Map<String, Json>)>,
 }
 
-impl Desk {
+impl TestWorkspace {
     /// The app `app` wrote `record`: every read waiting on it answers.
     fn write(&self, app: &str, record: Json) {
         let mut held = self.0.borrow_mut();
@@ -61,7 +61,7 @@ impl Desk {
     }
 }
 
-impl Workspace for Desk {
+impl Workspace for TestWorkspace {
     fn read(&mut self, app: &str, after: Option<String>) {
         let mut held = self.0.borrow_mut();
         if held.refused.iter().any(|refused| refused == app) {
@@ -132,15 +132,15 @@ fn bo() -> MemberId {
     MemberId::person("bo")
 }
 
-/// `source`, written by `author`, shown to Bo over `desk`.
-fn shown(source: &str, author: MemberId, desk: &Desk) -> (Surface, Rc<State>) {
+/// `source`, written by `author`, shown to Bo over `workspace`.
+fn shown(source: &str, author: MemberId, workspace: &TestWorkspace) -> (Surface, Rc<State>) {
     let state = Rc::new(State::default());
     let view = WrittenView {
         source: source.to_owned(),
         author: Actor::Member(author),
         viewer: "bo".into(),
     };
-    let surface = Surface::open(&view, Box::new(desk.clone()), Rc::clone(&state))
+    let surface = Surface::open(&view, Box::new(workspace.clone()), Rc::clone(&state))
         .unwrap_or_else(|why| panic!("the view opens: {why}"));
     (surface, state)
 }
@@ -155,43 +155,43 @@ fn texts(surface: &Surface) -> Vec<String> {
 
 #[test]
 fn a_view_shows_what_an_app_keeps_and_follows_it_as_it_changes() {
-    let desk = Desk::default();
-    desk.write(TASKS, tracker("Launch"));
-    let (mut surface, state) = shown(LIST, ada(), &desk);
+    let workspace = TestWorkspace::default();
+    workspace.write(TASKS, tracker("Launch"));
+    let (mut surface, state) = shown(LIST, ada(), &workspace);
     assert_eq!(texts(&surface), ["Launch"], "the view reads Tasks' record");
 
     // Someone renames the area in Tasks: the read the view left waiting answers, and the view
     // is drawn again over the new reading. Nothing reloads and no view is opened anew.
-    desk.write(TASKS, tracker("Launch day"));
+    workspace.write(TASKS, tracker("Launch day"));
     surface.turn();
     assert_eq!(texts(&surface), ["Launch day"]);
 
     assert!(state.refused().is_empty());
-    assert!(desk.invoked().is_empty(), "reading sends nothing");
+    assert!(workspace.invoked().is_empty(), "reading sends nothing");
 }
 
 #[test]
 fn a_view_over_an_app_that_keeps_nothing_yet_shows_it_once_it_does() {
-    let desk = Desk::default();
-    let (mut surface, _) = shown(LIST, ada(), &desk);
+    let workspace = TestWorkspace::default();
+    let (mut surface, _) = shown(LIST, ada(), &workspace);
     assert!(texts(&surface).is_empty(), "no record, nothing to list");
 
-    desk.write(TASKS, tracker("Launch"));
+    workspace.write(TASKS, tracker("Launch"));
     surface.turn();
     assert_eq!(texts(&surface), ["Launch"]);
 }
 
 #[test]
 fn a_view_someone_else_wrote_only_suggests_until_the_person_allows_that_one_thing() {
-    let desk = Desk::default();
-    desk.write(TASKS, tracker("Launch"));
+    let workspace = TestWorkspace::default();
+    workspace.write(TASKS, tracker("Launch"));
     // Ada wrote it; Bo looks at it and has not trusted what she writes.
-    let (mut surface, state) = shown(ACTS, ada(), &desk);
+    let (mut surface, state) = shown(ACTS, ada(), &workspace);
     let button = surface.nodes("ui.Button").remove(0).0;
 
     surface.press(&button);
     assert!(
-        desk.invoked().is_empty(),
+        workspace.invoked().is_empty(),
         "nothing is sent before Bo allows it"
     );
     let waiting = state.suggestions();
@@ -207,7 +207,7 @@ fn a_view_someone_else_wrote_only_suggests_until_the_person_allows_that_one_thin
     state.dismiss(waiting[0].id);
     surface.turn();
     assert!(state.suggestions().is_empty());
-    assert!(desk.invoked().is_empty());
+    assert!(workspace.invoked().is_empty());
 
     // Asked again and allowed: that one thing is sent, as Bo's, to Tasks' own verb.
     surface.press(&button);
@@ -216,7 +216,7 @@ fn a_view_someone_else_wrote_only_suggests_until_the_person_allows_that_one_thin
     state.allow(again[0].id);
     surface.turn();
     assert!(state.suggestions().is_empty());
-    let invoked = desk.invoked();
+    let invoked = workspace.invoked();
     assert_eq!(invoked.len(), 1);
     let (app, resource, verb, arguments) = &invoked[0];
     assert_eq!(
@@ -228,20 +228,20 @@ fn a_view_someone_else_wrote_only_suggests_until_the_person_allows_that_one_thin
     // Allowing one thing allowed nothing else: the next press waits again.
     surface.press(&button);
     assert_eq!(state.suggestions().len(), 1);
-    assert_eq!(desk.invoked().len(), 1);
+    assert_eq!(workspace.invoked().len(), 1);
 }
 
 #[test]
 fn a_persons_own_view_acts_without_asking_them() {
-    let desk = Desk::default();
-    desk.write(TASKS, tracker("Launch"));
-    let (mut surface, state) = shown(ACTS, bo(), &desk);
+    let workspace = TestWorkspace::default();
+    workspace.write(TASKS, tracker("Launch"));
+    let (mut surface, state) = shown(ACTS, bo(), &workspace);
     let button = surface.nodes("ui.Button").remove(0).0;
 
     surface.press(&button);
     assert!(state.suggestions().is_empty());
     assert_eq!(
-        desk.invoked().len(),
+        workspace.invoked().len(),
         1,
         "their own code does what they pressed"
     );
@@ -249,10 +249,10 @@ fn a_persons_own_view_acts_without_asking_them() {
 
 #[test]
 fn a_record_the_person_may_not_read_is_said_refused_and_shows_nothing() {
-    let desk = Desk::default();
-    desk.write(TASKS, tracker("Launch"));
-    desk.refuse(TASKS);
-    let (mut surface, state) = shown(LIST, ada(), &desk);
+    let workspace = TestWorkspace::default();
+    workspace.write(TASKS, tracker("Launch"));
+    workspace.refuse(TASKS);
+    let (mut surface, state) = shown(LIST, ada(), &workspace);
     surface.turn();
     assert_eq!(state.refused(), ["Tasks"]);
     assert!(texts(&surface).is_empty(), "nothing of the record is shown");
@@ -260,13 +260,13 @@ fn a_record_the_person_may_not_read_is_said_refused_and_shows_nothing() {
 
 #[test]
 fn a_view_that_does_not_compile_says_so_where_it_stands_and_reads_nothing() {
-    let desk = Desk::default();
-    desk.write(TASKS, tracker("Launch"));
-    let (surface, state) = shown("view broken() { text(nothing_here) }", ada(), &desk);
+    let workspace = TestWorkspace::default();
+    workspace.write(TASKS, tracker("Launch"));
+    let (surface, state) = shown("view broken() { text(nothing_here) }", ada(), &workspace);
     assert!(
         !surface.nodes("error").is_empty(),
         "the view's own fault is shown in its place"
     );
     assert!(state.suggestions().is_empty());
-    assert!(desk.invoked().is_empty());
+    assert!(workspace.invoked().is_empty());
 }
