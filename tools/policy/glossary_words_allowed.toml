@@ -44,7 +44,14 @@ identifiers = ["RelayMode", "RelayUrl", "RelayMap", "RelayNode", "RelayUrlParseE
 [[allow]]
 reason = "An email's subject line."
 words = ["subject"]
-paths = ["apps/mail/*", "apps/tl/mail/*"]
+paths = [
+    "apps/mail/*",
+    "apps/tl/mail/*",
+    "crates/platform/mail-session/*",
+    "crates/hosting/tilo-workspace-host/src/workspaces/mail_watch.rs",
+    "crates/hosting/tilo-workspace-host/src/workspaces/person_settings/sending.rs",
+    "crates/hosting/tilo-workspace-host/src/workspaces/actions/host/mail_assistant_tests.rs",
+]
 
 [[allow]]
 reason = "An X.509 certificate's subject."
