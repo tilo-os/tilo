@@ -1290,6 +1290,41 @@ fn an_app_qualified_action_name_finds_the_operation() {
     assert!(!found.contains("#remind_at"), "{found}");
 }
 
+/// The loop's system prompt keeps the agent speaking as the person's assistant: a greeting
+/// names no internal word, a reply does not narrate what the canvas already shows, and a thing
+/// that cannot be done is one short sentence — never the person asked to do the agent's work.
+#[test]
+fn the_system_prompt_keeps_the_agent_speaking_as_the_persons_assistant() {
+    let system = crate::tools::system_for(None).to_lowercase();
+    // A greeting: no jargon a person never sees, and no naming "the shell".
+    for word in [
+        "the shell",
+        "the canvas",
+        "the broker",
+        "a resource",
+        "an operation",
+    ] {
+        assert!(
+            !system.contains(&format!("say {word}")) && !system.contains(&format!("name {word}")),
+            "the greeting rule does not teach {word:?}"
+        );
+    }
+    assert!(
+        system.contains("never name what they never see"),
+        "the greeting rule forbids internal words"
+    );
+    // A reply does not narrate what the canvas shows.
+    assert!(
+        system.contains("never narrate it"),
+        "a reply must not narrate what the person can already see"
+    );
+    // A thing that cannot be done is one short sentence, never the person doing it.
+    assert!(
+        system.contains("never ask the person to do it themselves"),
+        "the agent never asks the person to do its work"
+    );
+}
+
 /// "Put my notes next to the inbox" is done in both apps by the one place: what it shows and
 /// what it stands next to, so a part named for either is done.
 #[test]

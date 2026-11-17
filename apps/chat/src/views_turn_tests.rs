@@ -252,3 +252,52 @@ fn a_turns_words_scroll_inside_its_card() {
         "the card keeps its padding inside the scroll"
     );
 }
+
+/// A turn that failed shows the failure once: when the reply says what went wrong in its own
+/// words, the card adds no second "Request refused", and what failed stays in the steps
+/// disclosure; only a reply that says nothing reads the failure as its own card.
+#[test]
+fn a_failed_turn_says_it_once_when_its_reply_already_says_why() {
+    let channel = Channel::default();
+    let spoke = turn_answered(Message {
+        id: "r1".to_owned(),
+        text: "I couldn't move it to 7.".to_owned(),
+        work: Some(Work {
+            state: "refused".to_owned(),
+            failure_detail: "trap: edit_field".to_owned(),
+            steps: vec!["Looked up Tasks".to_owned()],
+            ..Work::default()
+        }),
+        ..Message::by(MemberId::agent("assistant"))
+    });
+    let tree = super::turn(&spoke, &view_cx(&channel));
+    let banners: Vec<&Node> = keyed(&tree, "ui.Banner", "@failed-r1");
+    assert!(
+        banners.is_empty(),
+        "the reply already says why, so no second failure card"
+    );
+    assert!(
+        rich_texts(&tree)
+            .iter()
+            .any(|text| text.contains("couldn't move")),
+        "the reply's own words are the failure"
+    );
+    // A reply with no words reads the failure as its own card, with its detail behind it.
+    let silent = turn_answered(Message {
+        id: "r1".to_owned(),
+        text: String::new(),
+        work: Some(Work {
+            state: "refused".to_owned(),
+            failure_detail: "trap: edit_field".to_owned(),
+            ..Work::default()
+        }),
+        ..Message::by(MemberId::agent("assistant"))
+    });
+    let tree = super::turn(&silent, &view_cx(&channel));
+    let banners: Vec<&Node> = keyed(&tree, "ui.Banner", "@failed-r1");
+    assert_eq!(
+        banners.len(),
+        1,
+        "a silent failed turn still says what happened"
+    );
+}
