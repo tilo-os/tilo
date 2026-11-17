@@ -778,6 +778,20 @@ tilo_test_env::scenario! {
                 encode_command(forms),
                 Some(json!({"op":"page","request_id":11,"action":"forms"}))
             );
+            let table = WebViewCommand::Page {
+                request_id: 12,
+                actor: None,
+                request: PageRequest::Table {
+                    element: Some("d1e7".into()),
+                    from: Some(201),
+                    frame: None,
+                },
+            };
+            assert!(command_within_limits(&table));
+            assert_eq!(
+                encode_command(table),
+                Some(json!({"op":"page","request_id":12,"action":"table","element":"d1e7","from":201}))
+            );
             // A form's answers reach the host as the object they are, and the
             // way it is sent as a boolean or as the button's label.
             let answers = json!({"Arrival": "2027-02-03", "Guests": 2, "Languages": ["English"],

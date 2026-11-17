@@ -79,6 +79,13 @@ final class TiloSourceTests: XCTestCase {
       // A person who linked no provider yet (`window.unlinked`): what they add stands here.
       window.added = [];
       window.keys = [];
+      // What her server told her (`tilo.telling`, its log), and what a device said she saw. An
+      // ask that waits is held until the log moves, for `window.holds` milliseconds at most.
+      window.told = [];
+      window.acknowledged = [];
+      // A message in her conversation with the assistant.
+      window.direct = message => window.post({channel: DIRECT, ...message});
+      window.tell = thing => { window.told = window.told.filter(one => one.id !== thing.id).concat([thing]); window.logMoved?.(); };
       const own = () => window.unlinked ? {providers: window.added, defaultProvider: null, assignments: window.assignments} : providers();
       // An agent as the workspace keeps one. `window.agents` is what its server keeps and offers
       // a person's device; a server that has none of it offers no such read.
@@ -86,7 +93,7 @@ final class TiloSourceTests: XCTestCase {
         state: {$variant: 'active'}, created_at: 1794900000000, ...more});
       // Chat's own document of the workspace, as its server names what it offers of one, and
       // what a person's device asked of the server: `chat read`, `tilo.models list`.
-      const CHAT = 'record:so.tilo.chat:@tilo:package-primary';
+      const CHAT = 'record:so.tilo.chat:';
       window.asks = [];
       const noAgents = () => { throw Object.assign(new Error('No such action is offered'), {code: 'unknown_action'}); };
       // As the page that asks before it pairs: its card, its sentences, its two buttons.
@@ -119,6 +126,19 @@ final class TiloSourceTests: XCTestCase {
             case 'tilo.vault list':
               return done({items: window.vault.map((item, at) => ({reference: 'vault.item:0' + at, kind: item.kind, belongsTo: item.belongsTo, addedAt: 1794900000}))});
             case 'tilo.models list': return done(own());
+            case 'tilo.telling list': {
+              const newer = () => window.told.filter(one => one.seq > (argument?.after ?? 0));
+              if (!newer().length && argument?.waitMs) {
+                await new Promise(moved => { window.logMoved = moved; setTimeout(moved, Math.min(argument.waitMs, window.holds ?? 150)); });
+              }
+              return done({told: newer(), newest: Math.max(0, ...window.told.map(one => one.seq))});
+            }
+            case 'tilo.telling acknowledge': {
+              window.acknowledged.push(argument);
+              const seen = window.told.find(one => one.id === argument.told);
+              if (seen) window.tell({...seen, seq: Math.max(...window.told.map(one => one.seq)) + 1, acknowledged: {atMs: 1794900300000, device: argument.device ?? '', by: argument.by}});
+              return done(null);
+            }
             case 'tilo.models add-preset': {
               const made = {id: argument.preset, name: argument.preset === 'anthropic' ? 'Anthropic' : argument.preset, protocol: argument.preset,
                 endpoint: 'https://api.' + argument.preset + '.example', configured: false, models: []};
@@ -137,10 +157,15 @@ final class TiloSourceTests: XCTestCase {
               return done({provider: listed});
             }
             case CHAT + ' read': {
+              // A server whose answer never comes (`window.hangs`).
+              if (window.hangs) return new Promise(() => {});
               if (!window.agents) noAgents();
               const one = target.address.resource.split('/')[2];
               // A server that lists the agents and lets nobody read one of them (`window.rowsOnly`).
               if (one && window.rowsOnly) noAgents();
+              // A server that says each agent whole in its list and offers no read of one agent
+              // (`window.wholeRows`): what main's server answered on 17 November 2026.
+              if (window.wholeRows) { if (one) noAgents(); return done({agents: window.agents}); }
               if (one) return done(window.agents.find(agent => agent.id === one) ?? null);
               return done({kind: 'chat.agent', agents: window.agents.map(agent => ({item: 'chat.agent/agents/' + agent.id, name: agent.name}))});
             }
@@ -148,7 +173,8 @@ final class TiloSourceTests: XCTestCase {
               if (!window.agents) noAgents();
               if (window.mayNotMake) throw Object.assign(new Error('Your role in this workspace may not make an agent'), {code: 'not_permitted'});
               window.madeWith = argument;
-              window.agents.push(window.kept(argument.name.toLowerCase(), {name: argument.name, created_at: 1794900009000 + window.agents.length}));
+              window.agents.push(window.kept(argument.name.toLowerCase(), {name: argument.name, created_at: 1794900009000 + window.agents.length,
+                ...(window.wholeRows ? {keeper: ADA, state: 'active'} : {})}));
               return done(null);
             case CHAT + ' set-agent-on-host':
               // What was asked is kept on the agent as it was said: which agent, and the flag.
@@ -296,7 +322,7 @@ final class TiloSourceTests: XCTestCase {
         try await start(.agent(id: "assistant", name: "Assistant"))
         try await enter("""
             window.byKind = true;
-            post({id: 'm1', channel: DIRECT, author: {person: ADA}, text: 'Good morning'});
+            direct({id: 'm1', author: {person: ADA}, text: 'Good morning'});
             post({id: 'm2', channel: 'c_chat', author: {person: ADA}, text: 'Said in a channel'});
             post({id: 'm3', channel: DIRECT, author: {agent: 'assistant'}, text: 'Good morning, Ada',
               work: {stream: null, state: {state: {$variant: 'doing', did: '', about: ''}, since: 1794900002}}, stopped: null})
@@ -513,7 +539,7 @@ final class TiloSourceTests: XCTestCase {
         try await start()
         try await enter(device: true)
         try await until("the host was asked on the way in") {
-            (try? await self.page("return String(window.hostAsked.length)")) == "5"
+            (try? await self.page("return String(window.hostAsked.length)")) == "7"
         }
         // Ten changes of Chat's records: the conversation follows, and the host is asked nothing.
         for n in 0..<10 {
@@ -522,7 +548,8 @@ final class TiloSourceTests: XCTestCase {
         try await until("the conversation followed") { self.held.count == 10 }
         try await Task.sleep(for: .milliseconds(300))
         let asked = try await page("return JSON.stringify(window.hostAsked)")
-        XCTAssertEqual(asked, #"["tilo.models list","tilo.vault list","tilo.learned list","tilo.telling read","tilo.events list"]"#)
+        // The last two are what she was told: its log whole, then the ask her server holds until the log moves.
+        XCTAssertEqual(asked, #"["tilo.models list","tilo.vault list","tilo.learned list","tilo.telling read","tilo.events list","tilo.telling list","tilo.telling list"]"#)
     }
 
     func testWhatItLearnedAndWhatIsImportantAreThePersonsOwnOnTheirHost() async throws {
@@ -582,6 +609,71 @@ final class TiloSourceTests: XCTestCase {
         } catch let problem as SourceProblem {
             XCTAssertEqual(problem, .refused("This page hands a native app no way to its person's own providers"))
         }
+    }
+
+    // MARK: What her server told her
+
+    /// A thing her server told her about a message, as its log holds one.
+    private static func told(_ place: Int, _ kind: String, about message: String, title: String = "", important: Bool = false) -> String {
+        """
+        tell({seq: \(place), id: 'turn:ws-1:\(message):0', atMs: 1794900000000, kind: '\(kind)', title: '\(title)', words: 'said',
+          about: {workspace: 'ws-1', app: 'so.tilo.chat', resource: 'chat.messages/messages/\(message)'},
+          mark: {important: \(important), why: {code: '\(kind)'}}, reaches: true})
+        """
+    }
+
+    func testTheAnswerToAReminderStandsUnderItsLineAndIsTheReminderOnceHerServerSaysSo() async throws {
+        try await start(.agent(id: "assistant", name: "Assistant"))
+        try await enter(device: true, "window.byKind = true; window.holds = 60000")
+        // Her reminder comes: what her server tells the assistant then, and its answer to that.
+        try await run("""
+            direct({id: 'm_ask_1', author: {agent: 'e-9'}, text: 'Remind me to stretch. (for the assistant)',
+              cause: {kind: 'reminder', label: 'Stretch', key: 'k-1', person: {person: ADA}}});
+            direct({id: 'm_reply_1', author: {agent: 'assistant'}, text: 'Time to stretch.', parent: 'm_ask_1'})
+            """)
+        try await until("the answer stands under the reminder's line") { self.held.last?.task?.title == "Stretch" }
+        // What her server told the assistant is no piece of her conversation, and the answer is plain words so far.
+        XCTAssertEqual(held.map(words), ["Time to stretch."])
+        try await run(Self.told(1, "reminder", about: "m_ask_1", title: "Stretch"))
+        try await until("the answer is her reminder") { self.held.last?.content == .reminder("Time to stretch.") }
+        XCTAssertEqual(held.count, 1)
+        XCTAssertFalse(held[0].isImportant)
+        XCTAssertTrue(changes.contains { if case .changed(let item) = $0 { item.content == .reminder("Time to stretch.") } else { false } })
+        // She saw it on this device: her server hears so, once.
+        await source.seen(held[0].id, in: .main)
+        await source.seen(held[0].id, in: .main)
+        let heard = try await page("return JSON.stringify(window.acknowledged.map(one => [one.told, one.by]))")
+        XCTAssertEqual(heard, #"[["turn:ws-1:m_ask_1:0","opened"]]"#)
+    }
+
+    func testABriefAndWhatHerRuleCallsImportantAreMarkedAsHerServerToldThem() async throws {
+        try await start(.agent(id: "assistant", name: "Assistant"))
+        try await enter(device: true, "window.byKind = true; window.holds = 60000")
+        try await run("""
+            direct({id: 'm_ask_2', author: {agent: 'e-2'}, text: 'Brief me.',
+              cause: {kind: 'brief', label: 'Northwind call in 15 minutes', key: 'k-2', person: {person: ADA}}});
+            direct({id: 'm_reply_2', author: {agent: 'assistant'}, text: 'Northwind led your seed.', parent: 'm_ask_2'});
+            direct({id: 'm_news', author: {agent: 'assistant'}, text: 'Maya asks for the October numbers.'})
+            """)
+        try await until("both stand in the main chat") { self.held.count == 2 }
+        XCTAssertFalse(held.contains(where: \.isImportant))
+        try await run(Self.told(1, "brief", about: "m_ask_2", title: "Northwind call in 15 minutes", important: true) + "; "
+            + Self.told(2, "news", about: "m_news", important: true))
+        try await until("the brief and the mark are there") { self.held.count == 2 && self.held.allSatisfy(\.isImportant) }
+        XCTAssertEqual(held[0].content, .brief(Brief(title: "Northwind call in 15 minutes", text: "Northwind led your seed.")))
+        XCTAssertNil(held[0].task, "a brief carries its own line")
+        XCTAssertEqual(words(held[1]), "Maya asks for the October numbers.")
+    }
+
+    func testAServerThatTellsNothingThisWayIsAskedOnceAndTheConversationStandsAsItIs() async throws {
+        try await start(.agent(id: "assistant", name: "Assistant"))
+        try await enter(device: true, "window.byKind = true; window.told = null")
+        try await run("direct({id: 'm_1', author: {agent: 'assistant'}, text: 'Good morning.'})")
+        try await until("the message stands") { self.held.map(self.words) == ["Good morning."] }
+        try await run("direct({id: 'm_2', author: {agent: 'assistant'}, text: 'Nine mails sorted.'})")
+        try await until("the next one stands") { self.held.count == 2 }
+        let asked = try await page("return String(window.asks.filter(what => what === 'tilo.telling list').length)")
+        XCTAssertEqual(asked, "1")
     }
 
     // MARK: The first run
@@ -644,6 +736,91 @@ final class TiloSourceTests: XCTestCase {
         XCTAssertEqual(sent, [["kind": "agent", "id": "reed", "name": "Reed"]])
         let changed = try await page("return JSON.stringify(window.asks.filter(what => what.startsWith('chat ') && !what.endsWith(' read')))")
         XCTAssertEqual(changed, "[]")
+    }
+
+    /// As the second site's server answered on 17 November 2026: its list holds each agent
+    /// whole, the keeper a bare key and the state a bare word, and it offers no read of one agent.
+    func testAServerThatSaysEachAgentWholeInItsListIsTakenAtItsWordAndTheAssistantIsMade() async throws {
+        try await start(.assistant)
+        try await enter(device: true, """
+            window.byKind = true; window.wholeRows = true;
+            window.agents = [kept('scout', {keeper: 'ff'.repeat(32), state: 'active'})]
+            """)
+        try await until("nothing more stands in the way") { self.setups.last == .ready }
+        // None of hers was listed, so one was made and set to be answered by her server.
+        let asked = try await page("return JSON.stringify(window.asks.filter(what => what.startsWith('chat ')).map(what => what.split(' ')[1]))")
+        XCTAssertEqual(JSON(text: asked)?.array?.compactMap(\.string).filter { $0 != "read" }, ["create-agent", "set-agent-on-host"])
+        let kept = try await agentsKept()
+        XCTAssertEqual(kept, #"[["scout",false],["assistant",true]]"#)
+        try await source.send(Draft(text: "Good morning"), to: .main)
+        let sent = try await sentTo()
+        XCTAssertEqual(sent, [["kind": "agent", "id": "assistant", "name": "Assistant"]])
+    }
+
+    func testAServerThatSaysEachAgentWholeInItsListIsTakenAtItsWordAndTheAssistantIsFound() async throws {
+        try await start(.assistant)
+        try await enter(device: true, """
+            window.byKind = true; window.wholeRows = true;
+            window.agents = [kept('reed', {name: 'Reed', keeper: ADA, state: 'active'}),
+              kept('gone', {keeper: ADA, state: 'retired', created_at: 1794800000000})]
+            """)
+        try await until("nothing more stands in the way") { self.setups.last == .ready }
+        try await source.send(Draft(text: "Hello"), to: .main)
+        let sent = try await sentTo()
+        XCTAssertEqual(sent, [["kind": "agent", "id": "reed", "name": "Reed"]])
+        // Nothing was made, and no agent's own read was asked for.
+        let asked = try await page("return JSON.stringify(window.asks.filter(what => what.startsWith('chat ') && !what.endsWith(' read')))")
+        XCTAssertEqual(asked, "[]")
+    }
+
+    /// As main's page does once after it let a device in: it starts over while its server is asked.
+    func testAPageThatStartsOverWhileItsServerIsAskedLeavesNoWrongSentenceAndIsAskedAgainOnceItIsIn() async throws {
+        try await start(.assistant)
+        try await run("window.byKind = true; window.hangs = true; window.agents = [kept('reed', {name: 'Reed'})]; location.hash = '#/w/ws-1/so.tilo.chat'; enter(true)")
+        try await until("her server is asked for the agents") {
+            (try? await self.page("return String(window.asks.includes('chat read'))")) == "true"
+        }
+        XCTAssertEqual(setups.last, .findingAssistant)
+        // The page starts over under the ask, and is in again a moment later.
+        try await run("document.documentElement.dataset.entry = ''; document.documentElement.dataset.arrival = 'load'")
+        try await until("the page is on its way in again") { if case .arriving = self.source.engine.state { true } else { false } }
+        try await Task.sleep(for: .milliseconds(400))
+        XCTAssertEqual(setups.last, .findingAssistant, "nothing is said while the page is on its way in")
+        try await run("window.hangs = false; enter(true)")
+        try await until("nothing more stands in the way") { self.setups.last == .ready }
+        XCTAssertFalse(setups.contains { if case .noAssistant = $0 { true } else { false } })
+        try await source.send(Draft(text: "Hello"), to: .main)
+        let sent = try await sentTo()
+        XCTAssertEqual(sent, [["kind": "agent", "id": "reed", "name": "Reed"]])
+    }
+
+    /// As main's page did once in the proof against a site: it was in before it handed over its device's entry.
+    func testAPageThatHandsOverItsDevicesEntryAMomentAfterItIsInIsWaitedFor() async throws {
+        try await start(.assistant)
+        try await run("""
+            window.byKind = true; window.agents = [kept('reed', {name: 'Reed'})]; location.hash = '#/w/ws-1/so.tilo.chat'; enter(false);
+            setTimeout(() => enter(true), 700)
+            """)
+        try await until("nothing more stands in the way") { self.setups.last == .ready }
+        XCTAssertFalse(setups.contains { if case .noAssistant = $0 { true } else { false } })
+        try await source.send(Draft(text: "Hello"), to: .main)
+        let sent = try await sentTo()
+        XCTAssertEqual(sent, [["kind": "agent", "id": "reed", "name": "Reed"]])
+    }
+
+    func testAnUnansweredAskForThePersonsOwnWorkspaceIsAskedAgainAndTheAssistantIsMadeThere() async throws {
+        try await start(.assistant, livesInOwn: true)
+        // Her server does not say at first which workspace is her own; a moment later it does.
+        try await run("""
+            window.byKind = true; window.agents = [];
+            const own = await device.ownWorkspace();
+            window.noOwn = true; location.hash = '#/@' + own.origin.slice(8) + '/w/' + own.id + '/so.tilo.chat'; enter(true);
+            setTimeout(() => { window.noOwn = false; }, 500)
+            """)
+        try await until("nothing more stands in the way") { self.setups.last == .ready }
+        XCTAssertFalse(setups.contains { if case .noAssistant = $0 { true } else { false } })
+        let made = try await agentsKept()
+        XCTAssertEqual(made, #"[["assistant",true]]"#)
     }
 
     func testWhereTheServerRefusesToMakeOneTheMainChatSaysWhyAndAskingAgainMakesIt() async throws {

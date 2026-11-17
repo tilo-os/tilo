@@ -309,6 +309,16 @@ pub enum PageRequest {
     Forms {
         frame: Option<FrameId>,
     },
+    /// The page's tables as rows: with `element`, the table that element is or
+    /// sits in, otherwise every table the document shows. A row holds the
+    /// cells across it under the header's names, a merged cell in every place
+    /// it covers. A long table is read in parts: `from` is the row a read that
+    /// stopped short named (the first is 1), and comes with the `element`.
+    Table {
+        element: Option<String>,
+        from: Option<u32>,
+        frame: Option<FrameId>,
+    },
     /// Answer a form by the names it asks under: `form` is the id or the
     /// signature [`PageRequest::Forms`] gave, `answers` an object from a
     /// question's name to text, a number, a boolean or a list of texts. The
@@ -475,6 +485,7 @@ impl PageRequest {
             Self::Fields { .. } => "fields",
             Self::Search { .. } => "search",
             Self::Forms { .. } => "forms",
+            Self::Table { .. } => "table",
             Self::FillForm { .. } => "fill_form",
             Self::Reader { .. } => "reader",
             Self::Capture { .. } => "capture",
@@ -508,6 +519,7 @@ impl PageRequest {
             | Self::Fields { .. }
             | Self::Search { .. }
             | Self::Forms { .. }
+            | Self::Table { .. }
             | Self::Capture { .. }
             | Self::Find { .. } => true,
             Self::Click { .. }
@@ -588,6 +600,10 @@ impl PageRequest {
             Self::Fields { .. } => "Read the page's fields".to_string(),
             Self::Search { text, .. } => format!("Searched the page for {text:?}"),
             Self::Forms { .. } => "Read the page's forms".to_string(),
+            Self::Table { element, .. } => match element {
+                Some(element) => format!("Read table {element}"),
+                None => "Read the page's tables".to_string(),
+            },
             Self::FillForm { form, .. } => format!("Answered form {form}"),
             Self::Capture { element, .. } => match element {
                 Some(element) => format!("Pictured element {element}"),
@@ -643,6 +659,7 @@ impl PageRequest {
                 ..
             }
             | Self::Capture { element: None, .. }
+            | Self::Table { element: None, .. }
             | Self::Hover { element: None, .. }
             | Self::Drag {
                 from: None,
@@ -688,6 +705,10 @@ impl PageRequest {
             | Self::Capture {
                 element: Some(element),
                 ..
+            }
+            | Self::Table {
+                element: Some(element),
+                ..
             } => Some(element),
         }
     }
@@ -710,6 +731,7 @@ impl PageRequest {
             | Self::Fields { frame }
             | Self::Search { frame, .. }
             | Self::Forms { frame }
+            | Self::Table { frame, .. }
             | Self::FillForm { frame, .. }
             | Self::Find { frame, .. } => frame.as_ref(),
             Self::Console { .. }
@@ -804,6 +826,11 @@ impl PageRequest {
                 frames,
             },
             Self::Forms { .. } => Self::Forms { frame: None },
+            Self::Table { element, from, .. } => Self::Table {
+                element,
+                from,
+                frame: None,
+            },
             Self::At { x, y, .. } => Self::At { x, y, frame: None },
             Self::Scroll {
                 element,
@@ -965,7 +992,7 @@ impl PageRequest {
                     && (role.is_some() || name.is_some())
                     && nth.is_none_or(|nth| nth >= 1)
             }
-            Self::Outline { from, .. } => {
+            Self::Outline { from, .. } | Self::Table { from, .. } => {
                 from.is_none_or(|from| (1..=MAX_OUTLINE_FROM).contains(&from))
             }
             Self::Search { text, .. } => (1..=MAX_SEARCH_UNITS).contains(&units(text)),
@@ -1505,7 +1532,7 @@ pub(crate) fn encode_request(
                     .collect(),
             );
         }
-        PageRequest::Outline { from, .. } => {
+        PageRequest::Outline { from, .. } | PageRequest::Table { from, .. } => {
             if let Some(from) = from {
                 command["from"] = (*from).into();
             }

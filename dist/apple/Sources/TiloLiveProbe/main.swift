@@ -19,6 +19,11 @@ import WebKit
 // never by a clock), and takes steps on standard input, one JSON object a line:
 //   {"do": "send", "kind": "conversation", "id": "c_chat", "name": "chat", "text": "…"}
 //   {"do": "add-device"}  {"do": "stop-pairing"}   the answer to what the page asks before it pairs
+//   {"do": "agents", "action": "read"}    the workspace's agents as its server says them; also
+//                                         "create-agent" and "set-agent-on-host" with "argument"
+//   {"do": "person", "provider": "tilo.models", "resource": "models", "action": "list"}
+//                                         one of the person's own providers; with "argument", and
+//                                         with "field" and "file" for what a protected field holds
 //   {"do": "window"}                      the web view goes into a window nobody can see
 //   {"do": "show", "id": "doc", "app": "so.tilo.word-processor", "record": "…"}   or "new": true
 //   {"do": "text", "id": "doc"}           what the live document reads as
@@ -184,6 +189,27 @@ final class Probe {
             }
         case "add-device", "stop-pairing":
             say(["answered": .bool(await engine.answerPairing(goOn: what == "add-device"))])
+        case "agents":
+            // The workspace's agents as its server says them to this device: one ask of the engine.
+            guard let action = step["action"]?.string else { say(["error": "agents takes action"]); return }
+            do {
+                say(["agents": try await engine.askAgents(action, step["argument"]?.object ?? [:], agent: step["agent"]?.string)])
+            } catch {
+                say(["agents": false, "why": .string("\(error)")])
+            }
+        case "person":
+            // One of the person's own providers on their server: one ask of the engine. What a
+            // protected field holds is read from a file, and no answer says it.
+            guard let provider = step["provider"]?.string.flatMap(PersonProvider.init(rawValue:)),
+                  let resource = step["resource"]?.string, let action = step["action"]?.string
+            else { say(["error": "person takes provider, resource and action"]); return }
+            var protected: (field: String, value: Protected)?
+            if let field = step["field"]?.string, let file = step["file"]?.string { protected = (field, Protected(words(of: file))) }
+            do {
+                say(["person": try await engine.ask(provider, action, of: resource, step["argument"]?.object ?? [:], protected: protected)])
+            } catch {
+                say(["person": false, "why": .string("\(error)")])
+            }
         case "click":
             guard let x = step["x"]?.number, let y = step["y"]?.number else { say(["error": "click takes x and y"]); return }
             await click(at: NSPoint(x: x, y: y))

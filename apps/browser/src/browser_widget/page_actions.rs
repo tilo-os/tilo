@@ -190,6 +190,7 @@ fn page_actions_publish_programmatic_write_contracts() {
         "read-page-fields",
         "find-page-text",
         "read-page-forms",
+        "read-page-table",
         "fill-page-form",
         "capture-page",
     ] {
@@ -1156,7 +1157,7 @@ fn page_in(mode: BrowsingMode, url: &str) -> BrowserWidget {
 #[test]
 fn a_page_read_asks_first_only_where_the_window_holds_the_persons_sign_ins() {
     use ui::permissions::policy::Answer::{Allow, Ask};
-    const OBSERVE: [&str; 12] = [
+    const OBSERVE: [&str; 13] = [
         "read-page",
         "capture-page",
         "find-page-element",
@@ -1169,6 +1170,7 @@ fn a_page_read_asks_first_only_where_the_window_holds_the_persons_sign_ins() {
         "read-page-fields",
         "find-page-text",
         "read-page-forms",
+        "read-page-table",
     ];
     const ACT: [&str; 13] = [
         "click-page",
@@ -2660,5 +2662,78 @@ fn the_new_page_actions_declare_what_they_take() {
     assert_eq!(
         types("read-page-forms"),
         vec![("frame".to_owned(), ParamType::Text)]
+    );
+    assert_eq!(
+        types("read-page-table"),
+        vec![
+            ("element".to_owned(), ParamType::Text),
+            ("from".to_owned(), ParamType::Integer),
+            ("frame".to_owned(), ParamType::Text),
+        ]
+    );
+}
+
+/// A table is read as rows: every table of the page, or the one a ref names
+/// from the row an answer that stopped short named. What the engine read
+/// reaches the caller whole, as the page's own words.
+#[test]
+fn a_pages_tables_are_read_as_rows_and_read_on_from_a_row() {
+    let (engine, mut widget, mut doc, root) = page_on("https://prices.test/plans");
+    let tables = serde_json::json!({"tables": [{
+        "element": "d1e7", "name": "Plans and prices",
+        "columns": ["Plan", "Price / Monthly", "Price / Yearly"],
+        "from": 1, "total_rows": 450, "next": 201,
+        "rows": [["Free", "EUR 0", "EUR 0"], ["Team", "EUR 12", "EUR 120"]],
+    }]});
+    engine.set_page_data("table", tables.clone());
+    let mut answers = Vec::new();
+    for args in [
+        serde_json::json!({}),
+        serde_json::json!({"element": "d1e7", "from": 201}),
+        serde_json::json!({"frame": "2"}),
+    ] {
+        let invocation = start(&mut widget, &mut doc, &root, "read-page-table", &args).unwrap();
+        answers.push(succeeded(settled(&mut widget, &doc, &root, invocation)));
+    }
+    assert_eq!(
+        page_requests(&engine),
+        vec![
+            PageRequest::Table {
+                element: None,
+                from: None,
+                frame: None,
+            },
+            PageRequest::Table {
+                element: Some("d1e7".into()),
+                from: Some(201),
+                frame: None,
+            },
+            PageRequest::Table {
+                element: None,
+                from: None,
+                frame: FrameId::parse("2"),
+            },
+        ]
+    );
+    // The rows as the engine read them, told as what a page wrote.
+    for value in &answers[..2] {
+        assert_eq!(value["data"], tables, "{value}");
+    }
+    for value in &answers {
+        assert_eq!(value["provenance"], "web-content", "{value}");
+    }
+    // A table named by something that is no ref, and a row before the first,
+    // never reach the page.
+    for args in [
+        serde_json::json!({"element": "the first table"}),
+        serde_json::json!({"element": "d1e7", "from": 0}),
+    ] {
+        let refused = start(&mut widget, &mut doc, &root, "read-page-table", &args).unwrap_err();
+        assert!(!refused.is_empty(), "{args}");
+    }
+    assert_eq!(
+        page_requests(&engine).len(),
+        3,
+        "refused requests reached the page"
     );
 }

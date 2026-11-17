@@ -127,14 +127,14 @@ class PageAutomation final : public CefDevToolsMessageObserver {
   }
   // Whether the action in flight only reads the page, and is answered with
   // what it read: the outline, what changed in it, what a find or a search
-  // found, the fields, the forms, what is at a point, a picture. A gesture's
+  // found, the fields, the forms, a table, what is at a point, a picture. A gesture's
   // closing read of what it changed is the gesture's, not one of these.
   bool ReadsOnly() const {
     if(!pending_ || pending_->seq || PrivateText()) return false;
     const auto& asked=pending_->asked;
     if(asked=="at") return !HoverAtPoint();
     return asked=="outline" || asked=="changes" || asked=="find" || asked=="search" || asked=="fields" ||
-      asked=="forms" || asked=="capture";
+      asked=="forms" || asked=="table" || asked=="capture";
   }
   // The read in flight, asked again from its start of the document the page
   // shows now. It is the same request with what is left of its time, so a
@@ -2665,6 +2665,9 @@ class PageAutomation final : public CefDevToolsMessageObserver {
     if(action=="fields" && !frame_doc_) { pending_->navigation="none";ReviewFrames(value);return; }
     if(action=="fields" || action=="forms" || action=="search") { pending_->navigation="none";
       Succeed(Text(value,"message"),Text(value,"outline"),Findings(value));return; }
+    // A table's rows are a read like those, with no outline of their own.
+    if(action=="table") { pending_->navigation="none";
+      Succeed(Text(value,"message"),std::nullopt,value->GetType("data")==VTYPE_DICTIONARY?value->GetDictionary("data"):nullptr);return; }
     // A form answered whole runs the page's input handlers, and may send
     // the form: it answers once the page has handled that, with what the
     // page said of each answer.

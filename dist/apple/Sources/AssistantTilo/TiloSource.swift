@@ -38,6 +38,19 @@ public final class TiloSource: AssistantSource {
     private let mainChat: MainChat
     private let defaults: UserDefaults
     private let livesInOwn: Bool
+    /// What this device calls itself where it says that its person saw something.
+    private let deviceName: String
+    /// What the person's server told them, by the message of Chat each thing names.
+    private var toldByMessage: [String: ToldThing] = [:]
+    /// The things told that still wait for the person, by the piece each is shown as.
+    private var toldPieces: [Chat: [Item.ID: String]] = [:]
+    /// The place in the server's log that was read up to.
+    private var toldUpTo = 0
+    private var followsTold = false
+    /// The device is in and what its person is told is to be followed.
+    private var toldWanted = false
+    /// The server tells nothing this way, or does not hold an ask until its log moves.
+    private var toldRefused = false
     private static let routeKey = "TiloLiveRoute"
     private static let personKey = "TiloLivePerson"
 
@@ -109,12 +122,13 @@ public final class TiloSource: AssistantSource {
     public convenience init(settings: ShellSettings, store: UUID, mainChat: MainChat = .assistant, livesInOwn: Bool = true,
                             defaults: UserDefaults = .standard, deviceName: String = "") {
         self.init(engine: TiloEngine(settings: settings, store: .kept(store), deviceName: deviceName), mainChat: mainChat,
-                  livesInOwn: livesInOwn, defaults: defaults)
+                  livesInOwn: livesInOwn, defaults: defaults, deviceName: deviceName)
     }
 
     /// On an engine that is there already: for a check that keeps nothing.
-    init(engine: TiloEngine, mainChat: MainChat, livesInOwn: Bool, defaults: UserDefaults) {
+    init(engine: TiloEngine, mainChat: MainChat, livesInOwn: Bool, defaults: UserDefaults, deviceName: String = "") {
         self.engine = engine
+        self.deviceName = deviceName
         stage = LiveStage(engine: engine)
         self.mainChat = mainChat
         self.livesInOwn = livesInOwn
@@ -133,6 +147,8 @@ public final class TiloSource: AssistantSource {
                 for await _ in engine.changes() {
                     await self?.look()
                     await self?.survey(.records)
+                    // Following what the person is told ended with an ask that was not answered.
+                    if self?.toldWanted == true { self?.followTold() }
                 }
             },
         ]
@@ -183,6 +199,11 @@ public final class TiloSource: AssistantSource {
         keepsNothingLearned = false
         learnedInChat = []
         learnedOnHost = []
+        toldByMessage = [:]
+        toldPieces = [:]
+        toldUpTo = 0
+        toldWanted = false
+        toldRefused = false
         for chat in Array(feeds.keys) {
             feeds[chat]?.conversation = nil
             say([], in: chat)
@@ -231,12 +252,15 @@ public final class TiloSource: AssistantSource {
             root = whose.person
             // The assistant lives in the person's own workspace. A device is let in where its
             // link leads, so it goes to the person's own once, where the page says which it is.
-            if livesInOwn, !soughtOwn {
-                soughtOwn = true
-                ownRoute = (try? await engine.ownWorkspace())?.route
-                if let ownRoute, EngineAddress.isElsewhere(route, than: ownRoute) {
-                    try? engine.open(route: ownRoute)
-                    return
+            if livesInOwn {
+                // An ask that went unanswered is made again the next time the page is in.
+                if ownRoute == nil { ownRoute = (try? await engine.ownWorkspace())?.route }
+                if !soughtOwn, let ownRoute {
+                    soughtOwn = true
+                    if EngineAddress.isElsewhere(route, than: ownRoute) {
+                        try? engine.open(route: ownRoute)
+                        return
+                    }
                 }
             }
         }
@@ -268,6 +292,9 @@ public final class TiloSource: AssistantSource {
         for chat in Array(feeds.keys) { feeds[chat]?.told = false }
         await look()
         await survey(.everything)
+        toldWanted = true
+        toldRefused = false
+        followTold()
     }
 
     /// What the page keeps of its own membership, for a page that hands a native app nothing:
@@ -355,6 +382,23 @@ public final class TiloSource: AssistantSource {
         throw unread
     }
 
+    /// The workspace's agents as its server says them. A page that is in hands its device's
+    /// entry over a moment later, and until then nothing can be asked of its server: that
+    /// moment is waited for, three seconds at most.
+    private func agentsWhenOffered() async throws -> [JSON] {
+        let end = ContinuousClock.now.advanced(by: .seconds(3))
+        while true {
+            do {
+                return try await engine.whenPublished(within: .seconds(6)) { try await self.agentsOnServer() }
+            } catch let problem as TiloEngine.Problem {
+                guard case .refused(code: "unavailable", reason: _) = problem, ContinuousClock.now < end,
+                      case .open = engine.state, (try? await engine.whose()) == nil
+                else { throw problem }
+                _ = await engine.nextChange(within: .milliseconds(500))
+            }
+        }
+    }
+
     /// The person's assistant among a workspace's agents: the active one they keep that no
     /// outside client connects as and that is nobody's sub-agent, the earliest made.
     private static func assistant(among all: [JSON], of person: String) -> JSON? {
@@ -390,10 +434,22 @@ public final class TiloSource: AssistantSource {
         defer { finding = false }
         setups.set(.findingAssistant)
         do {
-            var all = try await engine.whenPublished(within: .seconds(6)) { try await self.agentsOnServer() }
+            var all = try await agentsWhenOffered()
             if TiloSource.assistant(among: all, of: me) == nil {
                 // An assistant lives in its person's own workspace: none is made anywhere else.
+                // Where the server did not say which workspace that is, it is asked once more.
+                if livesInOwn, !standsInOwn, ownRoute == nil, case .open(let route) = engine.state,
+                   let own = try? await engine.whenPublished(within: .seconds(4), { try await self.engine.ownWorkspace() }) {
+                    ownRoute = own.route
+                    if EngineAddress.isElsewhere(route, than: own.route) {
+                        soughtOwn = true
+                        try? engine.open(route: own.route)
+                        return
+                    }
+                    standsInOwn = true
+                }
                 guard !livesInOwn || standsInOwn else {
+                    if startedOver { return }
                     setups.set(.noAssistant(TiloSource.notInOwn))
                     return
                 }
@@ -413,6 +469,9 @@ public final class TiloSource: AssistantSource {
         } catch TiloEngine.Problem.refused {
             // An older page or an older server: what the page holds is read below.
         } catch {
+            // A page that just let a device in starts over once more, and what it was asked
+            // then is never answered. Nothing is wrong: it is asked again once it is in.
+            if startedOver { return }
             setups.set(.noAssistant(TiloSource.notAnswered))
             return
         }
@@ -420,7 +479,14 @@ public final class TiloSource: AssistantSource {
             take(found, of: me)
             return
         }
+        if startedOver { return }
         setups.set(.noAssistant(TiloSource.agentsNotOffered))
+    }
+
+    /// Whether the page is on its way in again. What it was asked before it started over is
+    /// asked anew when it is in, so nothing is said of an ask that ended with it.
+    private var startedOver: Bool {
+        if case .arriving = engine.state { true } else { false }
     }
 
     /// This agent is the person's assistant: the main chat is their conversation with it.
@@ -503,7 +569,7 @@ public final class TiloSource: AssistantSource {
             var whole = true
             for (chat, id) in wanted {
                 guard let read = try? await engine.chatConversation(id) else { whole = false; break }
-                now[chat] = read.map { piece(of: $0, in: chat, isFirst: $0.id == read.first?.id) }
+                now[chat] = pieces(of: read, in: chat)
                 atWork[chat] = read.contains(where: \.isWorkedOn)
             }
             if !whole {
@@ -566,6 +632,108 @@ public final class TiloSource: AssistantSource {
         }
         let added = now.filter { !known.contains($0.id) }
         if !added.isEmpty { for listener in feed.listeners.values { listener.yield(.added(added)) } }
+    }
+
+    // MARK: What the person's server told them
+
+    /// Follow what the person's server tells them (`tilo.telling`): its log is read whole
+    /// once, then asked for what is newer, and the server holds each ask until its log moves.
+    /// So the app hears of a reminder that comes due while it is open, with no clock of its
+    /// own. Every ask counts as a device of the person looking: their server tells them
+    /// nowhere else while this app does.
+    ///
+    /// The following ends with an ask that is not answered. The page's next word that it is in,
+    /// or that something changed, begins it again.
+    private func followTold() {
+        guard !followsTold, !toldRefused, case .open = engine.state else { return }
+        followsTold = true
+        let engine = engine
+        let device = deviceName
+        Task { [weak self] in
+            var waits = false
+            while let place = self?.toldUpTo {
+                let asked = ContinuousClock.now
+                do {
+                    let read = try await engine.told(after: place, waiting: waits ? .seconds(10) : nil, device: device)
+                    guard let self else { return }
+                    self.toldUpTo = max(self.toldUpTo, read.newest)
+                    if read.told.isEmpty {
+                        // A server that does not hold the ask until its log moves is not asked without end.
+                        if waits, ContinuousClock.now - asked < .seconds(1) {
+                            self.toldRefused = true
+                            break
+                        }
+                    } else {
+                        for thing in read.told {
+                            if let message = thing.message { self.toldByMessage[message] = thing }
+                        }
+                        await self.look()
+                    }
+                    waits = true
+                } catch TiloEngine.Problem.refused {
+                    // A server that tells nothing this way is not asked again before the device gets in anew.
+                    self?.toldRefused = true
+                    break
+                } catch {
+                    break
+                }
+            }
+            self?.followsTold = false
+        }
+    }
+
+    /// The pieces of one conversation's messages, oldest first.
+    ///
+    /// A message that a cause wrote is no piece of its own: an event of the person's that
+    /// came, a moment they asked to be told at. It is what their server told the assistant
+    /// then, and what the assistant answered to it stands under a line with the cause's name.
+    /// What the server told the person of that answer says what it is: a reminder, a brief, or
+    /// news, each with the mark the person's own rule gave it. Nothing here decides that.
+    private func pieces(of read: [ChatMessage], in chat: Chat) -> [Item] {
+        var causes: [String: String] = [:]
+        var lastAnswer: [String: String] = [:]
+        for message in read {
+            if message.author.id != me, let cause = message.fields["cause"], !cause.isNull {
+                causes[message.name] = cause["label"]?.string ?? ""
+            } else if let parent = message.fields["parent"]?.string {
+                lastAnswer[parent] = message.name
+            }
+        }
+        var waiting: [Item.ID: String] = [:]
+        let made = read.compactMap { message -> Item? in
+            guard causes[message.name] == nil else { return nil }
+            var item = piece(of: message, in: chat, isFirst: message.id == read.first?.id)
+            let cause = message.fields["parent"]?.string.flatMap { causes[$0] == nil ? nil : $0 }
+            if let cause, let label = causes[cause], !label.isEmpty { item.task = TaskLine(task: .init(cause), title: label) }
+            // A thing told names the message itself, or the cause's message it is the answer to.
+            let answers = cause.flatMap { lastAnswer[$0] == message.name ? toldByMessage[$0] : nil }
+            guard let told = toldByMessage[message.name] ?? answers else { return item }
+            if answers != nil, case .message(let said) = item.content, said.author == .assistant {
+                switch told.kind {
+                case .reminder:
+                    item.content = .reminder(said.text)
+                case .brief:
+                    // A brief carries its own line.
+                    item.content = .brief(Brief(title: told.title, text: said.text))
+                    item.task = nil
+                case .news, .question:
+                    break
+                }
+            }
+            item.isImportant = told.isImportant
+            if told.reaches, !told.isSettled { waiting[item.id] = told.id }
+            return item
+        }
+        toldPieces[chat] = waiting
+        return made
+    }
+
+    /// The person saw this piece on this device. Where their server told them of it, the
+    /// server hears so, once: it then tells them of it nowhere else.
+    public func seen(_ item: Item.ID, in chat: Chat) async {
+        guard let told = toldPieces[chat]?[item] else { return }
+        toldPieces[chat]?[item] = nil
+        try? await engine.acknowledge(told: told, device: deviceName)
     }
 
     private func piece(of message: ChatMessage, in chat: Chat, isFirst: Bool) -> Item {

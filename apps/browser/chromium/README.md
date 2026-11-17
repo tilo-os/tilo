@@ -631,6 +631,28 @@ and once more at the timeout, so an answer that the words never came has just
 looked. A look costs what one `search` of the page costs. `data.checks` counts
 the looks and `data.read_ms` the time they took.
 
+`action: "table"` reads tables as rows, which an `outline` prints a cell to a
+line. With an `element` it reads the table that element is or sits in; without
+one, every table the document shows: `table` elements and the roles `table`,
+`grid` and `treegrid`. A table whose role says it only lays the page out is
+none, and one that holds other tables is left out and counted in the message,
+to be read by its ref. `data.tables` holds for each its `element` (the ref),
+`name` (its caption or label), `columns`, `from`, `total_rows` and `rows`, a
+row being the texts of its cells in the header's order. A cell merged over
+several columns or rows stands in every place it covers, so every row is as
+long as the header, and `merged` counts such cells. The header is the table's
+`thead`, or the rows at its top whose every cell is a header, at most four; a
+header of several rows names a column by all of them (`Price / Monthly`), and
+a table without one has no `columns`. A row that is not laid out is no row. A
+cell says the words it shows, at most 400 characters, and never what a field
+in it holds; one that shows a mark instead of words says the mark's name. One
+read carries at most 200 rows of a table and 50 000 characters of cells over
+all its tables: a table that goes on says `next`, the row to read on from with
+`element` and `from` (rows count from 1 below the header). A `from` past the
+last row or without an `element`, and an `element` in no table, are
+`invalid_request`. A table in a shadow tree is read by a ref inside it. What a
+cell says is the page's own words, as with every read.
+
 `action: "reader"` with `enabled` shows the document's article alone and puts
 the page back when turned off. The article is the `article`, `main` or
 article-body element whose paragraphs hold the most text, else the block whose
