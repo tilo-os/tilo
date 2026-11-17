@@ -23,10 +23,8 @@ crate, tokio by feature unification — so the rule is on its own edges.)
 desktop's actions, and the bridge an agent reaches its person's workspace
 through. It draws nothing and plays nothing, so it reaches neither the
 toolkit nor the media stack; either one compiled back in is megabytes a
-``tilo mcp`` holds for as long as an agent keeps it. One path is the host it
-hands a task's programs to: that tilolang host commits with the collab client
-and tells the person in the session's notices, so the stack stands under it
-and nowhere else (``under``).
+``tilo mcp`` holds for as long as an agent keeps it. A task's programs go to
+the tilolang host's own program, which ``tilo`` starts and does not link.
 
 Each graph is resolved the way a build of the crate alone resolves it
 (``cargo tree -p``), for both Linux architectures and for
@@ -62,9 +60,6 @@ class Boundary:
     why: str
     # Never a direct dependency of the package itself.
     not_direct: frozenset[str] = frozenset()
-    # The one subtree under which a forbidden stack may stand: a host the package hands a
-    # task's programs to brings the session's own stack with it, and that cost is the host's.
-    under: frozenset[str] = frozenset()
     targets: tuple[str, ...] = NATIVE
 
 
@@ -101,10 +96,6 @@ BOUNDARIES = (
         manifest="crates/system/tilo-cli/Cargo.toml",
         forbidden=frozenset({"tilo-media", "tilo-native-media", "tilo-ui"}),
         why="it draws nothing and plays nothing: the toolkit and the media stack are the apps'",
-        # `tilo mcp` hands a task's programs to a tilolang host, which commits with the collab
-        # client and tells the person in the session's notices; ``under`` keeps that one path
-        # from excusing any other.
-        under=frozenset({"tilolang-host"}),
         targets=NATIVE,
     ),
 )
@@ -115,7 +106,6 @@ def reached_packages(
     target: str | None = None,
     depth: int | None = None,
     root: Path = ROOT,
-    under: frozenset[str] = frozenset(),
 ) -> set[str]:
     command = [
         "cargo",
@@ -133,8 +123,6 @@ def reached_packages(
     # Every boundary's package reaches the hack: it unifies features for the whole
     # workspace, so its edges say nothing about a package's own stacks.
     command += ["--prune", "workspace-hack"]
-    for pruned in sorted(under):
-        command += ["--prune", pruned]
     if target:
         command += ["--target", target]
     if depth is not None:
@@ -152,17 +140,6 @@ def violations(boundary: Boundary, target: str | None) -> list[str]:
         raise RuntimeError(f"cargo tree did not describe {boundary.package} for {where}")
     found = []
     reached = sorted(packages & boundary.forbidden)
-    if boundary.under:
-        # Only the pruned subtree may bring a forbidden stack: outside it, the rule stands.
-        outside = reached_packages(boundary.package, target, under=boundary.under)
-        reached = sorted(outside & boundary.forbidden)
-        if reached:
-            allowed = ", ".join(sorted(boundary.under))
-            found.append(
-                f"{boundary.manifest}: {boundary.package} reaches {', '.join(reached)} for {where} "
-                f"outside {allowed}; " + boundary.why
-            )
-        reached = []
     if reached:
         found.append(
             f"{boundary.manifest}: {boundary.package} reaches {', '.join(reached)} for {where}; "

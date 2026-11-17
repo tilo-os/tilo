@@ -62,7 +62,7 @@ if (( run_cargo )); then
     ( cd "$repo_root" && cargo build --release --locked --lib \
         -p launcher -p tilo-unlock-helper -p tilo-flight-log -p tilo-app-package-cli -p install -p runtime-bundle \
         -p cli-shim -p app-host -p app-cli -p ush -p local-model-service -p tilo-model-gateway \
-        -p imager -p tilo-server -p tilo-fs -p legacy-vm -p tilo-cli \
+        -p imager -p tilo-server -p tilo-fs -p legacy-vm -p tilo-cli -p tilolang-host \
         --features tilo-model-gateway/local-models,tilo-model-gateway/host-backend,imager/installation \
         --bin tilo --bin tilo-launcher --bin tilo-signal-provider --bin tilo-unlock-helper \
         --bin tilo-flight-recorder --bin tilo-session-report \
@@ -70,7 +70,7 @@ if (( run_cargo )); then
         --bin tilo-cli-shim --bin tilo-app-host --bin app --bin tilo-ush \
         --bin tilo-model-catalog --bin tilo-model-manager --bin tilo-speech-worker \
         --bin tilo-model-gateway --bin tilo-model-http --bin imager \
-        --bin tilo-server-admin --bin tilo-enroll --bin fs --bin tilo-legacy )
+        --bin tilo-server-admin --bin tilo-enroll --bin fs --bin tilo-legacy --bin tilolang-host )
     say "cargo build --release (runtime host, no default features)"
     # The runtime package also owns developer tools such as `tilo-control`.
     # Building the package without an explicit target compiles and LTO-links
@@ -88,7 +88,7 @@ target_dir=${CARGO_TARGET_DIR:-$repo_root/target}
 [[ $target_dir = /* ]] || target_dir=$repo_root/$target_dir
 target_dir=$(realpath -m "$target_dir")
 rel=${TILO_BIN_DIR:-$target_dir/release}
-for bin in tilo-session fs tilo-server-admin tilo-enroll imager tilo-launcher tilo-unlock-helper tilo-flight-recorder tilo-session-report tilo-install tilo-runtime-bundle \
+for bin in tilo-session tilolang-host fs tilo-server-admin tilo-enroll imager tilo-launcher tilo-unlock-helper tilo-flight-recorder tilo-session-report tilo-install tilo-runtime-bundle \
            tilo-cli-shim tilo-app-host tilo-ush tilo-model-manager tilo-model-gateway tilo-model-http \
            tilo-legacy app; do
     [[ -x $rel/$bin ]] || { echo "missing $rel/$bin — run without --no-cargo" >&2; exit 1; }

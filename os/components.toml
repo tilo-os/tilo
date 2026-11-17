@@ -108,8 +108,8 @@ external_units = ["greetd.service"]
 name = "tilo-session"
 kind = "userspace"
 scope = "session"
-packages = ["tilo-session", "tilo-window-menu", "tilo-lock-screen", "tilo-quick-settings", "osk"]
-bins = ["tilo-session", "tilo-window-menu", "tilo-lock-screen", "tilo-quick-settings", "osk"]
+packages = ["tilo-session", "tilo-window-menu", "tilo-lock-screen", "tilo-quick-settings", "osk", "tilolang-host"]
+bins = ["tilo-session", "tilo-window-menu", "tilo-lock-screen", "tilo-quick-settings", "osk", "tilolang-host"]
 # A dev image's session is the desktop `tilo-vm shot|input|control` and the
 # capture harnesses drive: it opens the test-control socket at
 # `$XDG_RUNTIME_DIR/tilo-session/test-control.sock`, or where
@@ -118,6 +118,9 @@ dev_features = ["tilo-session/dev-overrides"]
 layer = "desktop-binaries"
 files = [
   { from = "tilo-session", to = "/usr/bin/tilo-session", mode = "0755" },
+  # The program a task's tilolang programs run in: the session and `tilo` start it beside
+  # themselves.
+  { from = "tilolang-host", to = "/usr/bin/tilolang-host", mode = "0755" },
   # The PAM entry point and compositor share the session-recovery contract.
   # A fresh account login must run this source's wrapper, not the base image's.
   { from = "@manifest/usr/libexec/tilo-session", to = "/usr/libexec/tilo-session", mode = "0755" },

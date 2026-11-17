@@ -18,7 +18,7 @@ stage=$2
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 
 [[ ! -e $stage ]] || { echo "stage path already exists: $stage" >&2; exit 1; }
-bins=(tilo-session tilo tilo-launcher tilo-unlock-helper tilo-flight-recorder tilo-session-report imager)
+bins=(tilo-session tilo tilolang-host tilo-launcher tilo-unlock-helper tilo-flight-recorder tilo-session-report imager)
 (( ! primary_files )) || bins+=(fs tilo-server-admin tilo-enroll)
 for bin in "${bins[@]}"; do
     [[ -x $bin_dir/$bin ]] || { echo "missing executable: $bin_dir/$bin" >&2; exit 1; }
@@ -35,6 +35,9 @@ install -pm 0755 "$bin_dir/tilo-session"      "$stage/bin/tilo-session"
 # `tilo`: the desktop's apps and actions from any terminal (`tilo actions`,
 # `tilo do`, `tilo open`). Every host package ships it, as the OS image does.
 install -pm 0755 "$bin_dir/tilo"              "$stage/bin/tilo"
+# The program a task's tilolang programs run in, which `tilo` and the session start beside
+# themselves.
+install -pm 0755 "$bin_dir/tilolang-host"     "$stage/bin/tilolang-host"
 if (( primary_files )); then
     install -pm 0755 "$bin_dir/fs" "$stage/bin/fs"
     install -pm 0755 "$bin_dir/tilo-server-admin" "$stage/bin/tilo-server-admin"
