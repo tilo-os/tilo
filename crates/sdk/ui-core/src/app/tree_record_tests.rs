@@ -46,7 +46,7 @@ fn a_record_of_an_open_records_tree_syncs_on_its_own_route_from_a_snapshot() {
         .document_routes
         .owners
         .iter()
-        .find(|entry| entry.route.record.as_deref() == Some(part.id.as_str()))
+        .find(|entry| entry.route.document.as_deref() == Some(part.id.as_str()))
         .map(|entry| entry.route.clone())
         .expect("the part has a route of its own");
     // Made by a running action: the part's route only now joins. Its
@@ -149,7 +149,7 @@ fn a_record_held_for_a_tree_never_holds_back_the_published_surface() {
             .document_routes
             .owners
             .iter()
-            .any(|entry| entry.route.record.as_deref() == Some(part.id.as_str())),
+            .any(|entry| entry.route.document.as_deref() == Some(part.id.as_str())),
         "the part has a route of its own"
     );
 }

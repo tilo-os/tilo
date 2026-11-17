@@ -1472,7 +1472,7 @@ fn files_of_the_workspace(
     // and nothing it says.
     let content = match crate::peer::workspace_id(&config.workspace) {
         Ok(workspace) => {
-            let route = ui::collaboration::RouteSpec::record(
+            let route = ui::collaboration::RouteSpec::document(
                 fs_protocol::tree::FILES_APP,
                 workspace.as_uuid(),
                 collab_types::person_document_id(fs_protocol::tree::TREE_KIND),
@@ -3294,13 +3294,13 @@ impl Mount {
                     && self
                         .checkout
                         .as_ref()
-                        .is_some_and(|c| c.id.as_str() == target.record)
+                        .is_some_and(|c| c.id.as_str() == target.document)
                 {
                     self.frame
                         .published_action_locus(
                             target.instance,
                             &target.app,
-                            &target.record,
+                            &target.document,
                             &tilo_actions::ActionAddress::new(&target.resource, &target.action),
                         )
                         .map(|r| [r.x0, r.y0, r.width(), r.height()])

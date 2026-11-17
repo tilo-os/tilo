@@ -126,7 +126,7 @@ async fn make_agent(
     let route = DocumentRoute {
         app_id: CHAT.into(),
         cluster_id: workspace.into(),
-        record: record.clone(),
+        document: record.clone(),
     };
     let bytes = std::mem::take(made.doc_mut()).save();
     page.peer
@@ -173,7 +173,7 @@ async fn file_issue(
     let route = DocumentRoute {
         app_id: TASKS.into(),
         cluster_id: workspace.into(),
-        record: tracker,
+        document: tracker,
     };
     let arguments =
         serde_json::json!({"title": "Plan the launch", "assignee": format!("agent:{SCOUT}")});
@@ -627,7 +627,7 @@ async fn write_to_agent(
     let route = DocumentRoute {
         app_id: CHAT.into(),
         cluster_id: workspace.into(),
-        record: String::new(),
+        document: String::new(),
     };
     let conversation = chat::Chat::direct_id([MemberId::person(person), MemberId::agent(SCOUT)]);
     let arguments = serde_json::json!({"channel": conversation.as_str(), "text": text});

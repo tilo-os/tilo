@@ -174,10 +174,10 @@ async fn an_agent_waits_for_a_public_workspaces_records_and_never_founds_them() 
     let note_route = DocumentRoute {
         app_id: WRITER.into(),
         cluster_id: workspace.clone(),
-        record: note.document_id().route().to_owned(),
+        document: note.document_id().route().to_owned(),
     };
     assert!(
-        !note_route.record.is_empty(),
+        !note_route.document.is_empty(),
         "the note is a record of its own, not the app's record of the workspace"
     );
     written(
@@ -202,7 +202,7 @@ async fn an_agent_waits_for_a_public_workspaces_records_and_never_founds_them() 
     let chat_route = DocumentRoute {
         app_id: CHAT.into(),
         cluster_id: workspace.clone(),
-        record: String::new(),
+        document: String::new(),
     };
     written(
         &member,
@@ -240,7 +240,7 @@ async fn an_agent_waits_for_a_public_workspaces_records_and_never_founds_them() 
     let part_route = |index: u64| DocumentRoute {
         app_id: CHAT.into(),
         cluster_id: workspace.clone(),
-        record: chat::parts::part(index).route().to_owned(),
+        document: chat::parts::part(index).route().to_owned(),
     };
     written(&member, &part_route(1), &DocumentMutation::Snapshot(newest)).await;
 
@@ -286,7 +286,7 @@ async fn an_agent_waits_for_a_public_workspaces_records_and_never_founds_them() 
         control.clone(),
         crate::common::catalogue(),
         Box::new(Scripted {
-            note: note_route.record.clone(),
+            note: note_route.document.clone(),
             planned: std::sync::Arc::clone(&planned),
         }),
     )
@@ -390,11 +390,11 @@ async fn an_agent_waits_for_a_public_workspaces_records_and_never_founds_them() 
                     author: Some(author),
                 } if author == agent_key
                     && chat::parts::part_index(&ui::resource::DocumentId::parse(
-                        &route.record,
+                        &route.document,
                     )?)
                     .is_some() =>
                 {
-                    Some(route.record)
+                    Some(route.document)
                 }
                 _ => None,
             })
@@ -416,7 +416,7 @@ async fn an_agent_waits_for_a_public_workspaces_records_and_never_founds_them() 
     assert!(
         written_parts
             .iter()
-            .all(|record| *record == part_route(1).record),
+            .all(|record| *record == part_route(1).document),
         "the agent wrote into a part other than the chat's newest: {written_parts:?}"
     );
 

@@ -8,7 +8,7 @@ fn guild(workspace: &str) -> String {
     record_provider(&DocumentRoute {
         app_id: "so.tilo.discord".into(),
         cluster_id: workspace.into(),
-        record: String::new(),
+        document: String::new(),
     })
 }
 

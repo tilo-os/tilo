@@ -41,13 +41,13 @@ impl AgentMember {
         };
         tracing::debug!(
             app = %route.app_id,
-            record = %route.record,
+            record = %route.document,
             ?told,
             "agent: the workspace answered a record it does not send"
         );
         // What a held record asked for of what it keeps beside it (a chain's head or part) is
         // told to it.
-        if let Some(record) = ui::resource::DocumentId::parse(&route.record) {
+        if let Some(record) = ui::resource::DocumentId::parse(&route.document) {
             for (held, app) in &self.apps {
                 if held.app_id == route.app_id
                     && let Err(error) = app.workspace_answered(&record, told)
@@ -95,7 +95,7 @@ impl AgentMember {
                     .map(|record| DocumentRoute {
                         app_id: held.app_id.clone(),
                         cluster_id: held.cluster_id.clone(),
-                        record: record.route().to_owned(),
+                        document: record.route().to_owned(),
                     })
             })
             .collect();
@@ -149,7 +149,7 @@ impl AgentMember {
         let route = DocumentRoute {
             app_id: step.app.clone(),
             cluster_id: self.workspace.clone(),
-            record,
+            document: record,
         };
         self.document_on_its_way(&route)
     }
@@ -174,7 +174,7 @@ impl AgentMember {
             let route = DocumentRoute {
                 app_id: app,
                 cluster_id: self.workspace.clone(),
-                record: String::new(),
+                document: String::new(),
             };
             arriving = self.document_on_its_way(&route) || arriving;
         }

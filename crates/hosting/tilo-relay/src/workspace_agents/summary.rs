@@ -64,7 +64,7 @@ impl HostAgents {
         let route = DocumentRoute {
             app_id: CHAT.to_owned(),
             cluster_id: workspace.to_owned(),
-            record: String::new(),
+            document: String::new(),
         };
         match invoke_named(
             &reply.host,

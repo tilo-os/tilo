@@ -49,7 +49,7 @@ impl PersonalRecord {
         manager: &mut CollaborationManager,
     ) -> Self {
         let id = collab_types::workspace_document_id(personal::KIND);
-        let route = RouteSpec::record(personal::OWNER, workspace, id.clone());
+        let route = RouteSpec::document(personal::OWNER, workspace, id.clone());
         manager.join_route(
             route.clone(),
             collab_types::document::ResourceType::new(personal::KIND),

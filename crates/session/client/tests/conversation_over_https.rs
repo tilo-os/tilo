@@ -116,9 +116,9 @@ async fn a_page_and_the_other_persons_desktop_talk_in_their_conversations_record
     let route = DocumentRoute {
         app_id: "so.tilo.chat".into(),
         cluster_id: workspace.workspace.clone(),
-        record: collab_types::direct_resource(&pair),
+        document: collab_types::direct_resource(&pair),
     };
-    let artifact = document_artifact_id(&route.app_id, &route.cluster_id, &route.record);
+    let artifact = document_artifact_id(&route.app_id, &route.cluster_id, &route.document);
     let alice_device = alice.key.verifying_key().to_bytes();
     let mut desktop =
         NativeDevice::start(&host.relay, alice_root_key, alice, workspace.workspace_id).await;
@@ -154,7 +154,7 @@ async fn a_page_and_the_other_persons_desktop_talk_in_their_conversations_record
         sealed,
         artifact,
         Ed25519PublicKey::from_bytes(alice_device),
-        document_attestation_id(&route.app_id, &route.cluster_id, &route.record),
+        document_attestation_id(&route.app_id, &route.cluster_id, &route.document),
         OpKind::Change,
         std::time::SystemTime::now(),
         2,

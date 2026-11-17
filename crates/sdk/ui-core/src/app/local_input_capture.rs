@@ -944,7 +944,7 @@ mod tests {
             agent: None,
             app_id: route.app_id.clone(),
             workspace: route.cluster_id.to_string(),
-            document: route.record.clone().unwrap_or_default(),
+            document: route.document.clone().unwrap_or_default(),
         }
     }
     fn input(queue: &Queue, route: &RouteSpec) -> crate::local_document_action::Scope {

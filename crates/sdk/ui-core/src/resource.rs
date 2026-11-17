@@ -789,7 +789,7 @@ impl ResourceSet {
         Ok(if id.is_package_primary() {
             crate::collaboration::RouteSpec::app(self.app_id.as_str(), cluster)
         } else {
-            crate::collaboration::RouteSpec::record(self.app_id.as_str(), cluster, id.as_str())
+            crate::collaboration::RouteSpec::document(self.app_id.as_str(), cluster, id.as_str())
         })
     }
 
@@ -3440,7 +3440,7 @@ impl ResourceStore {
         let route = if checkout.id.is_package_primary() {
             crate::collaboration::RouteSpec::app(package, cluster)
         } else {
-            crate::collaboration::RouteSpec::record(package, cluster, checkout.id.as_str())
+            crate::collaboration::RouteSpec::document(package, cluster, checkout.id.as_str())
         };
         self.with_action_state(&checkout.id, |document, _, state| {
             state

@@ -997,7 +997,7 @@ impl Joined {
     /// The route record `record` (its wire name) of app `app` travels on in
     /// this workspace: its content lanes are this workspace's alone.
     fn content_route(&self, app: &str, record: &str) -> ui::collaboration::RouteSpec {
-        ui::collaboration::RouteSpec::record(app, self.cluster, record)
+        ui::collaboration::RouteSpec::document(app, self.cluster, record)
     }
 
     fn open_resources(&self) -> impl Iterator<Item = (String, String)> + '_ {
@@ -1024,7 +1024,7 @@ impl Joined {
         DocumentRoute {
             app_id: app.to_owned(),
             cluster_id: self.uuid.clone(),
-            record: record.to_owned(),
+            document: record.to_owned(),
         }
     }
 
@@ -1113,21 +1113,23 @@ impl Joined {
             // workspace sends when a window opens it) is what the workspace already held.
             let held = self
                 .read_heads
-                .contains_key(&(route.app_id.clone(), route.record.clone()));
+                .contains_key(&(route.app_id.clone(), route.document.clone()));
             let replayed = !self.ready || !held;
             if let Ok(
                 ResourceReading::Captured { heads, .. } | ResourceReading::Changes { heads, .. },
             ) = &read
             {
-                self.read_heads
-                    .insert((route.app_id.clone(), route.record.clone()), heads.clone());
+                self.read_heads.insert(
+                    (route.app_id.clone(), route.document.clone()),
+                    heads.clone(),
+                );
             }
             let applied = match read {
                 Ok(ResourceReading::Captured { bytes, heads, .. }) => {
                     self.apply(&route, (bytes, &heads), replayed, &mut woken)
                 }
                 Ok(ResourceReading::Changes { bytes, heads, .. })
-                    if self.is_open(&route.app_id, &route.record) =>
+                    if self.is_open(&route.app_id, &route.document) =>
                 {
                     self.apply_open_changes(&route, &bytes, &heads, replayed, &mut woken)
                 }
@@ -1139,7 +1141,7 @@ impl Joined {
                 Err(error) => Err(error),
             };
             if let Err(error) = applied {
-                warn(&format!("{}/{}: {error}", route.app_id, route.record));
+                warn(&format!("{}/{}: {error}", route.app_id, route.document));
             }
         }
         for (route, answer) in opened {
@@ -1158,7 +1160,7 @@ impl Joined {
             self.peer.engine().record_update(
                 &route.cluster_id,
                 &route.app_id,
-                &route.record,
+                &route.document,
                 kept.as_deref(),
             )
         });
@@ -1275,7 +1277,7 @@ impl Joined {
     ) {
         warn(&format!(
             "{}/{}: the workspace refused a change: {refusal}",
-            route.app_id, route.record
+            route.app_id, route.document
         ));
         if route.app_id == DESKTOP_APP {
             return;
@@ -1294,7 +1296,8 @@ impl Joined {
                     continue;
                 }
                 let Some(checkout) = store.open_resources().into_iter().find(|checkout| {
-                    tilo_desktop_surface::host::records::wire_document(&checkout.id) == route.record
+                    tilo_desktop_surface::host::records::wire_document(&checkout.id)
+                        == route.document
                 }) else {
                     continue;
                 };
@@ -1309,7 +1312,7 @@ impl Joined {
                             }
                             if let Some(replica) = mounted
                                 .records
-                                .get_mut(&(route.app_id.clone(), route.record.clone()))
+                                .get_mut(&(route.app_id.clone(), route.document.clone()))
                             {
                                 replica.advance(heads);
                             }
@@ -1318,7 +1321,7 @@ impl Joined {
                     }
                     Err(error) => warn(&format!(
                         "{}/{}: a refused change stays: {error}",
-                        route.app_id, route.record
+                        route.app_id, route.document
                     )),
                 }
             }
@@ -1344,7 +1347,7 @@ impl Joined {
             let answered = crate::landing::answered(
                 &mounted.attachment.stores.borrow(),
                 &route.app_id,
-                &route.record,
+                &route.document,
                 answer,
             );
             if answered {
@@ -1366,7 +1369,8 @@ impl Joined {
                     continue;
                 }
                 if let Some(checkout) = store.open_resources().into_iter().find(|checkout| {
-                    tilo_desktop_surface::host::records::wire_document(&checkout.id) == route.record
+                    tilo_desktop_surface::host::records::wire_document(&checkout.id)
+                        == route.document
                 }) {
                     store.workspace_settled(&checkout.id);
                     woken.insert(id);
@@ -1388,7 +1392,7 @@ impl Joined {
             return self.apply_desktop(&bytes, woken);
         }
         let app = route.app_id.clone();
-        let record = route.record.clone();
+        let record = route.document.clone();
         self.changes.note(&self.uuid, &app, &record, replayed);
         let mut merged = false;
         for (&id, mounted) in &mut self.mounts {
@@ -1445,12 +1449,12 @@ impl Joined {
         if route.app_id == DESKTOP_APP {
             return None;
         }
-        if self.is_open(&route.app_id, &route.record) {
-            return self.merged_heads(&route.app_id, &route.record);
+        if self.is_open(&route.app_id, &route.document) {
+            return self.merged_heads(&route.app_id, &route.document);
         }
         let heads = self
             .delivered
-            .get(&(route.app_id.clone(), route.record.clone()))?;
+            .get(&(route.app_id.clone(), route.document.clone()))?;
         let mut heads: Vec<[u8; 32]> = heads.iter().map(|head| head.0).collect();
         heads.sort_unstable();
         Some(heads)
@@ -1516,7 +1520,7 @@ impl Joined {
         replayed: bool,
         woken: &mut HashSet<u64>,
     ) -> Result<(), String> {
-        let (app, record) = (route.app_id.clone(), route.record.clone());
+        let (app, record) = (route.app_id.clone(), route.document.clone());
         self.changes.note(&self.uuid, &app, &record, replayed);
         for (&id, mounted) in &mut self.mounts {
             for store in mounted.attachment.stores.borrow().iter() {
@@ -1559,7 +1563,7 @@ impl Joined {
         replayed: bool,
         woken: &mut HashSet<u64>,
     ) -> Result<(), String> {
-        let (app, record) = (route.app_id.clone(), route.record.clone());
+        let (app, record) = (route.app_id.clone(), route.document.clone());
         self.changes.note(&self.uuid, &app, &record, replayed);
         let key = tilo_session::platform::records::storage_key(&app, &self.uuid, &record)
             .ok_or("not a record id")?;
@@ -1673,7 +1677,7 @@ impl Joined {
                         opening.push(DocumentRoute {
                             app_id: app.clone(),
                             cluster_id: self.uuid.clone(),
-                            record: key.1.clone(),
+                            document: key.1.clone(),
                         });
                     }
                     let delivered = &mut self.delivered;
@@ -1697,14 +1701,14 @@ impl Joined {
                     let route = DocumentRoute {
                         app_id: app.clone(),
                         cluster_id: self.uuid.clone(),
-                        record: key.1.clone(),
+                        document: key.1.clone(),
                     };
                     match replica.take_outbound(store, &checkout.id) {
                         Ok(Some(next)) => {
                             // A window here wrote the record: the session's activity and the
                             // person's mentions read it as any other change of it.
                             self.changes
-                                .note(&self.uuid, &route.app_id, &route.record, false);
+                                .note(&self.uuid, &route.app_id, &route.document, false);
                             outgoing.push((route, next.mutation, (id, key, next.heads)));
                         }
                         Ok(None) => {}
@@ -1717,7 +1721,7 @@ impl Joined {
         for route in opening {
             if !self
                 .asked
-                .insert((route.app_id.clone(), route.record.clone()))
+                .insert((route.app_id.clone(), route.document.clone()))
             {
                 continue;
             }
@@ -1785,7 +1789,7 @@ impl Joined {
                         wanted.push(DocumentRoute {
                             app_id: key.0,
                             cluster_id: self.uuid.clone(),
-                            record: key.1,
+                            document: key.1,
                         });
                     }
                 }

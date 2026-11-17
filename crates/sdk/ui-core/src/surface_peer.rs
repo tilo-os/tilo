@@ -196,7 +196,7 @@ impl PeerTransport for SurfacePeer {
                 self.acknowledged = Some(crate::collaboration::RouteSpec {
                     app_id: self.app_id.clone(),
                     cluster_id,
-                    record,
+                    document: record,
                 });
                 Ok(())
             }

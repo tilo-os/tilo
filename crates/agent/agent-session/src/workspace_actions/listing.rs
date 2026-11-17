@@ -65,7 +65,7 @@ impl Worker {
                     rows.extend(listed.into_iter().map(kept));
                 }
                 Err(error) => {
-                    tracing::warn!(%error, record = %route.record, "workspace actions: a record did not mount");
+                    tracing::warn!(%error, record = %route.document, "workspace actions: a record did not mount");
                 }
             }
             // The record's registered reads, over its retained source: kept

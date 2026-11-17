@@ -357,7 +357,7 @@ fn call_of(id: String, entry: &Entry) -> (Option<String>, Call) {
         })
         .unwrap_or_else(|| "someone".to_owned());
     let target = &entry.request.target;
-    let addressed = resource_of(&target.provider, "").map(|route| (route.app_id, route.record));
+    let addressed = resource_of(&target.provider, "").map(|route| (route.app_id, route.document));
     let action = match &addressed {
         Some((app_id, _)) => format!("{}#{}", app_path(app_id), target.address.action),
         None => format!("{}#{}", target.address.resource, target.address.action),
@@ -672,17 +672,17 @@ impl Worker {
     /// Note in the ledger the changes `invocation` handed to the session, as
     /// it ran, before they are saved and let go of ([`join_written`]).
     pub(super) fn note_written(&self, invocation: InvocationId) {
-        let written: Vec<(String, String, String)> =
-            self.handed
-                .values()
-                .flatten()
-                .flat_map(|write| {
-                    let route = write.route();
-                    write.changes().iter().map(move |change| {
-                        (route.app_id.clone(), route.record.clone(), change.clone())
-                    })
+        let written: Vec<(String, String, String)> = self
+            .handed
+            .values()
+            .flatten()
+            .flat_map(|write| {
+                let route = write.route();
+                write.changes().iter().map(move |change| {
+                    (route.app_id.clone(), route.document.clone(), change.clone())
                 })
-                .collect();
+            })
+            .collect();
         if written.is_empty() {
             return;
         }
@@ -709,7 +709,7 @@ impl Worker {
         };
         let records: Vec<DocumentKey> = routes
             .iter()
-            .map(|route| (route.app_id.clone(), route.record.clone()))
+            .map(|route| (route.app_id.clone(), route.document.clone()))
             .collect();
         let cluster_id = state.workspace.clone().unwrap_or_default();
         let engine = std::sync::Arc::clone(&state.engine);

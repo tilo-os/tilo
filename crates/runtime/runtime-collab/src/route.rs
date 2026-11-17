@@ -17,7 +17,7 @@ pub use collab_types::channel_key;
 pub struct RouteSpec {
     pub app_id: String,
     pub cluster_id: Uuid,
-    pub record: Option<String>,
+    pub document: Option<String>,
 }
 
 impl RouteSpec {
@@ -26,7 +26,7 @@ impl RouteSpec {
         channel_key::format(
             &self.app_id,
             &self.cluster_id.to_string(),
-            self.record.as_deref().unwrap_or(""),
+            self.document.as_deref().unwrap_or(""),
         )
     }
 
@@ -34,7 +34,7 @@ impl RouteSpec {
         Self {
             app_id: String::new(),
             cluster_id,
-            record: None,
+            document: None,
         }
     }
 
@@ -42,15 +42,19 @@ impl RouteSpec {
         Self {
             app_id: app_id.into(),
             cluster_id,
-            record: None,
+            document: None,
         }
     }
 
-    pub fn record(app_id: impl Into<String>, cluster_id: Uuid, record: impl Into<String>) -> Self {
+    pub fn document(
+        app_id: impl Into<String>,
+        cluster_id: Uuid,
+        document: impl Into<String>,
+    ) -> Self {
         Self {
             app_id: app_id.into(),
             cluster_id,
-            record: Some(record.into()),
+            document: Some(document.into()),
         }
     }
 }

@@ -555,7 +555,7 @@ impl PlanContext {
         self.open
             .iter()
             .find(|(route, _)| {
-                route.app_id == app && record.is_none_or(|record| route.record == record)
+                route.app_id == app && record.is_none_or(|record| route.document == record)
             })
             .and_then(|(_, descriptors)| {
                 descriptors
@@ -1076,7 +1076,7 @@ mod tests {
         let route = DocumentRoute {
             app_id: app.into(),
             cluster_id: "workspace".into(),
-            record: "w1".into(),
+            document: "w1".into(),
         };
         let descriptor = ActionDescriptor {
             did: None,

@@ -263,7 +263,7 @@ async fn an_existing_native_chat_reference_discovers_local_views_over_the_govern
     let record = DocumentRoute {
         app_id: "so.tilo.chat".into(),
         cluster_id: workspace.workspace.clone(),
-        record: source.wire_document().into(),
+        document: source.wire_document().into(),
     };
     browser
         .peer
@@ -549,7 +549,7 @@ impl tilo_agent_session::workspace_actions::WorkspaceDocumentsLink for DeliveryR
             || caller != &self.caller
             || self.route.workspace_id().ok() != Some(workspace)
             || app != self.route.app_id
-            || record != self.route.record
+            || record != self.route.document
         {
             return None;
         }
@@ -574,7 +574,7 @@ impl tilo_agent_session::workspace_actions::WorkspaceDocumentsLink for DeliveryR
     ) -> Result<tilo_agent_session::workspace_actions::ViewDocument, String> {
         if source != &self.route
             || self
-                .view_read_policy(workspace, caller, &source.app_id, &source.record)
+                .view_read_policy(workspace, caller, &source.app_id, &source.document)
                 .is_none()
         {
             return Err("read refused".into());
@@ -665,7 +665,7 @@ impl Page {
         let route = DocumentRoute {
             app_id: app.into(),
             cluster_id: self.cluster_id.clone(),
-            record: page.wire_document().to_owned(),
+            document: page.wire_document().to_owned(),
         };
         let mutation = page.take_mutation().unwrap().unwrap();
         before_publish(&route);
@@ -692,7 +692,7 @@ impl Page {
             &MemberId::person("ada"),
             ReplicaActor::Owner,
             Seed::Existing {
-                record: route_document(&route.record),
+                record: route_document(&route.document),
                 changes: changes.into_iter().map(|(_, bytes)| bytes).collect(),
             },
         )

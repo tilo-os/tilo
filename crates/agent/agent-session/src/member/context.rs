@@ -356,10 +356,10 @@ impl AgentMember {
         }
         let mut opened = Vec::new();
         for route in named {
-            match self.open(&route.app_id, Some(&route.record)) {
+            match self.open(&route.app_id, Some(&route.document)) {
                 Ok(route) => opened.push(route),
                 Err(error) => {
-                    tracing::warn!(%error, record = %route.record, "agent: a named record did not open");
+                    tracing::warn!(%error, record = %route.document, "agent: a named record did not open");
                 }
             }
         }
@@ -482,7 +482,7 @@ impl AgentMember {
                 observation_within(&route.app_id, &descriptor.address, &output, left)
             {
                 left = left.saturating_sub(seen.chars().count());
-                found.push(format!("(document {}) {seen}", route.record));
+                found.push(format!("(document {}) {seen}", route.document));
             }
         }
         found

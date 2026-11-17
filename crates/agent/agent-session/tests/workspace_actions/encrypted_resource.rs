@@ -73,10 +73,10 @@ async fn remote_encrypted_chat_primary_is_discoverable_after_host_restart() {
     let route = DocumentRoute {
         app_id: "so.tilo.chat".into(),
         cluster_id: workspace.workspace.clone(),
-        record: source.wire_document().into(),
+        document: source.wire_document().into(),
     };
     assert!(
-        route.record.is_empty(),
+        route.document.is_empty(),
         "exercise the native primary's canonical wire route"
     );
     publisher
@@ -99,7 +99,7 @@ async fn remote_encrypted_chat_primary_is_discoverable_after_host_restart() {
             body.author == writer_device.cert.device_public_key
                 && matches!(postcard::from_bytes::<neighbour_wire::NeighbourMsg>(&body.body),
             Ok(neighbour_wire::NeighbourMsg::AppDocument {app_id, document_id, envelope, ..})
-            if app_id == route.app_id && document_id == route.record &&
+            if app_id == route.app_id && document_id == route.document &&
                 envelope.encryption.as_ref().is_some())
         }),
         "the real remote writer's retained primary must be encrypted on its exact channel"

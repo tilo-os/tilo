@@ -68,7 +68,7 @@ async fn the_host_mints_a_message_link_with_its_range() {
     let route = DocumentRoute {
         app_id: "so.tilo.chat".into(),
         cluster_id: workspace.workspace.clone(),
-        record: source.wire_document().into(),
+        document: source.wire_document().into(),
     };
     publisher
         .peer

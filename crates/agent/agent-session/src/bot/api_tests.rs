@@ -37,7 +37,7 @@ fn route(app: &str, record: &str) -> DocumentRoute {
     DocumentRoute {
         app_id: app.into(),
         cluster_id: WORKSPACE.into(),
-        record: record.into(),
+        document: record.into(),
     }
 }
 
@@ -51,14 +51,14 @@ impl ApiMember for FakeMember {
     }
 
     fn holds(&self, route: &DocumentRoute) -> bool {
-        route.record.starts_with("rec-")
+        route.document.starts_with("rec-")
     }
 
     fn record(&self, route: &DocumentRoute) -> Result<Option<Vec<u8>>, String> {
-        if route.record == "secret" {
+        if route.document == "secret" {
             return Err("not the bot's to read".into());
         }
-        Ok(self.records.get(&route.record).cloned())
+        Ok(self.records.get(&route.document).cloned())
     }
 
     fn invoke(

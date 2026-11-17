@@ -72,7 +72,7 @@ impl OperationTarget {
             &operation,
         )?;
         if self.address.resource.is_empty()
-            || self.route.record.as_deref().is_none_or(str::is_empty)
+            || self.route.document.as_deref().is_none_or(str::is_empty)
         {
             return Err("external moderation requires the exact dispatched resource".into());
         }
@@ -108,7 +108,7 @@ impl OperationTarget {
     ) -> Result<crate::invocation_scope::ApprovedCheckFuture, String> {
         if self.address.action != runtime_collab::approved_checks::ACTION_ID
             || self.address.resource.is_empty()
-            || self.route.record.as_deref().is_none_or(str::is_empty)
+            || self.route.document.as_deref().is_none_or(str::is_empty)
         {
             return Err("approved check requires the exact dispatched project resource".into());
         }
@@ -144,7 +144,7 @@ impl OperationTarget {
     ) -> Result<crate::invocation_scope::ApprovedCheckReportedWork, String> {
         if self.address.action != runtime_collab::approved_checks::ACTION_ID
             || self.address.resource.is_empty()
-            || self.route.record.as_deref().is_none_or(str::is_empty)
+            || self.route.document.as_deref().is_none_or(str::is_empty)
         {
             return Err("approved check requires the exact dispatched project resource".into());
         }

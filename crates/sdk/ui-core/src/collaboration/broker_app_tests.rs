@@ -482,7 +482,7 @@ fn switching_to_a_record_still_joining_joins_its_route_once() {
         "the prepared route joins once, whatever asks for it"
     );
     assert_eq!(
-        manager.primary_route().unwrap().route().record.as_deref(),
+        manager.primary_route().unwrap().route().document.as_deref(),
         Some(want.id.as_str()),
         "the record's route is the window's primary route"
     );
@@ -597,7 +597,7 @@ fn a_native_window_showing_another_record_joins_its_route_on_the_live_broker() {
     assert_eq!(
         app.collaboration_manager()
             .primary_route()
-            .and_then(|witness| witness.route().record.clone())
+            .and_then(|witness| witness.route().document.clone())
             .as_deref(),
         Some(wanted.as_str()),
         "the window's primary route is the record it shows now"

@@ -574,7 +574,7 @@ mod tests {
         let route = DocumentRoute {
             app_id: "so.tilo.notes".into(),
             cluster_id: "workspace".into(),
-            record: "note".into(),
+            document: "note".into(),
         };
         let workspace = WorkspaceId::new();
         let held = vec![(route, vec![b"before the reload".to_vec()])];

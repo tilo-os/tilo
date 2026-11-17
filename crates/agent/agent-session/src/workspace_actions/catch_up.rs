@@ -21,7 +21,7 @@ pub(super) fn catch_up(route: &DocumentRoute, mounted: &mut Mounted, state: &Wor
         Err(error) => tracing::debug!(%error, "workspace actions: a record does not read"),
     }
     for (part, merged) in &mut mounted.parts {
-        let Ok(record) = reads::document_id(&part.record) else {
+        let Ok(record) = reads::document_id(&part.document) else {
             continue;
         };
         let Ok(Some((mutation, heads))) = state.update(part, merged.as_deref()) else {
@@ -63,7 +63,7 @@ pub(super) fn hold_parts(holder: &DocumentRoute, mounted: &mut Mounted, state: &
             continue;
         }
         let Some((chain, index)) =
-            ui::resource::DocumentId::parse(&route.record).and_then(|id| id.chain_part())
+            ui::resource::DocumentId::parse(&route.document).and_then(|id| id.chain_part())
         else {
             continue;
         };
@@ -104,7 +104,7 @@ pub(super) fn hold_parts(holder: &DocumentRoute, mounted: &mut Mounted, state: &
                 let route = DocumentRoute {
                     app_id: holder.app_id.clone(),
                     cluster_id: holder.cluster_id.clone(),
-                    record: record.as_str().to_owned(),
+                    document: record.as_str().to_owned(),
                 };
                 (newest.contains_key(&chain) && state.records.contains(&route)).then_some(route)
             })
@@ -119,7 +119,7 @@ pub(super) fn hold_parts(holder: &DocumentRoute, mounted: &mut Mounted, state: &
 /// Hand the part at `route` to `mounted` whole, as the workspace holds it;
 /// a part of another record's chain is remembered as not this one's.
 fn hold(route: &DocumentRoute, mounted: &mut Mounted, state: &WorkspaceState) {
-    let Ok(record) = reads::document_id(&route.record) else {
+    let Ok(record) = reads::document_id(&route.document) else {
         return;
     };
     let Ok((bytes, heads)) = state.document(route) else {
@@ -133,7 +133,7 @@ fn hold(route: &DocumentRoute, mounted: &mut Mounted, state: &WorkspaceState) {
             mounted.parts.insert(route.clone(), Some(heads));
         }
         Err(error) => {
-            tracing::debug!(%error, part = %route.record, "workspace actions: a part is not held here");
+            tracing::debug!(%error, part = %route.document, "workspace actions: a part is not held here");
             mounted.foreign.insert(route.clone());
         }
     }

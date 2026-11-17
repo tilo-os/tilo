@@ -49,7 +49,7 @@ async fn retained_by(
                     document_id,
                     envelope,
                     ..
-                }) if app_id == route.app_id && document_id == route.record => {
+                }) if app_id == route.app_id && document_id == route.document => {
                     Some(envelope.encryption.as_ref().is_some())
                 }
                 _ => None,
@@ -76,7 +76,7 @@ async fn until_retained(
         assert!(
             Instant::now() < deadline,
             "the relay never retained {count} change(s) to {} by {}: {sealed:?}",
-            route.record,
+            route.document,
             hex::encode(author)
         );
         tokio::time::sleep(Duration::from_millis(20)).await;
@@ -98,7 +98,7 @@ async fn until_authored(browser: &mut Browser, route: &DocumentRoute, author: [u
         assert!(
             Instant::now() < deadline,
             "the member never opened the host's change to {}: {:?}",
-            route.record,
+            route.document,
             browser.peer.status().key_state
         );
         tokio::time::sleep(Duration::from_millis(20)).await;
@@ -261,7 +261,7 @@ async fn the_governing_host_acts_on_sealed_records_for_its_owner_and_no_one_else
     let created = DocumentRoute {
         app_id: SHEETS.into(),
         cluster_id: workspace.workspace.clone(),
-        record,
+        document: record,
     };
     let first = until_retained(&hosted, workspace.workspace_id, &created, host_key, 1).await;
     assert!(

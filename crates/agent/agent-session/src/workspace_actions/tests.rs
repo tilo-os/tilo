@@ -9,7 +9,7 @@ fn route(workspace: &str, app: &str, record: &str) -> DocumentRoute {
     DocumentRoute {
         app_id: app.into(),
         cluster_id: workspace.into(),
-        record: record.into(),
+        document: record.into(),
     }
 }
 

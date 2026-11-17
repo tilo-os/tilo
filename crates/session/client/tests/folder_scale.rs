@@ -114,7 +114,7 @@ fn route(workspace: &str, chunk: TreeChunk) -> DocumentRoute {
     DocumentRoute {
         app_id: fs_protocol::tree::FILES_APP.into(),
         cluster_id: workspace.into(),
-        record: fs_protocol::tree::chunk_document_id(chunk),
+        document: fs_protocol::tree::chunk_document_id(chunk),
     }
 }
 
@@ -230,7 +230,7 @@ impl Reader {
         let began = Instant::now();
         for event in self.landed.drain() {
             if let tilo_session_client::Event::Landed { route, .. } = event
-                && let Some(chunk) = fs_protocol::tree::chunk_of_record(&route.record)
+                && let Some(chunk) = fs_protocol::tree::chunk_of_record(&route.document)
             {
                 self.unread.insert(chunk);
             }
@@ -241,7 +241,7 @@ impl Reader {
             let reading = self.link.engine().record_update(
                 &route.cluster_id,
                 &route.app_id,
-                &route.record,
+                &route.document,
                 self.heads.get(&chunk).map(Vec::as_slice),
             );
             let Ok(

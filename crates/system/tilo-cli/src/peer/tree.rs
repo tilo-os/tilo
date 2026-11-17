@@ -97,7 +97,7 @@ pub(crate) fn route(workspace: WorkspaceId, chunk: TreeChunk) -> DocumentRoute {
     DocumentRoute {
         app_id: FILES_APP.to_owned(),
         cluster_id: workspace.to_string(),
-        record: fs_protocol::tree::chunk_document_id(chunk),
+        document: fs_protocol::tree::chunk_document_id(chunk),
     }
 }
 
@@ -421,7 +421,7 @@ impl Sync {
         let _ = self.link.engine().open_resource(
             &self.workspace.to_string(),
             &route.app_id,
-            &route.record,
+            &route.document,
         );
     }
 
@@ -439,7 +439,7 @@ impl Sync {
             Event::Refused { route, refusal, .. }
                 if route.cluster_id == self.workspace.to_string() && route.app_id == FILES_APP =>
             {
-                if let Some(chunk) = fs_protocol::tree::chunk_of_record(&route.record) {
+                if let Some(chunk) = fs_protocol::tree::chunk_of_record(&route.document) {
                     let held = self.records.entry(chunk).or_default();
                     held.sent = held
                         .merged
@@ -448,14 +448,14 @@ impl Sync {
                         .map(|hash| automerge::ChangeHash(*hash))
                         .collect();
                     if held.refused.refused(Instant::now(), host_wait(&refusal)) {
-                        tracing::warn!(%refusal, workspace = %self.workspace, record = %route.record, "the workspace refused a change to its files; it goes again after a wait");
+                        tracing::warn!(%refusal, workspace = %self.workspace, record = %route.document, "the workspace refused a change to its files; it goes again after a wait");
                     }
                 }
             }
             Event::Landed { route, .. }
                 if route.cluster_id == self.workspace.to_string() && route.app_id == FILES_APP =>
             {
-                if let Some(chunk) = fs_protocol::tree::chunk_of_record(&route.record) {
+                if let Some(chunk) = fs_protocol::tree::chunk_of_record(&route.document) {
                     self.unread.insert(chunk);
                     self.records.entry(chunk).or_default().refused.landed();
                 }
@@ -472,7 +472,7 @@ impl Sync {
                 answer,
                 ..
             } if route.cluster_id == self.workspace.to_string() && route.app_id == FILES_APP => {
-                if let Some(chunk) = fs_protocol::tree::chunk_of_record(&route.record) {
+                if let Some(chunk) = fs_protocol::tree::chunk_of_record(&route.document) {
                     self.records.entry(chunk).or_default().answered = Some(answer);
                     // A host that sent some of the tree holds one, which this device reads
                     // before it writes: a tree it founded beside that one would go out whole.
@@ -517,8 +517,12 @@ impl Sync {
                 .records
                 .get(&chunk)
                 .and_then(|held| held.merged.clone());
-            let reading =
-                engine.record_update(&workspace, &route.app_id, &route.record, merged.as_deref());
+            let reading = engine.record_update(
+                &workspace,
+                &route.app_id,
+                &route.document,
+                merged.as_deref(),
+            );
             match reading {
                 Ok(
                     ResourceReading::Captured { heads, bytes, .. }
@@ -538,7 +542,7 @@ impl Sync {
                         && holds_none(engine.resource_answer(
                             &workspace,
                             &route.app_id,
-                            &route.record,
+                            &route.document,
                         ))
                     {
                         self.standing.lock_recover().opened = true;
@@ -658,7 +662,7 @@ impl Sync {
                 // go out, one it holds none of is founded here.
                 let answered = self.records.get(&chunk).and_then(|held| held.answered);
                 if !holds_none(answered)
-                    || engine.holds_resource(&workspace, &route.app_id, &route.record)
+                    || engine.holds_resource(&workspace, &route.app_id, &route.document)
                 {
                     // Said once per record: a write that waits here for long is one the
                     // folder says it is still sending.

@@ -121,7 +121,7 @@ impl App {
             let route = route.as_ref()?;
             let unit = collab_types::UnitMutation {
                 app: &route.app_id,
-                document_id: route.record.as_deref().unwrap_or(""),
+                document_id: route.document.as_deref().unwrap_or(""),
                 mutation,
                 document: Some(document),
             };

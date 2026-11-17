@@ -212,7 +212,7 @@ mod tests {
                 self.acknowledged = Some(RouteSpec {
                     app_id: app_id.clone(),
                     cluster_id: *cluster_id,
-                    record: record.clone(),
+                    document: record.clone(),
                 });
             }
             self.requests.borrow_mut().push(request);
@@ -531,7 +531,7 @@ mod owner_view_tests {
                 self.acknowledged = Some(crate::collaboration::RouteSpec {
                     app_id,
                     cluster_id,
-                    record,
+                    document: record,
                 });
                 Ok(())
             } else {
@@ -644,7 +644,7 @@ mod owner_view_tests {
                     .send(crate::collaboration::CollabRequest::Hello {
                         app_id: route.app_id.clone(),
                         cluster_id: route.cluster_id,
-                        record: route.record.clone(),
+                        record: route.document.clone(),
                         resource_type: None,
                         handle: None,
                     })
@@ -777,7 +777,7 @@ mod owner_view_tests {
                         .send(crate::collaboration::CollabRequest::Hello {
                             app_id: route.app_id,
                             cluster_id: route.cluster_id,
-                            record: route.record,
+                            record: route.document,
                             resource_type: None,
                             handle: None
                         })

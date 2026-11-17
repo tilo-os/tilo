@@ -112,7 +112,7 @@ async fn a_newcomer_reads_writes_follows_and_rejoins_its_channel_group() {
     let desktop = DocumentRoute {
         app_id: "so.tilo.browser-desktop".into(),
         cluster_id: lounge.workspace.clone(),
-        record: "desktop".into(),
+        document: "desktop".into(),
     };
     let host_cert = host_device.cert.clone();
     let enter = |name: &'static str| {
@@ -203,7 +203,7 @@ async fn a_newcomer_asks_for_its_workspaces_live_plane_and_joins_it() {
     let desktop = DocumentRoute {
         app_id: "so.tilo.browser-desktop".into(),
         cluster_id: lounge.workspace.clone(),
-        record: "desktop".into(),
+        document: "desktop".into(),
     };
     let host_cert = host_device.cert.clone();
 

@@ -31,7 +31,7 @@ async fn durable(peer: &Link) -> (u64, u64) {
         .health
         .records
         .into_iter()
-        .find(|record| record.record.document_id == route().record)
+        .find(|record| record.record.document_id == route().document)
         .expect("the note's health");
     (
         note.outgoing.durable_operations,

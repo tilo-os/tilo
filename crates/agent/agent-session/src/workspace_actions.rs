@@ -845,7 +845,7 @@ fn named_document(app: &str, record: &str) -> String {
 
 /// [`named_document`] of the record at `route`.
 pub(super) fn named(route: &DocumentRoute) -> String {
-    named_document(&route.app_id, &route.record)
+    named_document(&route.app_id, &route.document)
 }
 
 /// What running an action came to: its answer and where it left its actor.
@@ -888,7 +888,7 @@ impl WorkspaceState {
             match self.engine.record_update(
                 &route.cluster_id,
                 &route.app_id,
-                &route.record,
+                &route.document,
                 held,
             )? {
                 ResourceReading::Captured { heads, bytes, .. } => {
@@ -906,7 +906,7 @@ impl WorkspaceState {
     fn document(&self, route: &DocumentRoute) -> Result<Saved, String> {
         match self
             .engine
-            .record_update(&route.cluster_id, &route.app_id, &route.record, None)?
+            .record_update(&route.cluster_id, &route.app_id, &route.document, None)?
         {
             ResourceReading::Captured { heads, bytes, .. } => Ok((bytes, heads)),
             _ => Err(format!("the workspace holds no {} yet", named(route))),
@@ -953,14 +953,14 @@ fn sealed_for(
     // reading or acting on it needs that record open too, and any other
     // part of the same chain, which the request's host sends beside it.
     let named = |route: &DocumentRoute, app_id: &str, record: &str| {
-        let same_chain = match (opened::chain_of(record), opened::chain_of(&route.record)) {
+        let same_chain = match (opened::chain_of(record), opened::chain_of(&route.document)) {
             (Some(asked), Some(held)) => asked == held,
             _ => false,
         };
         route.app_id == app_id
-            && (route.record == record
+            && (route.document == record
                 || same_chain
-                || (is_part(record) && !is_part(&route.record)))
+                || (is_part(record) && !is_part(&route.document)))
     };
     routes
         .iter()
@@ -1130,7 +1130,7 @@ impl Workspace {
             let route = DocumentRoute {
                 app_id: app_id.to_owned(),
                 cluster_id: workspace,
-                record: record.to_owned(),
+                document: record.to_owned(),
             };
             self.take_host_keys(vec![route], needs, link, &mut handed)?;
         }
@@ -1200,7 +1200,7 @@ impl Workspace {
                             ),
                         });
                     }
-                    tracing::info!(app = %route.app_id, record = %route.record, %reason,
+                    tracing::info!(app = %route.app_id, record = %route.document, %reason,
                         "workspace actions: listing without a record the host holds no keys to");
                 }
             }
@@ -1345,7 +1345,7 @@ fn take_all(
         let route = DocumentRoute {
             app_id: holder.app_id.clone(),
             cluster_id: holder.cluster_id.clone(),
-            record: record.route().to_owned(),
+            document: record.route().to_owned(),
         };
         (route, mutation)
     }));
@@ -1864,7 +1864,7 @@ impl Worker {
         route: &DocumentRoute,
         state: &WorkspaceState,
     ) -> Result<&mut Mounted, String> {
-        let holder = if is_part(&route.record) {
+        let holder = if is_part(&route.document) {
             self.mount_part(route, state)?
         } else {
             self.mount_own(route, state)?;
@@ -1895,14 +1895,14 @@ impl Worker {
             return Ok(holder);
         }
         let (bytes, heads) = state.document(route)?;
-        let record = reads::document_id(&route.record)?;
+        let record = reads::document_id(&route.document)?;
         let holders: Vec<DocumentRoute> = state
             .records
             .iter()
             .filter(|held| {
                 held.app_id == route.app_id
                     && held.cluster_id == route.cluster_id
-                    && !is_part(&held.record)
+                    && !is_part(&held.document)
             })
             .cloned()
             .collect();
@@ -1930,7 +1930,7 @@ impl Worker {
         Err(format!(
             "no record of {} keeps {} beside it: {}",
             route.app_id,
-            route.record,
+            route.document,
             refusals.join("; ")
         ))
     }
@@ -1960,7 +1960,7 @@ impl Worker {
                 &MemberId::Person(self.member.clone()),
                 &crate::ReplicaActor::Owner,
                 Seed::Existing {
-                    record: reads::document_id(&route.record)?,
+                    record: reads::document_id(&route.document)?,
                     changes: vec![bytes],
                 },
             )
@@ -2029,7 +2029,7 @@ impl Worker {
                 let route = DocumentRoute {
                     app_id,
                     cluster_id: cluster_id.to_owned(),
-                    record,
+                    document: record,
                 };
                 if !routes.contains(&route) {
                     routes.push(route);
@@ -2041,7 +2041,7 @@ impl Worker {
             .filter(|route| {
                 self.catalogue
                     .get(&route.app_id)
-                    .is_some_and(|app| opens_as_its_own(app, &route.record))
+                    .is_some_and(|app| opens_as_its_own(app, &route.document))
             })
             .collect()
     }
@@ -2057,7 +2057,7 @@ impl Worker {
         let route_hint = resource_of(provider, "").ok_or_else(refuse)?;
         let link = self.shared.link.get().cloned().ok_or_else(refuse)?;
         let first = link
-            .view_read_policy(workspace, caller, &route_hint.app_id, &route_hint.record)
+            .view_read_policy(workspace, caller, &route_hint.app_id, &route_hint.document)
             .ok_or_else(refuse)?;
         let route = resource_of(provider, &first.workspace).ok_or_else(refuse)?;
         let source = link
@@ -2074,7 +2074,7 @@ impl Worker {
             .map_err(|reason| ActionHostError::Unavailable { reason })?;
         let descriptors = views.views(wanted, &first).map_err(|_| refuse())?;
         let fresh = link
-            .view_read_policy(workspace, caller, &route.app_id, &route.record)
+            .view_read_policy(workspace, caller, &route.app_id, &route.document)
             .ok_or_else(refuse)?;
         if fresh.workspace != first.workspace
             || fresh.standing != first.standing
@@ -2124,7 +2124,7 @@ impl Worker {
             return None;
         }
         route.cluster_id = link
-            .view_read_policy(workspace, caller, &route.app_id, &route.record)?
+            .view_read_policy(workspace, caller, &route.app_id, &route.document)?
             .workspace;
         // Document rows retain their existing workspace revision and invocation
         // path. Only an exact registered-read target uses this source revision.
@@ -2553,20 +2553,20 @@ impl Worker {
                 workspace_id,
                 Needs::Read {
                     app_id: &layout.app_id,
-                    record: &layout.record,
+                    record: &layout.document,
                 },
             )
             .map_err(Outcome::Rejected)?;
         let route = DocumentRoute {
             app_id: app.to_owned(),
             cluster_id: named.to_owned(),
-            record: application_provider_resource(&target.provider)
+            document: application_provider_resource(&target.provider)
                 .unwrap_or_default()
                 .to_owned(),
         };
         if !state.holds(&route) && !self.held_or_owed(workspace_id, &route)? {
             return Err(Outcome::Rejected(ActionHostError::Refused {
-                reason: format!("this workspace has no {app} record {}", route.record),
+                reason: format!("this workspace has no {app} record {}", route.document),
             }));
         }
         let workspace = self
@@ -2585,7 +2585,7 @@ impl Worker {
         let view = tilo_desktop_model::place::View {
             app_id: app,
             title: &title,
-            record: &route.record,
+            record: &route.document,
             beside: None,
         };
         let opener = tilo_desktop_model::place::Opener {
@@ -2648,7 +2648,7 @@ impl Worker {
         let Some(link) = self.shared.link.get() else {
             return Ok(None);
         };
-        let Some(policy) = link.view_read_policy(workspace, caller, &hint.app_id, &hint.record)
+        let Some(policy) = link.view_read_policy(workspace, caller, &hint.app_id, &hint.document)
         else {
             return Ok(None);
         };
@@ -2752,13 +2752,13 @@ impl Worker {
                 let route = DocumentRoute {
                     app_id: app.to_owned(),
                     cluster_id: workspace.to_owned(),
-                    record: String::new(),
+                    document: String::new(),
                 };
                 if self.held_or_owed(workspace_id, &route)? {
                     return Ok(ActionOutput {
                         value: Some(serde_json::json!({
                             "provider": record_provider(&route),
-                            "record": route.record,
+                            "record": route.document,
                         })),
                         resources: Vec::new(),
                     });
@@ -2777,7 +2777,7 @@ impl Worker {
             let route = DocumentRoute {
                 app_id: app.to_owned(),
                 cluster_id: workspace.to_owned(),
-                record: hosted.wire_document().to_owned(),
+                document: hosted.wire_document().to_owned(),
             };
             let genesis = hosted
                 .take_mutation()
@@ -2821,7 +2821,7 @@ impl Worker {
         Ok(ActionOutput {
             value: Some(serde_json::json!({
                 "provider": record_provider(&route),
-                "record": route.record,
+                "record": route.document,
             })),
             resources: Vec::new(),
         })

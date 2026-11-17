@@ -110,7 +110,7 @@ impl Worker {
         // link's page mounts that record, whose window holds the part and
         // offers its items at the address asked for here.
         locator.provider = record_provider(&opened);
-        let url = ui::framework::host_link(&request, &opened.app_id, &opened.record, &locator)
+        let url = ui::framework::host_link(&request, &opened.app_id, &opened.document, &locator)
             .map_err(failed)?;
         Ok(ActionOutput {
             value: Some(serde_json::json!({ "url": url })),
@@ -138,7 +138,7 @@ impl Worker {
         let mounted = self.mounted.get(route)?;
         let refuse = || ActionHostError::UnknownAction;
         let link = self.shared.link.get()?;
-        let Some(policy) = link.view_read_policy(workspace, caller, &route.app_id, &route.record)
+        let Some(policy) = link.view_read_policy(workspace, caller, &route.app_id, &route.document)
         else {
             return Some(Err(refuse()));
         };
@@ -208,12 +208,12 @@ impl Worker {
         let refused = || Outcome::Rejected(ActionHostError::UnknownAction);
         let link = self.shared.link.get().ok_or_else(refused)?;
         let policy = link
-            .view_read_policy(workspace_id, caller, &route.app_id, &route.record)
+            .view_read_policy(workspace_id, caller, &route.app_id, &route.document)
             .ok_or_else(refused)?;
         let locator = link
             .view_locator(&policy.workspace, &record_provider(route))
             .ok_or_else(|| failed("This workspace's host serves no web page".into()))?;
-        let url = ui::framework::host_link(request, &route.app_id, &route.record, &locator)
+        let url = ui::framework::host_link(request, &route.app_id, &route.document, &locator)
             .map_err(failed)?;
         Ok(ActionOutput {
             value: Some(serde_json::json!({ "url": url })),

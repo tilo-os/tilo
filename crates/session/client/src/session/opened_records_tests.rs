@@ -51,7 +51,7 @@ fn the_same_record_opened_in_two_workspaces_is_answered_as_each_ones_own() {
     let layout = |workspace: WorkspaceId| DocumentRoute {
         app_id: DESKTOP_APP.to_owned(),
         cluster_id: workspace.to_string(),
-        record: DESKTOP_DOCUMENT.to_owned(),
+        document: DESKTOP_DOCUMENT.to_owned(),
     };
     let (first, second) = (WorkspaceId::from_u128(1), WorkspaceId::from_u128(2));
     // Both are asked for before either is answered, as two workspaces' requests

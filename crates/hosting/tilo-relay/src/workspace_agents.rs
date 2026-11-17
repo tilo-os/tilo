@@ -676,7 +676,7 @@ impl Reply {
                 let route = DocumentRoute {
                     app_id: TASKS.to_owned(),
                     cluster_id: self.workspace.clone(),
-                    record: record.clone(),
+                    document: record.clone(),
                 };
                 let mut arguments = Map::new();
                 arguments.insert("issue".into(), json!(issue));
@@ -710,7 +710,7 @@ impl Reply {
         let route = DocumentRoute {
             app_id: CHAT.to_owned(),
             cluster_id: self.workspace.clone(),
-            record: part.clone(),
+            document: part.clone(),
         };
         let mut arguments = Map::new();
         arguments.insert("message".into(), json!(message));

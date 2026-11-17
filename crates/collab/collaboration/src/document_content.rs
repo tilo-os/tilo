@@ -134,7 +134,7 @@ fn lane_key(route: &super::RouteSpec) -> LaneKey {
     (
         route.cluster_id,
         route.app_id.clone(),
-        route.record.clone().unwrap_or_default(),
+        route.document.clone().unwrap_or_default(),
     )
 }
 

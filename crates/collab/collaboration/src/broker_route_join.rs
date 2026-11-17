@@ -174,7 +174,7 @@ pub(super) async fn join_route(
     // So this route keeps no document, no channel keys and no streams of its own, and the chain's
     // later parts arrive on theirs.
     if spec
-        .record
+        .document
         .as_deref()
         .and_then(collab_types::document::DocumentId::parse)
         .is_some_and(|record| record.is_chain_head())
@@ -217,7 +217,7 @@ pub(super) async fn join_route(
     {
         if snapshot.app_id == spec.app_id
             && snapshot.workspace == spec.cluster_id.to_string()
-            && snapshot.document == spec.record.as_deref().unwrap_or("")
+            && snapshot.document == spec.document.as_deref().unwrap_or("")
         {
             inbound_tx
                 .state
@@ -341,7 +341,7 @@ pub(super) async fn join_route(
             })
             .ok();
     media_routes.insert(channel_id.clone(), channel.clone());
-    if spec.record.is_none()
+    if spec.document.is_none()
         && member_kind == "person"
         && crate::host::environment()
             .identity

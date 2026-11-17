@@ -53,7 +53,7 @@ impl AgentMember {
     /// title (a document's first line).
     fn names_document(&mut self, route: &DocumentRoute, task: &str) -> bool {
         let lower = task.to_lowercase();
-        let id = route.record.trim_start_matches("uuid:").to_lowercase();
+        let id = route.document.trim_start_matches("uuid:").to_lowercase();
         if !id.is_empty() && lower.contains(&id) {
             return true;
         }

@@ -286,7 +286,7 @@ impl<P: ApiMember> BotApi<P> {
                 provider: provider.clone(),
                 app_id: route.app_id.clone(),
                 workspace: workspace.clone(),
-                document_id: route.record.clone(),
+                document_id: route.document.clone(),
                 browsable: false,
             });
             rows.extend(offered.into_iter().map(|mut row| {
@@ -601,7 +601,7 @@ impl<P: ApiMember + 'static> ResourceReads for BotReads<P> {
         let route = DocumentRoute {
             app_id: address.app.clone(),
             cluster_id: member.workspace().to_owned(),
-            record: address.record.clone(),
+            document: address.record.clone(),
         };
         match member.record(&route) {
             Ok(Some(document)) => Ok(ResourceCopy::Document(document)),

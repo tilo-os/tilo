@@ -198,7 +198,7 @@ impl Page {
         let read = self
             .peer
             .engine()
-            .record(&route.cluster_id, &route.app_id, &route.record);
+            .record(&route.cluster_id, &route.app_id, &route.document);
         // Keys that arrived open what the writers before them wrote; keys that open nothing new
         // say nobody wrote anything.
         match (read, author.or_else(|| self.unopened.remove(&route))) {
@@ -220,7 +220,7 @@ impl Page {
     pub fn unopened(&self) -> Vec<String> {
         self.unopened
             .keys()
-            .map(|route| format!("{}/{}", route.app_id, route.record))
+            .map(|route| format!("{}/{}", route.app_id, route.document))
             .collect()
     }
 
@@ -254,7 +254,7 @@ impl Page {
         DocumentRoute {
             app_id: tilo_desktop_model::ownership::DESKTOP_APP.into(),
             cluster_id: self.cluster_id.clone(),
-            record: tilo_desktop_model::ownership::DESKTOP_DOCUMENT.into(),
+            document: tilo_desktop_model::ownership::DESKTOP_DOCUMENT.into(),
         }
     }
 
@@ -301,7 +301,7 @@ impl Page {
         let read = self
             .peer
             .engine()
-            .record(&layout.cluster_id, &layout.app_id, &layout.record);
+            .record(&layout.cluster_id, &layout.app_id, &layout.document);
         let bytes = read.ok()??;
         tilo_desktop_model::shared_resource::read(&automerge::AutoCommit::load(&bytes).ok()?, None)
     }

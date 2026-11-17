@@ -736,7 +736,7 @@ impl BotRunner {
                 let route = DocumentRoute {
                     app_id: app.clone(),
                     cluster_id: self.workspace.clone(),
-                    record,
+                    document: record,
                 };
                 let held = Arc::clone(&self.held);
                 let holding = route.clone();
@@ -745,7 +745,7 @@ impl BotRunner {
                         .await
                         .map_err(|error| error.to_string())?;
                 if let Err(error) = held {
-                    tracing::warn!(installation = %self.bot.installation, app = %route.app_id, record = %route.record, %error, "bot run leaves out a record it could not hold");
+                    tracing::warn!(installation = %self.bot.installation, app = %route.app_id, record = %route.document, %error, "bot run leaves out a record it could not hold");
                 }
             }
         }
@@ -811,13 +811,13 @@ impl BotRunner {
                 self.api.forget_steps();
                 let reason = format!(
                     "the workspace refused the bot's change to {}/{}: {refusal}",
-                    route.app_id, route.record
+                    route.app_id, route.document
                 );
                 tracing::warn!(
                     installation = %self.bot.installation,
                     run = %firing.invocation.0,
                     app = %route.app_id,
-                    record = %route.record,
+                    record = %route.document,
                     change = index.saturating_add(1),
                     of = count,
                     %refusal,
@@ -970,7 +970,7 @@ impl BotRunner {
                 &self.bot_key,
                 &self.catalogue,
                 &route.app_id,
-                &route.record,
+                &route.document,
                 &bytes,
             )
             .await

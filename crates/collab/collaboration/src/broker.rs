@@ -659,7 +659,7 @@ impl CollabTransport for BrokerTransport {
                 route: RouteSpec {
                     app_id,
                     cluster_id,
-                    record,
+                    document: record,
                 },
                 resource_type,
                 handle,
@@ -2538,7 +2538,7 @@ impl CollaborationManager {
         let route = RouteSpec {
             app_id: app_id.clone(),
             cluster_id,
-            record: record.clone(),
+            document: record.clone(),
         };
         Self::connect_route_from(
             SdkConnectSource::Host(connector, route),
@@ -2564,7 +2564,7 @@ impl CollaborationManager {
             .route
             .clone();
         let record = (!checkout.id.is_package_primary()).then(|| checkout.id.as_str().to_owned());
-        if primary.record == record {
+        if primary.document == record {
             return Ok(());
         }
         if !self.send(CollabRequest::Hello {
@@ -2663,7 +2663,7 @@ impl CollaborationManager {
             RouteSpec {
                 app_id: app,
                 cluster_id: workspace,
-                record: None,
+                document: None,
             },
             Some(kind.as_str().to_owned()),
             crate::local_identity::own_name(),
@@ -2777,7 +2777,7 @@ impl CollaborationManager {
             RouteSpec {
                 app_id,
                 cluster_id,
-                record,
+                document: record,
             },
             None,
             handle,
@@ -2799,7 +2799,7 @@ impl CollaborationManager {
         let RouteSpec {
             app_id,
             cluster_id,
-            record,
+            document: record,
         } = route;
         // The connect's phases, so a launch's startup file splits it from the
         // rest of the time before `app-prepare`.
@@ -2826,7 +2826,7 @@ impl CollaborationManager {
         primary_route.announce(RouteSpec {
             app_id: app_id.clone(),
             cluster_id,
-            record: record.clone(),
+            document: record.clone(),
         });
         let _ = transport.submit(TransportCommand::Primary(CollabRequest::Hello {
             app_id,
@@ -2950,7 +2950,7 @@ impl CollaborationManager {
             RouteSpec {
                 app_id,
                 cluster_id,
-                record,
+                document: record,
             },
             resource_type,
             crate::local_identity::own_name(),
@@ -3002,7 +3002,7 @@ impl CollaborationManager {
         let RouteSpec {
             app_id,
             cluster_id,
-            record,
+            document: record,
         } = route;
         manager.send(CollabRequest::Hello {
             app_id,
@@ -4424,7 +4424,7 @@ fn note_route_join(state: &BridgeState, spec: &RouteSpec, joined: Result<(), Str
         Err(reason) => {
             tracing::warn!(
                 app = %spec.app_id,
-                record = spec.record.as_deref().unwrap_or(""),
+                record = spec.document.as_deref().unwrap_or(""),
                 %reason,
                 "collab: route did not join"
             );
@@ -4756,7 +4756,7 @@ impl RouteLabel {
         Self {
             app: spec.app_id.clone(),
             workspace: spec.cluster_id.to_string(),
-            record: spec.record.clone().unwrap_or_default(),
+            record: spec.document.clone().unwrap_or_default(),
             channel: spec.channel_id(),
         }
     }
@@ -5870,7 +5870,7 @@ fn origin_commit(
     mutation: &collab_types::DocumentMutation,
 ) -> Option<collab_types::WorkspaceCommit> {
     let app = route.spec.app_id.as_str();
-    let record = route.spec.record.as_deref().unwrap_or("");
+    let record = route.spec.document.as_deref().unwrap_or("");
     let device = signer_device(signer);
     if let Some(mut commit) = declared {
         if commit.covers(app, record) {
@@ -6014,7 +6014,7 @@ async fn try_send_frame(
     state: &BridgeState,
 ) -> FrameSend {
     let workspace_id = route.spec.cluster_id.to_string();
-    let document_id = route.spec.record.as_deref().unwrap_or("");
+    let document_id = route.spec.document.as_deref().unwrap_or("");
     let artifact =
         collab_types::document_artifact_id(&route.spec.app_id, &workspace_id, document_id);
     let (payload, encryption_metadata) =
@@ -6237,7 +6237,7 @@ async fn refresh_route_keys(route: &DocumentRoute, signer: &mut LocalSdkDocument
         return false;
     };
     let workspace_id = route.spec.cluster_id.to_string();
-    let document_id = route.spec.record.as_deref().unwrap_or("");
+    let document_id = route.spec.document.as_deref().unwrap_or("");
     let reply = match signer {
         LocalSdkDocumentSigner::Inherited(SdkDocumentSigner::Certified(identity)) => {
             let query = KeyQuery::of(route, generation);

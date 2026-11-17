@@ -33,11 +33,11 @@ fn document(
 ) -> (automerge::AutoCommit, bool) {
     match peer
         .engine()
-        .record(&route.cluster_id, &route.app_id, &route.record)
+        .record(&route.cluster_id, &route.app_id, &route.document)
     {
         Ok(Some(bytes)) => (
             automerge::AutoCommit::load(&bytes).unwrap_or_else(|error| {
-                tracing::warn!(record = %route.record, %error, "workspace actions: a record does not load");
+                tracing::warn!(record = %route.document, %error, "workspace actions: a record does not load");
                 automerge::AutoCommit::new()
             }),
             true,
@@ -79,7 +79,7 @@ impl Written {
         Self {
             app: route.app_id.clone(),
             workspace: route.cluster_id.clone(),
-            record: route.record.clone(),
+            record: route.document.clone(),
             whole: matches!(mutation, DocumentMutation::Snapshot(_)),
             changes: changes_of(mutation),
         }
@@ -95,7 +95,7 @@ impl Written {
         DocumentRoute {
             app_id: self.app.clone(),
             cluster_id: self.workspace.clone(),
-            record: self.record.clone(),
+            document: self.record.clone(),
         }
     }
 
@@ -432,7 +432,7 @@ impl Worker {
         let workspace = self.workspaces.get(&workspace_id)?;
         let checkout = ui::resource::identity(&document(&workspace.peer, route).0)?;
         let index = DocumentRoute {
-            record: String::new(),
+            document: String::new(),
             ..route.clone()
         };
         ui::resource::index::name_of(&document(&workspace.peer, &index).0, &checkout.id)
@@ -450,9 +450,9 @@ impl Worker {
     /// record written since is named again once, [`RENAME_AFTER`] after it
     /// last was, however many writes it took meanwhile.
     pub(super) fn index_document(&mut self, workspace_id: WorkspaceId, route: &DocumentRoute) {
-        if route.record.is_empty()
-            || in_a_tree(&route.record)
-            || collab_types::workspace_document(&route.app_id, &route.record).is_some()
+        if route.document.is_empty()
+            || in_a_tree(&route.document)
+            || collab_types::workspace_document(&route.app_id, &route.document).is_some()
             || self.catalogue.get(&route.app_id).is_none()
         {
             return;
@@ -472,7 +472,7 @@ impl Worker {
         self.shared.renaming.lock_recover().remove(route);
         self.named.insert(route.clone(), Instant::now());
         if let Err(reason) = self.name_in_index(workspace_id, route) {
-            tracing::warn!(app = %route.app_id, record = %route.record, %reason,
+            tracing::warn!(app = %route.app_id, record = %route.document, %reason,
                 "workspace actions: a record is not named in its workspace's index");
         }
     }
@@ -483,7 +483,7 @@ impl Worker {
         route: &DocumentRoute,
     ) -> Result<(), String> {
         let index_route = DocumentRoute {
-            record: String::new(),
+            document: String::new(),
             ..route.clone()
         };
         let link = self.shared.link.get().cloned();

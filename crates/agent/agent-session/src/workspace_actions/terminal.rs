@@ -241,7 +241,7 @@ impl Worker {
             workspace_id,
             Needs::Act {
                 app_id: &route.app_id,
-                record: &route.record,
+                record: &route.document,
             },
         ) {
             Ok(state) => state,
@@ -265,7 +265,7 @@ impl Worker {
         // recorded: two agents in one workspace never share a directory
         // or variables. A person's commands share the session's shell.
         let session = session_of.map_or_else(
-            || route.record.clone(),
+            || route.document.clone(),
             |agent_session| format!("run:{}", agent_session.id),
         );
         // What a cancel of this invocation, or a Ctrl+C in the session it
@@ -343,7 +343,7 @@ impl Worker {
                 workspace_id,
                 &who,
                 &route.cluster_id,
-                Some((&route.app_id, &route.record)),
+                Some((&route.app_id, &route.document)),
             )
             .map_err(refused)?;
         let permissions = super::bounded::bounded_permissions(&policy, &who)
@@ -503,7 +503,7 @@ impl Worker {
                 workspace_id,
                 Needs::Act {
                     app_id: &route.app_id,
-                    record: &route.record,
+                    record: &route.document,
                 },
             ) {
                 Ok(state) => state,
@@ -594,7 +594,7 @@ impl Worker {
                 ended.workspace_id,
                 Needs::Act {
                     app_id: &ended.route.app_id,
-                    record: &ended.route.record,
+                    record: &ended.route.document,
                 },
             )
             .map_err(|error| failed(error.to_string()))?;

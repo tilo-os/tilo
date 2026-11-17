@@ -82,7 +82,7 @@ pub(super) fn answer(
     let route = resource_of(&destination.provider, &destination.workspace)
         .filter(|route| {
             route.app_id == "so.tilo.chat"
-                && route.record.is_empty()
+                && route.document.is_empty()
                 && route.workspace_id().ok() == Some(workspace)
         })
         .ok_or_else(|| unavailable("feedback source mismatch"))?;
@@ -94,7 +94,7 @@ pub(super) fn answer(
     }
     let caller = caller.in_workspace(destination.workspace.clone());
     let policy = link
-        .view_read_policy(workspace, &caller, &route.app_id, &route.record)
+        .view_read_policy(workspace, &caller, &route.app_id, &route.document)
         .filter(|policy| policy.workspace == route.cluster_id)
         .ok_or_else(|| unavailable("certified feedback admission unavailable"))?;
     let host_device = link.host_device();

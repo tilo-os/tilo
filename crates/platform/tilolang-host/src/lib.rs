@@ -79,7 +79,7 @@ pub fn route_under(
     person: &str,
 ) -> collaboration::RouteSpec {
     match tilolang_tilo::own_record(meta, person) {
-        Some(record) => collaboration::RouteSpec::record(records.to_owned(), workspace, record),
+        Some(record) => collaboration::RouteSpec::document(records.to_owned(), workspace, record),
         None => collaboration::RouteSpec::app(records.to_owned(), workspace),
     }
 }
@@ -88,7 +88,7 @@ pub fn route_under(
 /// own, by its id. The workspace's record of the app is no record a launch names.
 fn opens_record(route: &collaboration::RouteSpec, asked: &str) -> bool {
     collab_types::document::DocumentId::parse(asked)
-        .is_some_and(|asked| asked.route() == route.record.as_deref().unwrap_or_default())
+        .is_some_and(|asked| asked.route() == route.document.as_deref().unwrap_or_default())
 }
 
 /// Why an instance the session handed over does not run.
@@ -988,7 +988,7 @@ impl TilolangHost {
             }
             parts.push((
                 route.app_id.clone(),
-                route.record.clone().unwrap_or_default(),
+                route.document.clone().unwrap_or_default(),
                 changes,
             ));
         }
@@ -1014,7 +1014,7 @@ impl TilolangHost {
             let route = running.hosted.record().route();
             let (app, record) = (
                 route.app_id.clone(),
-                route.record.clone().unwrap_or_default(),
+                route.document.clone().unwrap_or_default(),
             );
             let Some((_, _, changes)) = parts
                 .iter()
@@ -1201,7 +1201,7 @@ mod tests {
         let workspace = uuid::Uuid::from_u128(7);
         let own = collab_types::document::DocumentId::for_file_document(uuid::Uuid::from_u128(9));
         let workspaces = collaboration::RouteSpec::app("so.tilo.lang.notes", workspace);
-        let owns = collaboration::RouteSpec::record("so.tilo.lang.notes", workspace, own.route());
+        let owns = collaboration::RouteSpec::document("so.tilo.lang.notes", workspace, own.route());
         assert!(opens_record(&owns, own.as_str()));
         assert!(
             !opens_record(&workspaces, own.as_str()),

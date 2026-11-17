@@ -120,7 +120,7 @@ fn member(bus: &Rc<Bus>, workspace: uuid::Uuid, person: &str, bundle: &Arc<Bundl
     assert!(manager.send(CollabRequest::Hello {
         app_id: route.app_id.clone(),
         cluster_id: route.cluster_id,
-        record: route.record.clone(),
+        record: route.document.clone(),
         resource_type: None,
         handle: Some(person.to_owned()),
     }));
@@ -267,11 +267,11 @@ fn mail_is_each_members_own_record_of_the_workspace() {
     // Each member's Mail is on their own record of the workspace, which only their devices are
     // admitted to; an app that shares its records stays on the workspace's record of the app.
     assert_eq!(
-        ada.route.record.as_deref(),
+        ada.route.document.as_deref(),
         tilolang_tilo::member_record_of("so.tilo.lang.mail", ADA).as_deref()
     );
     assert_eq!(
-        bo.route.record.as_deref(),
+        bo.route.document.as_deref(),
         tilolang_tilo::member_record_of("so.tilo.lang.mail", BO).as_deref()
     );
     let counter = compiled(

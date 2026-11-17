@@ -3,7 +3,7 @@ use super::*;
 /// The route of record `record` of app `app` in the workspace these tests
 /// share.
 fn route(app: &str, record: &str) -> super::super::RouteSpec {
-    super::super::RouteSpec::record(app, uuid::Uuid::from_u128(1), record)
+    super::super::RouteSpec::document(app, uuid::Uuid::from_u128(1), record)
 }
 
 fn resource_store(record: &str) -> (ContentStore, Arc<ContentLane>) {
@@ -228,7 +228,7 @@ tilo_test_env::scenario! {
     phase a_record_that_is_not_the_windows_own_keeps_its_content_on_its_route;
     {
         let app = "so.tilo.person-content-test";
-        let person = super::super::RouteSpec::record(app, uuid::Uuid::from_u128(7), "history");
+        let person = super::super::RouteSpec::document(app, uuid::Uuid::from_u128(7), "history");
         let store = ContentLane::resource_store(&person);
         let hash = store.put(b"a poster").unwrap();
         let again = ContentLane::resource_store(&person);
@@ -419,7 +419,7 @@ fn the_same_bytes_stored_twice_on_a_record_of_one_workspace_are_one_item() {
     let elsewhere = Arc::new(ContentLane::default());
     // The same record's name, in another workspace.
     let in_another_workspace =
-        super::super::RouteSpec::record(APP, uuid::Uuid::from_u128(2), "a record");
+        super::super::RouteSpec::document(APP, uuid::Uuid::from_u128(2), "a record");
     ContentLane::show_on_route(&in_another_workspace, &elsewhere);
     ContentLane::of(&in_another_workspace)
         .hold_secret(Some(tilo_seal::SymmetricKey::generate().unwrap()));

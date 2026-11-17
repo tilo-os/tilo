@@ -96,7 +96,7 @@ async fn deliver_decided(route: &SdkRoute, arrived: Arrived, inbound_tx: &Inboun
         &claims,
         (
             route.spec.app_id.as_str(),
-            route.spec.record.as_deref().unwrap_or(""),
+            route.spec.document.as_deref().unwrap_or(""),
         ),
         complete,
     ) {

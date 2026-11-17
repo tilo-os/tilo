@@ -112,7 +112,7 @@ async fn a_change_written_before_its_record_lands_waits_for_it() {
     let chat = DocumentRoute {
         app_id: "so.tilo.chat".into(),
         cluster_id: lounge.workspace.clone(),
-        record: String::new(),
+        document: String::new(),
     };
 
     let founder = arrive(page_host(), &host_device.cert, &lounge.workspace, "Founder").await;
@@ -136,7 +136,7 @@ async fn a_change_written_before_its_record_lands_waits_for_it() {
     assert!(
         !early
             .engine()
-            .holds_resource(&chat.cluster_id, &chat.app_id, &chat.record),
+            .holds_resource(&chat.cluster_id, &chat.app_id, &chat.document),
         "the early page holds no record before it is founded"
     );
     early.write(chat.clone(), &first).unwrap();
@@ -167,7 +167,7 @@ async fn a_change_written_before_its_record_lands_waits_for_it() {
         let last =
             match guest
                 .engine()
-                .record_update(&chat.cluster_id, &chat.app_id, &chat.record, None)
+                .record_update(&chat.cluster_id, &chat.app_id, &chat.document, None)
             {
                 Ok(ResourceReading::Captured { bytes, .. }) => {
                     let doc = AutoCommit::load(&bytes).unwrap();

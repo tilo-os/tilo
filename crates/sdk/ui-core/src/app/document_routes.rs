@@ -534,7 +534,7 @@ impl App {
     /// ([`crate::resource::ResourceStore::note_workspace_answered`]).
     pub(super) fn resource_unavailable(&mut self, route: &crate::collaboration::RouteSpec) {
         let Some(id) = route
-            .record
+            .document
             .as_deref()
             .and_then(crate::resource::DocumentId::parse)
         else {
@@ -559,7 +559,7 @@ impl App {
             .any(|entry| entry.route == *route);
         if held
             || !route
-                .record
+                .document
                 .as_deref()
                 .and_then(crate::resource::DocumentId::parse)
                 .is_some_and(|id| id.arrives_on_demand())
@@ -637,7 +637,7 @@ impl App {
         let primary = validated_route_payload_with(witness.route(), envelope, decrypted_payload)
             .and_then(|payload| {
                 let active = !self.document_routes.retired_route(witness.route())
-                    && match witness.route().record.as_deref() {
+                    && match witness.route().document.as_deref() {
                         Some(record) => self
                             .persistence
                             .records
@@ -724,7 +724,7 @@ fn publication_commits(parts: &mut [Part]) -> Vec<Option<collab_types::Workspace
         let workspace = part.route.cluster_id;
         let unit = collab_types::UnitMutation {
             app: &part.route.app_id,
-            document_id: part.route.record.as_deref().unwrap_or(""),
+            document_id: part.route.document.as_deref().unwrap_or(""),
             mutation: &part.mutation,
             document: Some(part.document.document()),
         };
@@ -1083,7 +1083,7 @@ mod tests {
                     action_mutation("title", "a", invocation),
                 ),
                 part(
-                    crate::collaboration::RouteSpec::record(
+                    crate::collaboration::RouteSpec::document(
                         "so.tilo.test-discussion",
                         workspace,
                         "thread",

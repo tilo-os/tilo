@@ -121,7 +121,7 @@ impl App {
                     .primary_route()
                     .is_some_and(|witness| *witness.route() == route)
                     && !self.document_routes.retired_route(&route)
-                    && route.record.as_deref().is_none_or(|record| {
+                    && route.document.as_deref().is_none_or(|record| {
                         self.persistence
                             .records
                             .as_ref()
@@ -188,7 +188,7 @@ impl App {
                         %error,
                         whole = read.is_whole(),
                         app = %route.app_id,
-                        record = route.record.as_deref().unwrap_or("-"),
+                        record = route.document.as_deref().unwrap_or("-"),
                         "committed history could not be read here"
                     );
                     read.refuse();

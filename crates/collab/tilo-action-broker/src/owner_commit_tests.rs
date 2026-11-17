@@ -216,7 +216,7 @@ mod owner_commit_tests {
                 self.route = ui::collaboration::RouteSpec {
                     app_id: app_id.clone(),
                     cluster_id: *cluster_id,
-                    record: record.clone(),
+                    document: record.clone(),
                 };
                 self.ack = true;
             }
@@ -287,7 +287,7 @@ mod owner_commit_tests {
         let component = definition
             .instantiate(context, LaunchTarget::New, RestoreInput::None)
             .unwrap();
-        let route = RouteSpec::record(definition.app_id(), workspace, record.id.as_str());
+        let route = RouteSpec::document(definition.app_id(), workspace, record.id.as_str());
         let sent = Rc::new(RefCell::new(vec![]));
         let events = Rc::new(RefCell::new(vec![]));
         let mut manager = CollaborationManager::with_peer_transport(WorkerTransport {

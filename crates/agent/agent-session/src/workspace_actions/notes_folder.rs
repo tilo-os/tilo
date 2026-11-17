@@ -538,7 +538,7 @@ impl Worker {
         let notes_route = DocumentRoute {
             app_id: NOTES_APP.to_owned(),
             cluster_id: workspace_id.to_string(),
-            record: String::new(),
+            document: String::new(),
         };
         self.refresh(
             workspace_id,

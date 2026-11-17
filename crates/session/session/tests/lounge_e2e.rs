@@ -354,7 +354,7 @@ fn desktop_route(service: &WorkspaceService) -> DocumentRoute {
     DocumentRoute {
         app_id: DESKTOP_APP.to_owned(),
         cluster_id: service.workspace.clone(),
-        record: DESKTOP_DOCUMENT.to_owned(),
+        document: DESKTOP_DOCUMENT.to_owned(),
     }
 }
 

@@ -876,7 +876,7 @@ impl AppBrokerState {
             let route = runtime_collab::route::RouteSpec {
                 app_id: worker.route.app_id.clone(),
                 cluster_id: worker.route.cluster_id.parse().map_err(|_| "invalid original worker workspace")?,
-                record: (!worker.route.document_id.is_empty()).then(|| worker.route.document_id.clone()),
+                document: (!worker.route.document_id.is_empty()).then(|| worker.route.document_id.clone()),
             };
             let check = original.clone();
             PublishedInvocationLease::new(request.clone(), route, Arc::new(move || check.check_lifecycle()))

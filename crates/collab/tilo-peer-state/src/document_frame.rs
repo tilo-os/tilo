@@ -23,7 +23,7 @@ pub struct DocumentRoute {
     /// Workspace uuid, as text.
     pub cluster_id: String,
     /// Record wire name; empty when the app announced none.
-    pub record: String,
+    pub document: String,
 }
 
 impl DocumentRoute {
@@ -42,7 +42,7 @@ impl DocumentRoute {
         Some(Self {
             app_id: app_id.clone(),
             cluster_id: cluster_id.clone(),
-            record: document_id.clone(),
+            document: document_id.clone(),
         })
     }
     /// The workspace that carries this route.
@@ -54,7 +54,7 @@ impl DocumentRoute {
     /// The artifact every frame of this route is signed for.
     #[must_use]
     pub fn artifact(&self) -> collab_types::ArtifactId {
-        document_artifact_id(&self.app_id, &self.cluster_id, &self.record)
+        document_artifact_id(&self.app_id, &self.cluster_id, &self.document)
     }
 }
 
@@ -258,7 +258,7 @@ pub fn open_frame(
     let route = DocumentRoute {
         app_id,
         cluster_id,
-        record: document_id,
+        document: document_id,
     };
     let decrypted_payload = match envelope.encryption {
         Some(metadata) => {
@@ -441,7 +441,7 @@ mod tests {
             let route = DocumentRoute {
                 app_id: "app".into(),
                 cluster_id: "workspace".into(),
-                record: "record".into(),
+                document: "record".into(),
             };
             let creator = key_group::GroupPeer::create_now(
                 Some(std::sync::Arc::new(key_group::Files::new(dir.path()))),
@@ -490,7 +490,7 @@ mod tests {
                 peer: neighbour_wire::peer_handle(author.as_bytes()),
                 app_id: route.app_id.clone(),
                 cluster_id: route.cluster_id.clone(),
-                document_id: route.record,
+                document_id: route.document,
                 envelope: Box::new(op),
                 own: None,
             })

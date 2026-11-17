@@ -88,7 +88,7 @@ async fn a_session_over_a_store_for_it_alone_keeps_no_copy_of_its_workspaces() {
     let files = DocumentRoute {
         app_id: "so.tilo.chat".into(),
         cluster_id: lounge.workspace.clone(),
-        record: String::new(),
+        document: String::new(),
     };
 
     // A computer's session, and a page's whose profile a reload starts over.

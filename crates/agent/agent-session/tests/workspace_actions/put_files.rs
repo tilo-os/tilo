@@ -63,7 +63,7 @@ async fn publish(laptop: &Browser, folder: &mut tilo_fs::Namespace) {
         let route = DocumentRoute {
             app_id: FILES_APP.to_owned(),
             cluster_id: laptop.cluster_id.clone(),
-            record: fs_protocol::tree::chunk_document_id(write.chunk),
+            document: fs_protocol::tree::chunk_document_id(write.chunk),
         };
         laptop
             .peer

@@ -134,7 +134,7 @@ fn page(
 ) -> String {
     // The workspace's own record (Chat's) is not mounted from a copy: its
     // document is what the browser holds.
-    let Some(record) = ui::resource::DocumentId::parse(&route.record) else {
+    let Some(record) = ui::resource::DocumentId::parse(&route.document) else {
         use tilo_automerge::ApplyIncoming as _;
         let mut doc = automerge::AutoCommit::new();
         for change in changes {
@@ -161,7 +161,7 @@ fn page(
 fn held(browser: &tilo_session_client::Link, route: &DocumentRoute) -> Option<Vec<Vec<u8>>> {
     browser
         .engine()
-        .record(&route.cluster_id, &route.app_id, &route.record)
+        .record(&route.cluster_id, &route.app_id, &route.document)
         .ok()
         .flatten()
         .map(|bytes| vec![bytes])
@@ -357,7 +357,7 @@ async fn every_web_app_over_the_session() {
                     .map(|(app_id, record)| DocumentRoute {
                         app_id,
                         cluster_id: WORKSPACE.to_owned(),
-                        record,
+                        document: record,
                     }),
             )
             .find(|route| route.app_id == app)
@@ -926,7 +926,7 @@ async fn a_view_is_read_in_the_planning_conversation() {
     let turn = first_turn(&requests[0]);
     assert!(
         offers(&turn, "canvas.artwork#draw")
-            && turn.contains(&format!("(document {})", canvas.record))
+            && turn.contains(&format!("(document {})", canvas.document))
             && turn.contains("canvas.artwork#inspect answered"),
         "the first turn offers draw and shows what the artwork holds: {turn}"
     );
@@ -981,7 +981,7 @@ async fn a_task_reports_the_content_its_steps_produced() {
         let address = address(action);
         serde_json::json!({
             "app": CANVAS,
-            "record": canvas.record,
+            "record": canvas.document,
             "resource": address.resource,
             "action": address.action,
             "arguments": arguments,
@@ -1092,7 +1092,7 @@ async fn a_task_s_video_still_is_drawn_by_the_hosts_render_service() {
             .clone();
         serde_json::json!({
             "app": VIDEO,
-            "record": video.record,
+            "record": video.document,
             "resource": address.resource,
             "action": address.action,
             "arguments": arguments,
@@ -1221,7 +1221,7 @@ async fn a_step_takes_the_value_a_formula_computed() {
     .await;
     let sheets = agent.open(SHEETS, None).unwrap();
     let set_cells = |start: &str, rows: serde_json::Value| {
-        serde_json::json!({"app": SHEETS, "record": sheets.record, "resource": "sheets.workbook",
+        serde_json::json!({"app": SHEETS, "record": sheets.document, "resource": "sheets.workbook",
             "action": "set-cells", "arguments": {"sheet": FIRST_SHEET, "start": start, "rows": rows}})
     };
     let task = run_task(
@@ -1272,7 +1272,7 @@ async fn a_step_takes_arithmetic_written_in_words() {
     .await;
     let sheets = agent.open(SHEETS, None).unwrap();
     let step = |action: &str, arguments: serde_json::Value| {
-        serde_json::json!({"app": SHEETS, "record": sheets.record, "resource": "sheets.workbook",
+        serde_json::json!({"app": SHEETS, "record": sheets.document, "resource": "sheets.workbook",
             "action": action, "arguments": arguments})
     };
     let task = run_task(
@@ -1328,7 +1328,7 @@ async fn an_untyped_value_that_is_only_arithmetic_is_computed() {
     .await;
     let sheets = agent.open(SHEETS, None).unwrap();
     let step = |action: &str, arguments: serde_json::Value| {
-        serde_json::json!({"app": SHEETS, "record": sheets.record, "resource": "sheets.workbook",
+        serde_json::json!({"app": SHEETS, "record": sheets.document, "resource": "sheets.workbook",
             "action": action, "arguments": arguments})
     };
     let task = run_task(
@@ -1395,7 +1395,7 @@ async fn a_step_takes_a_field_of_the_message_a_rule_picks() {
     let sheets = agent.open(SHEETS, None).unwrap();
     let messages = agent.open(MESSAGES, None).unwrap();
     let deliver = |from: &str, body: &str, date: &str| {
-        serde_json::json!({"app": MESSAGES, "record": messages.record, "resource": "tilo.messages",
+        serde_json::json!({"app": MESSAGES, "record": messages.document, "resource": "tilo.messages",
             "action": "deliver-message", "arguments": {"from": from, "body": body, "date": date}})
     };
     let quoted = "messages/search-messages?query=code#/messages\
@@ -1408,7 +1408,7 @@ async fn a_step_takes_a_field_of_the_message_a_rule_picks() {
             deliver("Parcelly", "Parcelly login code: 552398.", "2026-10-14T09:15:41Z"),
             deliver("Northwind Bank", "Your sign-in code is 615204.", "2026-10-14T09:16:00Z"),
             deliver("Parcelly", "Parcelly: your new login code: 771046.", "2026-10-14T09:16:20Z"),
-            {"app": SHEETS, "record": sheets.record, "resource": "sheets.workbook",
+            {"app": SHEETS, "record": sheets.document, "resource": "sheets.workbook",
              "action": "set-cells", "arguments": {"sheet": FIRST_SHEET, "start": "A1", "rows": [[
                 format!("{{{{{quoted}/body|match:(\\d{{6}})}}}}"),
                 format!("Received {{{{{quoted}/date|long}}}}"),
@@ -1703,7 +1703,7 @@ async fn upserts_by_key_from_two_agents_overwrite_nothing() {
         first.pump();
         second.pump();
         let opened = second
-            .open(SHEETS, Some(&sheets.record))
+            .open(SHEETS, Some(&sheets.document))
             .ok()
             .filter(|route| sheet_rows(&mut second, route, "A2") == serde_json::json!([["Ana"]]));
         async move { opened }

@@ -54,7 +54,7 @@ fn plane_route(workspace: &str) -> tilo_peer_state::document_frame::DocumentRout
     tilo_peer_state::document_frame::DocumentRoute {
         app_id: collab_types::scope::MEDIA_APP.to_owned(),
         cluster_id: workspace.to_owned(),
-        record: collab_types::scope::WORKSPACE_RESOURCE.to_owned(),
+        document: collab_types::scope::WORKSPACE_RESOURCE.to_owned(),
     }
 }
 

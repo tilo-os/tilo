@@ -9,7 +9,7 @@ async fn create_feedback_document(browser: &mut Browser) -> DocumentRoute {
     let route = DocumentRoute {
         app_id: "so.tilo.chat".into(),
         cluster_id: browser.cluster_id.clone(),
-        record: String::new(),
+        document: String::new(),
     };
     let deadline = tilo_test_env::hang_deadline();
     loop {

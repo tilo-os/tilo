@@ -206,7 +206,7 @@ impl App {
                     if !custody.valid()
                         || custody.app_id != route.app_id
                         || custody.workspace != route.cluster_id.to_string()
-                        || custody.document != route.record.as_deref().unwrap_or("")
+                        || custody.document != route.document.as_deref().unwrap_or("")
                     {
                         return Err("private action checkpoint custody mismatch".into());
                     }

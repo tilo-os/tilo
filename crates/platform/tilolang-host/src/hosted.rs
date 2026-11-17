@@ -868,7 +868,7 @@ impl Hosted {
                 mode: Mode::Live,
                 device: None,
                 index_dir: kept.indexes.as_ref().map(|indexes| {
-                    record_indexes(indexes, &spec.workspace, record.route().record.as_deref())
+                    record_indexes(indexes, &spec.workspace, record.route().document.as_deref())
                 }),
                 record_loader: None,
                 root: tilolang_tilo::host::RootView::default(),
@@ -1226,7 +1226,7 @@ impl Hosted {
             })
             .map(|(chunk, change)| {
                 (
-                    self.record.chunk_route(chunk).record.unwrap_or_default(),
+                    self.record.chunk_route(chunk).document.unwrap_or_default(),
                     change,
                 )
             })
@@ -1616,7 +1616,7 @@ impl Hosted {
             .and_then(MemberId::person_id)
             .or_else(|| invoker.acting.acted_for_person());
         let route = self.record.route();
-        if !tilolang_tilo::reaches(&route.app_id, route.record.as_deref(), person) {
+        if !tilolang_tilo::reaches(&route.app_id, route.document.as_deref(), person) {
             let update = failed(
                 invocation,
                 Refused::new("permission_denied", "this is another member's own record"),

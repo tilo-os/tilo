@@ -192,7 +192,7 @@ impl NativeDevice {
             .content_keys()
             .unwrap()
             .seal_content(
-                document_artifact_id(&route.app_id, &route.cluster_id, &route.record),
+                document_artifact_id(&route.app_id, &route.cluster_id, &route.document),
                 collab_types::ContentRetention::of_frame(frame),
                 frame,
             )
@@ -208,7 +208,7 @@ impl NativeDevice {
                 peer: neighbour_wire::peer_handle(&self.key()),
                 app_id: route.app_id.clone(),
                 cluster_id: route.cluster_id.clone(),
-                document_id: route.record.clone(),
+                document_id: route.document.clone(),
                 envelope: Box::new(op),
                 own: None,
             },
@@ -220,7 +220,7 @@ impl NativeDevice {
     /// carries its epoch's key. The author never writes a sealed record in
     /// the clear.
     pub async fn written(&mut self, author: [u8; 32], route: &DocumentRoute) -> DocumentFrame {
-        let artifact = document_artifact_id(&route.app_id, &route.cluster_id, &route.record);
+        let artifact = document_artifact_id(&route.app_id, &route.cluster_id, &route.document);
         let author = Ed25519PublicKey::from_bytes(author);
         loop {
             if let Some(at) = self

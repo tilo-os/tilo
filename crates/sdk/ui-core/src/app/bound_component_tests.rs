@@ -2427,7 +2427,7 @@ fn bound_broker_routes_keep_the_chosen_contract_and_refuse_bad_witnesses() {
         let mut wrong_workspace = matching.clone();
         wrong_workspace.route.cluster_id = uuid::Uuid::nil();
         let mut wrong_resource = matching.clone();
-        wrong_resource.route.record = Some("different-record".into());
+        wrong_resource.route.document = Some("different-record".into());
         for witness in [
             Some(wrong_app),
             Some(wrong_workspace),

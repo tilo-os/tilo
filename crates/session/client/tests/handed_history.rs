@@ -72,7 +72,7 @@ async fn a_device_handed_its_keys_compacts_a_full_history_and_its_writes_go_out(
     .await;
     let tree = route();
     let tasks = DocumentRoute {
-        record: "tasks".into(),
+        document: "tasks".into(),
         ..route()
     };
     for route in [&tree, &tasks] {

@@ -2747,7 +2747,7 @@ impl WasmPeer {
                 Event::Landed { route, .. } => Some(JsDurable::Durable {
                     record: JsRecord {
                         app: route.app_id,
-                        record: route.record,
+                        record: route.document,
                     },
                 }),
                 _ => None,
@@ -2858,7 +2858,7 @@ impl WasmPeer {
             DocumentRoute {
                 app_id: app.into(),
                 cluster_id: workspace.into(),
-                record: record.into(),
+                document: record.into(),
             },
             state,
         );

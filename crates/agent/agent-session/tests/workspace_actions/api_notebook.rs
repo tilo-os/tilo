@@ -265,7 +265,7 @@ async fn a_fresh_page_opens_notes_and_reads_what_the_agent_wrote() {
     let ask = tilo_peer_state::document_frame::DocumentRoute {
         app_id: "so.tilo.notes".into(),
         cluster_id: workspace.clone(),
-        record: String::new(),
+        document: String::new(),
     };
     reader
         .peer

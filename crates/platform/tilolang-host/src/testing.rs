@@ -148,7 +148,7 @@ impl Bus {
 ///
 /// Returns the error a mutation too large to carry encodes to, as the connection reports it.
 pub fn delivered(route: &RouteSpec, mutation: &DocumentMutation) -> Result<CollabEvent, String> {
-    let record = route.record.as_deref().unwrap_or("");
+    let record = route.document.as_deref().unwrap_or("");
     let workspace = route.cluster_id.to_string();
     let mut envelope = collab_types::SignedOp::new_unsigned(
         mutation.encode().map_err(|error| error.to_string())?,

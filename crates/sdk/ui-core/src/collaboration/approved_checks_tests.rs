@@ -8,7 +8,7 @@ use tokio::sync::mpsc;
 #[tokio::test]
 async fn approved_check_reported_bridge_forwards_before_terminal_and_freezes_late_reports() {
     use runtime_collab::approved_checks::{ACTION_ID, ReportObservation};
-    let route = crate::collaboration::RouteSpec::record(
+    let route = crate::collaboration::RouteSpec::document(
         "so.tilo.git-client",
         uuid::Uuid::new_v4(),
         "reported-record",
@@ -78,9 +78,9 @@ tilo_test_env::scenario! {
     {
         let workspace = uuid::Uuid::new_v4();
         let first_route =
-            crate::collaboration::RouteSpec::record("so.tilo.git-client", workspace, "first-record");
+            crate::collaboration::RouteSpec::document("so.tilo.git-client", workspace, "first-record");
         let second_route =
-            crate::collaboration::RouteSpec::record("so.tilo.git-client", workspace, "second-record");
+            crate::collaboration::RouteSpec::document("so.tilo.git-client", workspace, "second-record");
         let (first, mut first_receive) = admit_for_test(first_route.channel_id()).unwrap();
         let (_second, mut second_receive) = admit_for_test(second_route.channel_id()).unwrap();
         let address =
@@ -107,7 +107,7 @@ tilo_test_env::scenario! {
         );
         assert!(first_receive.try_recv().is_err());
         let foreign = crate::host_operation::OperationTarget::new(
-            crate::collaboration::RouteSpec::record("so.tilo.git-client", workspace, "foreign-record"),
+            crate::collaboration::RouteSpec::document("so.tilo.git-client", workspace, "foreign-record"),
             address,
         );
         assert!(foreign.approved_check(first_id, "regression").is_err());

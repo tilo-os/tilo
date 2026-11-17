@@ -138,7 +138,7 @@ async fn the_hosts_action_service_reads_and_acts_on_a_public_workspaces_records(
     let route = DocumentRoute {
         app_id: NOTES.into(),
         cluster_id: workspace.clone(),
-        record: note.wire_document().to_owned(),
+        document: note.wire_document().to_owned(),
     };
     crate::support::written(
         &member.peer,
@@ -230,7 +230,7 @@ async fn the_hosts_action_service_reads_and_acts_on_a_public_workspaces_records(
     let missing = DocumentRoute {
         app_id: NOTES.into(),
         cluster_id: workspace.clone(),
-        record: ui::resource::DocumentId::minted().as_str().to_owned(),
+        document: ui::resource::DocumentId::minted().as_str().to_owned(),
     };
     let refused = catalogue(&mut member, &record_provider(&missing)).await;
     assert!(
@@ -346,7 +346,7 @@ async fn the_hosts_action_service_lists_a_public_workspaces_chat_it_was_never_se
     let chat = DocumentRoute {
         app_id: CHAT.into(),
         cluster_id: workspace.clone(),
-        record: String::new(),
+        document: String::new(),
     };
     let chat_provider = record_provider(&chat);
     let deadline = tilo_test_env::hang_deadline();
@@ -458,7 +458,7 @@ async fn an_agent_opening_chat_in_a_public_workspace_opens_the_chat_it_has() {
     let chat = DocumentRoute {
         app_id: CHAT.into(),
         cluster_id: workspace.clone(),
-        record: String::new(),
+        document: String::new(),
     };
     assert_eq!(
         output.value.as_ref().map(|value| value["provider"].clone()),
@@ -552,7 +552,7 @@ async fn every_paragraph_a_visitors_agent_was_told_it_wrote_reaches_their_open_n
     let notes_route = DocumentRoute {
         app_id: NOTES.into(),
         cluster_id: workspace.clone(),
-        record: founded.wire_document().to_owned(),
+        document: founded.wire_document().to_owned(),
     };
     crate::support::written(
         &browser.peer,
@@ -700,7 +700,7 @@ async fn an_agents_window_lands_on_the_layout_a_page_wrote_after_the_service_joi
         &DocumentRoute {
             app_id: NOTES.into(),
             cluster_id: workspace.clone(),
-            record: notes_document.clone(),
+            document: notes_document.clone(),
         },
         &founded.take_mutation().unwrap().unwrap(),
     )

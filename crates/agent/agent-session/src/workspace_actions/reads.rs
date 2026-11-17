@@ -32,7 +32,7 @@ impl CanonicalRead {
         route: &DocumentRoute,
     ) -> Result<Self, String> {
         let admitted = link
-            .view_read_policy(workspace, caller, &route.app_id, &route.record)
+            .view_read_policy(workspace, caller, &route.app_id, &route.document)
             .filter(|policy| policy.workspace == route.cluster_id)
             .ok_or("canonical read not permitted")?;
         // This source is replayed from retained, signature-verified host storage
@@ -41,7 +41,7 @@ impl CanonicalRead {
         // uncommitted peer write.
         let source = link.view_document(workspace, caller, route)?;
         let definition = catalogue.get(&route.app_id).ok_or("unknown source app")?;
-        let record = document_id(&route.record)?;
+        let record = document_id(&route.document)?;
         if definition.keeps_workspace_resource() != record.is_package_primary() {
             return Err("source record scope mismatch".into());
         }
@@ -82,7 +82,7 @@ impl CanonicalRead {
         route: &DocumentRoute,
     ) -> Result<(), String> {
         let fresh = link
-            .view_read_policy(workspace, caller, &route.app_id, &route.record)
+            .view_read_policy(workspace, caller, &route.app_id, &route.document)
             .ok_or("canonical read permission retired")?;
         if fresh.workspace != self.admitted.workspace
             || fresh.standing != self.admitted.standing

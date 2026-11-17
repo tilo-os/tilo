@@ -448,7 +448,7 @@ impl Worker {
         who: &Bounded,
         route: &DocumentRoute,
     ) -> Result<super::ViewReadPolicy, ActionHostError> {
-        let record = Some((route.app_id.as_str(), route.record.as_str()));
+        let record = Some((route.app_id.as_str(), route.document.as_str()));
         self.policy_for(workspace_id, who, &route.cluster_id, record)
     }
 
@@ -559,7 +559,7 @@ impl Worker {
                 &ui::permissions::MemberId::Person(who.person.clone()),
                 &member_actor(&policy, who)?,
                 Seed::Existing {
-                    record: reads::document_id(&holder.record).map_err(unavailable)?,
+                    record: reads::document_id(&holder.document).map_err(unavailable)?,
                     changes: vec![bytes],
                 },
             )
@@ -592,7 +592,7 @@ impl Worker {
             held.held
                 .app
                 .apply_document(
-                    &reads::document_id(&route.record).map_err(unavailable)?,
+                    &reads::document_id(&route.document).map_err(unavailable)?,
                     &DocumentMutation::Snapshot(part),
                 )
                 .map_err(|error| unavailable(error.to_string()))?;
@@ -852,7 +852,7 @@ impl Worker {
             // What it wrote, from the record's own replica: neither the record
             // nor its history is read for what one change touched. Only a
             // record the replica does not hold is read before and diffed.
-            let written = reads::document_id(&changed.record)
+            let written = reads::document_id(&changed.document)
                 .ok()
                 .and_then(|record| self.app_at(holder)?.changed_keys(&record, mutation));
             let before = match written {
@@ -868,7 +868,7 @@ impl Worker {
             )
             .map_err(|reason| super::commit_failed(reason, false))?;
             if !refused.is_empty() {
-                tracing::info!(record = %changed.record, ?refused,
+                tracing::info!(record = %changed.document, ?refused,
                     "workspace actions: a change writes what its author may not");
                 return Err(Outcome::Rejected(ActionHostError::NotPermitted));
             }
@@ -878,7 +878,7 @@ impl Worker {
                 let merged = if &changed == holder {
                     app.apply(&mutation)
                 } else {
-                    reads::document_id(&changed.record)
+                    reads::document_id(&changed.document)
                         .map_err(crate::apps::AppError::Merge)
                         .and_then(|record| app.apply_document(&record, &mutation))
                 };

@@ -130,7 +130,7 @@ tilo_test_env::scenario! {
             "the record lives in the workspace the conversation is in"
         );
         assert_eq!(
-            route.record.as_deref(),
+            route.document.as_deref(),
             Some(WITH_BOB),
             "the conversation's record sits beside the workspace's own"
         );

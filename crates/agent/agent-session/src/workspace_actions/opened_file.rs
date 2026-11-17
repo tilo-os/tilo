@@ -263,7 +263,7 @@ impl Worker {
         ActionOutput {
             value: Some(json!({
                 "provider": record_provider(route),
-                "record": route.record,
+                "record": route.document,
             })),
             resources: Vec::new(),
         }

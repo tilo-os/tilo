@@ -547,7 +547,7 @@ impl Link {
                             DocumentRoute {
                                 app_id,
                                 cluster_id: workspace.to_string(),
-                                record,
+                                document: record,
                             },
                             writes,
                         )

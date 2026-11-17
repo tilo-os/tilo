@@ -735,7 +735,7 @@ impl Task {
             .owner()
             .compact_document(
                 workspace,
-                (&route.app_id, &route.record),
+                (&route.app_id, &route.document),
                 self.signer.as_ref(),
                 now,
             )
@@ -763,7 +763,7 @@ impl Task {
                 .and_then(|workspace| {
                     self.replicas
                         .owner()
-                        .drafted_compaction(workspace, (&route.app_id, &route.record))
+                        .drafted_compaction(workspace, (&route.app_id, &route.document))
                         .ok()
                 })
                 .flatten();
@@ -776,7 +776,7 @@ impl Task {
             self.note_delivered(&route, &snapshot);
             let statement = tilo_relay_protocol::compaction::CoverageStatement {
                 workspace_id,
-                channel: neighbour_wire::app_document_channel(&route.app_id, &route.record),
+                channel: neighbour_wire::app_document_channel(&route.app_id, &route.document),
                 request,
                 snapshot,
                 covered,
@@ -1961,7 +1961,7 @@ impl Task {
         };
         let record = tilo_relay_protocol::live::LiveResource {
             app: route.app_id.clone(),
-            record: route.record.clone(),
+            record: route.document.clone(),
         };
         let released: Vec<_> = self.held_live.release(workspace_id, record).collect();
         for waiting in released {
@@ -1981,7 +1981,7 @@ impl Task {
         let keys = self.keyed_routes().find_map(|route| {
             let names = tilo_relay_protocol::live::LiveResource {
                 app: route.app_id.clone(),
-                record: route.record.clone(),
+                record: route.document.clone(),
             };
             (names == *record && route.workspace_id().ok() == Some(workspace_id))
                 .then(|| self.keys_of(route))
@@ -2009,7 +2009,7 @@ impl Task {
         let bound = self.keyed_routes().find_map(|route| {
             let record = tilo_relay_protocol::live::LiveResource {
                 app: route.app_id.clone(),
-                record: route.record.clone(),
+                record: route.document.clone(),
             };
             (record.digest() == sealed.record && route.workspace_id().ok() == Some(workspace_id))
                 .then(|| Some((record, self.keys_of(route)?)))
@@ -2198,7 +2198,7 @@ impl Task {
             let _ = write!(
                 channels,
                 "\nroute {}/{}: {state};",
-                route.app_id, route.record
+                route.app_id, route.document
             );
         }
         // A write the replica holds undecided says what it waits for, so a reader is told what
@@ -2207,7 +2207,7 @@ impl Task {
             let _ = write!(
                 channels,
                 "\nheld {}/{}: {reason}",
-                route.app_id, route.record
+                route.app_id, route.document
             );
         }
         let planes = self.planes.describe();

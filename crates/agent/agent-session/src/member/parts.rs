@@ -28,7 +28,7 @@ impl AgentMember {
         route: &DocumentRoute,
         mutation: &DocumentMutation,
     ) -> Option<DocumentRoute> {
-        let record = ui::resource::DocumentId::parse(&route.record)?;
+        let record = ui::resource::DocumentId::parse(&route.document)?;
         let known = self
             .beside
             .get(route)
@@ -42,7 +42,7 @@ impl AgentMember {
                 .filter(|held| {
                     held.app_id == route.app_id
                         && held.cluster_id == route.cluster_id
-                        && !is_part(&held.record)
+                        && !is_part(&held.document)
                 })
                 .cloned()
                 .collect(),
@@ -53,7 +53,7 @@ impl AgentMember {
             };
             match app.apply_document(&record, mutation) {
                 Ok(()) => {
-                    tracing::debug!(part = %route.record, "agent: merged a part");
+                    tracing::debug!(part = %route.document, "agent: merged a part");
                     self.beside.insert(route.clone(), holder.clone());
                     // What waited for the part (a post made before the chain's
                     // newest part was here) is written now: it goes out.
@@ -63,7 +63,7 @@ impl AgentMember {
                     return Some(holder);
                 }
                 Err(error) => {
-                    tracing::debug!(%error, part = %route.record, "agent: a part is not held here");
+                    tracing::debug!(%error, part = %route.document, "agent: a part is not held here");
                 }
             }
         }
@@ -80,14 +80,14 @@ impl AgentMember {
             .filter(|route| {
                 route.app_id == holder.app_id
                     && route.cluster_id == holder.cluster_id
-                    && is_part(&route.record)
+                    && is_part(&route.document)
             })
             .collect();
         for part in waiting {
             let Some(Ok(saved)) = self.unopened.seed(&part) else {
                 continue;
             };
-            let Some(record) = ui::resource::DocumentId::parse(&part.record) else {
+            let Some(record) = ui::resource::DocumentId::parse(&part.document) else {
                 continue;
             };
             let Some(app) = self.apps.get(holder) else {
@@ -95,12 +95,12 @@ impl AgentMember {
             };
             match app.apply_document(&record, &DocumentMutation::Snapshot(saved)) {
                 Ok(()) => {
-                    tracing::debug!(part = %part.record, "agent: held a waiting part");
+                    tracing::debug!(part = %part.document, "agent: held a waiting part");
                     self.unopened.forget(&part);
                     self.beside.insert(part, holder.clone());
                 }
                 Err(error) => {
-                    tracing::debug!(%error, part = %part.record, "agent: a part is not held here");
+                    tracing::debug!(%error, part = %part.document, "agent: a part is not held here");
                 }
             }
         }
@@ -125,7 +125,7 @@ impl AgentMember {
             let part = DocumentRoute {
                 app_id: holder.app_id.clone(),
                 cluster_id: holder.cluster_id.clone(),
-                record: record.route().to_owned(),
+                document: record.route().to_owned(),
             };
             // A part another member already started, which this agent
             // started again without holding it (its keys had not come):
@@ -134,14 +134,14 @@ impl AgentMember {
             // others' as two starts of one part do.
             let mutation = match mutation {
                 DocumentMutation::Snapshot(bytes)
-                    if known.contains(&(part.app_id.clone(), part.record.clone())) =>
+                    if known.contains(&(part.app_id.clone(), part.document.clone())) =>
                 {
                     DocumentMutation::Incremental(bytes)
                 }
                 mutation => mutation,
             };
             self.generation = self.generation.wrapping_add(1);
-            tracing::debug!(part = %part.record, "agent: published a part");
+            tracing::debug!(part = %part.document, "agent: published a part");
             self.peer.write(part.clone(), &mutation)?;
             self.beside.insert(part, holder.clone());
         }

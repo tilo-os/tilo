@@ -492,7 +492,7 @@ fn arrival(app: &str, line: &str) -> Arrival {
         route: DocumentRoute {
             app_id: app.into(),
             cluster_id: "workspace".into(),
-            record: "r".into(),
+            document: "r".into(),
         },
         title: None,
         from: Some("Bank".into()),

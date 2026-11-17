@@ -39,7 +39,7 @@ fn asked_routes(cluster_id: &str, app_id: &str, record: &str) -> Vec<DocumentRou
     let route = |record: &str| DocumentRoute {
         app_id: app_id.to_owned(),
         cluster_id: cluster_id.to_owned(),
-        record: record.to_owned(),
+        document: record.to_owned(),
     };
     let mut routes = vec![route(record)];
     if let Some(chain) = chain_of(record) {
@@ -56,7 +56,7 @@ fn asked_routes(cluster_id: &str, app_id: &str, record: &str) -> Vec<DocumentRou
 /// the records a member reads a workspace's folder with, beside the tree's own
 /// record. None for a record that is no tree's own.
 fn tree_chunks(index: Option<&[u8]>, route: &DocumentRoute) -> Vec<DocumentRoute> {
-    if fs_protocol::tree::chunk_of_record(&route.record) != Some(0) {
+    if fs_protocol::tree::chunk_of_record(&route.document) != Some(0) {
         return Vec::new();
     }
     let Some(index) = index else {
@@ -68,7 +68,7 @@ fn tree_chunks(index: Option<&[u8]>, route: &DocumentRoute) -> Vec<DocumentRoute
     fs_protocol::tree::listed_chunks(&doc)
         .into_iter()
         .map(|chunk| DocumentRoute {
-            record: fs_protocol::tree::chunk_document_id(chunk),
+            document: fs_protocol::tree::chunk_document_id(chunk),
             ..route.clone()
         })
         .collect()
@@ -84,7 +84,7 @@ impl Workspace {
             .is_ok_and(|records| {
                 records
                     .iter()
-                    .any(|(app, record)| *app == route.app_id && *record == route.record)
+                    .any(|(app, record)| *app == route.app_id && *record == route.document)
             })
     }
 
@@ -136,7 +136,7 @@ impl Workspace {
             .routes(workspace_id, needs)
             .into_iter()
             .filter(|route| {
-                fs_protocol::tree::chunk_of_record(&route.record).is_some_and(|chunk| chunk > 0)
+                fs_protocol::tree::chunk_of_record(&route.document).is_some_and(|chunk| chunk > 0)
             })
             .collect();
         self.ask_routes(workspace_id, chunks)
@@ -160,7 +160,7 @@ impl Workspace {
             {
                 // A record the host sends only to a device that opened it (a chunk of a
                 // tree) is opened as one; any other is asked for by its route.
-                let ask = if tilo_actions::document_sync::document_sync(&route.record)
+                let ask = if tilo_actions::document_sync::document_sync(&route.document)
                     == tilo_actions::document_sync::DocumentSync::Eager
                 {
                     Cmd::OpenRoute(route.clone())
@@ -171,7 +171,7 @@ impl Workspace {
                     Ok(()) => {
                         tracing::debug!(
                             app = %route.app_id,
-                            record = %route.record,
+                            record = %route.document,
                             "workspace actions: asked the workspace for a record this member holds none of"
                         );
                         self.asked.insert(route.clone());
@@ -179,7 +179,7 @@ impl Workspace {
                     Err(error) => tracing::warn!(
                         %error,
                         app = %route.app_id,
-                        record = %route.record,
+                        record = %route.document,
                         "workspace actions: a record the workspace may hold was not asked for"
                     ),
                 }
@@ -278,7 +278,7 @@ impl Worker {
         }
         let needs = Needs::Read {
             app_id: &route.app_id,
-            record: &route.record,
+            record: &route.document,
         };
         // Asked for now: the same call goes through once it arrived, which the caller waits for
         // as the workspace's state rather than a reason to read.
@@ -320,7 +320,7 @@ impl Worker {
         act: bool,
     ) -> Result<Option<super::Saved>, Outcome> {
         let app_id = route.app_id.as_str();
-        let record = route.record.as_str();
+        let record = route.document.as_str();
         let needs = if act {
             Needs::Act { app_id, record }
         } else {
@@ -368,7 +368,7 @@ mod tests {
         DocumentRoute {
             app_id: app.into(),
             cluster_id: WORKSPACE.into(),
-            record: record.into(),
+            document: record.into(),
         }
     }
 
@@ -435,7 +435,7 @@ mod tests {
         assert!(
             !asked
                 .iter()
-                .any(|asked| asked.record == chain().part(0).as_str()),
+                .any(|asked| asked.document == chain().part(0).as_str()),
             "the chain's first part is a guess at what it holds, not its head"
         );
     }
@@ -460,7 +460,7 @@ mod tests {
             },
             &GaveUp::default(),
         );
-        waited.sort_by(|a, b| a.record.cmp(&b.record));
+        waited.sort_by(|a, b| a.document.cmp(&b.document));
         assert_eq!(
             waited,
             [records, head],
@@ -472,7 +472,7 @@ mod tests {
                 workspace,
                 Needs::Act {
                     app_id: "so.tilo.chat",
-                    record: asked.record.as_str(),
+                    record: asked.document.as_str(),
                 },
                 &GaveUp::default(),
             )

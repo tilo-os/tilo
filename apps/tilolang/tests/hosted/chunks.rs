@@ -139,10 +139,10 @@ fn a_chunk_that_arrives_after_the_window_opened_shows_without_opening_it_again(
     );
 
     // The peer's chunk arrives on the chunk's route, as the broker delivers it.
-    let chunk_route = RouteSpec::record(
+    let chunk_route = RouteSpec::document(
         route.app_id.clone(),
         route.cluster_id,
-        chunk::record_id(route.record.as_deref().unwrap_or(""), away),
+        chunk::record_id(route.document.as_deref().unwrap_or(""), away),
     );
     let snapshot = DocumentMutation::Snapshot(
         whole
@@ -190,10 +190,10 @@ fn a_chunk_that_arrives_after_the_live_window_opened_is_caught_up_off_its_frame(
     let route = RouteSpec::app(TASKS, uuid::Uuid::new_v4());
     let mut session = Session::brokered(&route, TASKS, "ada", "en-US", here, None, Window::live);
     session.settle();
-    let chunk_route = RouteSpec::record(
+    let chunk_route = RouteSpec::document(
         route.app_id.clone(),
         route.cluster_id,
-        chunk::record_id(route.record.as_deref().unwrap_or(""), away),
+        chunk::record_id(route.document.as_deref().unwrap_or(""), away),
     );
     let snapshot = DocumentMutation::Snapshot(
         whole

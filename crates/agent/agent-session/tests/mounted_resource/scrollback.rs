@@ -172,7 +172,7 @@ pub async fn run(bundle: &str) {
     let route = super::super::DocumentRoute {
         app_id: "so.tilo.chat".into(),
         cluster_id: workspace.workspace.clone(),
-        record: source.wire_document().into(),
+        document: source.wire_document().into(),
     };
     native
         .peer
@@ -257,7 +257,7 @@ pub async fn run(bundle: &str) {
     let replayed: Vec<String> = probe
         .documents
         .keys()
-        .map(|route| route.record.clone())
+        .map(|route| route.document.clone())
         .collect();
     println!("SCROLLBACK_REPLAYED={replayed:?}");
     assert!(
@@ -281,7 +281,7 @@ pub async fn run(bundle: &str) {
     let decoy = "ab".repeat(32);
     let bootstrap = serde_json::json!({
         "origin": hosted.web.origin, "workspace": workspace.workspace, "provider": provider,
-        "record": route.record,
+        "record": route.document,
         "reference": {"id": channel_id, "kind": channel_kind},
         "root": reader_root, "decoy": decoy, "seed": reader.key.to_bytes(),
         "certificate": {"cert": reader.cert, "hostCert": host.cert},

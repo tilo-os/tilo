@@ -567,7 +567,7 @@ fn passage(text: &str, from: usize, to: usize) -> Option<String> {
 pub fn open_id(route: &DocumentRoute) -> String {
     surface::encode_address(&surface::open_document_address(
         &route.app_id,
-        &route.record,
+        &route.document,
     ))
 }
 
@@ -649,7 +649,7 @@ pub fn answer(
             rank.saturating_add(1),
             doc.route.app_id,
             label(doc),
-            doc.route.record
+            doc.route.document
         );
         if let Some(changed) = doc.changed
             && let Some(at) = stamps.iter().position(|stamp| *stamp == changed)
@@ -700,7 +700,7 @@ mod tests {
         DocumentRoute {
             app_id: app.into(),
             cluster_id: "workspace".into(),
-            record: record.into(),
+            document: record.into(),
         }
     }
 
@@ -766,7 +766,7 @@ mod tests {
         let hits = search(&docs, "Q3 partner review", None, MOST_HITS);
         let order: Vec<&str> = hits
             .iter()
-            .map(|hit| docs[hit.index].route.record.as_str())
+            .map(|hit| docs[hit.index].route.document.as_str())
             .collect();
         assert_eq!(order.first(), Some(&"uuid:brief"), "{order:?}");
         assert!(!order.contains(&"uuid:other"), "{order:?}");
@@ -779,7 +779,7 @@ mod tests {
         assert!(search(&docs, "the of", None, MOST_HITS).is_empty());
         let notes = search(&docs, "review", Some("notes"), MOST_HITS);
         assert_eq!(notes.len(), 1);
-        assert_eq!(docs[notes[0].index].route.record, "uuid:decoy");
+        assert_eq!(docs[notes[0].index].route.document, "uuid:decoy");
     }
 
     #[test]
@@ -791,10 +791,10 @@ mod tests {
             doc("so.tilo.notes", "uuid:newer", "Plan", "launch plan", 5),
         ];
         let hits = search(&docs, "budget", None, MOST_HITS);
-        assert_eq!(docs[hits[0].index].route.record, "uuid:title");
+        assert_eq!(docs[hits[0].index].route.document, "uuid:title");
         let hits = search(&docs, "launch", None, MOST_HITS);
-        assert_eq!(docs[hits[0].index].route.record, "uuid:newer");
-        assert_eq!(docs[hits[1].index].route.record, "uuid:older");
+        assert_eq!(docs[hits[0].index].route.document, "uuid:newer");
+        assert_eq!(docs[hits[1].index].route.document, "uuid:older");
         // Plurals find the singular.
         assert_eq!(search(&docs, "launches", None, MOST_HITS).len(), 2);
         assert_eq!(term("caches"), term("cache"));

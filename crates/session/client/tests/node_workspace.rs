@@ -324,7 +324,7 @@ async fn a_company_node_governs_and_seals_the_workspace_people_join() {
     let route = DocumentRoute {
         app_id: "so.tilo.notes".into(),
         cluster_id: acme.workspace.clone(),
-        record: "plan".into(),
+        document: "plan".into(),
     };
     let (snapshot, change) = plan();
     ada.write(route.clone(), &DocumentMutation::Snapshot(snapshot.clone()))

@@ -78,7 +78,7 @@ impl Workspace {
                 } if opened == workspace_id => {
                     tracing::debug!(
                         app = %route.app_id,
-                        record = %route.record,
+                        record = %route.document,
                         ?answer,
                         asked = self.asked.contains(&route),
                         "workspace actions: the workspace answered for a record"
@@ -119,11 +119,11 @@ impl Workspace {
             // Asked without reading the record out, as a write lands for every post;
             // this device's own writes not taken in yet leave only a read to decide.
             let reads = engine
-                .document_revision(&route.cluster_id, &route.app_id, &route.record)
+                .document_revision(&route.cluster_id, &route.app_id, &route.document)
                 .and_then(|revision| match revision {
                     Some(_) => Ok(true),
                     None => engine
-                        .record(&route.cluster_id, &route.app_id, &route.record)
+                        .record(&route.cluster_id, &route.app_id, &route.document)
                         .map(|read| read.is_some()),
                 });
             let undecided = match reads {
@@ -131,7 +131,7 @@ impl Workspace {
                 Err(_) => engine.records(&route.cluster_id).is_ok_and(|records| {
                     records
                         .iter()
-                        .any(|(app, record)| *app == route.app_id && *record == route.record)
+                        .any(|(app, record)| *app == route.app_id && *record == route.document)
                 }),
             };
             if undecided {

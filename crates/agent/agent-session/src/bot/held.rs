@@ -98,7 +98,7 @@ impl HeldDocuments {
             ReplicaActor::Owner => return true,
             ReplicaActor::Agent => return false,
         };
-        let node = collab_types::document_node(&self.workspace, &route.app_id, &route.record);
+        let node = collab_types::document_node(&self.workspace, &route.app_id, &route.document);
         let now = tilo_clock::unix_now_ms();
         standing.answer(&node, ActionKind::Read, &Context::at(now)) == Answer::Allow
     }
@@ -120,11 +120,11 @@ impl HeldDocuments {
         // workspace's emoji) is kept under its owner's routes but is no
         // record of the owner's kind: a bot acts on the app's own records,
         // and reads what such a record says through the app's actions.
-        if collab_types::workspace_document(&route.app_id, &route.record).is_some() {
+        if collab_types::workspace_document(&route.app_id, &route.document).is_some() {
             return Ok(());
         }
-        let record = ui::resource::DocumentId::from_route(&route.record)
-            .ok_or_else(|| format!("{} is not a record route", route.record))?;
+        let record = ui::resource::DocumentId::from_route(&route.document)
+            .ok_or_else(|| format!("{} is not a record route", route.document))?;
         if record.chain_part().is_some() {
             return self.hold_beside(route, &record, saved);
         }
@@ -152,7 +152,7 @@ impl HeldDocuments {
             if let Some(saved) = self.waiting.remove(&part)
                 && let Err(error) = self.hold(&part, saved)
             {
-                tracing::warn!(record = %part.record, %error, "a part of a chain could not be held");
+                tracing::warn!(record = %part.document, %error, "a part of a chain could not be held");
             }
         }
         Ok(())
@@ -191,7 +191,7 @@ impl HeldDocuments {
             return Err(format!(
                 "no record of {} keeps {} beside it: {}",
                 route.app_id,
-                route.record,
+                route.document,
                 refusals.join("; ")
             ));
         }
@@ -302,7 +302,7 @@ impl ApiMember for HeldDocuments {
             let part = DocumentRoute {
                 app_id: route.app_id.clone(),
                 cluster_id: route.cluster_id.clone(),
-                record: record.route().to_owned(),
+                document: record.route().to_owned(),
             };
             self.beside.insert(part.clone(), route.clone());
             kept.push((part, mutation));
@@ -381,7 +381,7 @@ mod tests {
         let emoji = DocumentRoute {
             app_id: "so.tilo.chat".into(),
             cluster_id: "workspace-1".into(),
-            record: collab_types::workspace_document_id("tilo.workspace.emoji"),
+            document: collab_types::workspace_document_id("tilo.workspace.emoji"),
         };
         assert_eq!(held.hold(&emoji, b"not chat's record".to_vec()), Ok(()));
         assert!(held.offered().is_empty(), "nothing is held for it");
@@ -425,7 +425,7 @@ mod tests {
         let route = |app: &str| DocumentRoute {
             app_id: app.into(),
             cluster_id: workspace.into(),
-            record: collab_types::workspace_document_id("tilo.workspace.emoji"),
+            document: collab_types::workspace_document_id("tilo.workspace.emoji"),
         };
         held.hold(&route("so.tilo.chat"), b"emoji".to_vec())
             .unwrap();

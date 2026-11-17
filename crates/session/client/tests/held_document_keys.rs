@@ -61,7 +61,7 @@ async fn a_page_takes_the_record_keys_though_every_write_it_received_is_held() {
     // writes the record's only write, sealed and naming another version's
     // surface.
     let note = route();
-    let artifact = document_artifact_id(&note.app_id, &note.cluster_id, &note.record);
+    let artifact = document_artifact_id(&note.app_id, &note.cluster_id, &note.document);
     let laptop_device = laptop.key.verifying_key().to_bytes();
     crate::support::place(&host.relay, &laptop.cert).await;
     let mut laptop = NativeDevice::start(
@@ -80,7 +80,7 @@ async fn a_page_takes_the_record_keys_though_every_write_it_received_is_held() {
         sealed,
         artifact,
         Ed25519PublicKey::from_bytes(laptop_device),
-        document_attestation_id(&note.app_id, &note.cluster_id, &note.record),
+        document_attestation_id(&note.app_id, &note.cluster_id, &note.document),
         OpKind::Change,
         SystemTime::now(),
         1,

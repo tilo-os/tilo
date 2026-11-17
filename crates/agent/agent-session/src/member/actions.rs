@@ -36,7 +36,7 @@ const REMEMBERED: usize = 256;
 
 #[must_use]
 pub fn record_provider(route: &DocumentRoute) -> String {
-    format!("{RESOURCE_PROVIDER}:{}:{}", route.app_id, route.record)
+    format!("{RESOURCE_PROVIDER}:{}:{}", route.app_id, route.document)
 }
 
 pub(crate) fn resource_of(provider: &str, workspace: &str) -> Option<DocumentRoute> {
@@ -48,7 +48,7 @@ pub(crate) fn resource_of(provider: &str, workspace: &str) -> Option<DocumentRou
     Some(DocumentRoute {
         app_id: app_id.to_owned(),
         cluster_id: workspace.to_owned(),
-        record: record.to_owned(),
+        document: record.to_owned(),
     })
 }
 
@@ -278,7 +278,7 @@ impl AgentMember {
                 provider: provider.clone(),
                 app_id: route.app_id.clone(),
                 workspace: workspace.clone(),
-                document_id: route.record.clone(),
+                document_id: route.document.clone(),
                 browsable: false,
             });
             for mut row in self.survey_rows(&route) {
@@ -379,7 +379,7 @@ impl AgentMember {
                 .map_err(|reason| reject(ActionHostError::Refused { reason }))?;
             return Ok(ActionOutput {
                 value: Some(
-                    serde_json::json!({ "provider": record_provider(&route), "record": route.record }),
+                    serde_json::json!({ "provider": record_provider(&route), "record": route.document }),
                 ),
                 resources: Vec::new(),
             });

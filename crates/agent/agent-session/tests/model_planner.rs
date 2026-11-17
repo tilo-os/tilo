@@ -41,7 +41,7 @@ fn context_with(app_id: &str) -> (PlanContext, DocumentRoute, Replica) {
     let route = DocumentRoute {
         app_id: app_id.into(),
         cluster_id: WORKSPACE.into(),
-        record: app.wire_document().to_owned(),
+        document: app.wire_document().to_owned(),
     };
     let context = PlanContext {
         open: vec![(route.clone(), app.survey())],
@@ -67,7 +67,7 @@ fn a_natural_language_task_becomes_a_published_action_with_typed_arguments() {
         )
         .unwrap();
     assert_eq!(steps.len(), 1);
-    assert_eq!(steps[0].record.as_deref(), Some(route.record.as_str()));
+    assert_eq!(steps[0].record.as_deref(), Some(route.document.as_str()));
     let StepAction::Invoke { address, arguments } = &steps[0].action else {
         panic!("{:?}", steps[0]);
     };
