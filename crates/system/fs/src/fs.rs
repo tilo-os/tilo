@@ -6453,6 +6453,9 @@ impl Filesystem for QuickFS {
     }
 }
 
+#[cfg(all(test, target_os = "linux"))]
+mod mount_tests;
+
 #[cfg(test)]
 mod tests;
 
