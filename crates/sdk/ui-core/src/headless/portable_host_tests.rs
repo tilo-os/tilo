@@ -1489,3 +1489,34 @@ fn an_agents_comment_is_drawn_in_the_thread_and_on_the_issues_row() {
     );
     assert!(changed.is_some(), "the row is the agent's place");
 }
+
+/// What someone else changed in a field stays only as the hover note saying who and what it held:
+/// the write itself is drawn where it landed while it fades ([`crate::presence::PresenceCtx::draw_writes_in`]),
+/// so the field never keeps their colour after that.
+#[test]
+fn a_field_changed_by_someone_else_keeps_no_colour_of_theirs() {
+    use crate::component::{Bound, Described as _, Person};
+    use crate::widget::{TextInput, TextInputProps};
+    let field = |changed_by: Option<Person>, title: bool| {
+        let props = TextInputProps {
+            value: Bound {
+                state: crate::LocalState::new("Second agent task, renamed".to_owned()),
+                ..Bound::default()
+            },
+            changed_by,
+            previous: Some("Second agent task".to_owned()),
+            title,
+            ..TextInputProps::default()
+        };
+        let mut frame = frame(Box::new(TextInput::from_props("field", props)));
+        frame.relayout();
+        frame.render_rgba()
+    };
+    let agent = Person::new(crate::permissions::MemberId::agent("scribe"), "Ada");
+    for title in [false, true] {
+        assert!(
+            field(Some(agent.clone()), title) == field(None, title),
+            "a changed field draws as an unchanged one (title: {title})"
+        );
+    }
+}

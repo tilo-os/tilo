@@ -31,8 +31,8 @@ pub struct TextInputProps {
     /// It is where the person types next (an entry a command just opened): it takes the
     /// keyboard as soon as it is in the window, once.
     pub autofocus: bool,
-    /// Someone else changed the text and the person has not seen it yet: the field takes their
-    /// colour. The host sets it, from what the field is bound to (task-legibility §3).
+    /// Someone else changed the text and the person has not seen it yet: hovering the field says
+    /// who. The app's runtime sets it, from what the field is bound to (task-legibility §3).
     pub changed_by: Option<Person>,
     /// What the text was before that change, said when the field is hovered.
     pub previous: Option<String>,
@@ -154,7 +154,6 @@ impl Described for TextInput {
             .with_change(change)
             .disabled(!enabled)
             .with_read_only(read_only);
-        input.change_before = previous;
         input.set_edits(written_at(&value));
         if let Some(text) = text {
             input = input
@@ -219,7 +218,6 @@ impl Described for TextInput {
             let note = change_note(&by, previous.as_deref());
             (by, note)
         });
-        self.change_before = previous;
         let edits = value.clone();
         self.set_on_change_view(move |text| edits.edited(Value::Text(text.to_owned())));
         let placeholder = placeholder.unwrap_or_default();

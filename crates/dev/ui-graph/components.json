@@ -5428,7 +5428,7 @@
         },
         {
           "name": "changed_by",
-          "doc": "Someone else changed the text and the person has not seen it yet: the field takes their colour. The host sets it, from what the field is bound to (task-legibility §3).",
+          "doc": "Someone else changed the text and the person has not seen it yet: hovering the field says who. The app's runtime sets it, from what the field is bound to (task-legibility §3).",
           "type": {
             "option": "actor"
           }

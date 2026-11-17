@@ -12,8 +12,8 @@
 //!   it starts (`unseen_from:`) takes no mark: the divider says it is new;
 //! - a list or a tree stands a struck row in for each item someone else removed that the person
 //!   has not seen go, with who removed it;
-//! - a bound text field takes the changer's colour (`changed_by`), and says what it held before
-//!   the change (`previous`);
+//! - a bound text field says, when hovered, who changed it (`changed_by`) and what it held
+//!   before the change (`previous`);
 //! - a window's header holds a mark with how many records its document holds a new change of,
 //!   and by whom: what the person finds by scrolling it, never items put somewhere the window
 //!   keeps closed. What it opens says, per record, who changed it and what — a page of each
