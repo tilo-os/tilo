@@ -51,8 +51,8 @@ use tilo_net::proxy::host::Destinations;
 use tilo_server_protocol::certify::{ConfirmationAnswer, PendingConfirmation};
 use tilo_user_identity::DeviceCert;
 
-use super::Workspaces;
 use super::person_models::kept_location;
+use super::{Workspaces, system_time};
 
 /// A person's calendars, kept beside their mail accounts.
 #[cfg(feature = "agents")]
@@ -382,9 +382,24 @@ impl Workspaces {
                     Staged::read(dir, beginning).and_then(|staged| Ok((staged.shown()?, staged)));
                 let sent = match read {
                     Ok((shown, staged)) => {
-                        self.ask_before_sending(person, agent.agent, caller, &shown)
-                            .await?;
-                        send_staged(self.mail_session(), &root, staged).await
+                        // A message that left already is answered as the send
+                        // it was: its person is asked nothing more.
+                        if let Some(sent) = self
+                            .recorded_mail_send(Some(agent.workspace), &staged)
+                            .await
+                        {
+                            Ok(sent)
+                        } else {
+                            self.ask_before_sending(person, agent.agent, caller, &shown)
+                                .await?;
+                            self.send_in_workspace(
+                                Some(agent.workspace),
+                                self.mail_session(),
+                                &root,
+                                staged,
+                            )
+                            .await
+                        }
                     }
                     Err(unshowable) => Err(unshowable),
                 };
@@ -486,7 +501,7 @@ impl Workspaces {
             }
             person_accounts::SEND => {
                 let sending: SendId = argument(request, "a message to send")?;
-                answer(&send_staged_with(self.mail_session(), &root, sending).await)
+                answer(&self.send_a_message(&here, &root, sending).await)
             }
             person_accounts::SAVE_DRAFT => {
                 let keeping: SendId = argument(request, "a draft to keep")?;
@@ -1068,9 +1083,149 @@ impl Staged {
     }
 }
 
+/// How long a message is taken for before another key holder may take it
+/// over: long enough for a large message's files to reach its server, short
+/// enough that a sender that stopped is taken over in the same minute.
+const MAIL_SEND_LEASE: std::time::Duration = std::time::Duration::from_secs(10 * 60);
+
+impl Workspaces {
+    /// Send `staged` through `session` in `workspace`, where the workspace's
+    /// key holders agree on which one sends a message: it is taken under a
+    /// lease of its own ([`tilo_peer_state::mail_send_lease`]) and the workspace
+    /// keeps what left. A message another key holder already sent is
+    /// answered from what the workspace kept instead of sent again, so a
+    /// takeover loses nothing and sends nothing twice; a send that failed
+    /// keeps nothing and is tried again.
+    async fn send_in_workspace(
+        &self,
+        workspace: Option<&str>,
+        session: Session,
+        root: &Path,
+        staged: Staged,
+    ) -> Result<SentMail, String> {
+        let message = staged
+            .leaving
+            .message()
+            .message_id
+            .clone()
+            .filter(|message| !message.is_empty());
+        let Some((workspace, message)) = workspace.zip(message) else {
+            return send_staged(session, root, staged).await;
+        };
+        if let Some(sent) = self.recorded_mail_send(Some(workspace), &staged).await {
+            return Ok(sent);
+        }
+        let lease = tilo_peer_state::mail_send_lease(&message);
+        let device = self.serving_certificate().clone();
+        let now = system_time(tilo_clock::unix_now_ns());
+        let claimed = self
+            .author_own_workspace_state(workspace, &device, |peer| {
+                peer.workspace_mut().take_lease(
+                    &device,
+                    &lease,
+                    MAIL_SEND_LEASE,
+                    tilo_peer_state::unranked(),
+                    now,
+                )
+            })
+            .await
+            .map_err(|error| error.to_string())?
+            .is_some();
+        if !claimed {
+            // Another key holder is sending it. The caller keeps the message
+            // pending and asks again, and hears what left once it did.
+            return Err("another device is sending that message".into());
+        }
+        // The merged state may hold a send made before this device took the
+        // message: what left is answered, never sent a second time.
+        if let Some(sent) = self.recorded_mail_send(Some(workspace), &staged).await {
+            self.release_mail_send(workspace, &device, &lease, now)
+                .await;
+            return Ok(sent);
+        }
+        let outcome = send_staged(session, root, staged).await;
+        if let Ok(sent) = &outcome {
+            let answer = serde_json::to_value(sent).map_err(|error| error.to_string())?;
+            if let Err(error) = self
+                .author_own_workspace_state(workspace, &device, |peer| {
+                    peer.workspace_mut()
+                        .keep_mail_sent(&device, &message, answer, now)
+                })
+                .await
+            {
+                tracing::warn!(%message, %error, "a sent message was not kept as sent");
+            }
+        }
+        self.release_mail_send(workspace, &device, &lease, now)
+            .await;
+        outcome
+    }
+
+    /// Send the message begun under `sending`'s id in `workspace`: what it
+    /// says, its files and its invitation, as they were begun.
+    async fn send_a_message(
+        &self,
+        workspace: &str,
+        root: &Path,
+        sending: SendId,
+    ) -> Result<SentMail, String> {
+        let (dir, beginning) = begun_send(root, &sending.send)?;
+        let staged = Staged::read(dir, beginning)?;
+        self.send_in_workspace(Some(workspace), self.mail_session(), root, staged)
+            .await
+    }
+
+    /// What the workspace recorded of `staged` having left, if a key holder
+    /// sent it.
+    async fn recorded_mail_send(
+        &self,
+        workspace: Option<&str>,
+        staged: &Staged,
+    ) -> Option<SentMail> {
+        let message = staged
+            .leaving
+            .message()
+            .message_id
+            .as_deref()
+            .filter(|message| !message.is_empty())?;
+        let sent = self
+            .state(workspace?)
+            .await?
+            .workspace()
+            .mail_sent(message)?;
+        match serde_json::from_value(sent.answer) {
+            Ok(sent) => Some(sent),
+            Err(error) => {
+                tilo_failure::ignored!(
+                    "what a send answered is not an answer this build reads",
+                    error
+                );
+                None
+            }
+        }
+    }
+
+    /// Stop taking the message `message` for `lease`, so the next message is
+    /// free to take at once rather than wait out the deadline.
+    async fn release_mail_send(
+        &self,
+        workspace: &str,
+        device: &DeviceCert,
+        lease: &str,
+        now: std::time::SystemTime,
+    ) {
+        let _ = self
+            .author_own_workspace_state(workspace, device, |peer| {
+                peer.workspace_mut().release_lease(device, lease, now)
+            })
+            .await;
+    }
+}
+
 /// Send the message begun under `sending`'s id through `session`: the files
 /// its pieces made, its invitation, and what it says. Answers what became of
 /// its copy in the account's Sent folder.
+#[cfg(test)]
 async fn send_staged_with(
     session: Session,
     root: &Path,
