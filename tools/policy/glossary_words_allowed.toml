@@ -74,6 +74,11 @@ words = ["custody"]
 paths = ["crates/collab/tilo-peer-state/src/owner/publication.rs"]
 
 [[allow]]
+reason = "Taffy's layout constraint, an external API's type name."
+words = ["space"]
+identifiers = ["AvailableSpace"]
+
+[[allow]]
 reason = "An email's subject line."
 words = ["subject"]
 paths = [

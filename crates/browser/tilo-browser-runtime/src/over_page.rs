@@ -411,7 +411,17 @@ impl<S: OverSheet + 'static> Widget for OverPage<S> {
         let Some(&child) = ctx.taffy.children(ctx.node_id).unwrap_or_default().first() else {
             return;
         };
-        content.handle_event(event, &mut ctx.reborrow(ctx.path, child));
+        let path = ctx.path;
+        content.handle_event(event, &mut ctx.reborrow(path, child));
+        // A press on one of the sheet's controls is the control's own verb, answered where the
+        // sheet draws it: the same drain a window's surface answers what its tree publishes
+        // with. The sheet's tree is the page's own and nothing else answers what it queues, so
+        // without this the press is queued and never carried out.
+        ui::widget::controls::start_pending_control_invocations(
+            content.as_mut(),
+            &mut ctx.edits(),
+            path,
+        );
     }
 
     fn children(&self) -> Vec<&dyn Widget> {
@@ -536,6 +546,98 @@ mod tests {
             page.sheet.presentation.phase(),
             Phase::Closed,
             "the page's putting it away ends its leaving"
+        );
+    }
+
+    /// A sheet showing one control that counts its presses, as a sheet the page draws shows the
+    /// session's own controls.
+    struct Pressing {
+        pressed: std::rc::Rc<std::cell::Cell<u32>>,
+        shown: std::cell::Cell<bool>,
+    }
+
+    impl OverSheet for Pressing {
+        fn follow_sheet(&mut self, show: &mut dyn FnMut(Option<Element>), _missing: bool) -> bool {
+            if self.shown.replace(true) {
+                return false;
+            }
+            let pressed = std::rc::Rc::clone(&self.pressed);
+            show(Some(Box::new(
+                ui::widget::Button::new("sheet-press", "Press")
+                    .on_effect(move || pressed.set(pressed.get().saturating_add(1))),
+            )));
+            true
+        }
+
+        fn drawn(&self) -> bool {
+            true
+        }
+
+        fn sheet_name(&self) -> &'static str {
+            "pressing"
+        }
+    }
+
+    /// A press on a control the sheet drew reaches its handler: the page answers the control's
+    /// own verb, as a window's surface answers what its tree publishes, so a control built with
+    /// `on_effect` (a person's Remove among them) takes its press rather than queueing it for no
+    /// one.
+    #[test]
+    fn a_press_on_a_sheets_control_reaches_its_handler() {
+        use std::cell::Cell;
+        use std::collections::HashMap;
+        use std::rc::Rc;
+
+        use ui::taffy::AvailableSpace;
+        use ui::winit::event::{DeviceId, ElementState, MouseButton};
+
+        let pressed = Rc::new(Cell::new(0u32));
+        let mut page = OverPage::new(Pressing {
+            pressed: Rc::clone(&pressed),
+            shown: Cell::new(false),
+        });
+        page.follow();
+        assert!(page.content.is_some(), "the sheet is on the page");
+
+        let theme = Theme::dark();
+        let mut taffy = TaffyTree::new();
+        let mut map = HashMap::new();
+        let node = page.build_layout(&mut taffy, &theme, &mut map);
+        taffy
+            .compute_layout(
+                node,
+                ui::taffy::Size {
+                    width: AvailableSpace::Definite(240.0),
+                    height: AvailableSpace::Definite(120.0),
+                },
+            )
+            .expect("the page lays out");
+        page.apply_layout(&taffy, node, Point::ZERO);
+
+        let device = DeviceId::dummy();
+        let mut at_node = ui::testing::Dispatch::new().layout(&taffy, node);
+        for event in [
+            WindowEvent::CursorMoved {
+                device_id: device,
+                position: (12.0, 12.0).into(),
+            },
+            WindowEvent::MouseInput {
+                device_id: device,
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+            },
+            WindowEvent::MouseInput {
+                device_id: device,
+                state: ElementState::Released,
+                button: MouseButton::Left,
+            },
+        ] {
+            at_node.send(&mut page, &event);
+        }
+        assert_eq!(
+            pressed.get(),
+            1,
+            "the sheet control's handler took the press"
         );
     }
 }

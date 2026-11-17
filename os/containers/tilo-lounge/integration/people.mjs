@@ -1810,6 +1810,59 @@ try {
     }
     console.log('ok: the People tab changed the invitee to a Viewer through the device serving the workspace');
     mark('the invitee made a Viewer');
+    // Remove, from that row: the question it asks is the page's own, and its
+    // confirm is the server's own removal. A control stands on a row when its
+    // own middle is within the row's, which is how this row's Remove is told
+    // from every other row's.
+    const controlAt = (name, near = null) => `(() => {
+      const box = b => Array.isArray(b) ? b : [b.x0 ?? b.x, b.y0 ?? b.y, b.x1 ?? b.x + b.width, b.y1 ?? b.y + b.height];
+      const all = [];
+      const node = n => { all.push({name: n.name ?? '', bounds: n.bounds ?? n.rect ?? null}); (n.children || []).forEach(node); };
+      const walk = n => { if (n.semantics) node(n.semantics); (n.children || []).forEach(walk); };
+      const root = globalThis.tiloMount?.state()?.semantics?.root;
+      if (root) walk(root);
+      const named = all.filter(n => n.name === ${JSON.stringify(name)} && n.bounds);
+      const near = ${JSON.stringify(near)};
+      if (near === null) return named.length ? JSON.stringify(named[0].bounds) : '';
+      const anchor = all.find(n => n.name === near && n.bounds);
+      if (!anchor) return '';
+      const [, ay0, , ay1] = box(anchor.bounds);
+      const beside = named.find(n => {
+        const [, y0, , y1] = box(n.bounds);
+        const middle = (y0 + y1) / 2;
+        return middle >= ay0 && middle <= ay1;
+      });
+      return beside ? JSON.stringify(beside.bounds) : '';
+    })()`;
+    // A press at `bounds`, as a person presses the control they see there.
+    const pressBounds = async bounds => {
+      const [x0, y0, x1, y1] = Array.isArray(bounds) ? bounds
+        : [bounds.x0 ?? bounds.x, bounds.y0 ?? bounds.y, bounds.x1 ?? bounds.x + bounds.width, bounds.y1 ?? bounds.y + bounds.height];
+      const corner = JSON.parse(await canvasTopLeft(a.tab));
+      await click(a.tab, corner.x + (x0 + x1) / 2, corner.y + (y0 + y1) / 2);
+    };
+    const remove = JSON.parse(await a.tab.evaluate(controlAt('Remove', 'Viewer')));
+    if (!remove) await failed(`the Viewer's row offers no Remove: ${JSON.stringify((await snapshot(a.tab)).names)}`, a.tab);
+    await pressBounds(remove);
+    // The question the press asks stands over the sheet. Its answer is the
+    // dialog's own footer button: named for a reader, it stands nowhere in the
+    // published tree, so its place is the widget's own rect.
+    await until(a.tab, `JSON.stringify(globalThis.tiloMount?.state()?.semantics ?? {}).includes('Remove this person?')`,
+      'the remove question', stepLimit(8));
+    const confirmAt = `(() => {
+      let confirm = null;
+      const walk = node => { if (!confirm && node.test_id === 'ws-settings-decision.primary') confirm = node; (node.children || []).forEach(walk); };
+      const root = globalThis.tiloMount?.state()?.semantics?.root;
+      if (root) walk(root);
+      return confirm ? JSON.stringify([confirm.rect[0], confirm.rect[1], confirm.rect[0] + confirm.rect[2], confirm.rect[1] + confirm.rect[3]]) : '';
+    })()`;
+    await until(a.tab, confirmAt, "the remove question's confirm", stepLimit(8));
+    await pressBounds(JSON.parse(await a.tab.evaluate(confirmAt)));
+    await until(c.tab, `document.documentElement.dataset.refusal ?? ''`,
+      "C's page turned away after the removal", stepLimit(8));
+    await until(a.tab, `!(${controlAt('Viewer')})`, "the Viewer row leaving A's sheet", stepLimit(8));
+    console.log('ok: A removed the invitation\'s person, and the viewer\'s row left A\'s settings');
+    mark('the invitee removed from the page');
     await key(a.tab, 'Escape');
   }
 
