@@ -165,7 +165,8 @@ final class AsksHoldTests: XCTestCase {
           actions: () => [
             ...(window.published ? [{address: {resource: 'chain:messages', action: 'read'}, resource_kind: 'chat.messages',
               params: [{name: 'cursor'}, {name: 'pageSize'}, {name: 'fields'}, {name: 'where'}]}] : []),
-            {address: {resource: 'chat.workspace/people/' + hex(ADA), action: 'read'}, resource_kind: 'chat.workspace.people'}],
+            // Chat keeps no row for a person it was never told a name of (`rowless`).
+            ...(window.rowless ? [] : [{address: {resource: 'chat.workspace/people/' + hex(ADA), action: 'read'}, resource_kind: 'chat.workspace.people'}])],
           invokeAction: async (resource, action, args) => {
             if (resource === 'chain:messages' && action === 'read') {
               const how = next('messages');
@@ -176,7 +177,7 @@ final class AsksHoldTests: XCTestCase {
               return said({kind: 'chat.messages', messages: listed.map(m => ({item: 'chat.messages/messages/' + m.id, name: m.text,
                 ...Object.fromEntries((args.fields ?? []).map(field => [field, field === named ? m.conversation : m[field] ?? null]))}))});
             }
-            if (resource === 'chat.workspace/people/' + hex(ADA) && action === 'read') return said({id: {person: ADA}, name: 'Ada Lovelace'});
+            if (resource === 'chat.workspace/people/' + hex(ADA) && action === 'read' && !window.rowless) return said({id: {person: ADA}, name: 'Ada Lovelace'});
             if (resource === 'chat.workspace' && action === 'send') {
               if (next('send') === 'never') return never();
               const id = 's' + window.messages.length;
@@ -447,6 +448,26 @@ final class AsksHoldTests: XCTestCase {
             }
         }
         XCTAssertTrue(asNews, "the reminder came in no change that tells it")
+    }
+
+    /// As on the test site, whose people have no name: Chat keeps no row for them.
+    func testAPersonChatKeepsNoRowForIsInAtOnceAndHerConversationIsSaidWithoutWaitingForHerName() async throws {
+        try await start(Self.assistant)
+        try await enter("window.rowless = true; " + Self.twoMessages)
+        try await until("the app is signed in", within: .seconds(4)) { if case .signedIn = self.sessions.last { true } else { false } }
+        try await until("both stand in the main chat", within: .seconds(4)) { self.held.count == 2 }
+        guard case .signedIn(let person) = sessions.last else { return XCTFail("the app is not signed in") }
+        XCTAssertEqual(person.name, "")
+    }
+
+    func testAPersonsNameThatChatPublishesAMomentLaterIsTakenWhenItComes() async throws {
+        try await start(Self.assistant)
+        try await enter("window.rowless = true; setTimeout(() => { window.rowless = false; touch(); }, 700); " + Self.twoMessages)
+        try await until("both stand in the main chat", within: .seconds(4)) { self.held.count == 2 }
+        try await until("she is signed in under her name") {
+            if case .signedIn(let person) = self.sessions.last { person.name == "Ada Lovelace" } else { false }
+        }
+        XCTAssertEqual(held.count, 2)
     }
 }
 #endif
