@@ -11,20 +11,35 @@ use tilo_actions::remote::Caller;
 /// server admits their agent's turns on. No agent works on that device.
 macro_rules! team {
     ($root:ident, $browser:ident, $actions:ident, $workspaces:ident, $workspace:ident, $page:ident, $person:ident) => {
+        team!(
+            $root,
+            $browser,
+            $actions,
+            $workspaces,
+            $workspace,
+            $page,
+            $person,
+            served,
+            device
+        );
+    };
+    // The same, for a test in which another person's page joins as well: it names what serves
+    // the workspace and the device that serves it.
+    ($root:ident, $browser:ident, $actions:ident, $workspaces:ident, $workspace:ident, $page:ident, $person:ident, $served:ident, $device:ident) => {
         let ($root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
-        let host = enrol(&$root, "tilo-sh", DeviceCapabilities::member());
+        let $device = enrol(&$root, "tilo-sh", DeviceCapabilities::member());
         let $browser = enrol(&$root, "browser", DeviceCapabilities::member());
         let state = crate::support::scratch_dir();
-        let (server, $actions) = crate::harness::hosted::serving_records_with_actions(
+        let ($served, $actions) = crate::harness::hosted::serving_records_with_actions(
             &$root,
-            &host,
+            &$device,
             state.path(),
             crate::common::catalogue,
         )
         .await;
-        let $workspaces = server.workspaces().unwrap().clone();
+        let $workspaces = $served.workspaces().unwrap().clone();
         let $workspace = $workspaces.create("Team").await.unwrap().workspace;
-        let $page = Browser::open_at(&server, &$browser, &host, &$workspace).await;
+        let $page = Browser::open_at(&$served, &$browser, &$device, &$workspace).await;
         let $person = hex::encode($root.verifying_key().to_bytes());
         make_agent(&$page, &$workspaces, &$workspace, &$person, None).await;
         let catalogue = crate::common::catalogue();
