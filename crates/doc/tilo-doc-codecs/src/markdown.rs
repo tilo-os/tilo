@@ -265,6 +265,8 @@ struct ImportState {
     footnote_bodies: BTreeMap<String, Vec<String>>,
     def_label: Option<String>,
     def_para: Option<String>,
+    /// The addresses of the links open inside a footnote definition.
+    def_links: Vec<String>,
     image: Option<ImageIn>,
     in_quote: bool,
     quote_block: Option<String>,
@@ -333,6 +335,19 @@ impl ImportState {
             Event::SoftBreak | Event::HardBreak => {
                 if let Some(p) = self.def_para.as_mut() {
                     p.push(' ');
+                }
+            }
+            Event::Start(Tag::Link { dest_url, .. }) => self.def_links.push(dest_url.to_string()),
+            Event::End(TagEnd::Link) => {
+                // A note holds words only: the address a link names is written out after
+                // its words, so the source a footnote cites is never lost.
+                if let (Some(url), Some(p)) = (self.def_links.pop(), self.def_para.as_mut())
+                    && !url.is_empty()
+                    && !p.ends_with(url.as_str())
+                {
+                    p.push_str(" (");
+                    p.push_str(&url);
+                    p.push(')');
                 }
             }
             _ => {}
@@ -1630,6 +1645,27 @@ mod tests {
         reason = "each phase keeps one former test's body verbatim"
     )]
     fn markdown_footnotes_roundtrip_in_reference_order() {
+        {
+            // A note holds words only, so the address a link in it names is written out
+            // after the link's words; an address that is its own words is not said twice.
+            let src = "Prices rose[^1].\n\n[^1]: Source: [Acme price page](https://example.test/prices), read <https://example.test/again>\n";
+            let snap = import(src);
+            assert_eq!(snap.notes.len(), 1, "{:?}", snap.notes);
+            assert_eq!(
+                snap.notes[0].blocks[0].text,
+                "Source: Acme price page (https://example.test/prices), read https://example.test/again"
+            );
+            let out = export(src);
+            assert!(
+                out.contains("Acme price page (https://example.test/prices)"),
+                "the address is written back out: {out}"
+            );
+            assert_eq!(
+                import(&out).notes[0].blocks[0].text,
+                snap.notes[0].blocks[0].text,
+                "and reads the same again"
+            );
+        }
         {
             let src = "Text with a ref[^1] here.\n\n[^1]: The footnote body.\n";
             let snap = import(src);
