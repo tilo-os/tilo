@@ -36,6 +36,15 @@
 #   TILO_WEB_ABOUT_NOTIFY     where to sign up to hear when Tilo comes out
 #   TILO_WEB_ABOUT_SOURCE     the source code
 #   TILO_WEB_ABOUT_COMMUNITY  the community
+# A system web view on an iPhone or a Mac lets the page ask for a passkey only in
+# an app the site itself names. The site names them to Apple's systems at
+# /.well-known/apple-app-site-association (the Caddyfile); a site that names
+# none has no such file, and its page can use no passkey inside an app:
+#   TILO_WEB_APPLE_APPS  the application identifiers of the apps that may use
+#                       this site's passkeys, each <team>.<bundle id>, with
+#                       spaces between them, e.g.
+#                       "ABCDE12345.so.tilo.shell ABCDE12345.so.tilo.assistant"
+#                       (unset: none)
 # Only the app itself may frame it, and the one site that embeds it as a live
 # preview, if any (an embed reports its state to that site alone):
 #   TILO_WEB_EMBEDDER   that site's https:// origin (unset: none)
@@ -198,5 +207,21 @@ rest=${releases#*://}
 export TILO_RELEASES_UPSTREAM="${releases%%://*}://${rest%%/*}"
 export TILO_RELEASES_PATH="/${rest#*/}"
 export TILO_WEB_FRAME_ANCESTORS="$ancestors"
+# The Apple apps that may use this site's passkeys, as Apple's systems read
+# them. Each lands in JSON as it is: a team, ten capitals and digits, then a
+# bundle id of letters, digits, dots and hyphens.
+apple=${TILO_WEB_APPLE_APPS:-}
+case "$apple" in *[!A-Za-z0-9.\ -]*) echo "TILO_WEB_APPLE_APPS names application identifiers like ABCDE12345.so.tilo.shell, with spaces between them: $apple" >&2; exit 2 ;; esac
+apps=
+for id in $apple; do
+  case "$id" in
+    [A-Z0-9][A-Z0-9][A-Z0-9][A-Z0-9][A-Z0-9][A-Z0-9][A-Z0-9][A-Z0-9][A-Z0-9][A-Z0-9].[A-Za-z0-9]*) ;;
+    *) echo "TILO_WEB_APPLE_APPS names application identifiers like ABCDE12345.so.tilo.shell: $id" >&2; exit 2 ;;
+  esac
+  case "$id" in *..* | *. | *.-* | *-) echo "TILO_WEB_APPLE_APPS names application identifiers like ABCDE12345.so.tilo.shell: $id" >&2; exit 2 ;; esac
+  apps="$apps${apps:+,}\"$id\""
+done
+rm -f "$TILO_WEB_RUN/apple-app-site-association"
+[ -z "$apps" ] || printf '{"webcredentials":{"apps":[%s]}}\n' "$apps" > "$TILO_WEB_RUN/apple-app-site-association"
 printf '{%s}\n' "$fields" > "$TILO_WEB_RUN/entry.json"
 exec caddy run --config "$caddyfile" --adapter caddyfile
