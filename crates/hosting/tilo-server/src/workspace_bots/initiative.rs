@@ -219,6 +219,9 @@ struct Inner {
     /// The people whose mail the server watches because their assistant
     /// looks round.
     listening: Mutex<BTreeMap<Owner, crate::workspaces::MailListening>>,
+    /// The look each person's look-round is handing to their assistant, by
+    /// its id: the turn it starts may begin before the look is kept.
+    handing: Mutex<BTreeMap<Owner, String>>,
 }
 
 /// What this server's people's assistants find to do on their own. It holds
@@ -284,6 +287,7 @@ impl Initiative {
                 actions,
                 kept: Mutex::default(),
                 listening: Mutex::default(),
+                handing: Mutex::default(),
             }),
         }
     }
@@ -351,6 +355,36 @@ impl Initiative {
         *kept = changed;
         drop(all);
         Ok(answer)
+    }
+
+    /// The look-round's day, where the turn the message `cause` asks for is
+    /// one a look of `person`'s started in `workspace`: a look hands its
+    /// instruction over under its own id as the cause's key, which names
+    /// that message ([`chat::cause::message_id`]). Whoever carries out the turn
+    /// counts every model call of it on this day beside the assistant's
+    /// own, so the turn stops where the look-round's limit is reached.
+    /// `None` for every other turn.
+    #[must_use]
+    pub fn day_of_turn(
+        &self,
+        workspace: &str,
+        person: &str,
+        cause: &str,
+        day: &str,
+    ) -> Option<Spender> {
+        use tilo_actions::policy::MemberId;
+        // A turn names its person as a resource does. Only a person's own
+        // root is looked up: nothing else names a place this keeps.
+        person_of(person).ok()?;
+        let owner = (workspace.to_owned(), person.to_owned());
+        let kept = self.kept(&owner);
+        let event = kept.event.as_deref()?;
+        let asker = MemberId::person(person.to_owned());
+        let asked_by = |look: &str| chat::cause::message_id(&asker, look).to_string() == cause;
+        let handing = self.inner.handing.lock_recover().get(&owner).cloned();
+        let theirs = handing.as_deref().is_some_and(&asked_by)
+            || kept.looks.iter().any(|past| asked_by(&past.look.id));
+        theirs.then(|| look_round_spender(workspace, event, NAME, day, kept.day_limit()))
     }
 
     /// What `spender` spent on its day, as `person`'s store counts it.
@@ -740,6 +774,12 @@ impl Initiative {
                 ),
                 ..instruction
             };
+            // The turn this starts may begin before the look is kept: its
+            // model calls count on the look-round's day from the first.
+            self.inner
+                .handing
+                .lock_recover()
+                .insert(owner.clone(), id.clone());
             match steps.instruct(handed) {
                 Ok(said) => (LookEnded::Told, Ok(said)),
                 // Refused, or nothing took it now: the look says why, and

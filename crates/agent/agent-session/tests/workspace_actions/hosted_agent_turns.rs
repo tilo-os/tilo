@@ -266,11 +266,11 @@ async fn an_agent_on_the_host_works_with_its_keepers_own_model() {
         )
         .unwrap();
 
-    let hosts = Arc::new(Mutex::new(Vec::new()));
+    let unasked = Arc::new(Mutex::new(Vec::new()));
     let agents = HostAgents::new(
         workspaces.clone(),
         actions.clone(),
-        Some(never_asked(Arc::clone(&hosts))),
+        Some(never_asked(Arc::clone(&unasked))),
     );
     let turns = agents.turns(&workspace).await.unwrap();
     assert_eq!(turns.len(), 1, "{turns:?}");
@@ -283,7 +283,7 @@ async fn an_agent_on_the_host_works_with_its_keepers_own_model() {
     .unwrap();
 
     assert!(
-        hosts.lock().unwrap().is_empty(),
+        unasked.lock().unwrap().is_empty(),
         "the host's own model is not asked for a keeper who linked theirs"
     );
     let asked = theirs.asked();

@@ -9,26 +9,38 @@
 use super::HostAgents as ServerAgents;
 use super::*;
 use crate::harness::hosted::serving_records_with_actions as serving_with_actions;
-use tilo_actions::remote::person_initiative::{self, Proposal, Proposals, State};
+use tilo_actions::remote::person_initiative::{
+    self, LookEnded, LookRound, Proposal, Proposals, State,
+};
 use tilo_actions::remote::{ActionCallError, Caller, ReceiptStatus};
+use tilo_agent_session::bot::host_steps::{
+    HostStepError as StepError, HostSteps as Steps, Instruction, Judgement, StepCause,
+};
+use tilo_agent_session::workspace_actions::WorkspaceActions;
 use tilo_server::{
     workspace_agents::{Ask, WorkspaceActionProvider, invoke_named},
     workspace_bots::{initiative::Initiative, workspace_resource},
-    workspaces::Workspaces,
+    workspaces::{
+        Workspaces,
+        person_model::{
+            ProviderProtocol,
+            scripted::{Linking, Reply, ScriptedProvider},
+        },
+    },
 };
 
-/// One action on what was proposed as `caller` takes it, through what the app action server and an
+/// One `action` of `resource` as `caller` takes it, through what the app action server and an
 /// agent's turn both answer with.
-async fn take(
+async fn take_of(
     initiative: &Initiative,
     workspace: &str,
     caller: &Caller,
-    action: &str,
+    (resource, action): (&str, &str),
     arguments: serde_json::Value,
 ) -> Result<serde_json::Value, ActionCallError> {
     let request = InvokeRequest {
         invocation: InvocationId::new(),
-        target: person_initiative::target(person_initiative::PROPOSALS, action),
+        target: person_initiative::target(resource, action),
         argument: InvokeArgument::Json(arguments.as_object().cloned().unwrap_or_default()),
         context: None,
         confirmation: None,
@@ -44,12 +56,38 @@ async fn take(
             .unwrap()
             .ok()
             .flatten()
-            .expect("an action on what was proposed is answered");
+            .expect("an action of the server's own is answered");
     match receipt.status {
         ReceiptStatus::Completed { output } => Ok(output.value.unwrap_or_default()),
         ReceiptStatus::Rejected { error } => Err(error),
         other => panic!("an action of the server's own ends with its answer: {other:?}"),
     }
+}
+
+/// One action on what was proposed, as `caller` takes it.
+async fn take(
+    initiative: &Initiative,
+    workspace: &str,
+    caller: &Caller,
+    action: &str,
+    arguments: serde_json::Value,
+) -> Result<serde_json::Value, ActionCallError> {
+    let proposals = (person_initiative::PROPOSALS, action);
+    take_of(initiative, workspace, caller, proposals, arguments).await
+}
+
+/// The look-round after its `action`, as its person takes it.
+async fn look_round(
+    initiative: &Initiative,
+    workspace: &str,
+    person: &Caller,
+    action: &str,
+    arguments: serde_json::Value,
+) -> LookRound {
+    let look_round = (person_initiative::LOOK_ROUND, action);
+    let answer = take_of(initiative, workspace, person, look_round, arguments).await;
+    serde_json::from_value(answer.expect("the look-round answers its person"))
+        .expect("a look-round is answered")
 }
 
 /// The proposal `answer` describes.
@@ -484,5 +522,281 @@ async fn what_the_servers_own_services_answer_reaches_the_model_of_a_turn() {
     assert!(
         !failed && listed.starts_with("ok") && listed.contains("Look-round"),
         "what the person's events answered the model: {listed}"
+    );
+}
+
+/// What takes a look's instruction, as the server's events hand one over: one ask of Chat's
+/// `ask-agent` in the conversation of the person and their assistant, made as the person's
+/// event, under the step's own invocation as the cause's key.
+struct HandsOver {
+    actions: WorkspaceActions,
+    /// The person, at their page's device.
+    person: Caller,
+    conversation: String,
+    /// Every instruction handed over.
+    handed: Mutex<Vec<String>>,
+}
+
+impl Steps for HandsOver {
+    fn instruct(&self, instruction: Instruction) -> Result<String, StepError> {
+        let workspace = WorkspaceId::parse(&instruction.workspace).unwrap();
+        let event = self
+            .person
+            .clone()
+            .delegated_to(instruction.cause.installation.clone())
+            .named("Look-round");
+        let route = DocumentRoute {
+            app_id: CHAT.into(),
+            cluster_id: instruction.workspace.clone(),
+            document: String::new(),
+        };
+        let arguments = serde_json::json!({
+            "channel": self.conversation,
+            "text": instruction.instruction,
+            "cause": {
+                "kind": "event",
+                "label": "Look-round",
+                "key": instruction.cause.invocation.0.to_string(),
+            },
+        });
+        tokio::runtime::Handle::current()
+            .block_on(invoke_named(
+                &WorkspaceActionProvider::new(self.actions.clone(), workspace),
+                &event,
+                &route,
+                &ui::resource::chain_resource_id(&chat::parts::chain()),
+                "ask-agent",
+                arguments.as_object().unwrap().clone(),
+            ))
+            .map_err(StepError::Unavailable)?;
+        self.handed.lock().unwrap().push(instruction.instruction);
+        Ok(String::new())
+    }
+
+    fn judge(&self, _: Judgement) -> Result<serde_json::Value, StepError> {
+        Err(StepError::Unavailable("nothing is judged here".into()))
+    }
+}
+
+/// The look-round `event` of `person` fires in `workspace`: what the events' engine hands the
+/// server's steps at its time, on a thread that drives nothing else.
+async fn fires(
+    steps: &Arc<dyn Steps>,
+    person: &str,
+    workspace: &str,
+    event: &str,
+) -> Result<String, StepError> {
+    let instruction = Instruction {
+        person: person.to_owned(),
+        workspace: WorkspaceId::parse(workspace).unwrap().to_string(),
+        instruction: "Look round.".into(),
+        allow: Vec::new(),
+        permits: Vec::new(),
+        note: serde_json::json!({}),
+        cause: StepCause {
+            installation: event.to_owned(),
+            invocation: InvocationId::new(),
+            event: None,
+        },
+    };
+    let steps = Arc::clone(steps);
+    tokio::task::spawn_blocking(move || steps.instruct(instruction))
+        .await
+        .unwrap()
+}
+
+/// The person files `title` in the workspace's tracker, a task of nobody's yet.
+async fn files(actions: &WorkspaceActions, workspace: &str, person: &Caller, title: &str) {
+    let catalogue = crate::common::catalogue();
+    invoke_named(
+        &WorkspaceActionProvider::new(actions.clone(), WorkspaceId::parse(workspace).unwrap()),
+        person,
+        &DocumentRoute {
+            app_id: TASKS.into(),
+            cluster_id: workspace.to_owned(),
+            document: workspace_resource(&catalogue, TASKS),
+        },
+        &ui::resource::chain_resource_id(&tasks::part::chain()),
+        "create",
+        serde_json::json!({"title": title})
+            .as_object()
+            .unwrap()
+            .clone(),
+    )
+    .await
+    .expect("the person files a task");
+}
+
+/// The look-round's own day in a turn the server really carries out. A look hands over what it
+/// found; the turn that starts is answered by its person's own model, and every call of it counts
+/// on the look-round's day beside the assistant's. At the limit the turn is asked nothing more,
+/// the look-round says what it spent, and the next look, with news again, starts no turn and
+/// says what the one before it cost.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_turn_a_look_started_spends_the_look_rounds_own_day_and_stops_at_its_limit() {
+    let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
+    let server_device = enrol(&root, "tilo-sh", DeviceCapabilities::member());
+    let browser = enrol(&root, "browser", DeviceCapabilities::member());
+    let state = crate::support::scratch_dir();
+    let (server, actions) = serving_with_actions(
+        &root,
+        &server_device,
+        state.path(),
+        crate::common::catalogue,
+    )
+    .await;
+    let workspaces = server.workspaces().unwrap().clone();
+    let workspace = workspaces.create("Team").await.unwrap().workspace;
+    let page = Browser::open_at(&server, &browser, &server_device, &workspace).await;
+    let keeper = root.verifying_key().to_bytes();
+    let person = hex::encode(keeper);
+    furnished(&page, &workspaces, &workspace, &person).await;
+
+    // The person's own provider. The first call of a turn costs the look-round's whole day.
+    let theirs = ScriptedProvider::answering([
+        Reply::tool_call("call-1", "tilo_ls", serde_json::json!({})).costing(2_000),
+        Reply::text("One task is new: call the bank.").costing(300),
+    ]);
+    workspaces.answer_models_with(theirs.clone());
+    workspaces
+        .link_model_for(
+            &keeper,
+            &Linking {
+                name: "Google",
+                protocol: ProviderProtocol::OpenAiCompatible,
+                endpoint: "https://generativelanguage.googleapis.com/v1beta/openai",
+                key: Some("sk-the-keepers-own"),
+                models: &["gemini-main"],
+            },
+            true,
+        )
+        .unwrap();
+
+    // What the server's events hand a look's instruction to, and the look in front of it.
+    let me = Caller::authenticated(keeper, browser.cert.device_public_key)
+        .in_workspace(workspace.clone());
+    let hands = Arc::new(HandsOver {
+        actions: actions.clone(),
+        person: me.clone(),
+        conversation: chat::Chat::direct_id([
+            MemberId::person(person.clone()),
+            MemberId::agent(SCOUT),
+        ])
+        .as_str()
+        .to_owned(),
+        handed: Mutex::default(),
+    });
+    let (initiative, events) = Initiative::start_with(
+        workspaces.clone(),
+        state.path().join("initiative"),
+        state.path().join("events"),
+        hands.clone(),
+    );
+    let steps = (initiative.before())(hands.clone());
+
+    // Its person turns the look-round on, with a day of its own.
+    let on = look_round(
+        &initiative,
+        &workspace,
+        &me,
+        person_initiative::TURN_ON,
+        serde_json::json!({"when": "every 3600 seconds", "dayLimitMicros": 2_000}),
+    )
+    .await;
+    assert_eq!((on.day_limit_micros, on.spent_today_micros), (2_000, 0));
+    let event = on.event.clone().expect("it is an event now");
+
+    // The first look notes where the workspace stands and hands nothing over.
+    assert_eq!(
+        fires(&steps, &person, &workspace, &event).await,
+        Ok(String::new())
+    );
+    assert!(hands.handed.lock().unwrap().is_empty());
+
+    // Its person files a task: news at the next look, which hands it over.
+    files(&actions, &workspace, &me, "Call the bank").await;
+    assert_eq!(
+        fires(&steps, &person, &workspace, &event).await,
+        Ok(String::new())
+    );
+    assert_eq!(
+        hands.handed.lock().unwrap().len(),
+        1,
+        "what the look found is handed over"
+    );
+
+    // The server owes the assistant the turn the look started and carries it out with its
+    // person's own model, whose first call spends the look-round's day: it is asked nothing more.
+    let unasked = Arc::new(Mutex::new(Vec::new()));
+    let agents = ServerAgents::new(
+        workspaces.clone(),
+        actions.clone(),
+        Some(never_asked(Arc::clone(&unasked))),
+    )
+    .with_events(Some(events))
+    .with_initiative(Some(initiative.clone()));
+    let turns = agents.turns(&workspace).await.unwrap();
+    assert_eq!(turns.len(), 1, "{turns:?}");
+    assert_eq!(turns[0].person, person, "it works for the look's person");
+    tokio::time::timeout(
+        Duration::from_secs(60),
+        agents.answer(&workspace, &turns[0]),
+    )
+    .await
+    .expect("the turn ends")
+    .unwrap();
+    assert_eq!(
+        theirs.asked().len(),
+        1,
+        "no call past the look-round's limit"
+    );
+    assert!(unasked.lock().unwrap().is_empty());
+    let spent = look_round(
+        &initiative,
+        &workspace,
+        &me,
+        person_initiative::READ,
+        serde_json::json!({}),
+    )
+    .await;
+    assert_eq!(
+        (spent.day_limit_micros, spent.spent_today_micros),
+        (2_000, 2_000)
+    );
+
+    // News again. The look finds it, starts no turn on a spent day, and the look before it
+    // now says what its turn cost.
+    files(&actions, &workspace, &me, "Renew the lease").await;
+    assert_eq!(
+        fires(&steps, &person, &workspace, &event).await,
+        Ok(String::new())
+    );
+    assert_eq!(
+        hands.handed.lock().unwrap().len(),
+        1,
+        "a spent day starts no turn"
+    );
+    assert_eq!(theirs.asked().len(), 1);
+    let after = look_round(
+        &initiative,
+        &workspace,
+        &me,
+        person_initiative::READ,
+        serde_json::json!({}),
+    )
+    .await;
+    let looks: Vec<_> = after
+        .looks
+        .iter()
+        .map(|look| (look.ended, look.cost_micros))
+        .collect();
+    assert_eq!(
+        looks,
+        [
+            (LookEnded::OverLimit, 0),
+            (LookEnded::Told, 2_000),
+            (LookEnded::Quiet, 0),
+        ],
+        "its looks, newest first"
     );
 }

@@ -2506,7 +2506,7 @@ pub(super) fn discord_bridge() -> installed::InstalledBot {
     }
 }
 
-/// The workspace's Chat categories by name, each with its channels' names.
+/// The workspace's Chat categories by name, each with its conversations' names.
 async fn chat_layout(workspaces: &Workspaces, workspace: &str) -> Vec<(String, Vec<String>)> {
     let record = workspace_resource(&AppCatalogue::native(), CHAT);
     let saved = workspaces

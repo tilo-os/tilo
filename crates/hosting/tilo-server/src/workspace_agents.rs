@@ -1086,7 +1086,8 @@ impl HostAgents {
             .map(|keeper| {
                 // Every call is counted on the agent's day as it is answered, so turns of
                 // one agent going at once cannot each spend the day's whole limit.
-                self.workspaces
+                let theirs = self
+                    .workspaces
                     .person_model(keeper, sub_agents::kind_of(&turn.agent))
                     .working_in(workspace_id)
                     .spending_as(Spender {
@@ -1095,7 +1096,21 @@ impl HostAgents {
                         name: sub_agents::payer(turn).name.clone(),
                         day: day.to_owned(),
                         limit_micros: sub_agents::payer(turn).spend_limit_micros,
-                    })
+                    });
+                // A turn a look of its person's look-round started counts on the
+                // look-round's own day as well, and stops where that day's limit is reached.
+                let look_round = self.initiative.as_ref().and_then(|initiative| {
+                    initiative.day_of_turn(
+                        &workspace_id.to_string(),
+                        &turn.person,
+                        &turn.cause,
+                        day,
+                    )
+                });
+                match look_round {
+                    Some(look_round) => theirs.spending_as(look_round),
+                    None => theirs,
+                }
             });
         let linked = match theirs {
             Some(theirs) => {

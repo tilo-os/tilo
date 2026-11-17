@@ -885,9 +885,38 @@ async fn what_a_look_found_and_nothing_took_is_said_and_still_new_at_the_next_lo
         Ok(String::new())
     );
     assert_eq!(assistant.taken().len(), 2, "handed over again");
+    let told = read(&initiative, &workspace, &me).looks[0].clone();
+    assert_eq!(told.ended, LookEnded::Told);
+
+    // The turn that look started counts on the look-round's own day: the
+    // message that asks for it is the one its handing over names by the
+    // look's id, and no other message is.
+    let person = hex::encode(cert.user_public_key);
+    let place = WorkspaceId::parse(&workspace).unwrap().to_string();
+    let day = crate::workspace_agents::today();
+    let asks = chat::cause::message_id(
+        &tilo_actions::policy::MemberId::person(person.clone()),
+        &told.id,
+    )
+    .to_string();
     assert_eq!(
-        read(&initiative, &workspace, &me).looks[0].ended,
-        LookEnded::Told
+        initiative.day_of_turn(&place, &person, &asks, &day),
+        Some(look_round_spender(
+            &place,
+            &event,
+            "Look-round",
+            &day,
+            person_initiative::DEFAULT_DAY_LIMIT_MICROS,
+        ))
+    );
+    assert_eq!(
+        initiative.day_of_turn(&place, &person, "another-message", &day),
+        None
+    );
+    assert_eq!(
+        initiative.day_of_turn(&place, "../somebody", &asks, &day),
+        None,
+        "what is no person's root names nobody here"
     );
 }
 
