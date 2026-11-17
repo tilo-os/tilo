@@ -503,8 +503,10 @@ export function createViewPresenter(layer, {onScroll, picture, semantic, onFrame
     (controls ?? []).forEach((control, index) => {
       const key = `${node.path}#control:${index}`;
       if (control.kind === 'link') {
+        // Its element keeps the widget's own place and size: only the ink and
+        // the cue that it opens something are the link's.
+        element.classList.add('tilo-link');
         write(element, '@href', control.href ?? null);
-        write(element, 'css', 'display:inline-flex;align-items:center;cursor:pointer;');
         out.push(wordsFor(`${key}:label`, control.label, next));
         mark(element, 'activate', target);
         return;
@@ -605,7 +607,7 @@ export function createViewPresenter(layer, {onScroll, picture, semantic, onFrame
         if (control.open && control.options.length) {
           const list = elementFor(`${key}:list`, 'ul', next);
           write(list, '@role', 'listbox');
-          write(list, 'css', 'position:absolute;left:0;top:calc(100% + 4px);margin:0;padding:4px;min-width:100%;max-height:280px;overflow-y:auto;box-sizing:border-box;border-radius:var(--tilo-radius,8px);background:var(--tilo-surface,Canvas);box-shadow:0 8px 24px rgba(0,0,0,.18),0 0 0 1px var(--tilo-border,rgba(127,127,127,.25));z-index:3;');
+          write(list, 'css', 'position:absolute;left:0;top:calc(100% + 4px);margin:0;padding:4px;min-width:100%;max-height:280px;overflow-y:auto;box-sizing:border-box;border-radius:var(--tilo-radius,8px);background:var(--tilo-overlay,Canvas);box-shadow:0 8px 24px rgba(0,0,0,.18),0 0 0 1px var(--tilo-border,rgba(127,127,127,.25));z-index:3;');
           place(list, control.options.map((option, row) => optionRow(`${key}:option:${row}`, option, target, next, 'option')));
           parts.push(list);
         }
@@ -797,6 +799,8 @@ export function createViewPresenter(layer, {onScroll, picture, semantic, onFrame
 export const VIEW_CSS = `
 .tilo-view{font-family:var(--tilo-faces,"Tilo Sans",system-ui,sans-serif);color:var(--tilo-text,#1d1d1f);--tilo-mono:ui-monospace,"SF Mono",Menlo,monospace;font-synthesis:none;-webkit-font-smoothing:antialiased;}
 .tilo-view button{all:unset;box-sizing:border-box;display:block;cursor:default;}
+.tilo-link{color:var(--tilo-accent,#2f6fed);text-decoration:underline;text-underline-offset:2px;cursor:pointer;}
+.tilo-link:hover{color:var(--tilo-accent-hover,var(--tilo-accent,#2f6fed));}
 .tilo-view [aria-disabled=true]{opacity:.45;}
 .tilo-view [data-widget=WindowNoticeStrip]>[aria-hidden]{border-radius:var(--tilo-radius,8px);box-shadow:0 0 0 1px var(--tilo-border,rgba(127,127,127,.25)),0 6px 20px rgba(0,0,0,.12);}
 .tilo-view button:focus-visible{outline:2px solid var(--tilo-accent,#2f6fed);outline-offset:-2px;}
