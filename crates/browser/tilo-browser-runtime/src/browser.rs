@@ -485,6 +485,12 @@ pub(crate) struct Mount {
     /// This mount's id, to wake it when a silent member's pointer leaves.
     id: u64,
     desktop: Option<Desktop>,
+    /// What answers this mount's window, which shows one app alone, when it reads another app's
+    /// document ([`Mount::answer_reads_alone`]). The peer's code makes it when the window first
+    /// reads one and keeps its type to itself: the start module only drops it, so nothing of
+    /// the answering is linked into what a page loads first. `None` until then, and always for
+    /// the desktop, which answers its windows itself.
+    reads: Option<Box<dyn std::any::Any>>,
     gpu: Option<Gpu>,
     pending: bool,
     /// Wakes the mounted app's component sent the loop, not yet taken up:
@@ -1754,6 +1760,12 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
         )?,
         None => present_desktop(id, &config, dyn_store, permissions.clone())?,
     };
+    let mut media = ui::headless::host_media::MediaQueue::default();
+    // A page that shows one app alone and joined no workspace holds no other app's document
+    // and reaches nobody who does: its window hears so as it asks to read one.
+    if desktop.is_none() && config.peer.is_none() {
+        media.refuse_resource_reads();
+    }
     let window = Arc::new(
         event_loop
             .create_window(
@@ -1901,7 +1913,7 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
         window: Arc::clone(&window),
         canvas,
         frame,
-        media: ui::headless::host_media::MediaQueue::default(),
+        media,
         store,
         stores,
         checkout,
@@ -1911,6 +1923,7 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
         presence: presence::Presence::default(),
         id,
         desktop,
+        reads: None,
         gpu: None,
         pending: true,
         component_wakes,
