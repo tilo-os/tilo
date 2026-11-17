@@ -114,6 +114,59 @@ impl Workspaces {
             .unwrap_or_else(std::sync::PoisonError::into_inner) = session;
     }
 
+    /// Keep the mail account `address` for `person` with a sign-in, as
+    /// adding it from a window keeps one, and name the agent `named` (a
+    /// workspace and the agent's id there) for it when one is given: a
+    /// test stands in for the account's servers
+    /// ([`Self::carry_mail_through`]).
+    ///
+    /// # Errors
+    /// The account, its sign-in or the naming could not be kept.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn keep_mail_account_as_added(
+        &self,
+        person: &[u8; 32],
+        address: &str,
+        named: Option<(&str, &str)>,
+    ) -> Result<(), String> {
+        let root = self.person_settings_root(person);
+        let id = accounts::AccountId::from(address.to_owned());
+        let mut account = accounts::Account::new(id.clone(), accounts::email::TYPE_ID);
+        // Where its servers are is not kept: the stand-in is every server.
+        account.config = serde_json::json!({"email": address, "username": address});
+        let mut store = accounts::AccountStore::load_in(&root);
+        store.upsert(account);
+        store.save_in(&root).map_err(|error| format!("{error:?}"))?;
+        let mut vault =
+            accounts::AccountCredentials::open_in(&root).map_err(|error| format!("{error:?}"))?;
+        vault.put(&id, &accounts::Secret::password("kept-for-a-test"));
+        vault.try_save().map_err(|error| format!("{error:?}"))?;
+        if let Some((workspace, agent)) = named {
+            let naming = tilo_actions::remote::person_accounts::AssistantAccess {
+                account: address.to_owned(),
+                agent: agent.to_owned(),
+                may: true,
+            };
+            say_assistant(&root, workspace, &naming)?;
+        }
+        self.person_settings_changed();
+        Ok(())
+    }
+
+    /// The accounts of `person` that they named the agent `agent` of
+    /// `workspace` for: what that agent may read, search and draft through.
+    pub(super) fn accounts_named_for(
+        &self,
+        person: &[u8; 32],
+        workspace: &str,
+        agent: &str,
+    ) -> BTreeSet<String> {
+        accounts_of_assistant(
+            &self.person_settings_root(person),
+            NamedAgent { workspace, agent },
+        )
+    }
+
     /// What proves an account's sign-in at its server before a use by
     /// reference keeps the account.
     pub(super) fn account_tester(&self) -> Arc<dyn AccountTester> {

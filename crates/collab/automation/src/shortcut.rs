@@ -630,6 +630,22 @@ pub enum TriggerSpec {
         #[serde(default, skip_serializing_if = "serde_json::Map::is_empty")]
         filter: serde_json::Map<String, serde_json::Value>,
     },
+    /// Something new in a source: what it holds differs from what it held
+    /// when whoever keeps the automation last looked
+    /// ([`crate::source_change`]). `kind` says what sort of source it is
+    /// ([`crate::source_change::PERSON_MAIL`]) and `at` which one of that
+    /// sort, empty for every one of them. `filter` is equality on the fields
+    /// of what is new ([`crate::resource_time::matches`]). The trigger fires
+    /// once for each new thing, never for what the source held before the
+    /// trigger was first seen, and what is new goes with the invocation as
+    /// its event.
+    SourceChanged {
+        kind: String,
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        at: String,
+        #[serde(default, skip_serializing_if = "serde_json::Map::is_empty")]
+        filter: serde_json::Map<String, serde_json::Value>,
+    },
 }
 
 /// Whose changes a [`TriggerSpec::ResourceChanged`] counts.
@@ -717,7 +733,8 @@ impl TriggerSpec {
             | Self::AppEvent { .. }
             | Self::Schedule { .. }
             | Self::Once { .. }
-            | Self::ResourceTime { .. } => &EVENT_PAYLOAD,
+            | Self::ResourceTime { .. }
+            | Self::SourceChanged { .. } => &EVENT_PAYLOAD,
             _ => &[],
         }
     }
@@ -741,6 +758,7 @@ impl TriggerSpec {
             Self::IncomingMessage { .. } => "incoming_message",
             Self::NearbyDevice { .. } => "nearby_device",
             Self::ResourceTime { .. } => "resource_time",
+            Self::SourceChanged { .. } => "source_changed",
         }
     }
 }

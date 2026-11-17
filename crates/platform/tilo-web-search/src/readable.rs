@@ -58,10 +58,31 @@ const BLOCKS: &[&str] = &[
     "hgroup",
 ];
 
+/// Why a document read without a browser does not hold what its page shows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NeedsBrowser {
+    /// The document says so itself: it asks for scripts to be turned on and
+    /// holds little besides.
+    AsksForScripts,
+    /// The document carries scripts and next to no words of its own, so what
+    /// its page shows is built by them.
+    BuiltByScripts,
+}
+
+/// The most readable characters of a document that still only asks for
+/// scripts: a page that holds its words is read, whatever it asks beside them.
+const ASKS_FOR_SCRIPTS_BELOW: usize = 600;
+/// The most readable characters of a document whose scripts build its page:
+/// a heading and a link or two.
+const BUILT_BY_SCRIPTS_BELOW: usize = 200;
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Readable {
     pub title: Option<String>,
     pub text: String,
+    /// Why `text` is not what the page shows a person, where a read without
+    /// a browser cannot see that.
+    pub needs_browser: Option<NeedsBrowser>,
 }
 
 pub fn extract(html: &str, base: &Url) -> Readable {
@@ -78,10 +99,41 @@ pub fn extract(html: &str, base: &Url) -> Readable {
         in_cell: false,
     };
     renderer.node(root);
+    let text = tidy(&renderer.out);
     Readable {
         title,
-        text: tidy(&renderer.out),
+        needs_browser: needs_browser(&doc, &text),
+        text,
     }
+}
+
+/// Whether what `doc` shows a person is missing from `text`, its readable
+/// words: a document that asks for scripts in so many words, or one that
+/// carries scripts and almost no words of its own. Judged by the document
+/// alone, so a short page without a script is only short.
+fn needs_browser(doc: &Document, text: &str) -> Option<NeedsBrowser> {
+    let shown = text.chars().count();
+    if shown >= ASKS_FOR_SCRIPTS_BELOW {
+        return None;
+    }
+    let all = |css: &str| {
+        Selector::parse(css)
+            .map(|selector| doc.select(Document::ROOT, &selector))
+            .unwrap_or_default()
+    };
+    let asks = all("noscript").into_iter().any(|id| {
+        let said: String = doc
+            .children(id)
+            .iter()
+            .filter_map(|&child| doc.text_node(child))
+            .collect();
+        said.to_lowercase().contains("javascript")
+    });
+    if asks {
+        return Some(NeedsBrowser::AsksForScripts);
+    }
+    (shown < BUILT_BY_SCRIPTS_BELOW && !all("script").is_empty())
+        .then_some(NeedsBrowser::BuiltByScripts)
 }
 
 fn first(doc: &Document, css: &str) -> Option<NodeId> {
@@ -453,6 +505,34 @@ mod tests {
 
     fn read(html: &str) -> Readable {
         extract(html, &Url::parse("https://example.org/docs/page").unwrap())
+    }
+
+    #[test]
+    fn a_document_its_scripts_fill_says_it_needs_a_browser() {
+        // A heading, a link, and the scripts that build the list a person sees.
+        let built = read(
+            r#"<html><head><title>Quotes</title></head><body><h1>Quotes</h1>
+            <a href="/login">Login</a><div id="quotes"></div>
+            <script src="/static/jquery.js"></script><script>var data = [];</script>
+            </body></html>"#,
+        );
+        assert_eq!(built.needs_browser, Some(NeedsBrowser::BuiltByScripts));
+        assert!(built.text.contains("Quotes"), "{}", built.text);
+        let asks = read(
+            r#"<html><body><noscript>You need to enable JavaScript to run this app.</noscript>
+            <div id="root"></div><script src="/app.js"></script></body></html>"#,
+        );
+        assert_eq!(asks.needs_browser, Some(NeedsBrowser::AsksForScripts));
+        // A short page without a script is only short.
+        let short = read("<html><body><p>Closed on Mondays.</p></body></html>");
+        assert_eq!(short.needs_browser, None);
+        // A page that holds its words is read, whatever it asks beside them.
+        let article = format!(
+            r#"<html><body><noscript>Enable JavaScript for comments.</noscript>
+            <main><p>{}</p></main><script src="/a.js"></script></body></html>"#,
+            "A sentence of the article. ".repeat(40)
+        );
+        assert_eq!(read(&article).needs_browser, None);
     }
 
     #[test]

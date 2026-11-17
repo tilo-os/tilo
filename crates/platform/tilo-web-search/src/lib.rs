@@ -26,6 +26,7 @@ pub use fetch::fetch_fixture;
 pub use fetch::{FetchError, FetchLimits, FetchedBody, FetchedPage, fetch};
 pub use guard::{Refusal, check_address, check_url};
 pub use merge::SearchResult;
+pub use readable::NeedsBrowser;
 #[cfg(feature = "fixture-servers")]
 pub use search::search_fixture;
 pub use search::{

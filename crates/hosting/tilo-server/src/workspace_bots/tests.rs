@@ -23,6 +23,8 @@ mod events;
 mod initiative;
 /// The host's own answers for the programs it runs for a person.
 mod judging;
+/// A person's event that waits on their mail.
+mod sources;
 /// A program's triggers at a time its person's calendars hold.
 mod times;
 

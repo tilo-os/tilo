@@ -286,6 +286,22 @@ pub struct TimeEvent {
     pub payload: Map<String, Value>,
 }
 
+/// Something new found in a source
+/// ([`crate::shortcut::TriggerSpec::SourceChanged`]).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SourceEvent {
+    /// The workspace whose holder looks at the source.
+    pub workspace: String,
+    /// Index of the trigger among the program's triggers.
+    pub trigger: usize,
+    /// What names the new thing for good
+    /// ([`crate::source_change::Found::key`]).
+    pub key: String,
+    /// What the invocation is told ([`crate::source_change::told`]).
+    #[serde(default)]
+    pub payload: Map<String, Value>,
+}
+
 /// Either kind of event.
 #[derive(Clone, Copy, Debug)]
 pub enum Event<'a> {
@@ -294,6 +310,7 @@ pub enum Event<'a> {
     AppEvent(&'a AppEvent),
     Schedule(&'a ScheduleEvent),
     Time(&'a TimeEvent),
+    Source(&'a SourceEvent),
 }
 
 impl Event<'_> {
@@ -318,6 +335,11 @@ impl Event<'_> {
             Self::Time(event) => format!(
                 "time\0{}\0{}\0{}\0{}",
                 event.workspace, event.trigger, event.key, event.at_ms
+            ),
+            // The same thing found again is the same event.
+            Self::Source(event) => format!(
+                "source\0{}\0{}\0{}",
+                event.workspace, event.trigger, event.key
             ),
         }
     }
@@ -344,13 +366,18 @@ impl Event<'_> {
                 "at_ms": event.due_ms,
             }),
             Self::Time(event) => Value::Object(event.payload.clone()),
+            Self::Source(event) => Value::Object(event.payload.clone()),
         }
     }
 
     pub(super) const fn caused_by(&self) -> Option<&Cause> {
         match self {
             Self::Record(event) => event.caused_by.as_ref(),
-            Self::Connector(_) | Self::AppEvent(_) | Self::Schedule(_) | Self::Time(_) => None,
+            Self::Connector(_)
+            | Self::AppEvent(_)
+            | Self::Schedule(_)
+            | Self::Time(_)
+            | Self::Source(_) => None,
         }
     }
 }
