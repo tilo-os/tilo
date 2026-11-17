@@ -1120,18 +1120,14 @@ impl Joined {
             // What reaches a record is news only once the workspace replayed what it held, and
             // only once this page holds the record: the first that reaches it (a record the
             // workspace sends when a window opens it) is what the workspace already held.
-            let held = self
-                .read_heads
-                .contains_key(&(route.app_id.clone(), route.document.clone()));
+            let key = (route.app_id.clone(), route.document.clone());
+            let held = self.read_heads.contains_key(&key);
             let replayed = !self.ready || !held;
             if let Ok(
                 ResourceReading::Captured { heads, .. } | ResourceReading::Changes { heads, .. },
             ) = &read
             {
-                self.read_heads.insert(
-                    (route.app_id.clone(), route.document.clone()),
-                    heads.clone(),
-                );
+                self.read_heads.insert(key, heads.clone());
             }
             let applied = match read {
                 Ok(ResourceReading::Captured { bytes, heads, .. }) => {
