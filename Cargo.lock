@@ -23117,6 +23117,7 @@ dependencies = [
  "tilo-session",
  "tilo-spellcheck",
  "tilo-ui",
+ "tilo-written-view",
  "totp",
  "tube",
  "typst-editor",
@@ -23415,6 +23416,23 @@ dependencies = [
  "tracing",
  "workspace-hack",
  "zeroize",
+]
+
+[[package]]
+name = "tilo-written-view"
+version = "0.1.0"
+dependencies = [
+ "app-fleet",
+ "chrono",
+ "serde_json",
+ "tilo-actions",
+ "tilo-app",
+ "tilo-render-protocol",
+ "tilo-resource",
+ "tilo-ui-host",
+ "tilolang-tilo",
+ "tracing",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -29184,6 +29202,7 @@ dependencies = [
  "tilo-workspace-host",
  "tilo-workspace-join",
  "tilo-workspace-keys",
+ "tilo-written-view",
  "tilo-zone-globe",
  "tilolang",
  "tilolang-app",
