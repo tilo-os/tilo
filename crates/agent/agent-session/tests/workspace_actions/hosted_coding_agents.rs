@@ -39,6 +39,26 @@ const NOT_STARTED: &str = "I have not started.";
 /// What a coding agent is started for in these tests.
 const JOB: &str = "Add a line to README that says hello.";
 
+/// A test of a coding agent, on both kinds of server: under its own name where the server
+/// starts its workspaces' programs itself, and with `_where_its_machine_is_placed` where the
+/// workspace's machine is on another computer and the program is asked of that computer's
+/// member device ([`Local::placed`]). Every guard holds on both, so every test goes on both.
+macro_rules! on_both_kinds {
+    ($here:ident, $placed:ident, |$machine:ident| $body:block) => {
+        #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+        async fn $here() {
+            let $machine = Local::new();
+            $body
+        }
+
+        #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+        async fn $placed() {
+            let $machine = Local::placed();
+            $body
+        }
+    };
+}
+
 /// The person's own model as they linked it: a scripted provider behind their settings, with
 /// [`KEY`] in their vault. It answers `replies` in order, whoever asks: the person's own agent
 /// and the coding program alike.
@@ -254,12 +274,14 @@ fn starting_unasked(workspace: &str) -> Allowing {
     }
 }
 
-/// A coding agent's job alone starts nothing: it answers that it has not started, it stands
-/// as needing its person, nothing is started in the machine and nobody's model is asked for
-/// it. Where its person let their own agent start coding agents unasked, the job starts it;
-/// and once they took that back, the next job starts nothing again.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_job_alone_starts_nothing_unless_its_person_let_coding_agents_start_unasked() {
+// A coding agent's job alone starts nothing: it answers that it has not started, it stands
+// as needing its person, nothing is started in the machine and nobody's model is asked for
+// it. Where its person let their own agent start coding agents unasked, the job starts it;
+// and once they took that back, the next job starts nothing again.
+on_both_kinds! {
+    a_job_alone_starts_nothing_unless_its_person_let_coding_agents_start_unasked,
+    a_job_alone_starts_nothing_unless_its_person_let_coding_agents_start_unasked_where_its_machine_is_placed,
+    |machine| {
     team!(root, browser, actions, workspaces, workspace, page, person);
     let key = root.verifying_key().to_bytes();
     let theirs = links_model(
@@ -272,7 +294,6 @@ async fn a_job_alone_starts_nothing_unless_its_person_let_coding_agents_start_un
             Reply::text("Third one waits for your word."),
         ],
     );
-    let machine = Local::new();
     let (agents, _) = coding_on(&workspaces, &actions, &machine);
 
     // Nothing stands for its person: the job alone starts nothing.
@@ -370,15 +391,18 @@ async fn a_job_alone_starts_nothing_unless_its_person_let_coding_agents_start_un
     assert_eq!(theirs.asked().len(), 4);
     let _ = browser;
     page.peer.close();
+    }
 }
 
-/// Its person writes to it, and those words start it: the coding program is handed the job
-/// first and then their words, in one process, in a working copy and a branch of its own.
-/// Each thing it says is a message of its own in its conversation, its last words are the
-/// reply, its item says which coding program works and how, what it cost is counted on the
-/// day of the person's own agent, and that agent is told and says one line in the main thread.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn its_persons_words_start_it_with_its_job_and_what_it_says_is_relayed() {
+// Its person writes to it, and those words start it: the coding program is handed the job
+// first and then their words, in one process, in a working copy and a branch of its own.
+// Each thing it says is a message of its own in its conversation, its last words are the
+// reply, its item says which coding program works and how, what it cost is counted on the
+// day of the person's own agent, and that agent is told and says one line in the main thread.
+on_both_kinds! {
+    its_persons_words_start_it_with_its_job_and_what_it_says_is_relayed,
+    its_persons_words_start_it_with_its_job_and_what_it_says_is_relayed_where_its_machine_is_placed,
+    |machine| {
     team!(root, browser, actions, workspaces, workspace, page, person);
     let ada = themselves(&root, &browser, &workspace);
     let theirs = links_model(
@@ -391,7 +415,6 @@ async fn its_persons_words_start_it_with_its_job_and_what_it_says_is_relayed() {
             Reply::text("Fix hello is done: the README says hello."),
         ],
     );
-    let machine = Local::new();
     let (agents, starts) = coding_on(&workspaces, &actions, &machine);
     let own = direct(&person, "fix-hello");
     let thread = direct(&person, SCOUT);
@@ -519,13 +542,16 @@ async fn its_persons_words_start_it_with_its_job_and_what_it_says_is_relayed() {
         "a coding agent has no day of its own"
     );
     page.peer.close();
+    }
 }
 
-/// What its person writes while it works reaches the process that is working, not a second
-/// one, and the answer then stands under their newest words. A note of its starter reaches
-/// the same process afterwards.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn words_written_while_it_works_and_a_note_after_reach_the_same_process() {
+// What its person writes while it works reaches the process that is working, not a second
+// one, and the answer then stands under their newest words. A note of its starter reaches
+// the same process afterwards.
+on_both_kinds! {
+    words_written_while_it_works_and_a_note_after_reach_the_same_process,
+    words_written_while_it_works_and_a_note_after_reach_the_same_process_where_its_machine_is_placed,
+    |machine| {
     team!(root, browser, actions, workspaces, workspace, page, person);
     let ada = themselves(&root, &browser, &workspace);
     let theirs = links_model(
@@ -540,7 +566,6 @@ async fn words_written_while_it_works_and_a_note_after_reach_the_same_process() 
             Reply::text("Fix hello greeted the reader."),
         ],
     );
-    let machine = Local::new();
     let (agents, _) = coding_on(&workspaces, &actions, &machine);
     let own = direct(&person, "fix-hello");
     let copy = machine.files().join("code/hello.agents/fix-hello");
@@ -645,14 +670,17 @@ async fn words_written_while_it_works_and_a_note_after_reach_the_same_process() 
     starter_told(&workspaces, &workspace, &person, 3).await;
     assert_eq!(theirs.asked().len(), 6);
     page.peer.close();
+    }
 }
 
-/// A stop ends the coding program. Its person's stop on the message it works on, through
-/// Chat: its process ends, its reply says it was stopped, and its item says stopped, and by
-/// that person. Then new work, and the stop of the agent that started it, on its item: the
-/// process ends and its item says by that agent.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn its_person_stops_it_on_its_message_and_its_starter_on_its_item() {
+// A stop ends the coding program. Its person's stop on the message it works on, through
+// Chat: its process ends, its reply says it was stopped, and its item says stopped, and by
+// that person. Then new work, and the stop of the agent that started it, on its item: the
+// process ends and its item says by that agent.
+on_both_kinds! {
+    its_person_stops_it_on_its_message_and_its_starter_on_its_item,
+    its_person_stops_it_on_its_message_and_its_starter_on_its_item_where_its_machine_is_placed,
+    |machine| {
     team!(root, browser, actions, workspaces, workspace, page, person);
     let ada = themselves(&root, &browser, &workspace);
     let theirs = links_model(
@@ -663,7 +691,6 @@ async fn its_person_stops_it_on_its_message_and_its_starter_on_its_item() {
             Reply::text("The job is looked at."),
         ],
     );
-    let machine = Local::new();
     let (agents, starts) = coding_on(&workspaces, &actions, &machine);
     let own = direct(&person, "fix-hello");
     let copy = machine.files().join("code/hello.agents/fix-hello");
@@ -829,15 +856,18 @@ async fn its_person_stops_it_on_its_message_and_its_starter_on_its_item() {
         "nothing asked a model after the job"
     );
     page.peer.close();
+    }
 }
 
-/// The person's key is nowhere a program in the machine could find it, and nowhere in what
-/// the workspace keeps of the coding agent: not in what its processes were started with, not
-/// in a file among the workspace's files or in its working copy, not in a frame into the
-/// machine, not in what it printed, not in a message, not in its item. The key was used all
-/// the same: on the server, where the provider is called.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn the_persons_key_is_nowhere_in_the_machine_or_in_what_the_workspace_keeps() {
+// The person's key is nowhere a program in the machine could find it, and nowhere in what
+// the workspace keeps of the coding agent: not in what its processes were started with, not
+// in a file among the workspace's files or in its working copy, not in a frame into the
+// machine, not in what it printed, not in a message, not in its item. The key was used all
+// the same: on the server, where the provider is called.
+on_both_kinds! {
+    the_persons_key_is_nowhere_in_the_machine_or_in_what_the_workspace_keeps,
+    the_persons_key_is_nowhere_in_the_machine_or_in_what_the_workspace_keeps_where_its_machine_is_placed,
+    |machine| {
     team!(root, browser, actions, workspaces, workspace, page, person);
     let ada = themselves(&root, &browser, &workspace);
     let theirs = links_model(
@@ -849,7 +879,6 @@ async fn the_persons_key_is_nowhere_in_the_machine_or_in_what_the_workspace_keep
             Reply::text("Fix hello is done."),
         ],
     );
-    let machine = Local::new();
     let (agents, _) = coding_on(&workspaces, &actions, &machine);
     let own = direct(&person, "fix-hello");
     let thread = direct(&person, SCOUT);
@@ -926,14 +955,17 @@ async fn the_persons_key_is_nowhere_in_the_machine_or_in_what_the_workspace_keep
         "{said:?}"
     );
     page.peer.close();
+    }
 }
 
-/// The one-way rule holds through Tilo's own MCP server, as the coding program reaches it.
-/// It reads the chat's messages and is refused, so nothing of the main thread reaches the
-/// machine. It writes into the main thread and is refused. The same write into its own
-/// conversation is taken: the tools work, and the rule is where it writes.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_coding_program_reads_nothing_of_the_main_thread_and_writes_only_where_it_works() {
+// The one-way rule holds through Tilo's own MCP server, as the coding program reaches it.
+// It reads the chat's messages and is refused, so nothing of the main thread reaches the
+// machine. It writes into the main thread and is refused. The same write into its own
+// conversation is taken: the tools work, and the rule is where it writes.
+on_both_kinds! {
+    a_coding_program_reads_nothing_of_the_main_thread_and_writes_only_where_it_works,
+    a_coding_program_reads_nothing_of_the_main_thread_and_writes_only_where_it_works_where_its_machine_is_placed,
+    |machine| {
     team!(root, browser, actions, workspaces, workspace, page, person);
     let ada = themselves(&root, &browser, &workspace);
     let theirs = links_model(
@@ -946,7 +978,6 @@ async fn a_coding_program_reads_nothing_of_the_main_thread_and_writes_only_where
             Reply::text("Fix hello is done."),
         ],
     );
-    let machine = Local::new();
     let (agents, _) = coding_on(&workspaces, &actions, &machine);
     let own = direct(&person, "fix-hello");
     let thread = direct(&person, SCOUT);
@@ -1067,6 +1098,7 @@ async fn a_coding_program_reads_nothing_of_the_main_thread_and_writes_only_where
     }
     assert_eq!(theirs.asked().len(), 4);
     page.peer.close();
+    }
 }
 
 /// [`team!`], with a second workspace of the same person on the same server, joined from
@@ -1116,12 +1148,14 @@ async fn model_of(
         .to_owned()
 }
 
-/// A coding program of another workspace gets nothing from this one's model. Each workspace's
-/// coding agent is a process of its own with an endpoint of its own. The other workspace's
-/// process asks this one's endpoint: it is turned away, nobody's model is asked, and nothing
-/// reaches this one's conversation. Its own endpoint answers it as before.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_coding_program_of_another_workspace_gets_nothing_from_this_ones_model() {
+// A coding program of another workspace gets nothing from this one's model. Each workspace's
+// coding agent is a process of its own with an endpoint of its own. The other workspace's
+// process asks this one's endpoint: it is turned away, nobody's model is asked, and nothing
+// reaches this one's conversation. Its own endpoint answers it as before.
+on_both_kinds! {
+    a_coding_program_of_another_workspace_gets_nothing_from_this_ones_model,
+    a_coding_program_of_another_workspace_gets_nothing_from_this_ones_model_where_its_machine_is_placed,
+    |machine| {
     two_teams!(
         root,
         (browser, laptop),
@@ -1146,7 +1180,6 @@ async fn a_coding_program_of_another_workspace_gets_nothing_from_this_ones_model
             Reply::text("Mine."),
         ],
     );
-    let machine = Local::new();
     let (agents, _) = coding_on(&workspaces, &actions, &machine);
 
     // A coding agent of each workspace says where its model is.
@@ -1242,14 +1275,17 @@ async fn a_coding_program_of_another_workspace_gets_nothing_from_this_ones_model
     assert_eq!(theirs.asked().len(), 7);
     page.peer.close();
     other_page.peer.close();
+    }
 }
 
-/// The day's limit of the person's own agent holds for its coding agent: once what the coding
-/// program's calls cost has used the day up, its next call is answered at its endpoint before
-/// the provider is asked, and the reply says the limit's words. What it spent is counted on
-/// the day of the person's own agent, whose own next turn then stops before it starts.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn the_days_limit_answers_a_coding_program_before_the_provider_is_asked() {
+// The day's limit of the person's own agent holds for its coding agent: once what the coding
+// program's calls cost has used the day up, its next call is answered at its endpoint before
+// the provider is asked, and the reply says the limit's words. What it spent is counted on
+// the day of the person's own agent, whose own next turn then stops before it starts.
+on_both_kinds! {
+    the_days_limit_answers_a_coding_program_before_the_provider_is_asked,
+    the_days_limit_answers_a_coding_program_before_the_provider_is_asked_where_its_machine_is_placed,
+    |machine| {
     team!(root, browser, actions, workspaces, workspace, page, person);
     let ada = themselves(&root, &browser, &workspace);
     on_roster(
@@ -1272,7 +1308,6 @@ async fn the_days_limit_answers_a_coding_program_before_the_provider_is_asked() 
             Reply::text("never asked"),
         ],
     );
-    let machine = Local::new();
     let (agents, _) = coding_on(&workspaces, &actions, &machine);
     let own = direct(&person, "fix-hello");
     started_and_waiting(
@@ -1341,4 +1376,5 @@ async fn the_days_limit_answers_a_coding_program_before_the_provider_is_asked() 
     );
     assert_eq!(theirs.asked().len(), 2, "and no model was asked for that");
     page.peer.close();
+    }
 }

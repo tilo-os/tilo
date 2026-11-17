@@ -26,14 +26,31 @@ pub const ID: &str = "claude-code";
 /// The most of a command or a path a line of what it is doing shows.
 const DOING_LENGTH: usize = 120;
 
-/// Starts the program, installing it for the machine's own user where it is
-/// not there yet. What the installer prints goes to standard error, so
-/// standard output stays the program's own lines.
-const STARTS: &str = "PATH=\"$HOME/.local/bin:$PATH\"; export PATH; \
-     command -v claude >/dev/null 2>&1 \
-     || npm install --global --prefix \"$HOME/.local\" @anthropic-ai/claude-code >&2 \
-     || exit 127; \
-     exec claude \"$@\"";
+/// The version of Claude Code a machine starts, written once.
+macro_rules! version {
+    () => {
+        "2.1.326"
+    };
+}
+
+/// The one version of Claude Code this server starts in a machine: the place to change it.
+/// A machine that does not hold exactly this one fetches it from npm's registry by this
+/// number at its first start and keeps it in a folder of that number, so a machine that
+/// once fetched another never goes on starting that. An image that ships the program puts
+/// it in the same folder.
+pub const VERSION: &str = version!();
+
+/// Starts the program, installing it for the machine's own user where this version of it
+/// is not there yet. What the installer prints goes to standard error, so standard output
+/// stays the program's own lines.
+const STARTS: &str = concat!(
+    "at=\"$HOME/.local/share/claude-code/",
+    version!(),
+    "\"; [ -x \"$at/bin/claude\" ] \
+     || npm install --global --prefix \"$at\" @anthropic-ai/claude-code@",
+    version!(),
+    " >&2 || exit 127; exec \"$at/bin/claude\" \"$@\""
+);
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct ClaudeCode;
@@ -255,6 +272,22 @@ mod tests {
             let program = ClaudeCode.program(&Start::default());
             assert_eq!(program.endpoints, ["model", "tilo"]);
             assert_eq!(program.argv.get(..4).unwrap(), ["sh", "-c", STARTS, "claude"]);
+            // The one version named here is the one fetched and the one started: nothing
+            // without a number is asked of the registry.
+            assert_eq!(
+                STARTS,
+                format!(
+                    "at=\"$HOME/.local/share/claude-code/{VERSION}\"; [ -x \"$at/bin/claude\" ] \
+                     || npm install --global --prefix \"$at\" \
+                     @anthropic-ai/claude-code@{VERSION} >&2 || exit 127; \
+                     exec \"$at/bin/claude\" \"$@\""
+                )
+            );
+            assert!(
+                VERSION.split('.').count() == 3
+                    && VERSION.split('.').all(|part| part.parse::<u32>().is_ok()),
+                "an exact version, never a range or a tag: {VERSION}"
+            );
             for flag in [
                 "--print",
                 "--verbose",

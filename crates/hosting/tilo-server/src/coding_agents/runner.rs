@@ -47,9 +47,18 @@ pub trait Machines: Send + Sync {
 }
 
 impl Machines for crate::agents::HostShells {
+    /// Beside the server, where it starts its workspaces' programs itself. Where their
+    /// machines are on other computers, on the member device of the one that holds the
+    /// workspace's machine, held from here ([`crate::placed_programs`]).
     fn serve(&self, workspace: &str, start: ServeRun) -> Result<Arc<dyn Machine>, String> {
-        self.serve_run(workspace, start)
-            .map(|run| Arc::new(run) as Arc<dyn Machine>)
+        match self {
+            Self::Here(shells) => shells
+                .serve_run(workspace, None, start)
+                .map(|served| Arc::new(served) as Arc<dyn Machine>)
+                .map_err(|error| error.to_string()),
+            Self::Placed(placed) => crate::placed_programs::serve_placed(placed, workspace, start)
+                .map(|carried| carried as Arc<dyn Machine>),
+        }
     }
 }
 
