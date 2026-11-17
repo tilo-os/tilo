@@ -369,7 +369,7 @@ impl Worker {
             ui::permissions::policy::Invoked {
                 answer: permissions.answer(&node, need.kind),
                 attended: descriptor.contract.is_attended(),
-                record: None,
+                resource: None,
             },
             permissions.asker(),
         );
