@@ -30,7 +30,7 @@
 //! turn costs is counted on the agent's record, and an agent whose keeper's daily limit is
 //! reached stops and says so.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -38,7 +38,7 @@ use std::time::{Duration, Instant};
 use serde_json::{Map, Value, json};
 use tilo_actions::remote::{
     ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueQuery, InvocationReceipt,
-    InvocationState, InvokeArgument, InvokeRequest, Pending, RemoteActionMessage,
+    InvocationState, InvokeArgument, InvokeRequest, Pending, ReceiptStatus, RemoteActionMessage,
     RemoteActionTarget,
 };
 use tilo_actions::{InvocationId, InvocationUpdate, api::ActionAddress};
@@ -114,8 +114,8 @@ const ANSWER_WITH_VIEW: &str = "answer_with_view";
 pub struct WorkspaceActionProvider {
     actions: WorkspaceActions,
     workspace: WorkspaceId,
-    /// The events this host runs for its people, where it runs any: what an agent sets up, pauses,
-    /// changes and removes for the person its turn is for.
+    /// The events this device runs for its people, where it runs any: what an agent sets up,
+    /// pauses, changes and removes for the person its turn is for.
     events: Option<PersonEvents>,
     /// What this service answers itself for the one turn it serves, beside the workspace's
     /// resources ([`TurnProvider`]).
@@ -125,11 +125,62 @@ pub struct WorkspaceActionProvider {
     /// The one conversation a sub-agent's turn writes in, while this serves such a turn
     /// ([`sub_agents::admits`]).
     kept_to: Option<sub_agents::Own>,
+    /// What its own services answered, for a caller that follows an invocation.
+    answered: OwnAnswers,
+}
+
+/// What the services answered here have said, kept for whoever follows the invocation. They
+/// answer with the receipt alone and the workspace's actions never hear of it, while a turn's
+/// tools read how an invocation ended by observing it: without this an action that was carried
+/// out is told to the model as one still pending.
+#[derive(Clone, Default)]
+struct OwnAnswers(Arc<Mutex<VecDeque<(InvocationId, Caller, InvocationUpdate)>>>);
+
+impl OwnAnswers {
+    /// The most answers kept. A turn's tools observe an invocation as soon as it is admitted,
+    /// so only the newest are ever asked for.
+    const KEPT: usize = 64;
+
+    /// Keep how `receipt` says `caller`'s invocation ended. One that admitted nothing, or
+    /// says nothing of the end yet, leaves nothing to follow.
+    fn keep(&self, caller: &Caller, receipt: &InvocationReceipt) {
+        let invocation = receipt.invocation;
+        let update = match &receipt.status {
+            ReceiptStatus::Completed { output } => InvocationUpdate::Succeeded {
+                invocation,
+                output: output.clone(),
+            },
+            ReceiptStatus::Failed { error } => InvocationUpdate::Failed {
+                invocation,
+                error: error.clone(),
+            },
+            ReceiptStatus::Cancelled { message } => InvocationUpdate::Cancelled {
+                invocation,
+                message: message.clone(),
+            },
+            ReceiptStatus::Rejected { .. } | ReceiptStatus::Accepted => return,
+        };
+        let mut kept = self.0.lock_recover();
+        if kept.len() >= Self::KEPT {
+            kept.pop_front();
+        }
+        kept.push_back((invocation, caller.clone(), update));
+    }
+
+    /// How invocation `id` ended, for the `caller` that made it and nobody else.
+    fn of(&self, caller: &Caller, id: &InvocationId) -> Option<InvocationState> {
+        self.0
+            .lock_recover()
+            .iter()
+            .rev()
+            .find(|(invocation, by, _)| invocation == id && by == caller)
+            .map(|(_, _, update)| InvocationState::new(*id, update.clone()))
+    }
 }
 
 impl WorkspaceActionProvider {
     #[must_use]
-    pub const fn new(actions: WorkspaceActions, workspace: WorkspaceId) -> Self {
+    pub fn new(actions: WorkspaceActions, workspace: WorkspaceId) -> Self {
         Self {
             actions,
             workspace,
@@ -137,11 +188,12 @@ impl WorkspaceActionProvider {
             own: Vec::new(),
             ended: None,
             kept_to: None,
+            answered: OwnAnswers::default(),
         }
     }
 
     /// This host, answering also for `events`: the host's own actions on a person's scheduled
-    /// work and events, listed and taken beside the workspace's records.
+    /// work and events, listed and taken beside the workspace's resources.
     #[must_use]
     pub fn offering(mut self, events: Option<PersonEvents>) -> Self {
         self.events = events;
@@ -254,7 +306,9 @@ impl ActionProvider for WorkspaceActionProvider {
         if let Some(events) = &self.events
             && request.target.provider == person_events::PROVIDER
         {
-            return Pending::ready(Ok(events.invoke(self.workspace, caller, &request)));
+            let receipt = events.invoke(self.workspace, caller, &request);
+            self.answered.keep(caller, &receipt);
+            return Pending::ready(Ok(receipt));
         }
         if let Some(own) = self.own.iter().find(|own| own.takes(&request.target))
             && let Some(ended) = &self.ended
@@ -275,6 +329,7 @@ impl ActionProvider for WorkspaceActionProvider {
             .as_ref()
             .and_then(|ended| ended.of(id))
             .or_else(|| self.actions.observe(caller, id))
+            .or_else(|| self.answered.of(caller, id))
     }
 
     fn cancel(&self, caller: &Caller, id: &InvocationId) -> Pending<Result<(), ActionCallError>> {
