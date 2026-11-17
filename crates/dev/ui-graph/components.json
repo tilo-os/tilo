@@ -750,6 +750,65 @@
       }
     },
     {
+      "name": "BarChart",
+      "doc": "Bars over named categories: how much there is of each, to compare. Several measured things stand beside each other in a category, stack on each other, or stack as shares of the category's whole; each takes the next colour of the theme's palette and is named in a legend.",
+      "props": [
+        {
+          "name": "bars",
+          "doc": "What is measured, each with its reading in every category: `.bars(values: done, label: \"Done\")`.",
+          "type": {
+            "list": {
+              "cases": {
+                "name": "Bars"
+              }
+            }
+          },
+          "required": true,
+          "positional": true
+        },
+        {
+          "name": "categories",
+          "doc": "What each group of bars is of, in order, under it: a week, a team, a stage.",
+          "type": {
+            "list": "text"
+          },
+          "required": true
+        },
+        {
+          "name": "title",
+          "doc": "What it shows, at its head and as assistive technology announces it.",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "layout",
+          "doc": "How several measured things share a category: `grouped` beside each other unless said, `stacked` on each other, `share` stacked as parts of the category's whole.",
+          "type": {
+            "option": {
+              "choice": {
+                "name": "BarLayout",
+                "cases": [
+                  "grouped",
+                  "stacked",
+                  "share"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "name": "readings",
+          "doc": "Each bar's reading written at it.",
+          "type": "bool"
+        }
+      ],
+      "semantics": {
+        "role": "Image",
+        "label": "title"
+      }
+    },
+    {
       "name": "ChangeMark",
       "doc": "What someone else changed of a resource that the person looking has not seen yet: who, in which task run, and whether they made, changed or removed it.",
       "props": [
@@ -3783,6 +3842,48 @@
       "semantics": {
         "role": "Group",
         "label": "label"
+      }
+    },
+    {
+      "name": "PieChart",
+      "doc": "The parts of one whole as the slices of a pie: how a total divides. Each slice takes the next colour of the theme's palette and is named in a legend with its share.",
+      "props": [
+        {
+          "name": "slices",
+          "doc": "The parts, in order: `.slice(label: \"Open\", value: 12.0)`.",
+          "type": {
+            "list": {
+              "cases": {
+                "name": "Slice"
+              }
+            }
+          },
+          "required": true,
+          "positional": true
+        },
+        {
+          "name": "title",
+          "doc": "What it shows, as assistive technology announces it.",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "ring",
+          "doc": "A ring rather than a full pie, with `total` read at its centre.",
+          "type": "bool"
+        },
+        {
+          "name": "total",
+          "doc": "What a ring reads at its centre: the whole, as it reads (\"128 issues\").",
+          "type": {
+            "option": "text"
+          }
+        }
+      ],
+      "semantics": {
+        "role": "Image",
+        "label": "title"
       }
     },
     {
@@ -8619,6 +8720,55 @@
               "name": "to",
               "ty": "text",
               "doc": "Where it ends."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Bars",
+      "doc": "The bars of one measured thing: its reading in each category.",
+      "cases": [
+        {
+          "name": "bars",
+          "doc": "A bar in each category for `values`, named `label` in the chart's legend.",
+          "fields": [
+            {
+              "name": "values",
+              "ty": {
+                "list": "float"
+              },
+              "doc": "The readings, one for each category, in the categories' order."
+            },
+            {
+              "name": "label",
+              "ty": "text",
+              "default": {
+                "text": ""
+              },
+              "doc": "What is measured, in the legend."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Slice",
+      "doc": "One part of the whole a pie shows.",
+      "cases": [
+        {
+          "name": "slice",
+          "doc": "A slice as large as `value` is of the sum, named `label` in the legend.",
+          "fields": [
+            {
+              "name": "label",
+              "ty": "text",
+              "doc": "What the part is of."
+            },
+            {
+              "name": "value",
+              "ty": "float",
+              "doc": "How much of it there is; nothing below zero is drawn."
             }
           ]
         }

@@ -177,6 +177,9 @@ pub struct CategoryMarks {
 
 pub type CategoryChart = Plot<CategoryMarks>;
 
+mod bar_chart_component;
+pub use bar_chart_component::{BarChartProps, BarSeries, bars_description};
+
 impl CategoryChart {
     pub fn new(categories: Vec<Category>, series: Vec<CategorySeries>) -> Self {
         Plot::from_marks(CategoryMarks {

@@ -1329,6 +1329,8 @@ pub fn catalogue() -> Catalogue {
             crate::widget::drawing::shape_description(),
             crate::widget::chart::series_description(),
             crate::widget::connection_description(),
+            crate::widget::category_chart::bars_description(),
+            crate::widget::pie_chart::slice_description(),
         ],
     }
 }

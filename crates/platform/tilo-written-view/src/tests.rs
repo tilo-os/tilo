@@ -364,3 +364,104 @@ fn a_view_is_given_the_apps_its_writer_listed_and_no_other() {
         "only Tasks was asked for: {asked:?}"
     );
 }
+
+/// Tasks' document of the workspace with the areas `areas`, each its name and how many people
+/// it has, as Tasks stores it.
+fn staffed(areas: &[(&str, usize)]) -> Json {
+    let mut stored = Map::new();
+    for (at, (name, people)) in areas.iter().enumerate() {
+        let mut members = Map::new();
+        for person in 0..*people {
+            members.insert(
+                format!("p{person}"),
+                json!({ "k": format!("a{person}"), "v": { "name": format!("Person {person}"), "role": "member" } }),
+            );
+        }
+        stored.insert(
+            format!("a{at}"),
+            json!({ "k": format!("a{at}"), "v": {
+                "id": format!("a{at}"),
+                "name": name,
+                "kind": { "$variant": "project" },
+                "people": members,
+            } }),
+        );
+    }
+    json!({ "areas": stored })
+}
+
+/// A bar for each of Tasks' areas, as tall as the area has people.
+const CHART: &str = "view staffing() {\n    ui.BarChart(\n        [.bars(values: tasks.tracker.areas.map(a -> a.people.len().to_float()), label: \"People\")],\n        categories: tasks.tracker.areas.map(a -> a.name),\n    )\n}";
+
+/// The parts of the whole: each area's share of the people.
+const PIE: &str = "view shares() {\n    ui.PieChart(tasks.tracker.areas.map(a -> ui.Slice.slice(label: a.name, value: a.people.len().to_float())))\n}";
+
+#[test]
+fn a_chart_follows_the_resource_it_reads() {
+    let workspace = TestWorkspace::default();
+    workspace.write(TASKS, staffed(&[("Launch", 2), ("Research", 1)]));
+    let (mut surface, state) = shown(CHART, ada(), &workspace);
+    assert_eq!(
+        surface.numbers("ui.BarChart", "bars"),
+        [2.0, 1.0],
+        "a bar for each area, as tall as it has people"
+    );
+    assert_eq!(
+        surface.words("ui.BarChart", "categories"),
+        ["Launch", "Research"]
+    );
+    assert_eq!(
+        surface.drawn("CategoryChart"),
+        1,
+        "drawn by the toolkit's own chart"
+    );
+    let chart = surface.nodes("ui.BarChart").remove(0).0;
+
+    // Two people join Research and an area is added in Tasks, by whoever: the read the view left
+    // waiting answers and the bars follow. It is the chart that stood there, with new readings:
+    // nothing reloads and no view is opened anew.
+    workspace.write(
+        TASKS,
+        staffed(&[("Launch", 2), ("Research", 3), ("Sales", 4)]),
+    );
+    surface.turn();
+    assert_eq!(surface.numbers("ui.BarChart", "bars"), [2.0, 3.0, 4.0]);
+    assert_eq!(
+        surface.words("ui.BarChart", "categories"),
+        ["Launch", "Research", "Sales"]
+    );
+    assert_eq!(surface.nodes("ui.BarChart").remove(0).0, chart);
+    assert_eq!(surface.drawn("CategoryChart"), 1);
+
+    assert!(state.refused().is_empty());
+    assert!(workspace.invoked().is_empty(), "a chart sends nothing");
+}
+
+#[test]
+fn a_pie_follows_the_resource_it_reads() {
+    let workspace = TestWorkspace::default();
+    workspace.write(TASKS, staffed(&[("Launch", 2), ("Research", 1)]));
+    let (mut surface, _) = shown(PIE, ada(), &workspace);
+    assert_eq!(surface.numbers("ui.PieChart", "slices"), [2.0, 1.0]);
+    assert_eq!(surface.drawn("PieChart"), 1);
+
+    workspace.write(TASKS, staffed(&[("Launch", 2), ("Research", 5)]));
+    surface.turn();
+    assert_eq!(surface.numbers("ui.PieChart", "slices"), [2.0, 5.0]);
+    assert_eq!(surface.drawn("PieChart"), 1);
+}
+
+#[test]
+fn a_chart_of_a_resource_the_person_may_not_read_draws_none_of_it() {
+    let workspace = TestWorkspace::default();
+    workspace.write(TASKS, staffed(&[("Launch", 2)]));
+    workspace.refuse(TASKS);
+    let (mut surface, state) = shown(CHART, ada(), &workspace);
+    surface.turn();
+    assert_eq!(state.refused(), ["Tasks"]);
+    assert!(
+        surface.numbers("ui.BarChart", "bars").is_empty(),
+        "no reading of what the person may not read reaches the chart"
+    );
+    assert!(surface.words("ui.BarChart", "categories").is_empty());
+}

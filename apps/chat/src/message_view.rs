@@ -55,7 +55,13 @@ that app keeps for the workspace, by the names reading the app shows: `view proj
 in tasks.tracker.areas { text(a.name) } }`. A control invokes one of the app's own actions, \
 named as the app names it with `_` for `-`: `button(\"Delete\", on: \
 tasks.delete_area(tasks.tracker, a.id))`; in your view a press only suggests, and the reader \
-allows that one thing or not. `reads` lists every app the view reads, each as the view calls \
+allows that one thing or not. Numbers that are compared are a chart, given readings and what \
+they are of and never a colour or a size: `ui.BarChart([.bars(values: [3.0, 5.0], label: \
+\"Closed\")], categories: [\"Mon\", \"Tue\"])` for amounts side by side (`layout: .stacked` \
+stacks several `.bars`), `ui.PieChart([.slice(label: \"Open\", value: 3.0)])` \
+for the parts of one whole, `ui.Chart([.series(values: [1.0, 2.0], label: \"Opened\")])` for \
+a history; build the lists from what the app keeps (`areas.map(a -> a.people.len().to_float())`) \
+and the chart follows it. `reads` lists every app the view reads, each as the view calls \
 it (`[\"tasks\"]`); the view is given those apps and no other. Calling it again in the same \
 turn writes the view again. After it, say in a sentence or two what the view shows: those words \
 are all that search, notifications and a reader that cannot show a view have.";

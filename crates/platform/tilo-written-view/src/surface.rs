@@ -413,6 +413,77 @@ impl Surface {
         out
     }
 
+    /// What the first node of kind `kind` the view shows holds in its prop `prop`.
+    fn held(&self, kind: &str, prop: &str) -> Option<Value> {
+        fn find(node: &tilolang_tilo::runtime::UiNode, kind: &str, prop: &str) -> Option<Value> {
+            if node.kind == kind {
+                return node.props.get(prop).cloned();
+            }
+            node.children
+                .iter()
+                .find_map(|child| find(child, kind, prop))
+        }
+        let view = self
+            .instance
+            .view(tilo_render_protocol::patch::Level::Detail)?;
+        let view = view.borrow();
+        find(view.tree(), kind, prop)
+    }
+
+    /// Every number the first node of kind `kind` holds in its prop `prop`, in order, through
+    /// the lists and cases it is given in: a chart's readings.
+    pub(crate) fn numbers(&self, kind: &str, prop: &str) -> Vec<f64> {
+        fn walk(value: &Value, out: &mut Vec<f64>) {
+            match value {
+                Value::Float(number) => out.push(*number),
+                Value::List(items) | Value::Tuple(items) => {
+                    for item in items {
+                        walk(item, out);
+                    }
+                }
+                Value::Opt(Some(inner)) => walk(inner, out),
+                Value::Enum(case) => {
+                    for field in case.fields.values() {
+                        walk(field, out);
+                    }
+                }
+                _ => {}
+            }
+        }
+        let mut out = Vec::new();
+        if let Some(value) = self.held(kind, prop) {
+            walk(&value, &mut out);
+        }
+        out
+    }
+
+    /// The texts the first node of kind `kind` holds in its list prop `prop`, in order.
+    pub(crate) fn words(&self, kind: &str, prop: &str) -> Vec<String> {
+        match self.held(kind, prop) {
+            Some(Value::List(items)) => items
+                .into_iter()
+                .filter_map(|item| match item {
+                    Value::Text(text) => Some(text),
+                    _ => None,
+                })
+                .collect(),
+            _ => Vec::new(),
+        }
+    }
+
+    /// How many widgets named `name` the window drew the view with.
+    pub(crate) fn drawn(&self, name: &str) -> usize {
+        fn walk(widget: &dyn Widget, name: &str, found: &mut usize) {
+            if widget.name() == name {
+                *found = found.saturating_add(1);
+            }
+            widget.for_each_child(&mut |child| walk(child, name, found));
+        }
+        let mut found = 0;
+        walk(&self.view, name, &mut found);
+        found
+    }
+
     /// Press the control `key`, as the person at the window does.
     pub(crate) fn press(&mut self, key: &str) {
         let view = self
