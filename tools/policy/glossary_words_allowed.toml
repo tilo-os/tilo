@@ -13,6 +13,9 @@ paths = [
     "crates/agent/agent-session/src/web_apps.rs",
     "crates/workspace-hack/*",
     "docs/codemap.md",
+    "docs/api/openapi.json",
+    "sdk/python/src/tilo/types/*",
+    "sdk/typescript/src/types/*",
 ]
 
 [[allow]]

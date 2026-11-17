@@ -21,9 +21,10 @@ use ui::widget::toast::ToastKind;
 use crate::account::AccountStore;
 use ui::framework::Dispatcher;
 
-use crate::actions::IngestBaseline;
+use crate::actions::{IngestBaseline, ServerUpdate};
 use crate::engine::EngineRequest;
 use crate::model::{AccountConfig, Draft, Folder, Mailbox, MessageId, Thread};
+use crate::part::MessagePart;
 use crate::resource::{Mail, mailbox};
 use ui::framework::Submit;
 
@@ -293,6 +294,12 @@ pub struct MailState {
     pub dirty: bool,
 
     pub(crate) dispatcher: Option<Dispatcher<Mail>>,
+    /// The parts the messages are kept in, beside the mailbox: what the
+    /// window writes a message's changes through.
+    pub(crate) chain: Option<ui::framework::Chain<MessagePart>>,
+    /// Every message the parts hold, as one, with the chain's revision it
+    /// was read at: read again only once a part changed.
+    messages: std::cell::RefCell<Option<(u64, std::rc::Rc<MessagePart>)>>,
 
     intents: Vec<Intent>,
     commands: Vec<Command>,
@@ -387,6 +394,7 @@ impl MailState {
     pub fn new_sample(avatars: crate::avatars::Avatars) -> Self {
         let mut state = Self::from_fixture(&crate::sample::MailFixture::bundled(), avatars);
         state.dispatcher = Some(ui::framework::testing::dispatcher("so.tilo.mail"));
+        state.chain = crate::part::detached_chain();
         state
     }
 
@@ -458,8 +466,64 @@ impl MailState {
             last_mouse: Point::ZERO,
             dirty: true,
             dispatcher: None,
+            chain: None,
+            messages: std::cell::RefCell::new(None),
             intents: Vec::new(),
             commands: Vec::new(),
+        }
+    }
+
+    /// Every message the mailbox's parts hold, as one: what the window
+    /// shows flags, folders and held mail by. Read again only once a part
+    /// changed.
+    pub(crate) fn messages(&self) -> std::rc::Rc<MessagePart> {
+        let Some(chain) = &self.chain else {
+            return std::rc::Rc::default();
+        };
+        let revision = chain.revision();
+        if let Some((read, messages)) = self.messages.borrow().as_ref()
+            && *read == revision
+        {
+            return std::rc::Rc::clone(messages);
+        }
+        let messages = std::rc::Rc::new(MessagePart::of(&chain.parts()));
+        *self.messages.borrow_mut() = Some((revision, std::rc::Rc::clone(&messages)));
+        messages
+    }
+
+    /// The revision of the mailbox's parts: moves whenever one changed.
+    pub(crate) fn messages_revision(&self) -> u64 {
+        self.chain
+            .as_ref()
+            .map_or(0, ui::framework::Chain::revision)
+    }
+
+    /// Change messages in the parts that hold them, as the person's gesture;
+    /// written once the frame is done.
+    pub(crate) fn submit_messages(&self, submit: impl Submit<MessagePart>) {
+        let Some(chain) = &self.chain else {
+            return;
+        };
+        chain.dispatcher().submit(submit);
+    }
+
+    /// A mail server confirmed `update`: a draft's copy in the mailbox
+    /// itself, a message's in the part holding it.
+    pub(crate) fn confirm(&self, doc: &mut ui::widget::Edits<'_>, update: ServerUpdate) {
+        let of_draft = matches!(update, ServerUpdate::SaveDraft { .. })
+            || crate::resource::read_mail(doc.doc())
+                .is_some_and(|mail| mail.retired_copy_ids().contains(update.id()));
+        if of_draft {
+            self.submit(
+                doc,
+                Mail::SERVER_APPLIED.with(mailbox::ServerApplied { update }),
+            );
+        } else {
+            self.submit_messages(MessagePart::SERVER_APPLIED.with(
+                crate::part::message_part::ServerApplied {
+                    updates: vec![update],
+                },
+            ));
         }
     }
 
@@ -525,8 +589,10 @@ impl MailState {
         self.ingest(doc, baselines);
     }
 
-    fn ingest(&self, doc: &mut ui::widget::Edits<'_>, messages: Vec<IngestBaseline>) {
-        self.submit(doc, Mail::INGEST.with(mailbox::Ingest { messages }));
+    fn ingest(&self, _doc: &mut ui::widget::Edits<'_>, messages: Vec<IngestBaseline>) {
+        self.submit_messages(
+            MessagePart::INGEST.with(crate::part::message_part::Ingest { messages }),
+        );
     }
 
     pub(crate) fn register_message_target(&self, doc: &mut ui::widget::Edits<'_>, id: &str) {
@@ -534,8 +600,7 @@ impl MailState {
     }
 
     fn register_loaded_target(&self, doc: &mut ui::widget::Edits<'_>, id: MessageId) {
-        let known = crate::resource::read_mail(doc.doc())
-            .is_some_and(|mail| mail.message(&id.to_string()).is_some());
+        let known = self.messages().message(&id.to_string()).is_some();
         if !known && self.mailbox.get(id).is_some() {
             self.register_message_target(doc, &id.to_string());
         }
@@ -562,8 +627,8 @@ impl MailState {
 
     fn message_paths(
         id: MessageId,
-    ) -> <crate::resource::MessageState as ui::tilo_resource::Model>::Paths<Mail> {
-        Mail::paths()
+    ) -> <crate::resource::MessageState as ui::tilo_resource::Model>::Paths<MessagePart> {
+        MessagePart::paths()
             .messages
             .item(&ui::tilo_resource::Id::from_raw(id.to_string()))
     }
@@ -960,25 +1025,23 @@ impl MailState {
                 for id in &ids {
                     self.mailbox.mark_read(*id, read);
                 }
-                self.submit(
-                    doc,
-                    Mail::MARK_READ.with(mailbox::MarkRead {
+                self.submit_messages(MessagePart::MARK_READ.with(
+                    crate::part::message_part::MarkRead {
                         messages: encoded_ids,
                         read,
-                    }),
-                );
+                    },
+                ));
                 ids.len()
             }
             BulkAction::Archive => {
                 for id in &ids {
                     self.mailbox.move_to(*id, Folder::Archive);
                 }
-                self.submit(
-                    doc,
-                    Mail::ARCHIVE.with(mailbox::Archive {
+                self.submit_messages(MessagePart::ARCHIVE.with(
+                    crate::part::message_part::Archive {
                         messages: encoded_ids,
-                    }),
-                );
+                    },
+                ));
                 self.bulk_selection.clear();
                 self.reselect_after_remove(doc);
                 ids.len()
@@ -1003,12 +1066,11 @@ impl MailState {
                     for id in &move_to_trash {
                         self.mailbox.move_to(*id, Folder::Trash);
                     }
-                    self.submit(
-                        doc,
-                        Mail::TRASH.with(mailbox::Trash {
+                    self.submit_messages(MessagePart::TRASH.with(
+                        crate::part::message_part::Trash {
                             messages: move_to_trash.iter().map(ToString::to_string).collect(),
-                        }),
-                    );
+                        },
+                    ));
                 }
                 self.bulk_selection.clear();
                 self.reselect_after_remove(doc);
@@ -1021,12 +1083,9 @@ impl MailState {
                 for id in &ids {
                     self.mailbox.purge(*id);
                 }
-                self.submit(
-                    doc,
-                    Mail::PURGE.with(mailbox::Purge {
-                        messages: encoded_ids,
-                    }),
-                );
+                self.submit_messages(MessagePart::PURGE.with(crate::part::message_part::Purge {
+                    messages: encoded_ids,
+                }));
                 self.bulk_selection.clear();
                 self.reselect_after_remove(doc);
                 ids.len()
@@ -1091,9 +1150,8 @@ impl MailState {
         }
         self.register_loaded_target(doc, id);
         self.mailbox.mark_read(id, read);
-        self.submit(
-            doc,
-            Mail::MARK_READ.with(mailbox::MarkRead {
+        self.submit_messages(
+            MessagePart::MARK_READ.with(crate::part::message_part::MarkRead {
                 messages: vec![id.to_string()],
                 read,
             }),
@@ -1106,7 +1164,7 @@ impl MailState {
         };
         self.register_loaded_target(doc, id);
         self.mailbox.toggle_star(id);
-        self.submit(doc, Self::message_paths(id).starred.set(target));
+        self.submit_messages(Self::message_paths(id).starred.set(target));
         self.dirty = true;
     }
 
@@ -1116,7 +1174,7 @@ impl MailState {
         }
         self.register_loaded_target(doc, id);
         self.mailbox.move_to(id, folder);
-        self.submit(doc, Self::message_paths(id).folder.set(folder));
+        self.submit_messages(Self::message_paths(id).folder.set(folder));
     }
 
     pub fn apply_message_action(
@@ -1160,7 +1218,7 @@ impl MailState {
                 self.mailbox.delete(id);
                 let moved_to = self.mailbox.get(id).map(|m| m.folder);
                 if let Some(to) = moved_to {
-                    self.submit(doc, Self::message_paths(id).folder.set(to));
+                    self.submit_messages(Self::message_paths(id).folder.set(to));
                     self.say_undoable(
                         ToastKind::Success,
                         crate::i18n::t_args(
@@ -1169,12 +1227,11 @@ impl MailState {
                         ),
                     );
                 } else if purging {
-                    self.submit(
-                        doc,
-                        Mail::PURGE.with(mailbox::Purge {
+                    self.submit_messages(MessagePart::PURGE.with(
+                        crate::part::message_part::Purge {
                             messages: vec![id.to_string()],
-                        }),
-                    );
+                        },
+                    ));
                 }
                 self.after_remove(doc, was_selected);
             }
@@ -1256,21 +1313,11 @@ mod tests {
         st.mailbox.messages_in(Folder::Inbox).first().map(|m| m.id)
     }
 
-    fn steps_since(doc: &AutoCommit, before: usize) -> Vec<String> {
-        ui::tilo_resource::history::versions(&mut doc.clone())
-            .into_iter()
-            .skip(before)
-            .filter_map(|version| version.context)
-            .filter(|context| context.change.is_step())
-            .filter_map(|context| match context.what {
-                Some(ui::tilo_actions::Did::Verb(verb)) => Some(verb.action.action),
-                _ => None,
-            })
-            .collect()
-    }
-
-    fn version_count(doc: &AutoCommit) -> usize {
-        ui::tilo_resource::history::versions(&mut doc.clone()).len()
+    /// The window's parts, where its messages' changes are written.
+    fn parts(st: &MailState) -> &ui::framework::Chain<crate::part::MessagePart> {
+        st.chain
+            .as_ref()
+            .expect("a test window keeps its messages in parts")
     }
 
     tilo_test_env::scenario! {
@@ -1355,17 +1402,15 @@ mod tests {
                 .cloned()
                 .expect("sample inbox");
             let mut doc = crate::resource::TestMail::doc();
-            let before = version_count(&doc);
             st.ingest_messages(
                 &mut ui::widget::Edits::lend(&mut doc),
                 std::slice::from_ref(&message),
             );
             assert_eq!(
-                crate::resource::TestMail::get_read(&doc, &message.id.to_string()),
+                crate::resource::TestMail::get_read(&st, &message.id.to_string()),
                 Some(message.read)
             );
-            assert_eq!(version_count(&doc), before + 1, "one ingest is one version");
-            assert!(steps_since(&doc, before).is_empty(), "and no undo step");
+            assert_eq!(parts(&st).undoable(), (false, false), "no undo step");
         }
 
         phase reader_selection_is_read_neutral_and_reply_all_is_distinct;
@@ -1448,7 +1493,7 @@ mod tests {
             );
             posts_nothing(&mut st);
             assert!(matches!(
-                crate::resource::TestMail::server_updates(&doc).as_slice(),
+                crate::resource::TestMail::owed(&st).as_slice(),
                 [ServerUpdate::Flags {
                     starred: true,
                     folder: Folder::Inbox,
@@ -1467,7 +1512,7 @@ mod tests {
             );
             posts_nothing(&mut st);
             assert!(matches!(
-                crate::resource::TestMail::server_updates(&doc).as_slice(),
+                crate::resource::TestMail::owed(&st).as_slice(),
                 [ServerUpdate::Move {
                     from: Folder::Inbox,
                     to: Folder::Archive,
@@ -1494,7 +1539,7 @@ mod tests {
             posts_nothing(&mut st);
             assert!(
                 matches!(
-                    crate::resource::TestMail::server_updates(&doc).as_slice(),
+                    crate::resource::TestMail::owed(&st).as_slice(),
                     [ServerUpdate::Remove {
                         folder: Folder::Inbox,
                         ..
@@ -1520,7 +1565,6 @@ mod tests {
                     assert!(st.toggle_bulk_selection(*id));
                 }
                 let archive_before = st.mailbox.count(Folder::Archive);
-                let versions_before = version_count(&doc);
                 assert_eq!(
                     st.apply_bulk_action(&mut ui::widget::Edits::lend(&mut doc), BulkAction::Archive),
                     2
@@ -1530,17 +1574,21 @@ mod tests {
                     st.bulk_selection.is_empty(),
                     "moved rows cannot stay selected"
                 );
-                assert_eq!(
-                    steps_since(&doc, versions_before).len(),
-                    1,
-                    "two archives are one undo step"
-                );
                 for id in &ids {
                     assert_eq!(
-                        crate::resource::TestMail::get_folder_for(&doc, &id.to_string()),
+                        crate::resource::TestMail::get_folder_for(&st, &id.to_string()),
                         Some(Folder::Archive)
                     );
                 }
+                assert!(parts(&st).undo_last(), "two archives are one undo step");
+                for id in &ids {
+                    assert_ne!(
+                        crate::resource::TestMail::get_folder_for(&st, &id.to_string()),
+                        Some(Folder::Archive),
+                        "one undo takes both back"
+                    );
+                }
+                assert!(!parts(&st).undoable().0, "and only them");
                 assert!(
                     doc.get(&automerge::ROOT, "bulk_selection")
                         .expect("document remains readable")
@@ -1606,11 +1654,11 @@ mod tests {
                     Some(Folder::Trash)
                 );
                 assert_eq!(
-                    crate::resource::TestMail::get_folder_for(&doc, &inbox.to_string()),
+                    crate::resource::TestMail::get_folder_for(&st, &inbox.to_string()),
                     Some(Folder::Trash)
                 );
                 assert!(
-                    crate::resource::TestMail::is_present_message(&doc, &already_trash.to_string()),
+                    crate::resource::TestMail::is_present_message(&st, &already_trash.to_string()),
                     "the row already in Trash is never purged"
                 );
             }

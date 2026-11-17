@@ -201,7 +201,7 @@ tilo_test_env::scenario! {
                 "'e' archived the selection"
             );
             assert_eq!(
-                TestMail::get_folder_for(&doc, &id.to_string()),
+                TestMail::get_folder_for(&app.shared.borrow(), &id.to_string()),
                 Some(Folder::Archive)
             );
         }
@@ -222,13 +222,13 @@ tilo_test_env::scenario! {
                 !was_starred
             );
             assert_eq!(
-                TestMail::get_starred(&doc, &id.to_string()),
+                TestMail::get_starred(&app.shared.borrow(), &id.to_string()),
                 Some(!was_starred)
             );
 
             assert!(dispatch(&mut app, &char_key("u"), &mut doc));
             assert!(!app.shared.borrow().mailbox.get(id).unwrap().read);
-            assert_eq!(TestMail::get_read(&doc, &id.to_string()), Some(false));
+            assert_eq!(TestMail::get_read(&app.shared.borrow(), &id.to_string()), Some(false));
         }
 
         {
@@ -255,7 +255,7 @@ tilo_test_env::scenario! {
                 "Delete moved the selection to Trash"
             );
             assert_eq!(
-                TestMail::get_folder_for(&doc, &id.to_string()),
+                TestMail::get_folder_for(&app.shared.borrow(), &id.to_string()),
                 Some(Folder::Trash)
             );
         }

@@ -69,6 +69,7 @@ pub mod list;
 pub mod model;
 pub mod notice;
 pub mod oauth;
+pub mod part;
 pub mod reader;
 pub mod resource;
 #[cfg(all(feature = "live", any(test, feature = "fake-servers")))]

@@ -109,6 +109,9 @@ tilo_test_env::scenario! {
                 })
                 .unwrap();
             app.drain_engine(&mut ui::widget::Edits::lend(doc));
+            // What the fetch wrote into the parts lands after the frame, as
+            // the session applies it.
+            crate::resource::TestMail::messages(&app.shared.borrow());
             app.hydrate_domain_state(&mut ui::widget::Edits::lend(doc));
             posted
         };
@@ -1254,7 +1257,7 @@ tilo_test_env::scenario! {
         app.shared
             .borrow_mut()
             .set_read(&mut ui::widget::Edits::lend(&mut doc), id, !message.read);
-        let [update] = TestMail::server_updates(&doc).try_into().unwrap();
+        let [update] = TestMail::owed(&app.shared.borrow()).try_into().unwrap();
 
         let outcome = push(&app, update.clone());
         app.flush_server_outbox();
@@ -1288,7 +1291,7 @@ tilo_test_env::scenario! {
         app.drain_engine(&mut ui::widget::Edits::lend(&mut doc));
         assert!(matches!(outcome.borrow().as_ref(), Some(Err(_))));
         assert_eq!(
-            TestMail::server_updates(&doc),
+            TestMail::owed(&app.shared.borrow()),
             std::slice::from_ref(&update),
             "still to tell"
         );
@@ -1305,7 +1308,7 @@ tilo_test_env::scenario! {
         app.drain_engine(&mut ui::widget::Edits::lend(&mut doc));
         assert!(matches!(outcome.borrow().as_ref(), Some(Ok(()))));
         assert!(
-            TestMail::server_updates(&doc).is_empty(),
+            TestMail::owed(&app.shared.borrow()).is_empty(),
             "the server has it"
         );
 

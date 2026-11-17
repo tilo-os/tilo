@@ -17089,158 +17089,6 @@
         ],
         "description": ""
       },
-      "mail.mailbox.mark-read.Arguments": {
-        "type": "object",
-        "properties": {
-          "messages": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array"
-          },
-          "read": {
-            "type": "boolean"
-          }
-        },
-        "required": [
-          "messages",
-          "read"
-        ],
-        "description": ""
-      },
-      "mail.mailbox.archive.Arguments": {
-        "type": "object",
-        "properties": {
-          "messages": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array"
-          }
-        },
-        "required": [
-          "messages"
-        ],
-        "description": ""
-      },
-      "mail.mailbox.trash.Arguments": {
-        "type": "object",
-        "properties": {
-          "messages": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array"
-          }
-        },
-        "required": [
-          "messages"
-        ],
-        "description": ""
-      },
-      "mail.mailbox.move-messages.Arguments": {
-        "type": "object",
-        "properties": {
-          "messages": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array"
-          },
-          "to": {
-            "enum": [
-              "inbox",
-              "starred",
-              "sent",
-              "drafts",
-              "archive",
-              "trash",
-              "junk"
-            ],
-            "type": "string"
-          }
-        },
-        "required": [
-          "messages",
-          "to"
-        ],
-        "description": ""
-      },
-      "mail.mailbox.purge.Arguments": {
-        "type": "object",
-        "properties": {
-          "messages": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array"
-          }
-        },
-        "required": [
-          "messages"
-        ],
-        "description": ""
-      },
-      "mail.mailbox.ingest.Arguments": {
-        "type": "object",
-        "properties": {
-          "messages": {
-            "items": {
-              "additionalProperties": false,
-              "properties": {
-                "account": {
-                  "type": [
-                    "string",
-                    "null"
-                  ]
-                },
-                "folder": {
-                  "type": [
-                    "string",
-                    "null"
-                  ]
-                },
-                "id": {
-                  "type": "string"
-                },
-                "label": {
-                  "type": [
-                    "string",
-                    "null"
-                  ]
-                },
-                "locator": {
-                  "type": [
-                    "string",
-                    "null"
-                  ]
-                },
-                "read": {
-                  "type": [
-                    "boolean",
-                    "null"
-                  ]
-                },
-                "starred": {
-                  "type": [
-                    "boolean",
-                    "null"
-                  ]
-                }
-              },
-              "required": [
-                "id"
-              ],
-              "type": "object"
-            },
-            "type": "array"
-          }
-        },
-        "required": [
-          "messages"
-        ],
-        "description": ""
-      },
       "mail.mailbox.server-applied.Arguments": {
         "type": "object",
         "properties": {
@@ -17987,7 +17835,527 @@
           "null"
         ]
       },
-      "mail.mailbox.deliver-message.Arguments": {
+      "mail.mailbox.draft-message.Arguments": {
+        "type": "object",
+        "properties": {
+          "to": {
+            "type": "string"
+          },
+          "subject": {
+            "type": "string"
+          },
+          "body": {
+            "type": "string"
+          },
+          "cc": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "notes": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "to",
+          "subject",
+          "body"
+        ],
+        "description": ""
+      },
+      "mail.mailbox.draft-message.Result": {
+        "type": "object"
+      },
+      "mail.mailbox.cancel-send.Arguments": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "description": ""
+      },
+      "mail.mailbox.cancel-send.Result": {
+        "type": [
+          "object",
+          "array",
+          "null"
+        ]
+      },
+      "mail.mailbox.search-messages.Arguments": {
+        "type": "object",
+        "properties": {
+          "query": {},
+          "folder": {},
+          "from": {},
+          "subject": {},
+          "since": {},
+          "until": {},
+          "has_attachment": {}
+        },
+        "required": [],
+        "description": ""
+      },
+      "mail.mailbox.export-content.Arguments": {
+        "type": "object",
+        "properties": {
+          "format": {},
+          "message": {},
+          "folder": {}
+        },
+        "required": [],
+        "description": ""
+      },
+      "mail.messages.mark-read.Arguments": {
+        "type": "object",
+        "properties": {
+          "messages": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "read": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "messages",
+          "read"
+        ],
+        "description": ""
+      },
+      "mail.messages.archive.Arguments": {
+        "type": "object",
+        "properties": {
+          "messages": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "messages"
+        ],
+        "description": ""
+      },
+      "mail.messages.trash.Arguments": {
+        "type": "object",
+        "properties": {
+          "messages": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "messages"
+        ],
+        "description": ""
+      },
+      "mail.messages.move-messages.Arguments": {
+        "type": "object",
+        "properties": {
+          "messages": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "to": {
+            "enum": [
+              "inbox",
+              "starred",
+              "sent",
+              "drafts",
+              "archive",
+              "trash",
+              "junk"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "messages",
+          "to"
+        ],
+        "description": ""
+      },
+      "mail.messages.purge.Arguments": {
+        "type": "object",
+        "properties": {
+          "messages": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "messages"
+        ],
+        "description": ""
+      },
+      "mail.messages.ingest.Arguments": {
+        "type": "object",
+        "properties": {
+          "messages": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "account": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "folder": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "id": {
+                  "type": "string"
+                },
+                "label": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "locator": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "read": {
+                  "type": [
+                    "boolean",
+                    "null"
+                  ]
+                },
+                "starred": {
+                  "type": [
+                    "boolean",
+                    "null"
+                  ]
+                }
+              },
+              "required": [
+                "id"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "messages"
+        ],
+        "description": ""
+      },
+      "mail.messages.server-applied.Arguments": {
+        "type": "object",
+        "properties": {
+          "updates": {
+            "items": {
+              "oneOf": [
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "Flags": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "account": {
+                          "type": "string"
+                        },
+                        "folder": {
+                          "enum": [
+                            "inbox",
+                            "starred",
+                            "sent",
+                            "drafts",
+                            "archive",
+                            "trash",
+                            "junk"
+                          ],
+                          "type": "string"
+                        },
+                        "id": {
+                          "type": "string"
+                        },
+                        "locator": {
+                          "type": "string"
+                        },
+                        "read": {
+                          "type": "boolean"
+                        },
+                        "starred": {
+                          "type": "boolean"
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "account",
+                        "locator",
+                        "folder",
+                        "read",
+                        "starred"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "Flags"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "Move": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "account": {
+                          "type": "string"
+                        },
+                        "from": {
+                          "enum": [
+                            "inbox",
+                            "starred",
+                            "sent",
+                            "drafts",
+                            "archive",
+                            "trash",
+                            "junk"
+                          ],
+                          "type": "string"
+                        },
+                        "id": {
+                          "type": "string"
+                        },
+                        "locator": {
+                          "type": "string"
+                        },
+                        "to": {
+                          "enum": [
+                            "inbox",
+                            "starred",
+                            "sent",
+                            "drafts",
+                            "archive",
+                            "trash",
+                            "junk"
+                          ],
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "account",
+                        "locator",
+                        "from",
+                        "to"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "Move"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "Remove": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "account": {
+                          "type": "string"
+                        },
+                        "folder": {
+                          "enum": [
+                            "inbox",
+                            "starred",
+                            "sent",
+                            "drafts",
+                            "archive",
+                            "trash",
+                            "junk"
+                          ],
+                          "type": "string"
+                        },
+                        "id": {
+                          "type": "string"
+                        },
+                        "locator": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "account",
+                        "locator",
+                        "folder"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "Remove"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "SaveDraft": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "account": {
+                          "type": "string"
+                        },
+                        "draft": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "attachments": {
+                              "items": {
+                                "additionalProperties": false,
+                                "properties": {
+                                  "content_id": {
+                                    "type": "string"
+                                  },
+                                  "filename": {
+                                    "type": "string"
+                                  },
+                                  "mime": {
+                                    "type": "string"
+                                  },
+                                  "size": {
+                                    "minimum": 0,
+                                    "type": "integer"
+                                  }
+                                },
+                                "required": [
+                                  "content_id",
+                                  "filename",
+                                  "mime",
+                                  "size"
+                                ],
+                                "type": "object"
+                              },
+                              "type": "array"
+                            },
+                            "bcc": {
+                              "type": "string"
+                            },
+                            "body": {
+                              "type": "string"
+                            },
+                            "calendar_ics": {
+                              "type": [
+                                "string",
+                                "null"
+                              ]
+                            },
+                            "cc": {
+                              "type": "string"
+                            },
+                            "html_body": {
+                              "type": [
+                                "string",
+                                "null"
+                              ]
+                            },
+                            "sender": {
+                              "additionalProperties": false,
+                              "properties": {
+                                "account": {
+                                  "type": "string"
+                                },
+                                "email": {
+                                  "type": "string"
+                                }
+                              },
+                              "required": [
+                                "account",
+                                "email"
+                              ],
+                              "type": [
+                                "object",
+                                "null"
+                              ]
+                            },
+                            "subject": {
+                              "type": "string"
+                            },
+                            "to": {
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "to",
+                            "cc",
+                            "bcc",
+                            "subject",
+                            "body"
+                          ],
+                          "type": "object"
+                        },
+                        "id": {
+                          "type": "string"
+                        },
+                        "in_reply_to": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "locator": {
+                          "type": "string"
+                        },
+                        "written": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "account",
+                        "locator",
+                        "written",
+                        "draft"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "SaveDraft"
+                  ],
+                  "type": "object"
+                }
+              ]
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "updates"
+        ],
+        "description": ""
+      },
+      "mail.messages.deliver-message.Arguments": {
         "type": "object",
         "properties": {
           "from": {
@@ -18098,6 +18466,12 @@
                 ]
               }
             ]
+          },
+          "answers": {
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "required": [
@@ -18107,86 +18481,8 @@
         ],
         "description": ""
       },
-      "mail.mailbox.deliver-message.Result": {
+      "mail.messages.deliver-message.Result": {
         "type": "object"
-      },
-      "mail.mailbox.draft-message.Arguments": {
-        "type": "object",
-        "properties": {
-          "to": {
-            "type": "string"
-          },
-          "subject": {
-            "type": "string"
-          },
-          "body": {
-            "type": "string"
-          },
-          "cc": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "notes": {
-            "type": [
-              "string",
-              "null"
-            ]
-          }
-        },
-        "required": [
-          "to",
-          "subject",
-          "body"
-        ],
-        "description": ""
-      },
-      "mail.mailbox.draft-message.Result": {
-        "type": "object"
-      },
-      "mail.mailbox.cancel-send.Arguments": {
-        "type": "object",
-        "properties": {
-          "id": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "id"
-        ],
-        "description": ""
-      },
-      "mail.mailbox.cancel-send.Result": {
-        "type": [
-          "object",
-          "array",
-          "null"
-        ]
-      },
-      "mail.mailbox.search-messages.Arguments": {
-        "type": "object",
-        "properties": {
-          "query": {},
-          "folder": {},
-          "from": {},
-          "subject": {},
-          "since": {},
-          "until": {},
-          "has_attachment": {}
-        },
-        "required": [],
-        "description": ""
-      },
-      "mail.mailbox.export-content.Arguments": {
-        "type": "object",
-        "properties": {
-          "format": {},
-          "message": {},
-          "folder": {}
-        },
-        "required": [],
-        "description": ""
       },
       "mail.trusted-senders.trust.Arguments": {
         "type": "object",
@@ -32367,42 +32663,6 @@
     {
       "app": "so.tilo.mail",
       "resource": "mail.mailbox",
-      "action": "mark-read",
-      "arguments": "#/components/schemas/mail.mailbox.mark-read.Arguments"
-    },
-    {
-      "app": "so.tilo.mail",
-      "resource": "mail.mailbox",
-      "action": "archive",
-      "arguments": "#/components/schemas/mail.mailbox.archive.Arguments"
-    },
-    {
-      "app": "so.tilo.mail",
-      "resource": "mail.mailbox",
-      "action": "trash",
-      "arguments": "#/components/schemas/mail.mailbox.trash.Arguments"
-    },
-    {
-      "app": "so.tilo.mail",
-      "resource": "mail.mailbox",
-      "action": "move-messages",
-      "arguments": "#/components/schemas/mail.mailbox.move-messages.Arguments"
-    },
-    {
-      "app": "so.tilo.mail",
-      "resource": "mail.mailbox",
-      "action": "purge",
-      "arguments": "#/components/schemas/mail.mailbox.purge.Arguments"
-    },
-    {
-      "app": "so.tilo.mail",
-      "resource": "mail.mailbox",
-      "action": "ingest",
-      "arguments": "#/components/schemas/mail.mailbox.ingest.Arguments"
-    },
-    {
-      "app": "so.tilo.mail",
-      "resource": "mail.mailbox",
       "action": "server-applied",
       "arguments": "#/components/schemas/mail.mailbox.server-applied.Arguments"
     },
@@ -32457,12 +32717,6 @@
     {
       "app": "so.tilo.mail",
       "resource": "mail.mailbox",
-      "action": "deliver-message",
-      "arguments": "#/components/schemas/mail.mailbox.deliver-message.Arguments"
-    },
-    {
-      "app": "so.tilo.mail",
-      "resource": "mail.mailbox",
       "action": "draft-message",
       "arguments": "#/components/schemas/mail.mailbox.draft-message.Arguments"
     },
@@ -32483,6 +32737,54 @@
       "resource": "mail.mailbox",
       "action": "export-content",
       "arguments": "#/components/schemas/mail.mailbox.export-content.Arguments"
+    },
+    {
+      "app": "so.tilo.mail",
+      "resource": "mail.messages",
+      "action": "mark-read",
+      "arguments": "#/components/schemas/mail.messages.mark-read.Arguments"
+    },
+    {
+      "app": "so.tilo.mail",
+      "resource": "mail.messages",
+      "action": "archive",
+      "arguments": "#/components/schemas/mail.messages.archive.Arguments"
+    },
+    {
+      "app": "so.tilo.mail",
+      "resource": "mail.messages",
+      "action": "trash",
+      "arguments": "#/components/schemas/mail.messages.trash.Arguments"
+    },
+    {
+      "app": "so.tilo.mail",
+      "resource": "mail.messages",
+      "action": "move-messages",
+      "arguments": "#/components/schemas/mail.messages.move-messages.Arguments"
+    },
+    {
+      "app": "so.tilo.mail",
+      "resource": "mail.messages",
+      "action": "purge",
+      "arguments": "#/components/schemas/mail.messages.purge.Arguments"
+    },
+    {
+      "app": "so.tilo.mail",
+      "resource": "mail.messages",
+      "action": "ingest",
+      "arguments": "#/components/schemas/mail.messages.ingest.Arguments"
+    },
+    {
+      "app": "so.tilo.mail",
+      "resource": "mail.messages",
+      "action": "server-applied",
+      "arguments": "#/components/schemas/mail.messages.server-applied.Arguments"
+    },
+    {
+      "app": "so.tilo.mail",
+      "resource": "mail.messages",
+      "action": "deliver-message",
+      "arguments": "#/components/schemas/mail.messages.deliver-message.Arguments"
     },
     {
       "app": "so.tilo.mail",

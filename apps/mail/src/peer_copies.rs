@@ -6,7 +6,6 @@ use ui::framework::PersonResource;
 
 use super::MailApp;
 use crate::model::Message;
-use crate::resource::read_mail;
 
 impl MailApp {
     pub(crate) fn share_copies(&mut self, record: PersonResource<crate::copies::MailCopies>) {
@@ -22,7 +21,7 @@ impl MailApp {
         if !copies.due() {
             return;
         }
-        let mail = read_mail(doc.doc()).unwrap_or_default();
+        let mail = self.shared.borrow().messages();
         let taken = {
             let st = self.shared.borrow();
             let accounts: Vec<String> = st
@@ -66,7 +65,7 @@ impl MailApp {
 
 /// What registering `message`, fetched or kept, tells the mailbox resource.
 pub(super) fn kept_baseline(
-    mail: &crate::resource::Mail,
+    mail: &crate::part::MessagePart,
     message: &Message,
 ) -> Option<crate::actions::IngestBaseline> {
     if message.account.is_empty() {
@@ -324,7 +323,7 @@ Message-ID: <{uid}.kept@x.example>\r\n\r\n{body}\r\n"
         assert!(second.shared.borrow().mailbox.get(newer.id).is_some());
         // The mailbox resource knows where its server holds it, as for mail
         // fetched here.
-        let mail = read_mail(&second_doc).unwrap();
+        let mail = crate::resource::TestMail::messages(&second.shared.borrow());
         assert!(mail.knows(&old.id.to_string()));
 
         second

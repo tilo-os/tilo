@@ -32,9 +32,9 @@ required = ["network.http"]
 optional = ["clipboard", "files.open", "files.save", "files.paths", "app-files", "secrets", "threads", "processes", "webview", "open-uri", "notifications", "gpu"]
 
 [resources]
-kinds = ["mail.mailbox", "tilo.accounts", "tilo.contacts.identities", "tilo.rich-text", "mail.copies", "mail.trusted-senders"]
+kinds = ["mail.mailbox", "mail.messages", "tilo.chain-unsent", "tilo.accounts", "tilo.contacts.identities", "tilo.rich-text", "mail.copies", "mail.trusted-senders"]
 # Each member keeps one of each as their own; nobody else in the workspace receives it.
-own = ["mail.mailbox", "mail.copies", "mail.trusted-senders"]
+own = ["mail.mailbox", "mail.copies", "mail.trusted-senders", "tilo.chain-unsent"]
 
 [publisher]
 identity  = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"

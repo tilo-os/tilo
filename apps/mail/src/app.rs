@@ -195,7 +195,7 @@ struct PendingEngineRequest {
 
 /// What the mailbox was hydrated at: the document's heads and pending
 /// changes, the mailbox's search revision and how much content had arrived.
-type HydratedAt = (Vec<ui::automerge::ChangeHash>, usize, u64, u64);
+type HydratedAt = (Vec<ui::automerge::ChangeHash>, usize, u64, u64, u64);
 
 #[allow(
     clippy::struct_excessive_bools,
@@ -2436,7 +2436,7 @@ impl MailApp {
         if std::mem::replace(&mut self.kept_registered, true) {
             return;
         }
-        let mail = read_mail(doc.doc()).unwrap_or_default();
+        let mail = self.shared.borrow().messages();
         let baselines: Vec<crate::actions::IngestBaseline> = self
             .shared
             .borrow()
@@ -2663,10 +2663,7 @@ impl MailApp {
                     .retain(|_, pending| *pending != request_id);
                 let sent = self.server_outbox.borrow_mut().sent.remove(&request_id);
                 if let Some((update, done)) = sent {
-                    st.submit(
-                        doc,
-                        Mail::SERVER_APPLIED.with(mailbox::ServerApplied { update }),
-                    );
+                    st.confirm(doc, update);
                     done(Ok(()));
                 }
                 let check = self.server_outbox.borrow_mut().checking.remove(&request_id);
@@ -3004,6 +3001,7 @@ impl MailApp {
             doc.doc().pending_ops(),
             self.shared.borrow().mailbox.search_revision(),
             ui::collaboration::document_content::arrivals(),
+            self.shared.borrow().messages_revision(),
         );
         if self.hydrated_at.borrow().as_ref() == Some(&at) {
             return;
@@ -3016,6 +3014,7 @@ impl MailApp {
             doc.doc().pending_ops(),
             self.shared.borrow().mailbox.search_revision(),
             ui::collaboration::document_content::arrivals(),
+            self.shared.borrow().messages_revision(),
         );
         *self.hydrated_at.borrow_mut() = Some(settled);
     }
@@ -3025,12 +3024,13 @@ impl MailApp {
         {
             let mut st = self.shared.borrow_mut();
             let store = ui::tilo_resource::content::current();
-            mail.show_held(
+            let messages = st.messages();
+            messages.show_held(
                 &mut st.mailbox,
                 store.as_ref(),
                 &mut self.held_whole.borrow_mut(),
             );
-            mail.apply_flags(&mut st.mailbox);
+            messages.apply_flags(&mut st.mailbox);
         }
         // A persisted draft becomes a local Drafts projection, but does not
         // force another member's composer open.
@@ -3738,7 +3738,8 @@ impl Widget for MailApp {
 
     ui::provides!(
         dyn ui::widget::controls::ActionControls,
-        dyn ui::undo::UndoControl
+        dyn ui::undo::UndoControl,
+        dyn ui::undo::LocalUndo
     );
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         #[cfg(any(test, not(feature = "live")))]
@@ -4345,18 +4346,6 @@ fn recipient_line(draft: &crate::actions::DraftData) -> String {
         "nobody yet".to_owned()
     } else {
         to.join(", ")
-    }
-}
-
-impl ui::undo::UndoControl for MailApp {
-    fn take_undo_request(&mut self) -> Option<ui::undo::UndoRequest> {
-        self.nav.take_toast_action()?;
-        if self.send_notice && !self.sent_here.is_empty() {
-            self.unsend = true;
-            self.dirty = true;
-            return None;
-        }
-        Some(ui::undo::UndoRequest::Undo)
     }
 }
 
@@ -5490,6 +5479,7 @@ mod empty;
 #[cfg(test)]
 mod tests;
 
+mod undo;
 mod view;
 pub(crate) use view::window;
 

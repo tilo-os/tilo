@@ -424,9 +424,10 @@ fn drafts_reach_the_server_and_come_back_as_nothing(
     let mail = app.state();
     let ids = mail.draft_copy_ids();
     assert!(ids.len() >= CANDIDATES.len(), "{ids:?}");
+    let held = crate::resource::TestMail::held_by(&app);
     for copy in ids {
         assert!(
-            mail.messages
+            held.messages
                 .get(&ui::tilo_resource::Id::from_raw(copy.as_str()))
                 .is_none(),
             "no entry in the resource for the copy {copy}"

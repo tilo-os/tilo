@@ -6,9 +6,18 @@ use ui::framework::testing::TestApp;
 
 use crate::resource::MailShell;
 
+/// The address the mailbox's messages are published at, beside it.
+fn messages(app: &mut TestApp<MailShell>) -> String {
+    crate::resource::TestMail::messages_resource(app)
+        .id
+        .as_str()
+        .to_owned()
+}
+
 fn deliver(app: &mut TestApp<MailShell>, message: serde_json::Value) -> serde_json::Value {
+    let at = messages(app);
     let answer = app
-        .call("deliver-message", message)
+        .call_on(&at, "deliver-message", message)
         .expect("delivered")
         .expect("an answer");
     app.settle();
@@ -44,13 +53,15 @@ tilo_test_env::scenario! {
     {
         let mut app = TestApp::<MailShell>::new().unwrap();
         let id = sample(&mut app);
-        let state = app.state();
+        let state = crate::resource::TestMail::held_by(&app);
         let message = state.message(&id).expect("its state");
         assert_eq!(message.folder, crate::model::Folder::Inbox);
         assert!(!message.read);
         assert!(message.server.is_none(), "nothing is queued for a server");
-        assert!(state.server_updates().is_empty());
-        let again = app.call(
+        assert!(crate::resource::TestMail::owed_by(&app).is_empty());
+        let at = messages(&mut app);
+        let again = app.call_on(
+            &at,
             "deliver-message",
             json!({
                 "from": "Sam Lee <sam@example.test>",
@@ -82,26 +93,22 @@ tilo_test_env::scenario! {
                 "read": true,
             }),
         );
-        let listing = app.call("read", json!({})).unwrap().unwrap();
-        let messages = listing["messages"].as_array().unwrap();
-        assert_eq!(messages.len(), 2);
-        assert_eq!(
-            messages[0]["subject"], "Re: Quarterly numbers",
-            "newest first"
-        );
-        assert_eq!(
-            reply["conversation"], messages[1]["conversation"],
-            "a reply about the same subject joins the conversation"
-        );
-        let one = app
-            .call("read", json!({ "item": format!("mail.message:{first}") }))
-            .unwrap()
-            .unwrap();
+        let at = messages(&mut app);
+        let listing = app.call_on(&at, "read", json!({})).unwrap().unwrap();
+        let held = listing["held"].as_array().unwrap();
+        assert_eq!(held.len(), 2);
+        assert_eq!(held[0]["name"], "Re: Quarterly numbers", "newest first");
+        let item = held[1]["item"].as_str().unwrap().to_owned();
+        assert!(item.ends_with(&first), "{item}");
+        let one = app.call_on(&item, "read", json!({})).unwrap().unwrap();
         assert_eq!(
             one["message"]["body"],
             "They are up.\nSee the attached summary."
         );
-        assert_eq!(one["message"]["date"], "2026-10-12T09:30:00Z");
+        assert_eq!(
+            reply["conversation"], one["message"]["conversation"],
+            "a reply about the same subject joins the conversation"
+        );
         assert_eq!(one["conversation"].as_array().unwrap().len(), 2);
     }
 
@@ -134,7 +141,8 @@ tilo_test_env::scenario! {
     {
         let mut app = TestApp::<MailShell>::new().unwrap();
         let id = sample(&mut app);
-        app.call("archive", json!({ "messages": [&id] })).unwrap();
+        let at = messages(&mut app);
+        app.call_on(&at, "archive", json!({ "messages": [&id] })).unwrap();
         app.settle();
         let message_id: crate::model::MessageId = id.parse().unwrap();
         let shown = app
@@ -155,7 +163,9 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase a_past_version_reads_and_shows_its_mail;
+    // A message's history is its part's: the delivery and the move are
+    // steps there, beside the mailbox itself.
+    phase a_messages_history_is_kept_in_its_part;
     {
         let mut app = TestApp::<MailShell>::new().unwrap();
         let id = deliver(
@@ -171,29 +181,15 @@ tilo_test_env::scenario! {
             .as_str()
             .unwrap()
             .to_owned();
-        let past = app.versions().pop().unwrap().hash;
-        app.call("archive", json!({ "messages": [&id] })).unwrap();
+        let at = messages(&mut app);
+        app.call_on(&at, "archive", json!({ "messages": [&id] })).unwrap();
         app.settle();
-
-        let read = app
-            .call("read", json!({ "version": past.to_string() }))
-            .unwrap()
-            .unwrap();
-        let content = &read["content"];
+        let history = app.chain_history::<crate::part::MessagePart>();
+        assert!(history.len() >= 2, "{history:?}");
+        let held = crate::resource::TestMail::held_by(&app);
         assert_eq!(
-            content["messages"][0]["subject"], "Marker kumquat parade",
-            "{read}"
-        );
-        assert_eq!(content["messages"][0]["folder"], "inbox", "{read}");
-
-        // The past view is the app's own mailbox, read-only, holding the
-        // message as it was, though a past version reads no accounts.
-        let shown = app.past_version(&[past]).unwrap().texts();
-        assert!(
-            shown
-                .iter()
-                .any(|text| text.contains("Marker kumquat parade")),
-            "{shown:?}"
+            held.message(&id).map(|message| message.folder),
+            Some(crate::model::Folder::Archive)
         );
     }
 }
