@@ -33,7 +33,9 @@ const FIND = `((what) => {
   const root = document.getElementById('app');
   const selector = what === 'field'
     ? 'input:not([type=checkbox]):not([type=radio]), textarea, [contenteditable=true], [role=textbox]'
-    : 'input[type=checkbox], [role=switch], [role=checkbox]';
+    : what === 'words'
+      ? 'input:not([type]):not([role=spinbutton]), input[type=text]:not([role=spinbutton]), input[type=search], textarea, [role=textbox]'
+      : 'input[type=checkbox], [role=switch], [role=checkbox]';
   // As HTML, the page's own elements; the accessibility mirror over them is not what a press reaches.
   const dom = Boolean(root.querySelector('[data-path]'));
   for (const element of root.querySelectorAll(selector)) {
@@ -107,6 +109,20 @@ try {
           }
           writeFileSync(join(out, `${render}-${theme}-${page.toLowerCase()}.png`), await tab.screenshot());
           if (render === 'dom' && theme === 'light') writeFileSync(join(out, `dom-${page.toLowerCase()}.html`), await tab.evaluate(`document.getElementById('app').outerHTML`));
+          // Words typed into the page's first field for them reach it, on both renders.
+          const field = theme === 'light' ? JSON.parse(await tab.evaluate(`${FIND}('words')`)) : null;
+          if (field) {
+            result.field = field;
+            await press(tab, field);
+            for (const ch of TEXT) {
+              await tab.key.down({key: ch, text: ch});
+              await tab.key.up({key: ch});
+              await sleep(60);
+            }
+            await settle(tab);
+            result.typed = await tab.evaluate(`document.getElementById('app').innerText.includes(${JSON.stringify(TEXT)}) || [...document.querySelectorAll('#app input, #app textarea')].some(e => e.value.includes(${JSON.stringify(TEXT)}))`);
+            writeFileSync(join(out, `${render}-typed-${page.toLowerCase()}.png`), await tab.screenshot());
+          }
         } catch (error) {
           result.error = String(error?.stack ?? error);
         } finally {

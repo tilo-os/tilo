@@ -957,7 +957,7 @@ export const VIEW_CSS = `
 .tilo-view input[role=switch]:checked::after{width:16px;height:16px;border:0;transform:translateX(14px);}
 .tilo-view input:disabled{cursor:default;}
 /* A box or switch the person cannot change is grey where it would be the accent, as painted. */
-.tilo-view input[type=checkbox]:disabled:checked,.tilo-view input[type=radio]:disabled:checked,.tilo-view input[type=checkbox]:disabled:indeterminate{background:color-mix(in srgb,var(--tilo-text-dim,#6e6e73) 38%,transparent);}
+.tilo-view input[type=checkbox]:disabled:checked,.tilo-view input[type=radio]:disabled:checked,.tilo-view input[type=checkbox]:disabled:indeterminate{background:color-mix(in srgb,var(--tilo-text-dim,#6e6e73) 35%,var(--tilo-raised,#e5e7eb));}
 .tilo-view input[type=checkbox]:disabled:not(:checked),.tilo-view input[type=radio]:disabled:not(:checked){opacity:.5;}
 .tilo-view input[type=checkbox]:focus-visible,.tilo-view input[type=radio]:focus-visible,.tilo-view input[type=range]:focus-visible{outline:2px solid var(--tilo-accent,#2f6fed);outline-offset:2px;}
 .tilo-view input[type=range]{flex:1;min-width:0;margin:0;height:20px;appearance:none;-webkit-appearance:none;background:transparent;cursor:pointer;}
@@ -984,6 +984,8 @@ export const VIEW_CSS = `
 .tilo-view [role=tablist]{flex-wrap:nowrap!important;}
 .tilo-view [role=tablist]>button{color:var(--tilo-text-dim,#6e6e73);}
 .tilo-view [role=tablist]>button[aria-selected=true]{color:var(--tilo-text,#1d1d1f);font-weight:600;background:var(--tilo-raised,rgba(127,127,127,.16));}
+/* A control over what its widget paints is only where a press lands: the picture shows it. */
+.tilo-view [data-widget=Target]{background:transparent!important;box-shadow:none!important;}
 /* What the shell paints as cards, rows and keys, as elements: the lift and the edge
    come from the theme's own variables, the words from each part's own look. */
 .tilo-view [data-widget=NotificationBanner]{box-sizing:border-box;padding:12px 14px;background:var(--tilo-raised,rgba(127,127,127,.08));color:var(--tilo-text,#1d1d1f);border-radius:var(--tilo-radius,8px);box-shadow:0 8px 24px rgba(0,0,0,.16),inset 0 0 0 1px var(--tilo-border,rgba(127,127,127,.25));overflow:hidden;}
