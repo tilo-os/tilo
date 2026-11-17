@@ -863,6 +863,7 @@ answer-try-again = Try again
 answer-reopen = Reopen
 answer-why-unknown-app = No app here opens it.
 answer-why-not-opened = It was stopped before a window appeared.
+answer-why-not-built = It ran into a problem while opening. Try again. If it still does not open, close this window and open { $app } again.
 answer-why-cannot-start = Apps cannot be started right now.
 # A chord of the desktop's a browser page has no surface for: it says so,
 # rather than doing nothing.

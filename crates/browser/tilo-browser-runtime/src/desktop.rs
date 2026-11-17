@@ -996,12 +996,15 @@ impl Tiles {
         if !own && (named_new.is_some() || matches!(target, LaunchTarget::PrimaryNew)) {
             self.may_start_record(tab)?;
         }
-        let restore = self
-            .inputs
-            .views
-            .load(tab.id)
-            .map_err(|error| error.to_string())?
-            .map_or(RestoreInput::None, RestoreInput::Local);
+        // The view this window saved, never one a closed window left under the same id.
+        let restore = crate::app_page::saved_view(
+            &self.inputs.views,
+            tab.id,
+            definition,
+            &target,
+            named_new.as_ref(),
+        )
+        .map_err(|error| error.to_string())?;
         let component = self
             .instantiate(
                 definition,
@@ -1017,7 +1020,7 @@ impl Tiles {
                     self.shared.waiting.borrow_mut().insert(tab.id);
                     Unready::Arriving
                 }
-                Unbuilt::Failed(detail) => Unready::Notice(detail),
+                Unbuilt::Failed(detail) => Unready::Failed(detail),
             })?;
         let record = component.record().clone();
         let previous = self
@@ -1193,6 +1196,8 @@ enum Unready {
     Arriving,
     /// What the window says instead.
     Notice(String),
+    /// The app could not be built on the record the window shows; what the launch answered.
+    Failed(String),
 }
 
 impl From<String> for Unready {
@@ -1436,6 +1441,28 @@ impl TileSource for Tiles {
                     title: tab.title.clone(),
                     detail,
                 })
+            }
+            // The app was not built: the window says that it could not open and what to do, in
+            // the person's words, and tries again on their word. What the launch answered is for
+            // whoever looks into it: behind the card's Details, and in the console.
+            Err(Unready::Failed(detail)) => {
+                self.shared
+                    .unopened
+                    .borrow_mut()
+                    .insert(tab.id, detail.clone());
+                self.shared.landed.borrow_mut().remove(&tab.id);
+                if self.shared.records.borrow().contains_key(&tab.id) {
+                    self.shared.waiting.borrow_mut().insert(tab.id);
+                }
+                web_sys::console::warn_1(&format!("{} could not open: {detail}", tab.title).into());
+                let outcome = tilo_desktop_surface::outcome::Outcome::not_built(&tab.title, detail);
+                let shared = self.shared.clone();
+                let id = tab.id;
+                TileHost::new(ui::widget::TileContent::App(Box::new(
+                    tilo_desktop_surface::outcome::OutcomeCard::new(&outcome, move || {
+                        shared.reopen(id);
+                    }),
+                )))
             }
         }
     }

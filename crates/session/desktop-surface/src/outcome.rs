@@ -23,6 +23,10 @@ pub struct Outcome {
     /// The label of the button that tries it again, where trying again can work; `None` tells it
     /// without a button.
     pub retry: Option<String>,
+    /// The technical side of it, for whoever looks into it: what the launch or a service answered.
+    /// Never among the words the person is told; its card keeps it behind "Details". Empty where
+    /// there is none.
+    pub technical_details: String,
 }
 
 impl Outcome {
@@ -33,7 +37,31 @@ impl Outcome {
             what: what.into(),
             why: String::new(),
             retry: None,
+            technical_details: String::new(),
         }
+    }
+
+    /// The same outcome, keeping `technical_details` behind its card's "Details".
+    #[must_use]
+    pub fn with_technical_details(mut self, technical_details: impl Into<String>) -> Self {
+        self.technical_details = technical_details.into();
+        self
+    }
+
+    /// The outcome for the app `app` whose window could not be built: it could not open, what to
+    /// do about it, and Try again. `technical_details` is what the launch answered.
+    #[must_use]
+    pub fn not_built(app: &str, technical_details: impl Into<String>) -> Self {
+        Self::new(crate::i18n::t_args(
+            "answer-app-not-opened",
+            &[("app", app.into())],
+        ))
+        .saying(crate::i18n::t_args(
+            "answer-why-not-built",
+            &[("app", app.into())],
+        ))
+        .retryable(crate::i18n::t("answer-try-again"))
+        .with_technical_details(technical_details)
     }
 
     /// The same outcome, saying `why` .
@@ -124,6 +152,25 @@ pub struct OutcomeCard {
 impl OutcomeCard {
     /// The card for `outcome` ; `retry` runs when the person presses the button its label names.
     pub fn new(outcome: &Outcome, retry: impl FnMut() + 'static) -> Self {
+        // An outcome with a technical reason is the toolkit's own card for something that did not
+        // open, which keeps that reason behind "Details".
+        if !outcome.technical_details.trim().is_empty() {
+            let mut card =
+                ui::widget::EmptyState::new(&outcome.what).with_details(&outcome.technical_details);
+            if !outcome.why.trim().is_empty() {
+                card = card.with_message(&outcome.why);
+            }
+            if let Some(label) = &outcome.retry {
+                card = card
+                    .with_action(label)
+                    .with_action_id(RETRY_ID)
+                    .on_effect(retry);
+            }
+            return Self {
+                title: outcome.what.clone(),
+                inner: Box::new(card),
+            };
+        }
         let mut body = Column::new()
             .with_intrinsic_height()
             .with_rhythm(ui::tokens::Rhythm::Related)
@@ -209,6 +256,139 @@ mod tests {
             .perform_named(RETRY_ID, &ui::a11y::Action::Activate)
             .unwrap();
         assert_eq!(asked.get(), 1, "Try again asked for it once");
+    }
+
+    /// A window whose app could not be built says so in the person's words, says what to do, tries
+    /// again on their word, and keeps what the launch answered out of what it tells them.
+    #[test]
+    fn a_window_that_could_not_be_built_says_what_to_do_and_keeps_the_reason_apart() {
+        let reason = "application setup failed: application binding does not match";
+        let asked = Rc::new(Cell::new(0));
+        let counted = Rc::clone(&asked);
+        let outcome = Outcome::not_built("Notes", reason);
+        assert_eq!(outcome.what, "Notes could not open");
+        assert_eq!(
+            outcome.why,
+            "It ran into a problem while opening. Try again. If it still does not open, close this window and open Notes again."
+        );
+        assert_eq!(outcome.retry.as_deref(), Some("Try again"));
+        assert_eq!(outcome.technical_details, reason);
+        assert!(
+            !outcome.detail().contains("binding"),
+            "the line a notice says holds no technical reason: {}",
+            outcome.detail()
+        );
+        let card = OutcomeCard::new(&outcome, move || {
+            counted.set(counted.get() + 1);
+        });
+        let mut frame =
+            ui::headless::FrameHarness::new(ui::state::State::new(), Box::new(card), (640, 420));
+        frame.relayout();
+        let texts = ui::a11y::texts(frame.root_widget());
+        assert!(
+            texts.iter().any(|text| text == "Notes could not open"),
+            "{texts:?}"
+        );
+        // What to do is what the card is described by. What the launch answered is none of the
+        // words the window shows: its Details control keeps it.
+        let described = descriptions_under(frame.root_widget());
+        assert!(
+            described.iter().any(|said| said == &outcome.why),
+            "{described:?}"
+        );
+        assert!(
+            !texts.iter().any(|shown| shown.contains("binding")),
+            "{texts:?}"
+        );
+        assert!(texts.iter().any(|shown| shown == "Details"), "{texts:?}");
+        assert!(described.iter().any(|kept| kept == reason), "{described:?}");
+        frame
+            .perform_named(RETRY_ID, &ui::a11y::Action::Activate)
+            .unwrap();
+        assert_eq!(asked.get(), 1, "Try again asked for it once");
+    }
+
+    /// The middle of the control named `name` under `root`, where it is drawn.
+    fn centre_of_control(root: &dyn Widget, name: &str) -> Option<(f64, f64)> {
+        fn centre_in(access: &ui::a11y::AccessNode, name: &str) -> Option<(f64, f64)> {
+            if access.name.as_deref() == Some(name)
+                && let Some(bounds) = access.bounds
+            {
+                return Some((
+                    f64::midpoint(bounds.x0, bounds.x1),
+                    f64::midpoint(bounds.y0, bounds.y1),
+                ));
+            }
+            access
+                .children
+                .iter()
+                .find_map(|child| centre_in(child, name))
+        }
+        fn centre_under(widget: &dyn Widget, name: &str, found: &mut Option<(f64, f64)>) {
+            if found.is_none() {
+                *found = widget
+                    .accessibility()
+                    .and_then(|access| centre_in(&access, name));
+            }
+            widget.for_each_child(&mut |child| centre_under(child, name, found));
+        }
+        let mut found = None;
+        centre_under(root, name, &mut found);
+        found
+    }
+
+    /// Every description `root` and its descendants give assistive technology, depth first.
+    fn descriptions_under(root: &dyn Widget) -> Vec<String> {
+        fn described_in(access: &ui::a11y::AccessNode, out: &mut Vec<String>) {
+            out.extend(access.description.clone());
+            for child in &access.children {
+                described_in(child, out);
+            }
+        }
+        fn described_under(widget: &dyn Widget, out: &mut Vec<String>) {
+            if let Some(access) = widget.accessibility() {
+                described_in(&access, out);
+            }
+            widget.for_each_child(&mut |child| described_under(child, out));
+        }
+        let mut out = Vec::new();
+        described_under(root, &mut out);
+        out
+    }
+
+    /// `TILO_OUTCOME_SHOTS=<dir>` writes the card of a window whose app could not be built, as it
+    /// stands and with its Details open, in the dark and light themes.
+    #[test]
+    fn shots_of_a_window_that_could_not_be_built() {
+        let Ok(directory) = std::env::var("TILO_OUTCOME_SHOTS") else {
+            return;
+        };
+        window_not_built_shots(std::path::Path::new(&directory));
+    }
+
+    /// The pictures [`shots_of_a_window_that_could_not_be_built`] writes into `directory`.
+    fn window_not_built_shots(directory: &std::path::Path) {
+        for (scheme, theme) in [("dark", ui::Theme::dark()), ("light", ui::Theme::light())] {
+            let outcome = Outcome::not_built(
+                "Notes",
+                "application setup failed: application binding does not match",
+            );
+            let card = OutcomeCard::new(&outcome, || {});
+            let mut frame = ui::headless::FrameHarness::new(
+                ui::state::State::new(),
+                Box::new(card),
+                (720, 480),
+            );
+            frame.set_theme(theme);
+            frame.relayout();
+            frame.render_png(&directory.join(format!("window-not-built-{scheme}.png")));
+            // The same card with its Details open, as a press on the control opens it.
+            if let Some((x, y)) = centre_of_control(frame.root_widget(), "Details") {
+                frame.click_at(x, y);
+                frame.relayout();
+                frame.render_png(&directory.join(format!("window-not-built-details-{scheme}.png")));
+            }
+        }
     }
 
     /// What an outcome that trying again cannot fix says, and that it offers no button.

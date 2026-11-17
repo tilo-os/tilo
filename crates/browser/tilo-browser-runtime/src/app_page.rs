@@ -14,7 +14,8 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use ui::application::{ApplicationDefinition, LaunchTarget};
+use ui::application::{ApplicationDefinition, LaunchTarget, RestoreInput};
+use ui::application_view::InstanceViewStore;
 use ui::permissions::MemberId;
 use ui::resource::{
     DocumentCheckout, DocumentId, ResourceOpenError, ResourceOwners, ResourceStore,
@@ -68,6 +69,52 @@ impl From<String> for Unbuilt {
     fn from(detail: String) -> Self {
         Self::Failed(detail)
     }
+}
+
+/// The view saved under the window id `instance`, when it is this window's own: the view of
+/// `definition`'s app on the record `target` opens (`named_new` where the host names a new one).
+///
+/// A window's view is saved under its id for the device and workspace, and stays there after the
+/// window is closed. Ids come round again: a desktop mints them from just above the highest its
+/// layout still holds, so after a reload the next window takes the id a closed one had, and every
+/// page showing one app alone is the same window. What is saved under an id is therefore
+/// sometimes another window's leftover, of another app or another record. That is not this
+/// window's to take: the launch refuses a saved view that is not of its own app and record, so a
+/// window handed one never opened again, on any reload. A leftover is left where it is, and the
+/// window's own first save replaces it.
+///
+/// # Errors
+/// What the store answered when the view could not be read.
+pub(crate) fn saved_view(
+    views: &InstanceViewStore,
+    instance: u64,
+    definition: &ApplicationDefinition,
+    target: &LaunchTarget,
+    named_new: Option<&DocumentId>,
+) -> Result<RestoreInput, ui::view::ThawError> {
+    let Some(saved) = views.load(instance)? else {
+        return Ok(RestoreInput::None);
+    };
+    let primary = DocumentId::package_primary();
+    let shown = match target {
+        LaunchTarget::Record { checkout, .. } => Some(&checkout.id),
+        LaunchTarget::PrimaryNew => Some(&primary),
+        // A record made now is the one the host names, or one nobody has named yet.
+        _ => named_new,
+    };
+    if saved.app_id == definition.app_id()
+        && saved.resource_type == definition.resource_type.as_str()
+        && shown.is_some_and(|shown| saved.document_id == shown.as_str())
+    {
+        return Ok(RestoreInput::Local(saved));
+    }
+    tracing::warn!(
+        instance,
+        app = definition.app_id(),
+        saved_app = %saved.app_id,
+        "the view saved under this window's id is another window's: the window opens without it"
+    );
+    Ok(RestoreInput::None)
 }
 
 /// The store a page showing `definition` reads, opened once into `stores` so
