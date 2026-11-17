@@ -12,8 +12,8 @@ use ui::tilo_actions::remote::{
 };
 use ui::tilo_resource::{self, Effect as _};
 use ui::widget::{
-    Button, ButtonRole, Column, DisclosureGroup, DisclosureRow, Element, ListRow, Row, Spacer,
-    TextInput,
+    Button, ButtonRole, Column, Container, DisclosureGroup, DisclosureRow, Element, ListRow, Row,
+    Spacer, TextInput,
 };
 
 use crate::area::AreaContext;
@@ -1336,17 +1336,22 @@ impl Removal {
             );
         }
         let cancel = state.clone();
+        // The pair takes the width it needs and no more. A line of controls
+        // fills its parent otherwise, and a row whose trailing control fills
+        // it leaves nothing for its name and what removing does.
         Box::new(
-            Row::new()
-                .no_wrap()
-                .push(Box::new(
-                    Button::new(
-                        &format!("settings.access.{id}.cancel"),
-                        &t("settings-access-cancel"),
-                    )
-                    .on_view(move || cancel.ask_removal(None)),
-                ))
-                .push(Box::new(self.confirm)),
+            Container::new().hug().with_child(Box::new(
+                Row::new()
+                    .no_wrap()
+                    .push(Box::new(
+                        Button::new(
+                            &format!("settings.access.{id}.cancel"),
+                            &t("settings-access-cancel"),
+                        )
+                        .on_view(move || cancel.ask_removal(None)),
+                    ))
+                    .push(Box::new(self.confirm)),
+            )),
         )
     }
 }

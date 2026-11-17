@@ -1680,6 +1680,47 @@ tilo_test_env::scenario! {
         );
     }
 
+    phase a_row_that_asks_before_removing_keeps_its_name;
+    // Cancel and Remove filled the row from its leading edge: the row's
+    // name and what removing does were gone under them, and the person was
+    // asked to remove something the row no longer named.
+    {
+        let mut app = window_on_a_full_list(&a_full_list(now()));
+        press(
+            &mut app,
+            &format!("settings.access.device.{OTHER_COMPUTER}.ask-remove"),
+        );
+        let targets = app.harness().targets();
+        let placed = |name: String| {
+            *targets
+                .get(&name)
+                .unwrap_or_else(|| panic!("the page shows `{name}`"))
+        };
+        let row = placed(format!("settings.access.device.{OTHER_COMPUTER}"));
+        let cancel = placed(format!("settings.access.device.{OTHER_COMPUTER}.cancel"));
+        let remove = placed(format!("settings.access.device.{OTHER_COMPUTER}.remove"));
+        assert!(
+            cancel.x0 > row.x0 + row.width() / 2.0,
+            "the row's name keeps its leading half: Cancel at {cancel:?} in the row at {row:?}"
+        );
+        assert!(
+            cancel.x1 <= remove.x0,
+            "Cancel, then Remove: {cancel:?}, {remove:?}"
+        );
+        assert!(
+            remove.x1 <= row.x1,
+            "both at the row's trailing edge: {remove:?} in the row at {row:?}"
+        );
+        let shown = plain_all(app.texts());
+        assert!(
+            shown.iter().any(|text| {
+                text.contains("MacBook Air")
+                    && text.contains("It's signed out and can't act as you anymore.")
+            }),
+            "the row still names the computer and says what removing does: {shown:?}"
+        );
+    }
+
     phase a_removal_the_host_took_and_never_showed_gone_stops_saying_so;
     {
         en();
