@@ -543,7 +543,7 @@ mod tests {
              optional-runtimes = [\"tilo-runtime/2026.10.0-chromium\"]",
                 "[entrypoint]\nbin = \"bin/browser\"\n[sandbox.net]\nmode = \"allowlist\"\n\
              hosts = [\"example.org\"]\n\
-             [sandbox.portals]\nfile-chooser = \"via-host\"\nnotifications = \"deny\"",
+             [sandbox.portals]\nfile-chooser = \"via-host\"\nscreencast = \"deny\"",
             ))
             .unwrap();
             assert_eq!(m.name.as_deref(), Some("Browser"));
@@ -556,7 +556,7 @@ mod tests {
                 Some(PortalPolicy::ViaHost)
             );
             assert_eq!(
-                m.sandbox.portals.get("notifications").copied(),
+                m.sandbox.portals.get("screencast").copied(),
                 Some(PortalPolicy::Deny)
             );
             assert!(

@@ -842,9 +842,9 @@ impl ScreenCastPortal {
     }
 }
 
-/// A real sandboxed launch of an app whose manifest allows notifications and denies screencast:
-/// inside the sandbox, a notification call reaches the portal and a screencast call is refused by
-/// the bus proxy before the portal sees it.
+/// A real sandboxed launch of an app whose manifest declares no notifications and denies
+/// screencast: a notification call from its window reaches the portal, and a screencast call is
+/// refused by the bus proxy before the portal sees it.
 #[test]
 fn a_launched_app_reaches_only_the_portals_its_manifest_allows() {
     use launcher::manifest::PortalPolicy;
@@ -894,11 +894,11 @@ fn a_launched_app_reaches_only_the_portals_its_manifest_allows() {
         .set("XDG_RUNTIME_DIR", &runtime);
 
     let mut manifest = crate::support::manifest("so.tilo.portaltest", "bin/workspacetest", "off");
-    manifest.sandbox.portals = std::collections::BTreeMap::from([
-        ("notifications".to_owned(), PortalPolicy::ViaHost),
-        ("screencast".to_owned(), PortalPolicy::Deny),
-    ]);
+    manifest.sandbox.portals =
+        std::collections::BTreeMap::from([("screencast".to_owned(), PortalPolicy::Deny)]);
     let data = tempfile::tempdir().unwrap();
+    let display = dir.path().join("wayland-0");
+    let _display = std::os::unix::net::UnixListener::bind(&display).unwrap();
     let call = |method: &str, arg: Option<&str>| {
         let mut argv = vec![
             "exec",
@@ -914,6 +914,7 @@ fn a_launched_app_reaches_only_the_portals_its_manifest_allows() {
         opts.no_services = true;
         opts.bwrap_bin = Some(crate::support::bwrap());
         opts.sandbox_shim_bin = Some(tilo_test_env::package_binary!("tilo-launcher"));
+        opts.wayland_socket = Some(display.clone());
         opts.mode = launch::LaunchMode::Cli {
             command: "workspacetest".to_owned(),
             passthrough_argv: argv.iter().map(|arg| (*arg).to_owned()).collect(),
@@ -930,7 +931,7 @@ fn a_launched_app_reaches_only_the_portals_its_manifest_allows() {
     );
     assert!(
         allowed.starts_with("EXIT 0"),
-        "the allowed portal answers: {allowed}"
+        "an app with a window notifies without declaring it: {allowed}"
     );
     assert_eq!(notified.load(Ordering::SeqCst), 1);
 

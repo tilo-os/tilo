@@ -19,7 +19,7 @@ aarch64 = "aarch64"
 
 # What the app's code uses (tools/policy/check_app_capabilities.py checks it).
 [capabilities]
-optional = ["files.open", "files.save", "files.paths", "app-files", "notifications", "threads", "open-uri"]
+optional = ["files.open", "files.save", "files.paths", "app-files", "threads", "open-uri"]
 
 [publisher]
 identity  = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"
@@ -48,7 +48,6 @@ mode = "off"
 # per-cluster file-access prompt lives on the portal side, so it stays the
 # security boundary.
 file-chooser = "via-host"
-notifications = "via-host"
 
 [sandbox.services]
 collab = "optional@31"

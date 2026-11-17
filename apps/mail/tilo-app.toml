@@ -29,7 +29,7 @@ aarch64 = "aarch64"
 # What the app's code uses (tools/policy/check_app_capabilities.py checks it).
 [capabilities]
 required = ["network.http"]
-optional = ["clipboard", "files.open", "files.save", "files.paths", "app-files", "secrets", "threads", "processes", "webview", "open-uri", "notifications", "gpu"]
+optional = ["clipboard", "files.open", "files.save", "files.paths", "app-files", "secrets", "threads", "processes", "webview", "open-uri", "gpu"]
 
 [resources]
 kinds = ["mail.mailbox", "mail.messages", "tilo.chain-unsent", "tilo.accounts", "tilo.contacts.identities", "tilo.rich-text", "mail.copies", "mail.trusted-senders"]
@@ -66,7 +66,6 @@ mode = "host"
 
 [sandbox.portals]
 file-chooser = "via-host"
-notifications = "via-host"
 open-uri = "via-host"
 
 [sandbox.services]

@@ -1972,7 +1972,7 @@ mod tests {
                 let mut m = mk_manifest("off");
                 m.sandbox
                     .portals
-                    .insert("notifications".to_string(), PortalPolicy::ViaHost);
+                    .insert("file-chooser".to_string(), PortalPolicy::ViaHost);
                 let plan = DBusBindPlan {
                     host_socket: PathBuf::from("/run/user/1234/tilo/dbus-proxy/9999.sock"),
                     sandbox_path: PathBuf::from("/run/user/1234/bus"),

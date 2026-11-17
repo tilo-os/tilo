@@ -204,7 +204,7 @@ tilo_test_env::scenario! {
             // Extend it here to also cover `deny`, then round-trip.
             let extended = src.replace(
                 "[sandbox.portals]\nfile-chooser = \"via-host\"",
-                "[sandbox.portals]\nfile-chooser = \"via-host\"\nnotifications = \"deny\"",
+                "[sandbox.portals]\nfile-chooser = \"via-host\"\nscreencast = \"deny\"",
             );
             let m = Manifest::from_toml_str(&extended).expect("decode");
             assert_eq!(
@@ -212,7 +212,7 @@ tilo_test_env::scenario! {
                 Some(PortalPolicy::ViaHost)
             );
             assert_eq!(
-                m.sandbox.portals.get("notifications").copied(),
+                m.sandbox.portals.get("screencast").copied(),
                 Some(PortalPolicy::Deny)
             );
 

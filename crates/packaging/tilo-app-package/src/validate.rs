@@ -114,6 +114,8 @@ pub enum ManifestError {
     BadOffer(String),
     #[error("sandbox.services: {0}")]
     BadService(String),
+    #[error("sandbox.portals names {0:?}, which is not a portal")]
+    UnknownPortal(String),
     #[error("publisher.identity: {0}")]
     BadPublisherIdentity(String),
     #[error("publisher.signature: {0}")]
@@ -496,6 +498,13 @@ fn validate_declarations(m: &Manifest) -> Result<(), ManifestError> {
         return Err(ManifestError::UndeclaredOwnKind(own.clone()));
     }
     validate_offers(&m.offers)?;
+    if let Some(name) = m.sandbox.portals.keys().find(|name| {
+        !crate::manifest::PORTALS
+            .iter()
+            .any(|(known, _)| known == name)
+    }) {
+        return Err(ManifestError::UnknownPortal(name.clone()));
+    }
     for (name, req) in &m.sandbox.services {
         registry_types::InterfaceRequirement::new(name, req.version)
             .map_err(|error| ManifestError::BadService(error.to_string()))?;
@@ -1521,6 +1530,11 @@ mode = "off"
                 validate_manifest(&m),
                 Err(ManifestError::BadService(_))
             ));
+            m.sandbox.services.clear();
+            // A portal name the launcher's table does not know is refused.
+            let unknown = "notifications".to_owned();
+            m.sandbox.portals.insert(unknown.clone(), crate::manifest::PortalPolicy::Deny);
+            assert_eq!(validate_manifest(&m), Err(ManifestError::UnknownPortal(unknown)));
         }
 
         phase offered_actions_name_stable_addresses_once;

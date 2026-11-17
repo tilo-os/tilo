@@ -678,11 +678,8 @@ pub struct Sandbox {
     pub landlock: String,
     /// `[sandbox.net]` block — egress policy.
     pub net: SandboxNet,
-    /// `[sandbox.portals]` table — policy per freedesktop portal name
-    /// (`file-chooser`, `screencast`, ...). Values are [`PortalPolicy`]:
-    /// `via-host` (D-Bus socket plumbed in) or `deny`. An entry MUST exist
-    /// for every portal the app uses: the launcher's bus proxy refuses every
-    /// other portal, and the app's `ashpd` call fails.
+    /// `[sandbox.portals]`: a [`PortalPolicy`] per name in [`PORTALS`]. The launcher's bus proxy
+    /// refuses every portal the app does not allow here; notifications need no entry.
     #[serde(default)]
     pub portals: std::collections::BTreeMap<String, PortalPolicy>,
     #[serde(default)]
@@ -711,10 +708,21 @@ impl SandboxNet {
     }
 }
 
-/// How the launcher should route a portal request. Parsed into an
-/// enum (rather than a bare string) so misspellings surface at
-/// decode time instead of silently downgrading to a no-op; wire form
-/// is kebab-case via `#[serde(rename_all = "kebab-case")]`.
+/// Every name `[sandbox.portals]` accepts, with the `org.freedesktop.portal` interface a grant opens
+/// on the session bus. `microphone` has no bus portal: the runtime captures the device for the app.
+pub const PORTALS: &[(&str, Option<&str>)] = &[
+    ("camera", Some("Camera")),
+    ("file-chooser", Some("FileChooser")),
+    ("location", Some("Location")),
+    ("microphone", None),
+    ("network-monitor", Some("NetworkMonitor")),
+    ("open-uri", Some("OpenURI")),
+    ("screencast", Some("ScreenCast")),
+    ("secrets", Some("Secret")),
+    ("wallpaper", Some("Wallpaper")),
+];
+
+/// Whether an app may reach a portal (`via-host`) or not (`deny`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum PortalPolicy {

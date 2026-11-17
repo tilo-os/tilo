@@ -14,49 +14,42 @@ use std::time::Duration;
 const PORTAL_NAME: &str = "org.freedesktop.portal.Desktop";
 const PORTAL_PATH: &str = "/org/freedesktop/portal/desktop";
 
-/// The portal interface each `[sandbox.portals]` name grants. A name not listed here grants nothing.
-pub const PORTAL_INTERFACES: &[(&str, &str)] = &[
-    ("camera", "org.freedesktop.portal.Camera"),
-    ("file-chooser", "org.freedesktop.portal.FileChooser"),
-    ("location", "org.freedesktop.portal.Location"),
-    ("network-monitor", "org.freedesktop.portal.NetworkMonitor"),
-    ("notifications", "org.freedesktop.portal.Notification"),
-    ("open-uri", "org.freedesktop.portal.OpenURI"),
-    ("screencast", "org.freedesktop.portal.ScreenCast"),
-    ("secrets", "org.freedesktop.portal.Secret"),
-    ("wallpaper", "org.freedesktop.portal.Wallpaper"),
-];
-
-/// The session-bus rules for the portals `portals` allows, and nothing for the rest.
+/// The session-bus rules for the portals `portals` allows (named in
+/// [`tilo_app_package::manifest::PORTALS`]), the notification portal when the app has a window, and
+/// nothing for the rest.
 ///
 /// Each granted portal adds calls to, and broadcasts from, its own interface on the portal object.
 /// Any grant adds what portal answers travel through: reading the portal object's properties (each
 /// interface's `version`), and the `Request` and `Session` objects the portal hands back, which can
-/// only be closed. `notifications` also reaches the notification daemon, which keeps scheduled
+/// only be closed. Notifications also reach the notification daemon, which keeps scheduled
 /// notifications and priority contacts.
 #[must_use]
 pub fn portal_filter_args(
     portals: &std::collections::BTreeMap<String, crate::manifest::PortalPolicy>,
+    graphical: bool,
 ) -> Vec<String> {
-    let granted = |name: &str| {
-        portals
-            .get(name)
-            .is_some_and(|policy| matches!(policy, crate::manifest::PortalPolicy::ViaHost))
-    };
-    let interfaces = PORTAL_INTERFACES
+    let mut interfaces = tilo_app_package::manifest::PORTALS
         .iter()
-        .filter(|(name, _)| granted(name))
-        .map(|(_, interface)| interface)
+        .filter(|(name, _)| {
+            portals
+                .get(*name)
+                .is_some_and(|policy| matches!(policy, crate::manifest::PortalPolicy::ViaHost))
+        })
+        .filter_map(|(_, interface)| *interface)
         .collect::<Vec<_>>();
+    if graphical {
+        interfaces.push("Notification");
+    }
     if interfaces.is_empty() {
         return Vec::new();
     }
     let mut args = Vec::new();
     for interface in interfaces {
-        args.push(format!("--call={PORTAL_NAME}={interface}.*@{PORTAL_PATH}"));
-        args.push(format!(
-            "--broadcast={PORTAL_NAME}={interface}.*@{PORTAL_PATH}"
-        ));
+        for kind in ["call", "broadcast"] {
+            args.push(format!(
+                "--{kind}={PORTAL_NAME}=org.freedesktop.portal.{interface}.*@{PORTAL_PATH}"
+            ));
+        }
     }
     for rule in [
         "--call=NAME=org.freedesktop.DBus.Properties.Get@PATH",
@@ -71,13 +64,8 @@ pub fn portal_filter_args(
                 .replace("PATH", PORTAL_PATH),
         );
     }
-    if granted("notifications") {
-        args.push(
-            "--call=org.freedesktop.Notifications=org.freedesktop.Notifications.*@/org/freedesktop/Notifications".to_owned(),
-        );
-        args.push(
-            "--broadcast=org.freedesktop.Notifications=org.freedesktop.Notifications.*@/org/freedesktop/Notifications".to_owned(),
-        );
+    for kind in ["call", "broadcast"].iter().filter(|_| graphical) {
+        args.push(format!("--{kind}=org.freedesktop.Notifications=org.freedesktop.Notifications.*@/org/freedesktop/Notifications"));
     }
     args
 }
@@ -116,8 +104,9 @@ pub fn media_player_for(manifest: &crate::manifest::ManifestView) -> Option<Stri
 }
 
 /// The session-bus filter for one launch: the bus daemon for `Hello`, the portals the manifest
-/// grants ([`portal_filter_args`]), the accessibility status rules when the app has a display, and
-/// ownership of `media_player` (see [`media_player_for`]) when the app publishes its player.
+/// grants and notifications ([`portal_filter_args`]), the accessibility status rules when the app
+/// has a display, and ownership of `media_player` (see [`media_player_for`]) when the app publishes
+/// its player.
 #[must_use]
 pub fn session_filter_args(
     portals: &std::collections::BTreeMap<String, crate::manifest::PortalPolicy>,
@@ -128,7 +117,7 @@ pub fn session_filter_args(
         "--filter".to_owned(),
         "--see=org.freedesktop.DBus".to_owned(),
     ];
-    args.extend(portal_filter_args(portals));
+    args.extend(portal_filter_args(portals, graphical));
     if graphical {
         args.extend(
             A11Y_STATUS_FILTER_ARGS
@@ -415,6 +404,7 @@ impl Drop for DBusProxyGuard {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tilo_app_package::manifest::PORTALS;
 
     /// Mock proxy fixture: writes a marker to `argv[2]` (the socket path) so callers waiting on socket
     /// existence see it, then becomes a `sleep` that the guard's SIGTERM ends.
@@ -465,44 +455,43 @@ exit 1
                     .collect::<std::collections::BTreeMap<_, _>>()
             };
             let none = portals(&[]);
-            // A portal-less graphical app: the bus daemon and the accessibility status questions, nothing
-            // else.
+            let answers = [
+                "--call=org.freedesktop.portal.Desktop=org.freedesktop.DBus.Properties.Get@/org/freedesktop/portal/desktop",
+                "--call=org.freedesktop.portal.Desktop=org.freedesktop.DBus.Properties.GetAll@/org/freedesktop/portal/desktop",
+                "--call=org.freedesktop.portal.Desktop=org.freedesktop.portal.Request.Close@/org/freedesktop/portal/desktop/request/*",
+                "--broadcast=org.freedesktop.portal.Desktop=org.freedesktop.portal.Request.Response@/org/freedesktop/portal/desktop/request/*",
+                "--call=org.freedesktop.portal.Desktop=org.freedesktop.portal.Session.Close@/org/freedesktop/portal/desktop/session/*",
+                "--broadcast=org.freedesktop.portal.Desktop=org.freedesktop.portal.Session.Closed@/org/freedesktop/portal/desktop/session/*",
+            ];
+            // A graphical app that declares no portal: the bus daemon, notifications (portal and
+            // daemon) with the answer objects, and the accessibility status questions.
+            let mut expected = vec![
+                "--filter",
+                "--see=org.freedesktop.DBus",
+                "--call=org.freedesktop.portal.Desktop=org.freedesktop.portal.Notification.*@/org/freedesktop/portal/desktop",
+                "--broadcast=org.freedesktop.portal.Desktop=org.freedesktop.portal.Notification.*@/org/freedesktop/portal/desktop",
+            ];
+            expected.extend(answers);
+            expected.extend([
+                "--call=org.freedesktop.Notifications=org.freedesktop.Notifications.*@/org/freedesktop/Notifications",
+                "--broadcast=org.freedesktop.Notifications=org.freedesktop.Notifications.*@/org/freedesktop/Notifications",
+            ]);
+            expected.extend(A11Y_STATUS_FILTER_ARGS);
+            assert_eq!(session_filter_args(&none, true, None), expected);
+            // Without a window: screencast allowed and file-chooser denied gives the screencast
+            // portal and the answer objects, and no notifications.
+            let mut expected = vec![
+                "--filter",
+                "--see=org.freedesktop.DBus",
+                "--call=org.freedesktop.portal.Desktop=org.freedesktop.portal.ScreenCast.*@/org/freedesktop/portal/desktop",
+                "--broadcast=org.freedesktop.portal.Desktop=org.freedesktop.portal.ScreenCast.*@/org/freedesktop/portal/desktop",
+            ];
+            expected.extend(answers);
             assert_eq!(
-                session_filter_args(&none, true, None),
-                [
-                    "--filter",
-                    "--see=org.freedesktop.DBus",
-                    "--call=org.a11y.Bus=org.a11y.Bus.GetAddress@/org/a11y/bus",
-                    "--call=org.a11y.Bus=org.freedesktop.DBus.Properties.Get@/org/a11y/bus",
-                    "--call=org.a11y.Bus=org.freedesktop.DBus.Properties.GetAll@/org/a11y/bus",
-                    "--broadcast=org.a11y.Bus=org.freedesktop.DBus.Properties.PropertiesChanged@/org/a11y/bus",
-                ]
+                session_filter_args(&portals(&[("screencast", Allow), ("file-chooser", Deny)]), false, None),
+                expected
             );
-            // Notifications allowed and screencast denied: the notification portal and daemon, the
-            // answer objects, and nothing of the screencast portal.
-            let notifications = portals(&[("notifications", Allow), ("screencast", Deny)]);
-            assert_eq!(
-                session_filter_args(&notifications, false, None),
-                [
-                    "--filter",
-                    "--see=org.freedesktop.DBus",
-                    "--call=org.freedesktop.portal.Desktop=org.freedesktop.portal.Notification.*@/org/freedesktop/portal/desktop",
-                    "--broadcast=org.freedesktop.portal.Desktop=org.freedesktop.portal.Notification.*@/org/freedesktop/portal/desktop",
-                    "--call=org.freedesktop.portal.Desktop=org.freedesktop.DBus.Properties.Get@/org/freedesktop/portal/desktop",
-                    "--call=org.freedesktop.portal.Desktop=org.freedesktop.DBus.Properties.GetAll@/org/freedesktop/portal/desktop",
-                    "--call=org.freedesktop.portal.Desktop=org.freedesktop.portal.Request.Close@/org/freedesktop/portal/desktop/request/*",
-                    "--broadcast=org.freedesktop.portal.Desktop=org.freedesktop.portal.Request.Response@/org/freedesktop/portal/desktop/request/*",
-                    "--call=org.freedesktop.portal.Desktop=org.freedesktop.portal.Session.Close@/org/freedesktop/portal/desktop/session/*",
-                    "--broadcast=org.freedesktop.portal.Desktop=org.freedesktop.portal.Session.Closed@/org/freedesktop/portal/desktop/session/*",
-                    "--call=org.freedesktop.Notifications=org.freedesktop.Notifications.*@/org/freedesktop/Notifications",
-                    "--broadcast=org.freedesktop.Notifications=org.freedesktop.Notifications.*@/org/freedesktop/Notifications",
-                ]
-            );
-            // The reverse: screencast without notifications.
-            let screencast = portal_filter_args(&portals(&[("screencast", Allow), ("notifications", Deny)]));
-            assert!(screencast.iter().any(|rule| rule.contains("portal.ScreenCast.*@")));
-            assert!(!screencast.iter().any(|rule| rule.contains("Notification")), "{screencast:?}");
-            // Denied, unknown and tilo's own backend names grant nothing at all.
+            // Denied names, the device-only microphone and unknown names grant nothing at all.
             for denied in [
                 portals(&[("screencast", Deny), ("file-chooser", Deny)]),
                 portals(&[("microphone", Allow), ("org.freedesktop.impl.portal.desktop.tilo", Allow)]),
@@ -510,20 +499,21 @@ exit 1
                 assert_eq!(session_filter_args(&denied, false, None), ["--filter", "--see=org.freedesktop.DBus"]);
             }
             // Every portal is granted on its own: one interface, at the portal object only.
-            for (name, interface) in PORTAL_INTERFACES {
-                let rules = portal_filter_args(&portals(&[(name, Allow)]));
-                for (other_name, other) in PORTAL_INTERFACES {
+            for (name, interface) in PORTALS {
+                let rules = portal_filter_args(&portals(&[(name, Allow)]), false);
+                for (other_name, other) in PORTALS {
+                    let Some(other) = other else { continue };
                     assert_eq!(
-                        rules.iter().any(|rule| rule.contains(&format!("={other}.*@"))),
+                        rules.iter().any(|rule| rule.contains(&format!(".portal.{other}.*@"))),
                         other_name == name,
-                        "{name} must grant {interface} and no other portal: {rules:?}"
+                        "{name} must grant {interface:?} and no other portal: {rules:?}"
                     );
                 }
             }
             // No portal grant ever names a whole bus name, another portal bus (documents, the Flatpak
             // portal, tilo's backend), or a wildcard object.
-            let all = portals(&PORTAL_INTERFACES.iter().map(|(name, _)| (*name, Allow)).collect::<Vec<_>>());
-            for rule in portal_filter_args(&all) {
+            let all = portals(&PORTALS.iter().map(|(name, _)| (*name, Allow)).collect::<Vec<_>>());
+            for rule in portal_filter_args(&all, true) {
                 assert!(rule.starts_with("--call=") || rule.starts_with("--broadcast="), "{rule}");
                 let (name, rest) = rule.split_once('=').unwrap().1.split_once('=').unwrap();
                 assert!(matches!(name, "org.freedesktop.portal.Desktop" | "org.freedesktop.Notifications"), "{rule}");
