@@ -336,12 +336,12 @@ async fn own_key_runs_unasked_only_while_let() {
     // Another action of the key's that reaches outside the records still
     // asks: running a recorded command again goes to the session's pane,
     // which need not be the workspace's machine.
-    let recorded = recorded_run(&mut page, &agent, &ws).await;
+    let recorded = recorded_command(&mut page, &agent, &ws).await;
     let (status, rerun) = beside(
         &mut page,
         agent.post(
             &format!("/v1/workspaces/{ws}/resources/{}/actions/rerun", recorded.0),
-            &json!({"runs": recorded.1}),
+            &json!({"command": recorded.1}),
         ),
     )
     .await;
@@ -369,9 +369,9 @@ async fn own_key_runs_unasked_only_while_let() {
     host.close().await;
 }
 
-/// The Terminal session of `workspace` and the id of a run it recorded, as
+/// The Terminal session of `workspace` and the id of a command it ran, as
 /// `key` reads them.
-async fn recorded_run(
+async fn recorded_command(
     page: &mut Pin<&mut impl Future<Output = tilo_server_client::CertifyError>>,
     key: &Key<'_>,
     workspace: &str,
@@ -399,16 +399,17 @@ async fn recorded_run(
         )
         .await;
         assert_eq!(status, 200, "{read}");
-        let run = read["fields"]["runs"]
+        // A command's entry is its id, which is the run's.
+        let command = read["fields"]["commands"]
             .as_array()
             .into_iter()
             .flatten()
-            .find_map(|run| run["run"].as_str().or_else(|| run["id"].as_str()));
-        if let Some(run) = run {
-            return (encoded, run.to_owned());
+            .find_map(|entry| entry["id"].as_str());
+        if let Some(command) = command {
+            return (encoded, command.to_owned());
         }
     }
-    panic!("no Terminal session of {workspace} recorded a run: {listed}");
+    panic!("no Terminal session of {workspace} ran a command: {listed}");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
