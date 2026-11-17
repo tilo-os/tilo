@@ -8,6 +8,7 @@
 
 use ed25519_dalek::SigningKey;
 use serde::{Deserialize, Serialize};
+use tilo_peer_state::WorkspaceGrant;
 use tilo_peer_state::join::JoinBootstrap;
 use tilo_peer_state::join_answer::{JoinWorkspaces, WorkspaceTxn};
 use tilo_peer_state::join_ledger::{Administered, Governed, Signer};
@@ -16,7 +17,7 @@ use tilo_relay_session::workspaces::{
     CancelInvitationRequest, IssueInvitationRequest, IssuedInvitation, PendingInvitation,
     RemoveMemberRequest, SetMemberRoleRequest,
 };
-use tilo_user_identity::DeviceCert;
+use tilo_user_identity::{AgentScope, DeviceCert};
 
 use tilo_action_policy::roles::governance;
 
@@ -340,7 +341,49 @@ impl Workspaces {
             Ok(state)
         })?;
         self.settle(&mut workspace).await?;
+        // The workspace keeps the grant it admitted, so every holder and every
+        // front door reads the same grant from the workspace itself.
+        if let Some(scope) = device.capabilities.agent {
+            self.record_grant(&mut workspace, device, scope, now)
+                .await?;
+        }
         Ok(true)
+    }
+
+    /// Record the grant `cert` was admitted under in `workspace`'s governance,
+    /// reaching `scope`, authored by this host: the workspace's holders and
+    /// the front doors that read them see it from then on.
+    async fn record_grant(
+        &self,
+        workspace: &mut GovernedWorkspace,
+        cert: &DeviceCert,
+        scope: AgentScope,
+        now: u64,
+    ) -> Result<(), CollaborationError> {
+        let at = system_time(now);
+        let grant = WorkspaceGrant {
+            id: WorkspaceGrant::id_of(&cert.device_public_key),
+            person: hex::encode(cert.user_public_key),
+            device: hex::encode(cert.device_public_key),
+            name: cert.device_label.clone(),
+            scope: match scope {
+                AgentScope::AllWorkspaces => None,
+                one @ AgentScope::Workspace(_) => Some(one.name()),
+            },
+            expires_ms: cert.expires_at_ns.map(|expiry| expiry / 1_000_000),
+            created_ms: cert.issued_at_ns / 1_000_000,
+            revoked_ms: None,
+        };
+        let mut candidate = workspace.peer().clone();
+        if candidate
+            .governance_mut()
+            .author_workspace_grant(&grant, &self.inner.host.key, at)?
+        {
+            let state = workspace.collaboration().clone();
+            workspace.commit(candidate, &self.inner.host.key, at, |_, _| Ok(state))?;
+            self.settle(workspace).await?;
+        }
+        Ok(())
     }
 
     /// Change the role of the member `request.user_public_key` in `workspace`.

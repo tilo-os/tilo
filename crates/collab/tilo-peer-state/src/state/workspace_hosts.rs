@@ -108,8 +108,9 @@ impl PeerGovernanceMut<'_> {
         })
     }
 
-    /// Apply `change` to the workspace's governance as the governor `key`.
-    fn write(
+    /// Apply `change` to the workspace's governance as the governor `key`,
+    /// for this module and the workspace's grants beside it.
+    pub(super) fn write(
         self,
         key: &dyn DeviceSigner,
         now: SystemTime,
