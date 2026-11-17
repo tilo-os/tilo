@@ -20,11 +20,11 @@ tilo-desktop-model = { path = "../desktop-model" }
 # and the search text typed on the canvas places through.
 tilo-desktop-search = { path = "../desktop-search" }
 tilo-desktop-surface = { path = "../desktop-surface", default-features = false }
-# The plane's members, as every surface reads them, and the tiles pointers land on.
+# The live session's members, as every surface reads them, and the tiles pointers land on.
 collab-types = { version = "0.1.0", path = "../../collab/collab-types" }
-# The presence plane's schedule and the tiles its pointers land on, as the page's own plane
+# The presence track's schedule and the tiles its pointers land on, as the page's own live session
 # already runs them.
-tilo-live = { path = "../../collab/tilo-live", features = ["plane"] }
+tilo-live = { path = "../../collab/tilo-live", features = ["live_session"] }
 # The undo log and the clock are the toolkit's shared, portable parts.
 ui = { package = "tilo-ui", path = "../../sdk/ui-core", default-features = false }
 # The event sounds a notice makes, played by the host that shows it.

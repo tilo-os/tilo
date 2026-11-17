@@ -80,9 +80,9 @@ fn workspace_on_the_shell(state: &Path) -> WorkspaceId {
 }
 
 /// The session of the device whose key is `key`, keeping its shell and its workspaces under
-/// `state`: the device the identity this process reads names, on a plane the test carries.
+/// `state`: the device the identity this process reads names, on a live session the test carries.
 fn session_of(key: &SigningKey, label: &str, state: &Path) -> Member {
-    let (sync, said) = Client::planeless(
+    let (sync, said) = Client::without_network(
         iroh::SecretKey::from_bytes(&key.to_bytes()).public(),
         OwnPresence {
             label: label.to_owned(),

@@ -715,7 +715,7 @@ fn session_through(
         launches: Arc::clone(&started),
         services,
         wake,
-        // A login's services take part in no collaboration plane of their own; the tests of the
+        // A login's services take part in no peer network of their own; the tests of the
         // shell alone do.
         collab: desktop.is_none(),
         desktop,

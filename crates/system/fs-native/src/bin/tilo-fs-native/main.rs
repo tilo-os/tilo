@@ -1,4 +1,4 @@
-//! Capability report and local benchmarks for the native data plane. `probe`
+//! Capability report and local benchmarks for the native backend. `probe`
 //! and most benchmarks need `CAP_SYS_ADMIN` and a dedicated Btrfs store
 //! volume; `userns-probe` shows what an unprivileged user namespace can and
 //! cannot do.
@@ -79,6 +79,6 @@ fn main() -> ExitCode {
 
 #[cfg(not(target_os = "linux"))]
 fn main() -> ExitCode {
-    eprintln!("tilo-fs-native: the native data plane uses Linux kernel interfaces");
+    eprintln!("tilo-fs-native: the native backend uses Linux kernel interfaces");
     ExitCode::FAILURE
 }

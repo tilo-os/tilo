@@ -10,7 +10,7 @@
 //!    records the branch on the source's host and answers that host, making
 //!    nothing, or answers that the source has no machine
 //!    ([`Reply::NoVm`]), and then there is nothing to copy;
-//! 2. that host's member device, over the device plane as this host's own
+//! 2. that host's member device, over the device action service as this host's own
 //!    device and in the branch's name, so it enters the branch, to make the
 //!    branch's machine there on its own hosted-VM service
 //!    ([`environment_machines`]).
@@ -72,8 +72,8 @@ impl PlacedMachines {
             format!("the placer named {host}, which is no VM host this host knows")
         })?;
         let address = placed_shells::member_address(member)?;
-        let (plane, endpoint) = self.placed.asking()?;
-        Ok(plane.remote(endpoint, &address, workspace))
+        let (action_service, endpoint) = self.placed.asking()?;
+        Ok(action_service.remote(endpoint, &address, workspace))
     }
 
     fn ask_placer(&self, request: &Request) -> Result<Reply, String> {
@@ -197,7 +197,7 @@ fn follow(
         wait_ms: None,
         appearance: None,
     };
-    // Who asks is the plane's device: the caller here is only what the trait
+    // Who asks is the action service's device: the caller here is only what the trait
     // asks for, never sent.
     let caller = Caller::local_app("tilo.relay");
     let receipt = placed_shells::settled(device.invoke(&caller, request))?

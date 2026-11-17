@@ -1,5 +1,5 @@
 //! The agent host the scenario tests drive: a `tilo-relay` whose app-serving
-//! plane is the agent supervisor, its state under a scratch directory, and
+//! app action server is the agent supervisor, its state under a scratch directory, and
 //! the laptop that certifies the agents and answers what they ask.
 
 #![allow(
@@ -31,7 +31,7 @@ use tilo_user_identity::{CertificationPolicy, RevocationList, issue_device_cert}
 use crate::support::Device;
 
 /// A host serving its workspaces, with the agent supervisor as its
-/// app-serving plane.
+/// app action server.
 pub struct Hosted {
     pub relay: Relay,
     pub web: WebHandle,

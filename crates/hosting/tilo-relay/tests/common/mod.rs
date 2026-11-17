@@ -135,14 +135,14 @@ pub async fn spawn_relay_on(
     .await
 }
 
-/// [`spawn_relay`] for a host that serves apps through `plane` and asks to
+/// [`spawn_relay`] for a host that serves apps through `server` and asks to
 /// advertise `app_serving`.
 pub async fn spawn_relay_serving_apps(
     user: &TestUser,
     relay_dev: TestDevice,
     workspaces: &[WorkspaceId],
     members: &[[u8; 32]],
-    plane: std::sync::Arc<dyn tilo_relay::AppServingPlane>,
+    server: std::sync::Arc<dyn tilo_relay::AppActionServer>,
 ) -> TestRelay {
     let tmp = tempfile::tempdir().unwrap();
     let state_root = tmp.path().to_path_buf();
@@ -152,7 +152,7 @@ pub async fn spawn_relay_serving_apps(
         relay_dev,
         workspaces,
         members,
-        Some(plane),
+        Some(server),
     ))
     .await;
     TestRelay {
@@ -168,7 +168,7 @@ async fn spawn_relay_with(
     relay_dev: TestDevice,
     workspaces: &[WorkspaceId],
     members: &[[u8; 32]],
-    plane: Option<std::sync::Arc<dyn tilo_relay::AppServingPlane>>,
+    server: Option<std::sync::Arc<dyn tilo_relay::AppActionServer>>,
 ) -> Relay {
     if std::env::var_os("TILO_RELAY_CORRELATED_DIAGNOSTICS").is_some() {
         let _ = tracing_subscriber::fmt()
@@ -189,8 +189,8 @@ async fn spawn_relay_with(
         device_cert: relay_dev.cert.clone(),
         revocations: RevocationList::new(),
     };
-    cfg.services.app_serving = plane.is_some();
-    let relay = start_relay_serving(cfg, identity, plane).await.unwrap();
+    cfg.services.app_serving = server.is_some();
+    let relay = start_relay_serving(cfg, identity, server).await.unwrap();
     for id in workspaces {
         admit_members(&relay, *id, members, state_root).await;
     }
@@ -215,7 +215,7 @@ pub fn start_relay(
     start_relay_serving(cfg, identity, None)
 }
 
-/// [`start_relay`], with the app-serving plane `plane` when a test hosts apps.
+/// [`start_relay`], with the app action server `server` when a test hosts apps.
 ///
 /// # Errors
 ///
@@ -223,13 +223,18 @@ pub fn start_relay(
 pub fn start_relay_serving(
     cfg: RelayConfig,
     identity: RelayIdentity,
-    plane: Option<std::sync::Arc<dyn tilo_relay::AppServingPlane>>,
+    server: Option<std::sync::Arc<dyn tilo_relay::AppActionServer>>,
 ) -> std::pin::Pin<
     Box<dyn std::future::Future<Output = Result<Relay, tilo_relay::RelayError>> + Send>,
 > {
     Box::pin(async move {
-        Relay::start_with_app_serving_and_relay_mode(cfg, identity, plane, test_relay::relay_mode())
-            .await
+        Relay::start_with_app_serving_and_relay_mode(
+            cfg,
+            identity,
+            server,
+            test_relay::relay_mode(),
+        )
+        .await
     })
 }
 

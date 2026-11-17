@@ -54,9 +54,9 @@ use tilo_sheets::{word, words};
 use crate::Shared;
 use crate::agent_sessions::{AgentSessions, Doing};
 use crate::app_names::app_name;
+use crate::app_wire::LayoutAuthority;
 use crate::device_mcp::DeviceAgents;
 use crate::launches::Launches;
-use crate::plane::LayoutAuthority;
 use crate::platform::steps::SessionSteps as _;
 use tilo_action_policy::AgentSessionId;
 
@@ -2249,7 +2249,7 @@ impl ActionHost for Host {
         match &self.state {
             Some(state) => state.action_query(caller, &query),
             // A desktop that runs no broker (a session in a window of another, a test with no
-            // action plane) still publishes its own actions: they are read on the loop and
+            // app wire) still publishes its own actions: they are read on the loop and
             // held here, so the services list them itself.
             None => Pending::ready(Ok(CataloguePage::from_rows(
                 String::new(),

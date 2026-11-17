@@ -4,7 +4,7 @@
 //! Browser runs as a headless session in the workspace's own VM, the one its
 //! shells run in ([`legacy_vm::hosted::browser`]). This host only routes: it
 //! asks the placer for the host of that VM, as a shell does, and asks that
-//! host's member device, over the device plane as this host's own device, to
+//! host's member device, over the device action service as this host's own device, to
 //! open Browser there ([`tilo_actions::remote::browser`]), handing it what the
 //! session joins the workspace with. While every host is full the open waits,
 //! and says so once; after [`OPEN_PATIENCE`] it says why instead of waiting
@@ -20,7 +20,7 @@ use tilo_actions::remote::{
     ActionHost as _, ActionHostError, Caller, InvokeArgument, InvokeRequest, ReceiptStatus,
 };
 use tilo_actions::{InvocationId, InvocationUpdate};
-use tilo_peer_state::actions::{ActionPlane, RemoteDevice};
+use tilo_peer_state::actions::{ActionService, RemoteDevice};
 use tilo_relay_protocol::hosted::Material;
 
 use super::hosted_browser::{AppRefusal, Window};
@@ -93,9 +93,9 @@ impl PlacedBrowsers {
         self
     }
 
-    /// Ask as `plane`'s device, from `endpoint`: this host's own.
-    pub fn ask_from(&self, plane: ActionPlane, endpoint: iroh::Endpoint) {
-        self.placed.ask_from(plane, endpoint);
+    /// Ask as `action_service`'s device, from `endpoint`: this host's own.
+    pub fn ask_from(&self, action_service: ActionService, endpoint: iroh::Endpoint) {
+        self.placed.ask_from(action_service, endpoint);
     }
 
     /// Start `launch` in `workspace`'s Linux apps session in its VM, starting
@@ -132,8 +132,8 @@ impl PlacedBrowsers {
             material: material.to_owned(),
             launch: launch.clone(),
         };
-        let (plane, endpoint) = self.placed.asking().map_err(words)?;
-        let device = plane.remote(endpoint, &address, workspace);
+        let (action_service, endpoint) = self.placed.asking().map_err(words)?;
+        let device = action_service.remote(endpoint, &address, workspace);
         let opened: OpenedBrowser = follow(&device, &asked, linux_apps::target())
             .map_err(|error| match error {
                 OnMember::Plan(refusal) => AppRefusal::Refused(refusal),
@@ -158,8 +158,8 @@ impl PlacedBrowsers {
             .placed(workspace, &mut None, None)?
             .ok_or_else(|| "the placer named no host".to_owned())?;
         let address = self.member(&host)?;
-        let (plane, endpoint) = self.placed.asking()?;
-        let device = plane.remote(endpoint, &address, workspace);
+        let (action_service, endpoint) = self.placed.asking()?;
+        let device = action_service.remote(endpoint, &address, workspace);
         let asked = OpenBrowser {
             workspace: workspace.to_owned(),
             account: String::new(),
@@ -198,8 +198,8 @@ impl PlacedBrowsers {
             account: self.placed.account().to_owned(),
             material: material.to_owned(),
         };
-        let (plane, endpoint) = self.placed.asking().map_err(OpenError::Error)?;
-        let device = plane.remote(endpoint, &address, workspace);
+        let (action_service, endpoint) = self.placed.asking().map_err(OpenError::Error)?;
+        let device = action_service.remote(endpoint, &address, workspace);
         let opened = open_on(&device, &asked).map_err(|error| match error {
             OnMember::Refused(words) => OpenError::Refused(words),
             OnMember::Plan(refusal) => OpenError::Refused(refusal.message),
@@ -223,8 +223,8 @@ impl PlacedBrowsers {
             .placed(workspace, &mut None, None)?
             .ok_or_else(|| "the placer named no host".to_owned())?;
         let address = self.member(&host)?;
-        let (plane, endpoint) = self.placed.asking()?;
-        let device = plane.remote(endpoint, &address, workspace);
+        let (action_service, endpoint) = self.placed.asking()?;
+        let device = action_service.remote(endpoint, &address, workspace);
         stop_on(&device, workspace).map_err(|words| format!("{host}: {words}"))
     }
 
@@ -311,7 +311,7 @@ fn follow(
         wait_ms: None,
         appearance: None,
     };
-    // Who asks is the plane's device: the caller here is only what the trait
+    // Who asks is the action service's device: the caller here is only what the trait
     // asks for, never sent.
     let caller = Caller::local_app("tilo.relay");
     let until = Instant::now().checked_add(OPEN_PATIENCE);
@@ -458,8 +458,8 @@ impl super::hosted_browser::BrowserSessions for PlacedBrowsers {
         }
     }
 
-    fn ask_from(&self, plane: ActionPlane, endpoint: iroh::Endpoint) {
-        PlacedBrowsers::ask_from(self, plane, endpoint);
+    fn ask_from(&self, action_service: ActionService, endpoint: iroh::Endpoint) {
+        PlacedBrowsers::ask_from(self, action_service, endpoint);
     }
 }
 

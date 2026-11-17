@@ -506,7 +506,7 @@ impl RelayClient {
     }
 
     /// Resolve both the content endpoint and authenticated Files workspace
-    /// ticket needed by a fresh device to join the live record plane.
+    /// ticket needed by a fresh device to join the live record protocol.
     #[cfg(not(target_arch = "wasm32"))]
     pub async fn discover_content_peer(
         endpoint: &Endpoint,
@@ -1219,7 +1219,7 @@ impl RelayClient {
     /// Disconnect and close the endpoint this client was built on, which
     /// [`RelayClient::connect`] takes by value on the understanding that the
     /// client owns it. A caller that kept a clone and is still using it — a
-    /// page redialling from the endpoint beside its planes — calls
+    /// page redialling from the endpoint beside its live sessions — calls
     /// [`RelayClient::disconnect`] instead.
     pub async fn close(self) {
         self.carrier.close_owned().await;
@@ -1231,7 +1231,7 @@ impl RelayClient {
 /// ([`crate::auth`]): the device signs the host's challenge with the key
 /// `cert` names, and the host must prove `expected_server_user` (and
 /// `expected_server_device`, when named). What a link over a carrier that
-/// does not say who dialled it (WebTransport) carries before the plane's
+/// does not say who dialled it (WebTransport) carries before the live session's
 /// own admission.
 ///
 /// # Errors

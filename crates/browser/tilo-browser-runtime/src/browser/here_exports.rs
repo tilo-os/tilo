@@ -7,7 +7,7 @@ use wasm_bindgen::prelude::*;
 
 use super::{error, with_mount, with_mount_quietly};
 
-/// This page's own person, for a desktop that has no live plane to read it
+/// This page's own person, for a desktop that has no live session to read it
 /// from: `{own: {publisher, label, user}}`. A desktop in a workspace reads
 /// itself and everyone else from the presence board each frame, so this only
 /// names the person where there is none. Nothing is written to the

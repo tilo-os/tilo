@@ -768,7 +768,7 @@ impl Shell {
     /// arranged is merged here, so the shell this session draws is the one they have everywhere.
     ///
     /// Cheap when nothing moved, which is what every pass runs. `None` on a session that takes part
-    /// in no plane of the person's.
+    /// in no peer network of the person's.
     pub(crate) fn sync_resource(&self, personal: &tilo_peer_state::PersonalSync) {
         let id = self.record_kept.id().to_owned();
         let app = self.app.as_str();
@@ -1706,7 +1706,7 @@ impl crate::Session {
         self.shell.as_ref()?.record_setting(field)
     }
 
-    /// The collaboration plane this session takes part in, when it does: what a test hands it is
+    /// The peer network this session takes part in, when it does: what a test hands it is
     /// who is here.
     #[must_use]
     pub fn sync(&self) -> Option<&Rc<crate::sync::Client>> {

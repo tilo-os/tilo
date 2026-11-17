@@ -884,7 +884,7 @@ async fn delivered_effect(rig: &Rig, env: &Environment, id: tilo_actions::Invoca
     delivered.id
 }
 
-/// The broker's device api, as the engine's action plane reaches it.
+/// The broker's device api, as the engine's action service reaches it.
 async fn api_answer<T>(mut pending: tilo_actions::remote::Pending<T>) -> T {
     tilo_test_env::within("the broker api answers", async {
         loop {

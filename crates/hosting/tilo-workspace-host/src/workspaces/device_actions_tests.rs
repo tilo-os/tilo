@@ -1,22 +1,22 @@
-//! A device of a workspace asking the host, over the devices' own plane,
+//! A device of a workspace asking the host, over the devices' action service,
 //! whether it would run a piece of work: what the host answers, which work it
 //! keeps for whom, and who may run it here.
 #![expect(
     clippy::significant_drop_tightening,
-    reason = "the relay, its workspaces and the devices' planes are this test's subject until its last assertion"
+    reason = "the relay, its workspaces and the devices' action services are this test's subject until its last assertion"
 )]
 
 use super::fixtures::{entry_join, entry_join_as};
 use super::tests::{governor, guest_device, test_host};
 use super::*;
 
-/// A device of a workspace asks the host, over the devices' own plane, whether
+/// A device of a workspace asks the host, over the devices' action service, whether
 /// it would run a piece of work; the host answers as one of the workspace's
 /// member devices, with what it knows of itself.
 #[tokio::test]
 async fn a_member_device_asks_the_host_whether_it_would_run_work() {
     use neighbour_wire::offer::{Decline, Route, Work};
-    use tilo_peer_state::actions::{ActionPlane, OFFER_DEADLINE};
+    use tilo_peer_state::actions::{ActionService, OFFER_DEADLINE};
 
     let dir = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
@@ -38,13 +38,13 @@ async fn a_member_device_asks_the_host_whether_it_would_run_work() {
         .bind()
         .await
         .unwrap();
-    let plane = ActionPlane::new(
+    let action_service = ActionService::new(
         member_key.clone(),
         Arc::new(tilo_actions::remote::TestHost::new()),
     );
     let choice = tokio::time::timeout(
         Duration::from_secs(20),
-        plane.offers(
+        action_service.offers(
             &endpoint,
             [relay.node_addr()],
             &created.workspace,
@@ -59,7 +59,7 @@ async fn a_member_device_asks_the_host_whether_it_would_run_work() {
     .expect("the round completes");
 
     // The host answered as itself: it holds the workspace, and it runs no app
-    // actions on this plane, so it claims none.
+    // actions on this action service, so it claims none.
     assert_eq!(choice.considered.len(), 1, "the host was asked: {choice}");
     assert_eq!(
         choice.considered[0].device, cert.device_public_key,
@@ -88,7 +88,7 @@ fn offered_work(input: [u8; 32]) -> neighbour_wire::offer::Work {
 }
 
 /// The invocation a device makes of `route` in `workspace`.
-fn plane_invocation(
+fn action_service_invocation(
     workspace: &str,
     invocation: tilo_actions::InvocationId,
 ) -> tilo_actions::remote::InvokeRequest {
@@ -177,17 +177,17 @@ impl HostJobs for Recorded {
 /// key.
 async fn asking_device(
     key: &SigningKey,
-) -> (iroh::Endpoint, tilo_peer_state::actions::ActionPlane) {
+) -> (iroh::Endpoint, tilo_peer_state::actions::ActionService) {
     let endpoint = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
         .secret_key(iroh::SecretKey::from_bytes(&key.to_bytes()))
         .bind()
         .await
         .unwrap();
-    let plane = tilo_peer_state::actions::ActionPlane::new(
+    let action_service = tilo_peer_state::actions::ActionService::new(
         key.clone(),
         Arc::new(tilo_actions::remote::TestHost::new()),
     );
-    (endpoint, plane)
+    (endpoint, action_service)
 }
 
 /// Two devices offer the host the same route over different inputs; each
@@ -208,7 +208,7 @@ async fn each_device_runs_the_work_it_offered_and_no_other() {
     let (key, cert) = governor();
     let relay = test_host(dir.path(), &key, &cert).await;
     let workspaces = relay.workspaces();
-    let created = workspaces.create("Plane").await.unwrap();
+    let created = workspaces.create("ActionService").await.unwrap();
     let jobs = Arc::new(Recorded::default());
     let serving: Arc<dyn HostJobs> = jobs.clone();
     workspaces.run_jobs(serving);
@@ -221,29 +221,29 @@ async fn each_device_runs_the_work_it_offered_and_no_other() {
     entry_join(workspaces, &cert, &created.workspace, (&a_key, &a_cert), 41).await;
     entry_join(workspaces, &cert, &created.workspace, (&b_key, &b_cert), 42).await;
     entry_join(workspaces, &cert, &created.workspace, (&c_key, &c_cert), 43).await;
-    let (a_endpoint, a_plane) = asking_device(&a_key).await;
-    let (b_endpoint, b_plane) = asking_device(&b_key).await;
-    let (c_endpoint, c_plane) = asking_device(&c_key).await;
+    let (a_endpoint, a_action_service) = asking_device(&a_key).await;
+    let (b_endpoint, b_action_service) = asking_device(&b_key).await;
+    let (c_endpoint, c_action_service) = asking_device(&c_key).await;
 
     let route = Route::new("so.tilo.notes", "notes.root", "insert");
     let (a_input, b_input) = ([0xa1; 32], [0xb2; 32]);
     let a_offer = tilo_actions::InvocationId::new();
     let b_offer = tilo_actions::InvocationId::new();
     let host = relay.node_addr();
-    let ask = |plane: &tilo_peer_state::actions::ActionPlane,
+    let ask = |action_service: &tilo_peer_state::actions::ActionService,
                endpoint: &iroh::Endpoint,
                work: &neighbour_wire::offer::Work,
                invocation: tilo_actions::InvocationId| {
         let host = host.clone();
         let route = route.clone();
         let workspace = created.workspace.clone();
-        let (plane_endpoint, plane) = (endpoint.clone(), plane.clone());
+        let (action_service_endpoint, action_service) = (endpoint.clone(), action_service.clone());
         let work = work.clone();
         async move {
             tokio::time::timeout(
                 Duration::from_secs(20),
-                plane.offers(
-                    &plane_endpoint,
+                action_service.offers(
+                    &action_service_endpoint,
                     [host],
                     &workspace,
                     &route,
@@ -259,26 +259,38 @@ async fn each_device_runs_the_work_it_offered_and_no_other() {
     };
 
     // Both devices offer over the same route; the host takes both.
-    let chosen = ask(&a_plane, &a_endpoint, &offered_work(a_input), a_offer).await;
+    let chosen = ask(
+        &a_action_service,
+        &a_endpoint,
+        &offered_work(a_input),
+        a_offer,
+    )
+    .await;
     assert_eq!(
         chosen.worker,
         Some(cert.device_public_key),
         "the host takes the first device's work: {chosen}"
     );
-    let chosen = ask(&b_plane, &b_endpoint, &offered_work(b_input), b_offer).await;
+    let chosen = ask(
+        &b_action_service,
+        &b_endpoint,
+        &offered_work(b_input),
+        b_offer,
+    )
+    .await;
     assert_eq!(
         chosen.worker,
         Some(cert.device_public_key),
         "the host takes the second device's work: {chosen}"
     );
 
-    let invoke = |plane: &tilo_peer_state::actions::ActionPlane,
+    let invoke = |action_service: &tilo_peer_state::actions::ActionService,
                   endpoint: &iroh::Endpoint,
                   invocation: tilo_actions::InvocationId| {
         let host = host.clone();
         let workspace = created.workspace.clone();
-        let remote = Arc::new(plane.remote(endpoint, &host, &workspace));
-        let request = plane_invocation(&workspace, invocation);
+        let remote = Arc::new(action_service.remote(endpoint, &host, &workspace));
+        let request = action_service_invocation(&workspace, invocation);
         async move {
             tokio::time::timeout(
                 Duration::from_secs(20),
@@ -291,7 +303,7 @@ async fn each_device_runs_the_work_it_offered_and_no_other() {
     };
 
     // Each device's invocation runs the work that device offered.
-    let update = invoke(&a_plane, &a_endpoint, a_offer)
+    let update = invoke(&a_action_service, &a_endpoint, a_offer)
         .await
         .expect("the host ran the first device's work");
     let InvocationUpdate::Succeeded { output, .. } = update else {
@@ -302,7 +314,7 @@ async fn each_device_runs_the_work_it_offered_and_no_other() {
         Some(serde_json::json!({ "ran": [hex::encode(a_input)] })),
         "the run read the inputs the first device offered"
     );
-    let update = invoke(&b_plane, &b_endpoint, b_offer)
+    let update = invoke(&b_action_service, &b_endpoint, b_offer)
         .await
         .expect("the host ran the second device's work");
     let InvocationUpdate::Succeeded { output, .. } = update else {
@@ -317,7 +329,7 @@ async fn each_device_runs_the_work_it_offered_and_no_other() {
     // A device that never offered runs nothing, whatever invocation it names:
     // not another device's, and not one of its own.
     for invocation in [a_offer, b_offer, tilo_actions::InvocationId::new()] {
-        let refused = invoke(&c_plane, &c_endpoint, invocation).await;
+        let refused = invoke(&c_action_service, &c_endpoint, invocation).await;
         assert_eq!(
             refused,
             Err(ActionHostError::UnknownAction),
@@ -325,7 +337,7 @@ async fn each_device_runs_the_work_it_offered_and_no_other() {
         );
     }
     // Nor does one device run the work another offered.
-    let refused = invoke(&a_plane, &a_endpoint, b_offer).await;
+    let refused = invoke(&a_action_service, &a_endpoint, b_offer).await;
     assert_eq!(
         refused,
         Err(ActionHostError::UnknownAction),
@@ -381,11 +393,11 @@ async fn the_workspaces_permission_for_the_action_decides_who_runs_work_here() {
             role,
         )
         .await;
-        let (endpoint, plane) = asking_device(&device_key).await;
+        let (endpoint, action_service) = asking_device(&device_key).await;
         let offer = tilo_actions::InvocationId::new();
         let chosen = tokio::time::timeout(
             Duration::from_secs(20),
-            plane.offers(
+            action_service.offers(
                 &endpoint,
                 [host.clone()],
                 &created.workspace,
@@ -400,11 +412,11 @@ async fn the_workspaces_permission_for_the_action_decides_who_runs_work_here() {
         .expect("the round completes");
         assert_eq!(chosen.worker, Some(cert.device_public_key), "{chosen}");
 
-        let remote = Arc::new(plane.remote(&endpoint, &host, &created.workspace));
+        let remote = Arc::new(action_service.remote(&endpoint, &host, &created.workspace));
         let update = tokio::time::timeout(
             Duration::from_secs(20),
             remote.invoke_until_settled(
-                plane_invocation(&created.workspace, offer),
+                action_service_invocation(&created.workspace, offer),
                 Duration::from_secs(20),
             ),
         )
@@ -456,10 +468,10 @@ async fn a_host_at_its_capacity_answers_an_offer_as_taken_by_nobody() {
         61,
     )
     .await;
-    let (endpoint, plane) = asking_device(&device_key).await;
+    let (endpoint, action_service) = asking_device(&device_key).await;
     let choice = tokio::time::timeout(
         Duration::from_secs(20),
-        plane.offers(
+        action_service.offers(
             &endpoint,
             [relay.node_addr()],
             &created.workspace,

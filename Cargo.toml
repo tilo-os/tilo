@@ -755,7 +755,7 @@ data-encoding = "2.10"
 data-encoding-macro = "0.1.19"
 hex = "0.4.3"
 bytes = "1.11.1"
-# The moq-lite live plane's protocol layer, shared by native devices and pages.
+# The moq-lite live session's protocol layer, shared by native devices and pages.
 moq-net = "0.3.3"
 flate2 = "1"
 miniz_oxide = "0.8"
@@ -804,7 +804,7 @@ iroh-blobs = { version = "0.103.0", default-features = false, features = ["fs-st
 bao-tree = { version = "0.16", default-features = false, features = ["experimental-mixed"] }
 irpc = { version = "0.17.0", default-features = false }
 ref-cast = "1.0.24"
-# Content-defined chunking for the native data plane (normalised FastCDC).
+# Content-defined chunking for the native backend (normalised FastCDC).
 fastcdc = { version = "3.2", default-features = false }
 # Embedded metadata database of the storage daemon (already in the graph
 # through iroh-blobs' store).

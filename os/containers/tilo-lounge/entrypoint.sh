@@ -27,7 +27,7 @@
 #   TILO_WORKSPACES_OPERATOR_SOCKET  that socket (default: the workspace's state
 #                               directory, operator.sock)
 #
-# The pages reach the host's live plane through the host's own iroh packet
+# The pages reach the host's live session through the host's own iroh packet
 # relay, over websockets, which the deployment publishes beside the HTTP
 # routes: it binds TILO_WORKSPACES_LIVE, and pages dial TILO_WORKSPACES_LIVE_ORIGIN
 # when an ingress terminates TLS in front of it. The HTTPS listener behind the
@@ -118,8 +118,8 @@ fi
 entry=${TILO_WORKSPACES_WEB_ENTRY:-}
 [ -n "$entry" ] || fail 'TILO_WORKSPACES_WEB_ENTRY is required: the Tilo app web entry the links open'
 origin=${origin%/}
-# eu1 also names the API's public address and the live plane's. The API's is
-# the relay's own origin here (one origin, one ingress), and the live plane
+# eu1 also names the API's public address and the live session's. The API's is
+# the relay's own origin here (one origin, one ingress), and the live session
 # rides the plain listener as the HTTPS stream fallback, so neither changes
 # what the host serves; both are read so eu1's environment starts as it is.
 dir=${TILO_WORKSPACES_STATE:-/run/tilo-workspaces}/$name

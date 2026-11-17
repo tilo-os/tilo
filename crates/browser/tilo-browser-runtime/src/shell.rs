@@ -499,7 +499,7 @@ pub(crate) struct BrowserShell {
     /// Who is here: the session's own roster, its cards and every other person's pointer, on the
     /// layer it placed over the shell.
     people: Rc<RefCell<tilo_session::people::People>>,
-    /// The session's sync, when this page takes part in the workspace's plane.
+    /// The session's sync, when this page takes part in the workspace's live session.
     sync: Option<Rc<tilo_session::sync::Client>>,
     /// Whether the person may invite someone here, as the workspace last answered: the roster's
     /// footer is offered on it.
@@ -991,7 +991,7 @@ impl BrowserShell {
     }
 
     /// Keep what this person says they are doing, in their own words: their other devices read it
-    /// on the plane, and this page's own bar says it here.
+    /// on the live session, and this page's own bar says it here.
     fn keep_own_words(&self, words: &str) {
         self.chrome
             .here

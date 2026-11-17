@@ -192,8 +192,8 @@ new_root() {
   fi
   printf '%s\n' "$root"
 }
-fuse_for() { printf 'TILO_FS_DATA_PLANE_ARGS="--data-plane=fuse --native-owner=%s"' "$1"; }
-fuse_line='TILO_FS_DATA_PLANE_ARGS="--data-plane=fuse"'
+fuse_for() { printf 'TILO_FS_BACKEND_ARGS="--backend=fuse --native-owner=%s"' "$1"; }
+fuse_line='TILO_FS_BACKEND_ARGS="--backend=fuse"'
 
 r="$(new_root proven "cy 1002:1002" 0)"
 printf 'kind=none\n' > "$r/etc/tilo/store-volume.conf"
@@ -266,14 +266,14 @@ SH
 chmod 0755 "$tmp/systemctl-restart"
 r="$(new_root after-signin "cy 1002:1002" 0)"
 printf 'kind=none\n' > "$r/etc/tilo/store-volume.conf"
-printf 'TILO_FS_DATA_PLANE_ARGS="--data-plane=fuse"\n' > "$r/run/fs.env" 2>/dev/null || {
-  mkdir -p "$r/run"; printf 'TILO_FS_DATA_PLANE_ARGS="--data-plane=fuse"\n' > "$r/run/fs.env"; }
+printf 'TILO_FS_BACKEND_ARGS="--backend=fuse"\n' > "$r/run/fs.env" 2>/dev/null || {
+  mkdir -p "$r/run"; printf 'TILO_FS_BACKEND_ARGS="--backend=fuse"\n' > "$r/run/fs.env"; }
 if TILO_TEST_SYSTEMCTL_CALLS="$tmp/systemctl.calls" SYSTEMCTL_STUB="$tmp/systemctl-restart" ensure_env "$r" \
    && [ "$(cat "$r/run/fs.env")" = "$(fuse_for 1002:1002)" ] \
    && grep -Fqx 'try-restart fs.service' "$tmp/systemctl.calls"; then
   ok "a preparation re-run after the sign-in restarts fs.service onto what it announced"
 else
-  bad "the sign-in's preparation did not hand its data plane to the running daemon: $(cat "$r/log" 2>/dev/null)"
+  bad "the sign-in's preparation did not hand its backend to the running daemon: $(cat "$r/log" 2>/dev/null)"
 fi
 # Nothing changed (the same answer as an earlier run): no restart.
 rm -f "$tmp/systemctl.calls"
@@ -281,7 +281,7 @@ if TILO_TEST_SYSTEMCTL_CALLS="$tmp/systemctl.calls" SYSTEMCTL_STUB="$tmp/systemc
    && ! grep -Fq 'try-restart' "$tmp/systemctl.calls"; then
   ok "a preparation that announces what the daemon already runs restarts nothing"
 else
-  bad "an unchanged data plane restarted fs.service"
+  bad "an unchanged backend restarted fs.service"
 fi
 
 # A device that names an owner it cannot use is misconfigured, and that is a
@@ -308,13 +308,13 @@ fi
 # --- unit wiring and image contract --------------------------------------------
 if exactly_once "$fs_unit" 'Wants=tilo-store-volume.service var-lib-tilo-store.mount' \
    && exactly_once "$fs_unit" 'After=tilo-store-volume.service var-lib-tilo-store.mount' \
-   && exactly_once "$fs_unit" 'Environment=TILO_FS_DATA_PLANE_ARGS=--data-plane=fuse' \
+   && exactly_once "$fs_unit" 'Environment=TILO_FS_BACKEND_ARGS=--backend=fuse' \
    && exactly_once "$fs_unit" 'EnvironmentFile=-/run/tilo-store/fs.env' \
-   && exactly_once "$fs_unit" '    $TILO_FS_DATA_PLANE_ARGS' \
+   && exactly_once "$fs_unit" '    $TILO_FS_BACKEND_ARGS' \
    && exactly_once "$fs_unit" 'ExecStopPost=-/usr/bin/umount --lazy /var/workspace'; then
   ok "fs.service waits for the store and defaults to FUSE unless the store is announced"
 else
-  bad "fs.service is not ordered after the store or can pick a data plane on its own"
+  bad "fs.service is not ordered after the store or can pick a backend on its own"
 fi
 if exactly_once "$volume_unit" 'Before=fs.service' \
    && exactly_once "$volume_unit" 'ExecStart=/usr/libexec/tilo-store-volume ensure' \
@@ -366,7 +366,7 @@ fi
 # the person's sign-in ends, not a misconfiguration.
 if grep -Fq 'The person has not signed in yet, so the workspace has no owner.' "$helper" \
    && grep -Fq 'return 2' "$helper" \
-   && grep -Fq 'publish_data_plane "--data-plane=fuse${OWNER:+ --native-owner=$OWNER}"' "$helper"; then
+   && grep -Fq 'publish_backend "--backend=fuse${OWNER:+ --native-owner=$OWNER}"' "$helper"; then
   ok "waiting for a sign-in is reported, keeps FUSE serving, and does not fail the unit"
 else
   bad "the store preparation fails a boot for waiting on the person"
@@ -538,7 +538,7 @@ if run_root env TILO_STORE_ETC="$r/fs/etc" TILO_STORE_RUNTIME="$r/run" TILO_STOR
      "$helper" ensure > "$r/log" 2>&1; then
   ids="$(id -u):$(id -g)"
   image="$r/fs/var-lib-tilo/store.img"
-  if [ "$(run_root cat "$r/run/fs.env")" = "TILO_FS_DATA_PLANE_ARGS=\"--data-plane=auto --store=$r/fs/store --native-owner=$ids\"" ] \
+  if [ "$(run_root cat "$r/run/fs.env")" = "TILO_FS_BACKEND_ARGS=\"--backend=auto --store=$r/fs/store --native-owner=$ids\"" ] \
      && findmnt -rn -M "$r/fs/store" -o FSTYPE | grep -qx btrfs \
      && run_root lsattr "$image" | awk '{print $1}' | grep -q C \
      && [ "$(run_root stat -c %a "$image")" = 600 ] \

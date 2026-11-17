@@ -225,11 +225,11 @@ async fn a_session_beside_the_devices_own_dials_from_the_devices_endpoint() {
         sockets.iter().any(|socket| socket.port() == from.port()),
         "the host hears the dial from the device's own endpoint: {from} is none of {sockets:?}"
     );
-    // The device's own session runs its live plane: a second one under the same key would shadow
+    // The device's own session runs its live session: a second one under the same key would shadow
     // the broadcast it publishes its presence on.
     assert!(
-        dial.plane().is_none(),
-        "a session beside the device's own joins no plane of its own"
+        dial.live_session().is_none(),
+        "a session beside the device's own joins no live session of its own"
     );
 
     // The session ending leaves the device's endpoint open: it is the device's.

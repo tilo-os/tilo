@@ -376,7 +376,7 @@ pub enum NeighbourMsg {
         workspace: String,
     },
     /// Retired: a peer's presence cursor moved within `key`'s coordinate
-    /// space. A pointer move is a frame on the workspace's live plane now; no
+    /// space. A pointer move is a frame on the workspace's live session now; no
     /// build produces this, and it stays only so every later Postcard
     /// discriminant keeps its value.
     RetiredPresenceMoved {
@@ -389,7 +389,7 @@ pub enum NeighbourMsg {
         colour: PresenceColour,
     },
     /// Retired: a peer's presence cursor disappeared from `key`'s coordinate
-    /// space. A leaving pointer is a frame on the workspace's live plane now;
+    /// space. A leaving pointer is a frame on the workspace's live session now;
     /// no build produces this, and it stays only so every later Postcard
     /// discriminant keeps its value.
     RetiredPresenceCleared { peer: PeerId, key: PresenceKey },
@@ -537,7 +537,7 @@ pub enum NeighbourMsg {
         own: Option<collab_types::OwnResource>,
     },
     /// Retired: app-level presence crossing the host boundary. An app's
-    /// presence is a frame on the workspace's live plane now; no build
+    /// presence is a frame on the workspace's live session now; no build
     /// produces this, and it stays only so every later Postcard discriminant
     /// keeps its value.
     RetiredAppPresenceV2 {
@@ -714,8 +714,8 @@ pub enum NeighbourMsg {
     /// One of session `peer`'s live presence frames in the workspace
     /// (`tilo_relay_protocol::live`, sealed with the channel keys of the
     /// record it names), on the workspace's own topic: how the frame travels
-    /// when no workspace host's live plane reaches the workspace. It is the same
-    /// frame, read the same way as one the live plane delivers, so what
+    /// when no workspace host's live session reaches the workspace. It is the same
+    /// frame, read the same way as one the live session delivers, so what
     /// rides it (a wave) reaches the workspace's people with or without a host.
     /// Appended to preserve every existing Postcard discriminant.
     LivePresence { peer: PeerId, frame: Vec<u8> },
@@ -837,7 +837,7 @@ impl NeighbourMsg {
             Self::IdentityAnnouncement { .. }
             // Never acted on; control consent rides `PermissionGrant`.
             | Self::PermissionRequest { .. }
-            // Presence is a frame on the workspace's live plane.
+            // Presence is a frame on the workspace's live session.
             | Self::RetiredPresenceMoved { .. }
             | Self::RetiredPresenceCleared { .. }
             | Self::RetiredAppPresenceV2 { .. } => true,
@@ -1476,7 +1476,7 @@ mod tests {
     }
 
     /// Only generations no build produces any more are retired: the two
-    /// identity predecessors and the presence messages that live-plane frames
+    /// identity predecessors and the presence messages that live-live session frames
     /// replaced. Every other variant, including both identity successors,
     /// stays live.
     #[test]

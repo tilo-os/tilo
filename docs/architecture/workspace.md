@@ -545,7 +545,7 @@ share it: a person shares a window on the device that has it.
 A window whose app draws its own page, as the Browser's does, is shared as
 that page and not as a picture of it. Its app hands the session the page as a
 display list while a member's shell shows the window, the list travels the
-live plane on a track of its own, sealed as the pictures are, and the device
+live session on a track of its own, sealed as the pictures are, and the device
 showing the window draws it with its own text and vector stack. Nothing of
 such a window is captured or encoded, and the device showing it sends it no
 input. Pictures of it would show a watcher what the page masks, so it is never
@@ -562,8 +562,8 @@ workspace its app was started in. The tile that draws the page names the page's 
 is drawn, so a reader who cannot see the page, and a tool that lists what a
 shell shows, read what is on the screen.
 
-The window's pictures travel the workspace's live plane, which the device
-serving the workspace relays for its members. A device is in the plane once
+The window's pictures travel the workspace's live session, which the device
+serving the workspace relays for its members. A device is in the live session once
 it holds the workspace's keys and reached that device; while it is not taken
 in, it asks again, waiting longer each time and at most every fifteen
 seconds, each device up to a quarter sooner by its own key so that the
@@ -577,20 +577,20 @@ workspace's devices out (`MAX_ADMITTING`, `MAX_ADMITTING_OF_ONE` and
 more it closes as busy, unread: it judged nobody, so the device it closed
 asks again the same way and reads as told busy by it (`relay-busy`), where a
 device that did not reach it reads as waiting to reach it and a device it
-judged and did not admit reads as refused. A plane reads thirty-two devices
-at once (`MAX_HEARD` in `crates/collab/tilo-live/src/plane.rs`): each is
+judged and did not admit reads as refused. A live session reads thirty-two devices
+at once (`MAX_HEARD` in `crates/collab/tilo-live/src/live_session.rs`): each is
 three tracks that it and the relay hold open, about 250 KiB between them,
 and that, not the transport, is what a further device costs. A device that
-is in the plane beyond those is not heard on this device, and the plane's
+is in the live session beyond those is not heard on this device, and the live session's
 row says how many those are and why (`unheard`, `unheard_why`, `not_heard`).
 The connection to the relay is allowed the streams thirty-two devices take
 once its session is admitted (`MAX_BI_STREAMS` and `MAX_UNI_STREAMS` in
 `crates/collab/tilo-live/src/native.rs`), on a session's endpoint as on one
-bound for the plane alone. The share's reading
-says how far that came, since a plane that is not open drops nothing and
-reports nothing by itself: `live` names each workspace's plane as open or by
+bound for the live session alone. The share's reading
+says how far that came, since a live session that is not open drops nothing and
+reports nothing by itself: `live` names each workspace's live session as open or by
 what it waits for (the keys, the device that relays it, that device being
-busy, or its refusal), a window shared or watched under a plane that is not open says the
+busy, or its refusal), a window shared or watched under a live session that is not open says the
 same on its own row (`waiting_for`), and a shared window says whether it goes
 out to a member's shell now (`streaming`): a captured window as soon as a shell
 asks for it, a window shared as its page once its app handed a page over. A
@@ -608,12 +608,12 @@ window is that device's to say (`pictured`), and it says so in the turn the
 tile takes the window or loses it: a picture is decoded off the loop and taken
 into the tile while the shell builds a frame, so the session asks its tiles
 again once that frame is drawn. An open
-plane also says the epoch it seals under, what it opened and could not open
+live session also says the epoch it seals under, what it opened and could not open
 of the other devices, and which of its windows another device asks it for
 (`asked_for`), which is where two devices that hear nothing of each other read
 why. A device that holds none of the workspace's keys and is lent the keys of
 its own streams by the workspace's host, as the session in a workspace's VM
-is, is in the plane on those (`lent_keys`): it sends what it shares and opens
+is, is in the live session on those (`lent_keys`): it sends what it shares and opens
 nothing another device sends, and a window it watches says so.
 
 ## Presence

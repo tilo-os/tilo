@@ -2,7 +2,7 @@
 //!
 //! Every frame the host sends arrives here ([`Task::inbound`]) and is turned
 //! into what the page sees: a workspace's `Ready`, its bootstrap, one message
-//! the host relayed, or a live frame of its plane. A message the workspace's
+//! the host relayed, or a live frame of its live session. A message the workspace's
 //! governance or a record's write is taken into the session's replica, which
 //! decides it; a write it cannot decide yet waits there for its keys, its app
 //! version's surface or the workspace's governance, and the page hears of a
@@ -120,7 +120,7 @@ impl Task {
     /// there, as a refusal ends one.
     fn workspace_deleted(&mut self, workspace_id: WorkspaceId) {
         self.workspaces.remove(&workspace_id);
-        self.planes_due.remove(&workspace_id);
+        self.live_sessions_due.remove(&workspace_id);
         self.placing.remove(&workspace_id);
         // Its records are opened on no later subscription: the host holds
         // nothing of it to answer with.
@@ -327,7 +327,7 @@ impl Task {
     /// Follow what `workspace_id`'s governance says now: who its members are,
     /// and the channel commits that waited for a member it now admits.
     pub(super) fn follow_governance(&mut self, workspace_id: WorkspaceId) {
-        self.planes_due.insert(workspace_id);
+        self.live_sessions_due.insert(workspace_id);
         self.land_admitted(workspace_id);
         if let Some((workspace, members)) = self.replicas.members(workspace_id) {
             if self.reports.status().workspace_members.get(&workspace) != members.as_ref() {
@@ -499,7 +499,7 @@ impl Task {
     ) {
         match message {
             // Taken in by a session that settles its own keys; the device's own key service hears
-            // the workspace's governance on its own plane.
+            // the workspace's governance on its own live session.
             message @ neighbour_wire::NeighbourMsg::MlsGovernance { .. } => {
                 if let Some(inbound) = tilo_workspace_keys::InboundGovernance::from_message(message)
                     && let Some(governance) = &self.governance

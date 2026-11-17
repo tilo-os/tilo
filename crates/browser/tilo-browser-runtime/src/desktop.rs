@@ -426,7 +426,7 @@ pub(crate) struct Shared {
     /// The peer whose workspace this desktop shows, when it has one: what it asks its session for
     /// the pages of the windows other devices host.
     pub peer: Option<u32>,
-    /// The workspace it shows: whose plane those windows' pages travel.
+    /// The workspace it shows: whose live session those windows' pages travel.
     pub workspace: String,
     /// The workspace's agents, as Chat's record of them names each: an agent is a member of
     /// the workspace like a person is, so a page names it to its windows whether or not a

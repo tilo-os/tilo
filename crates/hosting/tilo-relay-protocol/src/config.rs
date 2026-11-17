@@ -93,7 +93,7 @@ pub struct RelayConfig {
     pub work: WorkSetting,
 
     /// Services requested by the operator. Runtime advertisement is clamped
-    /// to the planes started by the composite home peer and its live residency
+    /// to the protocols started by the composite home peer and its live residency
     /// proof.
     #[serde(default = "default_services")]
     pub services: ServiceCapabilities,

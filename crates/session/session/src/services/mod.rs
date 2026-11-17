@@ -1,12 +1,12 @@
 //! Every service this session serves, in one table — the name a client dials it by, how the client
-//! reaches it, and what serves it — and the plane the apps read them on ([`plane`]).
+//! reaches it, and what serves it — and the app wire the apps read them on ([`app_wire`]).
 //!
 //! The session's apps and the person's own devices reach it in two ways. A
 //! socket under the launcher's services root is what the launcher hands an
 //! app at launch and what a program of this login dials by name
 //! ([`launcher::services::socket_for`]): one name, one socket, one server.
 //! Everything else is a registration: a resource the apps reach on the
-//! action plane they already speak on, or, for the work no one calls at
+//! app wire they already speak on, or, for the work no one calls at
 //! all, a worker that counts into the person's own records.
 //!
 //! [`TABLE`] is the whole answer to "does this session serve X". The
@@ -39,12 +39,12 @@ use tilo_system_stats::protocol::Handoff;
 use tilo_system_stats::server::{Prompter, Server};
 use tilo_workspace_keys::KeyProvider;
 
-use crate::plane::LayoutAuthority;
+use crate::app_wire::LayoutAuthority;
 
 use crate::render;
 use crate::tools;
 
-pub(crate) mod plane;
+pub(crate) mod app_wire;
 
 /// How a client reaches a service of this session.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -53,9 +53,9 @@ pub(crate) enum Reach {
     /// ([`launcher::services::socket_for`]): what it hands an app at launch,
     /// and what a program of this login dials by name.
     Launcher,
-    /// On the action plane the session's apps speak on: a resource published beside the others, or
+    /// On the app wire the session's apps speak on: a resource published beside the others, or
     /// a verb of the person's own records.
-    Plane,
+    AppWire,
     /// Nowhere: a package names the service in its manifest for the grant it carries, and there is
     /// no connection.
     NoConnection,
@@ -103,7 +103,7 @@ pub(crate) const TABLE: &[Row] = &[
     Row {
         name: launcher::services::COLLAB_SERVICE,
         reach: Reach::Launcher,
-        owner: Owner::Module("services::plane"),
+        owner: Owner::Module("services::app_wire"),
     },
     Row {
         name: launcher::services::SHELL_UI_SERVICE,
@@ -123,11 +123,11 @@ pub(crate) const TABLE: &[Row] = &[
     Row {
         name: launcher::services::SYSTEM_SERVICE,
         reach: Reach::NoConnection,
-        owner: Owner::Module("services::plane"),
+        owner: Owner::Module("services::app_wire"),
     },
     Row {
         name: "network-usage",
-        reach: Reach::Plane,
+        reach: Reach::AppWire,
         owner: Owner::Session(Service::DataUsage),
     },
     Row {
@@ -211,7 +211,7 @@ pub(crate) struct Served {
 /// What a session serves its services with.
 pub(crate) struct Serving {
     /// The shell the session's apps act on, and the workspace their identity is signed in: a session
-    /// that serves no action plane serves no identity either. Its apps still render, all in the
+    /// that serves no app wire serves no identity either. Its apps still render, all in the
     /// private service.
     pub shell: Option<Arc<LayoutAuthority>>,
     /// The person at this device: whose workspaces are theirs alone, so their apps share one render
@@ -316,7 +316,7 @@ fn identity(
     shell: Option<Arc<LayoutAuthority>>,
     keys: KeyProvider,
 ) -> Option<IdentityBrokerHandle> {
-    // An app reaches its identity the way it reaches its actions: over the plane this session
+    // An app reaches its identity the way it reaches its actions: over the app wire this session
     // serves it. A session that serves none has nothing to sign in.
     let shell = shell?;
     if let Err(error) = launcher::services::ensure_services_root() {
@@ -978,8 +978,8 @@ mod tests {
                         row.name
                     ),
                     Owner::Module(module) => assert!(
-                        !module.is_empty() && row.reach != Reach::Plane,
-                        "`{}` names the module `{module}` but is reached on the plane",
+                        !module.is_empty() && row.reach != Reach::AppWire,
+                        "`{}` names the module `{module}` but is reached on the app wire",
                         row.name
                     ),
                     Owner::Elsewhere(program) => assert!(

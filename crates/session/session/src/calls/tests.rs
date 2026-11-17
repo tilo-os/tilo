@@ -3,7 +3,7 @@
 //! workspace hear each other; and a session with no transport ends the
 //! call it cannot carry, saying why.
 //!
-//! The audio here is the call's own: the same encoder, plane, sealing and
+//! The audio here is the call's own: the same encoder, live session, sealing and
 //! playout a device's call runs, ending in memory instead of a speaker,
 //! and a tone instead of a microphone.
 
@@ -28,8 +28,8 @@ use tilo_workspace_keys::{
 
 use super::*;
 use crate::sync::{Client, Entry, OwnPresence};
-use crate::{ActionPlane, Options, Session};
-use tilo_live::plane::Join;
+use crate::{AppSocket, Options, Session};
+use tilo_live::live_session::Join;
 use tilo_live::relay::{Admission, Denied, Peer, Relay, RelayAuthority};
 use tilo_live::roster::Roster as LiveRoster;
 use tilo_live::scope::Scope;
@@ -88,17 +88,17 @@ fn layout_tree() -> Layout {
     }
 }
 
-/// A directory for the plane's socket that only this user reaches.
+/// A directory for the live session's socket that only this user reaches.
 fn private_home() -> tempfile::TempDir {
     use std::os::unix::fs::PermissionsExt as _;
-    let root = tempfile::tempdir().expect("a directory to serve the plane in");
+    let root = tempfile::tempdir().expect("a directory to serve the live session in");
     std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700))
-        .expect("the plane's directory is this user's");
+        .expect("the live session's directory is this user's");
     root
 }
 
 /// One of the person's devices, on its own loopback endpoint, taking part in the collaboration
-/// plane as its certified self.
+/// live session as its certified self.
 fn device(person: &ed25519_dalek::SigningKey, seed: u8, label: &str) -> Client {
     let key = test_relay::signing_key(seed);
     let cert = test_relay::certified(
@@ -213,7 +213,7 @@ fn session(sync: &std::rc::Rc<Client>, socket: &std::path::Path) -> Session {
         Options {
             presentation: ui::headless::fixture_runner_inputs,
             sync: Some(std::rc::Rc::clone(sync)),
-            action_plane: ActionPlane::At(socket.to_path_buf()),
+            app_socket: AppSocket::At(socket.to_path_buf()),
             ..Options::default()
         },
         &[OutputConfig::new("HEADLESS-1", 1280, 800)],
@@ -266,7 +266,7 @@ fn hello(from: u8, label: &str) -> Event {
     )
 }
 
-/// One presence `from` said of themselves on the workspace's live plane.
+/// One presence `from` said of themselves on the workspace's live session.
 fn presence(client: &Client, from: u8, payload: collab_types::PeerPresencePayload) {
     let payload = match payload {
         collab_types::PeerPresencePayload::Arrived => Payload::Arrived,
@@ -382,7 +382,7 @@ struct Carrier {
     calls: Arc<Calls>,
     factory: Factory,
     probe: Arc<Mutex<Vec<f32>>>,
-    /// What carries the workspace's plane's objects to the calls, while a plane is attached.
+    /// What carries the workspace's live session's objects to the calls, while a live session is attached.
     _heard: Option<tokio::task::JoinHandle<()>>,
 }
 
@@ -401,8 +401,8 @@ async fn bound(client: &Client) {
     }
 }
 
-/// The relay the test's planes meet on: in-process, with no one to admit,
-/// since a local plane is its own relay's member.
+/// The relay the test's live sessions meet on: in-process, with no one to admit,
+/// since a local live session is its own relay's member.
 fn relay() -> Arc<Relay> {
     struct Nobody;
     impl RelayAuthority for Nobody {
@@ -422,15 +422,15 @@ fn workspace_keys() -> key_group::ContentKeys {
         .expect("the workspace's keys")
 }
 
-/// `device` 's plane in the test workspace, on `relay` , hearing and heard by `devices` .
-fn plane(
+/// `device` 's live session in the test workspace, on `relay` , hearing and heard by `devices` .
+fn live_session(
     relay: &Relay,
     device: [u8; 32],
     devices: &[[u8; 32]],
     keys: &key_group::ContentKeys,
-) -> Arc<Plane> {
+) -> Arc<LiveSession> {
     Arc::new(
-        Plane::local(
+        LiveSession::local(
             relay,
             &Join {
                 scope: Scope::workspace(WORKSPACE.to_owned()),
@@ -441,11 +441,11 @@ fn plane(
                 presence: true,
             },
         )
-        .expect("a local plane"),
+        .expect("a local live session"),
     )
 }
 
-fn carrier(client: &Client, keys: &KeyProvider, heard_on: Option<Arc<Plane>>) -> Carrier {
+fn carrier(client: &Client, keys: &KeyProvider, heard_on: Option<Arc<LiveSession>>) -> Carrier {
     let calls = Calls::new();
     calls.follow(client, None);
     let probe = Arc::new(Mutex::new(Vec::new()));
@@ -461,17 +461,17 @@ fn carrier(client: &Client, keys: &KeyProvider, heard_on: Option<Arc<Plane>>) ->
         camera: pictures::Camera::TestPattern,
         played: Some(Arc::clone(&probe)),
     });
-    // What the session's own pass does with a plane's objects: hand them to the calls playing that
+    // What the session's own pass does with a live session's objects: hand them to the calls playing that
     // workspace, voice and pictures alike.
-    let draining = heard_on.map(|plane| {
+    let draining = heard_on.map(|live_session| {
         calls
-            .planes
+            .live_sessions
             .lock_recover()
-            .insert(WORKSPACE.to_owned(), Arc::clone(&plane));
+            .insert(WORKSPACE.to_owned(), Arc::clone(&live_session));
         let calls = Arc::clone(&calls);
         tokio::spawn(async move {
             loop {
-                while let Some(heard) = plane.try_recv() {
+                while let Some(heard) = live_session.try_recv() {
                     calls.hear(WORKSPACE, heard);
                 }
                 tokio::time::sleep(Duration::from_millis(2)).await;
@@ -517,7 +517,7 @@ async fn one_call(laptop: &Client, session: &Client) -> Pair {
     bound(session).await;
     let (keys, kept) = keys(0x11, 0x11, &[0x11, 0x22]);
     founded(&keys).await;
-    // Voice runs on the workspace's plane: both devices publish and hear on their own plane in one
+    // Voice runs on the workspace's live session: both devices publish and hear on their own live session in one
     // scope, as they do in a workspace's relay.
     let relay = relay();
     let workspace = workspace_keys();
@@ -525,12 +525,12 @@ async fn one_call(laptop: &Client, session: &Client) -> Pair {
     let left = carrier(
         laptop,
         &keys,
-        Some(plane(&relay, devices[0], &devices, &workspace)),
+        Some(live_session(&relay, devices[0], &devices, &workspace)),
     );
     let right = carrier(
         session,
         &keys,
-        Some(plane(&relay, devices[1], &devices, &workspace)),
+        Some(live_session(&relay, devices[1], &devices, &workspace)),
     );
     let mut here = left
         .factory
@@ -768,12 +768,12 @@ async fn a_device_shows_anothers_camera_at_the_one_layer_it_shows() {
     let left = carrier(
         &ana,
         &keys,
-        Some(plane(&relay, devices[0], &devices, &workspace)),
+        Some(live_session(&relay, devices[0], &devices, &workspace)),
     );
     let right = carrier(
         &ben,
         &keys,
-        Some(plane(&relay, devices[1], &devices, &workspace)),
+        Some(live_session(&relay, devices[1], &devices, &workspace)),
     );
     assert_eq!(
         left.calls.persons(CHANNEL).get(public(0x22).as_bytes()),
@@ -861,7 +861,7 @@ fn drawing(share: &'static Arc<ScreenShare>) -> tokio::task::JoinHandle<()> {
     })
 }
 
-/// Ana's shared desktop reaches Ben's device over the plane at the layer his app shows, and a
+/// Ana's shared desktop reaches Ben's device over the live session at the layer his app shows, and a
 /// locked desktop sends nothing at all until it is unlocked.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_shared_screen_reaches_the_other_device_and_a_lock_silences_it() {
@@ -887,12 +887,12 @@ async fn a_shared_screen_reaches_the_other_device_and_a_lock_silences_it() {
     let left = carrier(
         &ana,
         &keys,
-        Some(plane(&relay, devices[0], &devices, &workspace)),
+        Some(live_session(&relay, devices[0], &devices, &workspace)),
     );
     let right = carrier(
         &ben,
         &keys,
-        Some(plane(&relay, devices[1], &devices, &workspace)),
+        Some(live_session(&relay, devices[1], &devices, &workspace)),
     );
     let mut here = left
         .factory

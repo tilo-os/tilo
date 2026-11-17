@@ -242,7 +242,7 @@ impl Lounge {
             command.env("TILO_WORKSPACES_REFOUND", refound);
         }
         // The image lays every version of each built-in app's `surface.toml`
-        // at this one path and the host publishes them into its content plane
+        // at this one path and the host publishes them into its content store
         // at start (`tools/ci/publish/lounge-context.sh`). The image has them;
         // a rehearsal can name the same set built from its checkout.
         if let Some(surfaces) = std::env::var_os("TILO_LOUNGE_SURFACES") {
@@ -701,8 +701,8 @@ async fn a_fresh_page_joins_the_lounge_and_reads_chat() {
 /// production: the host makes its workspace and its owner root as it starts,
 /// and both people are guests the host invites through the entry it serves. It
 /// is the fast check of the one thing a member's page needs to see another
-/// member move: both pages join the workspace's live plane over the host's
-/// packet relay, the first says where its pointer is on that plane's presence
+/// member move: both pages join the workspace's live session over the host's
+/// packet relay, the first says where its pointer is on that live session's presence
 /// track, and the second's board places it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn two_pages_join_a_fresh_lounge_and_see_each_other_point() {
@@ -717,11 +717,11 @@ async fn two_pages_join_a_fresh_lounge_and_see_each_other_point() {
     let other = fresh_page(&lounge, &second, &second_invitation).await;
     println!("both pages joined the Lounge");
     let workspace_id = workspace_id(&lounge);
-    // Both pages are in the workspace's live plane before anything is said:
-    // a page says presence only on a plane it joined, and a plane joined
+    // Both pages are in the workspace's live session before anything is said:
+    // a page says presence only on a live session it joined, and a live session joined
     // after the word would not draw it.
-    wait_for_plane(&page).await;
-    wait_for_plane(&other).await;
+    wait_for_live_session(&page).await;
+    wait_for_live_session(&other).await;
 
     let (tab, at) = (0x41, (12.0f32, 34.0f32));
     let bound = Duration::from_secs(10);
@@ -783,7 +783,7 @@ const BRIDGE_FRAMES: usize = 200;
 /// An agent's bridge (`tilo mcp`) is a device of the person in their workspace, asking the host's
 /// actions through its session, while the person's page in the same workspace says where its
 /// pointer is many times a second and another member's page draws it. Nothing on the bridge shows
-/// people, so its plane subscribes to none of their presence: not one frame reaches it.
+/// people, so its live session subscribes to none of their presence: not one frame reaches it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_agents_bridge_keeps_nothing_of_a_busy_workspaces_presence() {
     let lounge = Lounge::fresh();
@@ -797,9 +797,9 @@ async fn an_agents_bridge_keeps_nothing_of_a_busy_workspaces_presence() {
     let other = fresh_page(&lounge, &member, &member_invitation).await;
     let bridge = fresh_page(&lounge, &agent, &agent_invitation).await;
     let workspace_id = workspace_id(&lounge);
-    wait_for_plane(&tab).await;
-    wait_for_plane(&other).await;
-    wait_for_plane(&bridge).await;
+    wait_for_live_session(&tab).await;
+    wait_for_live_session(&other).await;
+    wait_for_live_session(&bridge).await;
     // What `tilo mcp` holds once it entered: the device's session and the host's actions asked
     // through it, and nothing that reads the workspace's live frames.
     let actions = tilo_session_client::device::Device::of(
@@ -812,7 +812,7 @@ async fn an_agents_bridge_keeps_nothing_of_a_busy_workspaces_presence() {
     let drawn = other.events_where(|event| {
         matches!(
             event,
-            Event::LivePlane {
+            Event::LiveSession {
                 track: tilo_live::live::Track::Presence,
                 ..
             }
@@ -842,8 +842,8 @@ async fn an_agents_bridge_keeps_nothing_of_a_busy_workspaces_presence() {
     assert!(
         channels
             .lines()
-            .any(|line| line.starts_with("plane ") && line.ends_with(", heard 0 object(s)")),
-        "the bridge heard nothing on its workspace's plane while the person said {heard} presence \
+            .any(|line| line.starts_with("live session ") && line.ends_with(", heard 0 object(s)")),
+        "the bridge heard nothing on its workspace's live_session while the person said {heard} presence \
          frames: {channels}"
     );
     drop(actions);
@@ -852,21 +852,21 @@ async fn an_agents_bridge_keeps_nothing_of_a_busy_workspaces_presence() {
     tab.close();
 }
 
-/// Wait until `page` is in the workspace's live plane: the plane reports the
+/// Wait until `page` is in the workspace's live session: the live session reports the
 /// devices it reads and the objects it heard, which it lists only once joined.
-async fn wait_for_plane(page: &Link) {
+async fn wait_for_live_session(page: &Link) {
     let started = tokio::time::Instant::now();
     loop {
         let channels = page.status().key_state;
         if channels
             .lines()
-            .any(|line| line.starts_with("plane ") && line.contains(" epoch "))
+            .any(|line| line.starts_with("live session ") && line.contains(" epoch "))
         {
             return;
         }
         assert!(
             started.elapsed() < Duration::from_secs(60),
-            "the page never joined the workspace's live plane; its channels:\n{channels}"
+            "the page never joined the workspace's live session; its channels:\n{channels}"
         );
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
@@ -880,8 +880,8 @@ fn workspace_id(lounge: &Lounge) -> tilo_relay_protocol::WorkspaceId {
 /// Every presence frame `page` heard over `secs`, and the devices that said
 /// anything: presence is a live frame the host fans out and never keeps, so
 /// the frames are gathered over a while and replayed into a board. A page
-/// takes another device's presence off its plane's presence track
-/// ([`Event::LivePlane`] with `Track::Presence`): the plane opened the
+/// takes another device's presence off its live session's presence track
+/// ([`Event::LiveSession`] with `Track::Presence`): the live session opened the
 /// scope's seal, and the body is the [`Presence`] frame the device said.
 async fn presence_frames(
     page: &Events,
@@ -911,7 +911,7 @@ fn gather_presence(
 ) -> bool {
     let mut heard = false;
     for event in page.drain() {
-        if let Event::LivePlane {
+        if let Event::LiveSession {
             from,
             track: tilo_live::live::Track::Presence,
             body,

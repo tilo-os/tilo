@@ -1,7 +1,7 @@
 //! A workspace's shell command runs on the VM host that holds the workspace's
 //! VM: the relay asks the placer which host runs it, waits while none has
 //! workspace, and asks that VM host's member device, a device of the relay's own
-//! person, to run it over the device plane. The member holds the workspace as
+//! person, to run it over the device action service. The member holds the workspace as
 //! any member does — entering it the first time the relay asks about it, with
 //! the invitation the relay's own `workspace.enter` answers — and its command works
 //! on the member's copy of the workspace's files, its output coming back as
@@ -25,7 +25,7 @@ use tilo_actions::remote::{
     ActionHost as _, ActionHostError, Caller, InvokeArgument, InvokeRequest,
 };
 use tilo_agent_session::workspace_actions::{ShellRan, Watching};
-use tilo_peer_state::actions::{ActionPlane, NoActions};
+use tilo_peer_state::actions::{ActionService, NoActions};
 use tilo_relay::placed_shells::{Member, Members, PlacedShells};
 use tilo_relay_protocol::WorkSetting;
 use tilo_runtime::standalone::take_work;
@@ -182,7 +182,7 @@ async fn placed() -> Arc<Placed> {
         VmSize::Small,
     ));
     shells.ask_from(
-        hosted.host.workspaces().plane(),
+        hosted.host.workspaces().action_service(),
         hosted.router.endpoint().clone(),
     );
     Arc::new(Placed {
@@ -260,7 +260,7 @@ async fn a_command_runs_on_the_vm_host_holding_the_workspace() {
     // is refused there: it takes the work of its own person's workspaces only.
     let stranger = TestUser::fresh("stranger").enrol("laptop", DeviceCapabilities::member());
     let stranger_endpoint = device_endpoint(&stranger).await;
-    let asking = ActionPlane::new(stranger.sk.clone(), Arc::new(NoActions));
+    let asking = ActionService::new(stranger.sk.clone(), Arc::new(NoActions));
     let member_device = asking.remote(
         &stranger_endpoint,
         &member_at(placed.member_device, &placed.member_address),
@@ -273,7 +273,7 @@ async fn a_command_runs_on_the_vm_host_holding_the_workspace() {
         )
         .wait_timeout(Duration::from_secs(30))
     else {
-        panic!("the member's plane answers, and refuses it");
+        panic!("the member's action service answers, and refuses it");
     };
     let refused = match answered {
         Ok(receipt) => panic!(
@@ -352,7 +352,7 @@ async fn only_the_relay_makes_the_member_enter_a_workspace() {
     // and the relay admits nothing for it.
     let stranger = TestUser::fresh("stranger").enrol("laptop", DeviceCapabilities::member());
     let stranger_endpoint = device_endpoint(&stranger).await;
-    let asking = ActionPlane::new(stranger.sk.clone(), Arc::new(NoActions));
+    let asking = ActionService::new(stranger.sk.clone(), Arc::new(NoActions));
     let answered = asking
         .remote(
             &stranger_endpoint,

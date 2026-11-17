@@ -1,10 +1,10 @@
-//! The live plane between the devices of a workspace: one sealed `moq-lite` session per workspace,
+//! The live session between the devices of a workspace: one sealed `moq-lite` session per workspace,
 //! carried over this session's own iroh endpoint, and the relay role the device serving the
 //! workspace takes for the others.
-//! Which device relays is durable workspace state, not presence and not the plane itself, so every
+//! Which device relays is durable workspace state, not presence and not the live session itself, so every
 //! device names the same one without asking anyone ([`relay_of`]): the device whose signed
 //! address the workspace's governance holds, while it is a member. Two people's own devices
-//! sharing a workspace one of them serves have a live plane without a server. Every session
+//! sharing a workspace one of them serves have a live session without a server. Every session
 //! serves [`tilo_live::relay::Relay`] on its endpoint, and its ALPN handler admits a connection
 //! only for a workspace the session relays now, as the workspace's state names it: a device only
 //! when the certificate it presents is the roster's own and the handshake proved the key. It cuts
@@ -14,7 +14,7 @@
 //! time, since a relay that comes back says nothing to the devices that missed it.
 //! Every other member dials that relay over iroh ([`tilo_live::native`]) with its device
 //! certificate as its grant, and each member seals its own tracks under the scope's channel
-//! content keys ([`tilo_live::plane::Plane`]): the relay copies bytes it cannot open, and it is a
+//! content keys ([`tilo_live::live_session::LiveSession`]): the relay copies bytes it cannot open, and it is a
 //! member that holds them already.
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -26,11 +26,11 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use collab_types::scope::Scope;
 use iroh::{Endpoint, EndpointAddr, EndpointId};
 use tilo_desktop_model::WorkspaceId;
-use tilo_live::frame::PlaneKeys;
+use tilo_live::frame::LiveKeys;
 use tilo_live::grant;
 use tilo_live::live::{self, Namespace};
+use tilo_live::live_session::{Heard, Join, LiveError, LiveSession};
 use tilo_live::native;
-use tilo_live::plane::{Heard, Join, Plane, PlaneError};
 use tilo_live::relay::{
     Admission, Denied, Direction, Peer, Relay, RelayAuthority, SessionAuthorization,
 };
@@ -42,13 +42,13 @@ use tilo_user_identity::{DeviceCert, EndpointDelegation};
 use crate::engine::Engine;
 use crate::workspace_keys::{self, Device};
 
-/// The scope one workspace's live plane carries.
+/// The scope one workspace's live session carries.
 fn scope_of(workspace: WorkspaceId) -> Scope {
     Scope::workspace(workspace.to_string())
 }
 
 /// The workspace's relay, as its state names it: `host`, the device serving the workspace, while
-/// it is a current member. `None` otherwise, which is a workspace with no live plane.
+/// it is a current member. `None` otherwise, which is a workspace with no live session.
 pub(crate) fn relay_of(
     devices: &[Device],
     host: Option<[u8; 32]>,
@@ -61,7 +61,7 @@ pub(crate) fn relay_of(
         .find(|device| Some(*device) == host)
 }
 
-/// How long the workspace's relay has to open its plane before this device gives up on this
+/// How long the workspace's relay has to open its live session before this device gives up on this
 /// attempt.
 const ATTEMPT: Duration = Duration::from_secs(4);
 /// How long a workspace whose relays did not take this device in waits before it asks them again:
@@ -72,7 +72,7 @@ const RETRY_FIRST: Duration = Duration::from_secs(1);
 const RETRY_LONGEST: Duration = Duration::from_secs(15);
 
 /// The wait the schedule gives before a workspace's relays are asked again after `missed` attempts
-/// in a row that none of them answered with a plane.
+/// in a row that none of them answered with a live session.
 fn retry_schedule(missed: u32) -> Duration {
     let doublings = missed.saturating_sub(1).min(8);
     RETRY_FIRST
@@ -81,8 +81,8 @@ fn retry_schedule(missed: u32) -> Duration {
 }
 
 /// The wait before `device` asks `workspace` 's relays again after `missed` attempts in a row that
-/// none of them answered with a plane: the schedule's ([`retry_schedule`]), less up to a quarter
-/// that the device takes off by its own key ([`tilo_live::plane::spread`]).
+/// none of them answered with a live session: the schedule's ([`retry_schedule`]), less up to a quarter
+/// that the device takes off by its own key ([`tilo_live::live_session::spread`]).
 ///
 /// The devices of a workspace miss its relay together: it was away and came back, or it was
 /// admitting as many as it takes when they all asked. On the schedule alone they would ask it
@@ -93,7 +93,7 @@ fn retry_wait(device: [u8; 32], workspace: WorkspaceId, missed: u32) -> Duration
     let mut turn = std::hash::DefaultHasher::new();
     workspace.as_uuid().as_bytes().hash(&mut turn);
     missed.hash(&mut turn);
-    tilo_live::plane::spread(retry_schedule(missed), device, turn.finish())
+    tilo_live::live_session::spread(retry_schedule(missed), device, turn.finish())
 }
 
 /// Now, in Unix nanoseconds.
@@ -105,7 +105,7 @@ fn now_ns() -> u64 {
         })
 }
 
-/// A device that relays a workspace's live plane, as a standing names it.
+/// A device that relays a workspace's live session, as a standing names it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Relayer {
     /// Its device key.
@@ -117,12 +117,12 @@ pub struct Relayer {
     pub here: bool,
 }
 
-/// How far one workspace's live plane came on this device. A plane that is not open carries no
+/// How far one workspace's live session came on this device. A live session that is not open carries no
 /// presence, no call and no picture of a shared window, and nothing else says so: what was asked
 /// of it waits without a word. The session publishes this, so a person, a tool and a test read why.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Standing {
-    /// This device is in the plane, through `relay`, sealing under the keys of `epoch`. `lent`
+    /// This device is in the live session, through `relay`, sealing under the keys of `epoch`. `lent`
     /// says those are the keys of its own streams alone, lent by the workspace's host
     /// ([`MediaKeysLender`]): it publishes with them and opens nothing another device sends.
     Open {
@@ -138,7 +138,7 @@ pub enum Standing {
     Keyless,
     /// Who is in the workspace cannot be read here, so nothing names who relays it.
     Unread,
-    /// The workspace names no device that relays its live plane.
+    /// The workspace names no device that relays its live session.
     NoRelay,
     /// The workspace's relay, `relay`, was not reached.
     Unreached { relay: Relayer },
@@ -152,7 +152,7 @@ pub enum Standing {
 }
 
 impl Standing {
-    /// Whether the plane carries what this device says and asks for now.
+    /// Whether the live session carries what this device says and asks for now.
     #[must_use]
     pub const fn is_open(&self) -> bool {
         matches!(self, Self::Open { .. })
@@ -174,7 +174,7 @@ fn relayer(devices: &[Device], device: [u8; 32], own: [u8; 32]) -> Relayer {
     }
 }
 
-/// Why a workspace's relay did not carry its plane for this device: the relay, whether it
+/// Why a workspace's relay did not carry its live session for this device: the relay, whether it
 /// refused this device, and whether it was busy. A refusal is an answer that waiting alone does
 /// not change; a relay that was not reached may be back at any time. A relay that was admitting
 /// as many devices as it takes at once judged nobody: it is asked again like one that was not
@@ -187,16 +187,16 @@ struct Missed {
 }
 
 impl Missed {
-    /// What `error`, the answer to this device's ask for a plane through `relay`, says of it.
-    const fn of(relay: [u8; 32], error: &PlaneError) -> Self {
+    /// What `error`, the answer to this device's ask for a live session through `relay`, says of it.
+    const fn of(relay: [u8; 32], error: &LiveError) -> Self {
         Self {
             relay,
-            refused: matches!(error, PlaneError::Denied),
-            busy: matches!(error, PlaneError::Busy),
+            refused: matches!(error, LiveError::Denied),
+            busy: matches!(error, LiveError::Busy),
         }
     }
 
-    /// How the plane stands after it: refused by `relay` when it presented the keys of `epoch`,
+    /// How the live session stands after it: refused by `relay` when it presented the keys of `epoch`,
     /// told by it that it is busy, or waiting to reach it.
     fn standing(self, relay: Relayer, epoch: u64) -> Standing {
         if self.refused {
@@ -209,7 +209,7 @@ impl Missed {
     }
 }
 
-/// Why a relay turned a device away from a workspace's live plane. The relay knows, and the device
+/// Why a relay turned a device away from a workspace's live session. The relay knows, and the device
 /// it turned away is told only that it was not let in: so the relay's journal and its own reading
 /// say it ([`TurnedAway`]), where the person whose devices these are reads both.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -218,7 +218,7 @@ pub enum Refusal {
     Unparsed,
     /// Who is in the workspace cannot be read on this relay.
     Unread,
-    /// The grant asks for a scope this relay carries no plane for.
+    /// The grant asks for a scope this relay carries no live session for.
     Scope,
     /// This device does not relay the workspace: it is not the device serving it.
     NotRelayedHere,
@@ -257,7 +257,7 @@ impl Refusal {
     }
 }
 
-/// One endpoint this relay turned away from a workspace's live plane, and has not let in since.
+/// One endpoint this relay turned away from a workspace's live session, and has not let in since.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TurnedAway {
     /// The endpoint the handshake proved: a device's key, or the key a page dials under.
@@ -429,13 +429,13 @@ impl SessionAuthorization for Permit {
     }
 }
 
-/// One joined plane: through which relay, and the session itself.
+/// One joined live session: through which relay, and the session itself.
 struct Joined {
     relay: [u8; 32],
-    plane: Arc<Plane>,
+    live_session: Arc<LiveSession>,
 }
 
-/// What the relay role and the planes share: this session's engine, its own device, the epochs it
+/// What the relay role and the live sessions share: this session's engine, its own device, the epochs it
 /// saw, what it joined, and the change signal an open session re-observes on.
 struct Shared {
     engine: Arc<Engine>,
@@ -449,16 +449,16 @@ struct Shared {
     rosters: Mutex<BTreeMap<WorkspaceId, BTreeSet<[u8; 32]>>>,
     /// Told when a workspace's membership or keys moved.
     changed: tokio::sync::watch::Sender<u64>,
-    planes: Mutex<BTreeMap<WorkspaceId, Joined>>,
-    /// How far each workspace's plane came here, as it was last settled ([`Standing`]).
+    live_sessions: Mutex<BTreeMap<WorkspaceId, Joined>>,
+    /// How far each workspace's live session came here, as it was last settled ([`Standing`]).
     standings: Mutex<BTreeMap<WorkspaceId, Standing>>,
-    /// The endpoints this relay turned away from each workspace's plane and has not let in since,
-    /// and why ([`TurnedAway`]): of the workspaces this session runs a plane for, and no others.
+    /// The endpoints this relay turned away from each workspace's live session and has not let in since,
+    /// and why ([`TurnedAway`]): of the workspaces this session runs a live session for, and no others.
     turned: Mutex<BTreeMap<WorkspaceId, BTreeMap<[u8; 32], TurnedAway>>>,
-    /// Counts each move of a standing and each plane opened: what the session reads the standings
-    /// and the planes again on, and not on every pass.
+    /// Counts each move of a standing and each live session opened: what the session reads the standings
+    /// and the live sessions again on, and not on every pass.
     moves: std::sync::atomic::AtomicU64,
-    /// What wakes each workspace's reconciler beside the workspace's own changes: a plane of it
+    /// What wakes each workspace's reconciler beside the workspace's own changes: a live session of it
     /// ended, so the workspace is settled again through its relay, or this
     /// session was given a lender of media keys ([`Live::lend_media_keys`]).
     nudges: Mutex<BTreeMap<WorkspaceId, Arc<tokio::sync::Notify>>>,
@@ -466,8 +466,8 @@ struct Shared {
     /// yet, beside the keys that announce a workspace joined later.
     readopt: tokio::sync::Notify,
     wake: Arc<dyn Fn() + Send + Sync>,
-    /// The runtime the planes run on, once the plane's thread started it: what a plane's readers
-    /// are started on, whichever thread asks the plane to show a track.
+    /// The runtime the live sessions run on, once the live session's thread started it: what a live session's readers
+    /// are started on, whichever thread asks the live session to show a track.
     runtime: std::sync::OnceLock<tokio::runtime::Handle>,
     /// Where a device that holds none of a workspace's media keys is lent the keys of its own
     /// streams ([`MediaKeysLender`]): a session in a workspace's VM, once it can ask its host.
@@ -475,8 +475,8 @@ struct Shared {
 }
 
 /// One sender's media keys, lent: what a device confined to its own record publishes its presence,
-/// windows and pages with on a workspace's live plane, holding nothing that opens anyone's stream
-/// ([`tilo_live::plane::PlaneKeys::Sender`]).
+/// windows and pages with on a workspace's live session, holding nothing that opens anyone's stream
+/// ([`tilo_live::live_session::LiveKeys::Sender`]).
 pub(crate) trait MediaKeysLender: Send + Sync {
     /// This device's own media keys in `workspace` at the media channel's current epoch, as its
     /// host lends them; `None` when they could not be had now.
@@ -488,7 +488,7 @@ pub(crate) trait MediaKeysLender: Send + Sync {
     >;
 }
 
-/// How long one ask for lent keys is waited for before the plane waits for the next event instead.
+/// How long one ask for lent keys is waited for before the live session waits for the next event instead.
 const LEND_PATIENCE: Duration = Duration::from_secs(20);
 
 impl RelayAuthority for Shared {
@@ -508,7 +508,7 @@ impl RelayAuthority for Shared {
 }
 
 impl Shared {
-    /// Whether `peer` may take part in the plane its grant (`proof`) names, from what this
+    /// Whether `peer` may take part in the live session its grant (`proof`) names, from what this
     /// device holds of the workspace now.
     fn decide(&self, peer: Peer, proof: &[u8]) -> Result<Arc<dyn SessionAuthorization>, Denied> {
         let Peer(endpoint) = peer;
@@ -518,7 +518,7 @@ impl Shared {
         });
         let Some((grant, workspace)) = named else {
             tracing::debug!(peer = %hex::encode(endpoint), why = Refusal::Unparsed.word(),
-                "a device was turned away from the live plane");
+                "a device was turned away from the live session");
             return Err(Denied);
         };
         let devices = workspace_keys::devices_of(&self.engine, workspace);
@@ -575,8 +575,8 @@ impl Shared {
         }))
     }
 
-    /// `peer` was turned away from `workspace` 's plane for `why` : the journal says so when that
-    /// is news, and so does this session's reading for a workspace it runs a plane for, which
+    /// `peer` was turned away from `workspace` 's live session for `why` : the journal says so when that
+    /// is news, and so does this session's reading for a workspace it runs a live session for, which
     /// counts the asks that follow and is read again ever less often as they repeat. A relay
     /// answers whoever dials it, so nothing is kept of a workspace this session does not hold.
     fn turned_away(&self, workspace: WorkspaceId, peer: [u8; 32], name: String, why: Refusal) {
@@ -586,8 +586,8 @@ impl Shared {
         };
         if !self.standings.lock_recover().contains_key(&workspace) {
             tracing::debug!(%workspace, peer = %hex::encode(peer), why = why.word(),
-                "a device was turned away from the live plane of a workspace this session runs \
-                 no plane for");
+                "a device was turned away from the live session of a workspace this session runs \
+                 no live_session for");
             return;
         }
         let (news, times) = {
@@ -600,10 +600,10 @@ impl Shared {
         };
         if news {
             tracing::warn!(%workspace, peer = %hex::encode(peer), why = why.word(), ?presented,
-                ?newest, "a device was turned away from this workspace's live plane");
+                ?newest, "a device was turned away from this workspace's live session");
         } else {
             tracing::debug!(%workspace, peer = %hex::encode(peer), why = why.word(), ?presented,
-                ?newest, "a device was turned away from this workspace's live plane again");
+                ?newest, "a device was turned away from this workspace's live session again");
         }
         // The reading says it when it is news, and then ever less often: a device that asks again
         // every few seconds, or an endpoint that dials in a loop, wakes the session a handful of
@@ -613,7 +613,7 @@ impl Shared {
         }
     }
 
-    /// `peer` was let into `workspace` 's plane: it is no longer one this relay turned away.
+    /// `peer` was let into `workspace` 's live session: it is no longer one this relay turned away.
     fn let_in(&self, workspace: WorkspaceId, peer: [u8; 32]) {
         let was = self
             .turned
@@ -623,29 +623,29 @@ impl Shared {
         if let Some(was) = was {
             tracing::info!(%workspace, peer = %hex::encode(peer), why = was.why.word(),
                 times = was.times,
-                "a device this relay turned away is in the workspace's live plane now");
+                "a device this relay turned away is in the workspace's live session now");
             self.moved();
         }
     }
 }
 
 impl Shared {
-    /// This workspace's devices, and the one among them that may relay its live plane; `None` —
-    /// after withdrawing the plane — when the membership is unknown or names no relay.
+    /// This workspace's devices, and the one among them that may relay its live session; `None` —
+    /// after withdrawing the live session — when the membership is unknown or names no relay.
     fn relay_for(&self, workspace: WorkspaceId) -> Option<(Vec<Device>, [u8; 32])> {
         let devices = match workspace_keys::devices_of(&self.engine, workspace) {
             Ok(devices) => devices,
             Err(error) => {
-                tracing::warn!(%workspace, %error, "the live plane's membership is unknown");
+                tracing::warn!(%workspace, %error, "the live session's membership is unknown");
                 self.withdraw(workspace);
                 self.stand(workspace, Standing::Unread);
                 return None;
             }
         };
         let Some(relay) = relay_of(&devices, self.engine.host_of(workspace), now_ns()) else {
-            // No member may relay it: the workspace has no live plane.
-            if self.planes.lock_recover().contains_key(&workspace) {
-                tracing::info!(%workspace, "no member relays this workspace's live plane any more");
+            // No member may relay it: the workspace has no live session.
+            if self.live_sessions.lock_recover().contains_key(&workspace) {
+                tracing::info!(%workspace, "no member relays this workspace's live session any more");
             }
             self.withdraw(workspace);
             self.stand(workspace, Standing::NoRelay);
@@ -669,26 +669,26 @@ impl Shared {
         }
     }
 
-    /// Read `workspace` as it is now and join its relay, move the plane's keys and roster when
+    /// Read `workspace` as it is now and join its relay, move the live session's keys and roster when
     /// they changed, or leave when the workspace names no relay any more.
     async fn settle(self: &Arc<Self>, workspace: WorkspaceId, endpoint: &Endpoint, relay: &Relay) {
         let Some((devices, serving)) = self.relay_for(workspace) else {
             return;
         };
-        // The plane's tracks are sealed under the workspace's media channel: taking part in it asks
-        // the workspace's devices for access, and the plane opens on the keys arriving.
+        // The live session's tracks are sealed under the workspace's media channel: taking part in it asks
+        // the workspace's devices for access, and the live session opens on the keys arriving.
         let keys = self.engine.seal_keys(workspace);
         // A device that may hold none of them (a session in a workspace's VM) is lent its own
-        // streams' keys instead, asked afresh at each join: a plane whose epoch moved is cut, and
+        // streams' keys instead, asked afresh at each join: a live session whose epoch moved is cut, and
         // joins again on the keys its host lends then.
         let (keys, lent) = match keys {
-            Ok(crate::engine::SealKeys::Here(keys)) => (PlaneKeys::from(keys), false),
+            Ok(crate::engine::SealKeys::Here(keys)) => (LiveKeys::from(keys), false),
             held => {
                 let Some(lent) = self.lent(workspace).await else {
                     self.without_keys(workspace, &held);
                     return;
                 };
-                (PlaneKeys::from(lent), true)
+                (LiveKeys::from(lent), true)
             }
         };
         self.observe(workspace, keys.epoch());
@@ -696,20 +696,20 @@ impl Shared {
         let roster = Roster::new(devices.iter().map(|device| device.device));
         let scope = scope_of(workspace);
         let kept = {
-            let planes = self.planes.lock_recover();
-            planes
+            let live_sessions = self.live_sessions.lock_recover();
+            live_sessions
                 .get(&workspace)
-                .filter(|joined| joined.relay == serving && !joined.plane.ended())
-                .map(|joined| (joined.relay, Arc::clone(&joined.plane)))
+                .filter(|joined| joined.relay == serving && !joined.live_session.ended())
+                .map(|joined| (joined.relay, Arc::clone(&joined.live_session)))
         };
-        if let Some((at, plane)) = kept {
-            // The workspace moved under a relay that still carries it: the plane keeps its sessions
+        if let Some((at, live_session)) = kept {
+            // The workspace moved under a relay that still carries it: the live session keeps its sessions
             // and seals under the keys and roster it now has.
             tracing::debug!(%workspace, relay = %hex::encode(at),
-                epoch = keys.epoch(), "the live plane keeps its relay");
+                epoch = keys.epoch(), "the live session keeps its relay");
             let epoch = keys.epoch();
-            plane.set_keys(keys);
-            plane.set_roster(roster);
+            live_session.set_keys(keys);
+            live_session.set_roster(roster);
             self.stand(
                 workspace,
                 Standing::Open {
@@ -720,9 +720,9 @@ impl Shared {
             );
             return;
         }
-        // A plane whose relay the workspace no longer names, or one that ended, is closed before
+        // A live session whose relay the workspace no longer names, or one that ended, is closed before
         // another is opened in its place.
-        drop(self.planes.lock_recover().remove(&workspace));
+        drop(self.live_sessions.lock_recover().remove(&workspace));
         let epoch = keys.epoch();
         let join = Join {
             scope: scope.clone(),
@@ -733,20 +733,20 @@ impl Shared {
             presence: true,
         };
         let opened = if serving == self.device {
-            Plane::local(relay, &join)
+            LiveSession::local(relay, &join)
         } else if let Some((addr, grant)) = self.dial_target(workspace, &scope, epoch, serving) {
             let carrier = native::Iroh::new(endpoint.clone(), addr);
-            Plane::join_within(Arc::new(carrier), &grant, join, ATTEMPT).await
+            LiveSession::join_within(Arc::new(carrier), &grant, join, ATTEMPT).await
         } else {
             // Where the relay is reached, or the grant it asks for, is not here yet: it was not
             // reached, and is asked again.
-            Err(PlaneError::Unavailable)
+            Err(LiveError::Unavailable)
         };
-        let plane = match opened {
-            Ok(plane) => plane,
+        let live_session = match opened {
+            Ok(live_session) => live_session,
             Err(error) => {
                 tilo_failure::ignored!(
-                    "the plane's standing says its relay was missed, and the relay is asked again",
+                    "the live session's standing says its relay was missed, and the relay is asked again",
                     tracing::debug!(%workspace, relay = %hex::encode(serving), %error,
                         "this workspace's relay was not reached")
                 );
@@ -756,21 +756,21 @@ impl Shared {
         };
         tracing::debug!(%workspace, relay = %hex::encode(serving),
             local = serving == self.device, epoch,
-            "the live plane opened");
+            "the live session opened");
         let open = Standing::Open {
             relay: relayer(&devices, serving, self.device),
             epoch,
             lent,
         };
-        self.keep(workspace, serving, plane, open);
+        self.keep(workspace, serving, live_session, open);
     }
 
-    /// `workspace` 's keys are not here (`held`), and none were lent: the plane opens when they
+    /// `workspace` 's keys are not here (`held`), and none were lent: the live session opens when they
     /// are, and until then it stands as waiting for them, or as holding none where none are coming.
-    /// A device whose host lends it keys waits for those. A plane already open keeps what it has
+    /// A device whose host lends it keys waits for those. A live session already open keeps what it has
     /// until they move.
     fn without_keys(&self, workspace: WorkspaceId, held: &Result<crate::engine::SealKeys, String>) {
-        tracing::debug!(%workspace, "the live plane waits for the workspace's keys");
+        tracing::debug!(%workspace, "the live session waits for the workspace's keys");
         if self.joined(workspace) {
             return;
         }
@@ -786,36 +786,36 @@ impl Shared {
         );
     }
 
-    /// Keep `plane`, opened through the relay `serving`, as `workspace` 's: it wakes the session on
+    /// Keep `live_session`, opened through the relay `serving`, as `workspace` 's: it wakes the session on
     /// what it hears, has the workspace settled again when it ends, and stands as `open` says.
     fn keep(
         self: &Arc<Self>,
         workspace: WorkspaceId,
         serving: [u8; 32],
-        plane: Plane,
+        live_session: LiveSession,
         open: Standing,
     ) {
-        plane.set_wake(Arc::clone(&self.wake));
+        live_session.set_wake(Arc::clone(&self.wake));
         let ended = Arc::clone(self);
-        plane.set_ended(Arc::new(move || ended.ended(workspace)));
-        // The devices a plane does not hear are part of what the session reads of it.
+        live_session.set_ended(Arc::new(move || ended.ended(workspace)));
+        // The devices a live session does not hear are part of what the session reads of it.
         let unheard = Arc::clone(self);
-        plane.set_unheard_changed(Arc::new(move || unheard.moved()));
-        let replaced = self.planes.lock_recover().insert(
+        live_session.set_unheard_changed(Arc::new(move || unheard.moved()));
+        let replaced = self.live_sessions.lock_recover().insert(
             workspace,
             Joined {
                 relay: serving,
-                plane: Arc::new(plane),
+                live_session: Arc::new(live_session),
             },
         );
         drop(replaced);
         self.stand(workspace, open);
-        // A plane opened again where one stood is another plane, whatever its standing says.
+        // A live session opened again where one stood is another live session, whatever its standing says.
         self.moved();
         self.bump();
     }
 
-    /// Tell the session that a standing moved or a plane opened: it reads both again.
+    /// Tell the session that a standing moved or a live session opened: it reads both again.
     fn moved(&self) {
         self.moves
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -847,10 +847,10 @@ impl Shared {
             Ok(grant) => grant,
             Err(error) => {
                 tilo_failure::ignored!(
-                    "the plane opens when the workspace's keys and certificate are here, and the \
+                    "the live_session opens when the workspace's keys and certificate are here, and the \
                      next settle asks again",
                     tracing::debug!(%workspace, %error,
-                        "this device has no grant for the workspace's live plane")
+                        "this device has no grant for the workspace's live session")
                 );
                 return None;
             }
@@ -909,16 +909,16 @@ impl Shared {
         }
     }
 
-    /// Whether this device is in `workspace` 's plane now.
+    /// Whether this device is in `workspace` 's live session now.
     fn joined(&self, workspace: WorkspaceId) -> bool {
-        self.planes
+        self.live_sessions
             .lock_recover()
             .get(&workspace)
-            .is_some_and(|joined| !joined.plane.ended())
+            .is_some_and(|joined| !joined.live_session.ended())
     }
 
-    /// Note how far `workspace` 's plane came, and wake the session when that moved: what it
-    /// publishes of the plane is read again. Answers whether it moved.
+    /// Note how far `workspace` 's live session came, and wake the session when that moved: what it
+    /// publishes of the live session is read again. Answers whether it moved.
     fn stand(&self, workspace: WorkspaceId, standing: Standing) -> bool {
         let moved = {
             let mut standings = self.standings.lock_recover();
@@ -934,8 +934,8 @@ impl Shared {
         moved
     }
 
-    /// The relay of `workspace` did not carry its plane for this device, which presented the keys
-    /// of `epoch` : the plane stands as waiting for the relay `missed` names, as told by it that it
+    /// The relay of `workspace` did not carry its live session for this device, which presented the keys
+    /// of `epoch` : the live session stands as waiting for the relay `missed` names, as told by it that it
     /// is busy, or as refused by it, and the journal says so when that is news.
     fn missed(&self, workspace: WorkspaceId, devices: &[Device], missed: Missed, epoch: u64) {
         let relay = relayer(devices, missed.relay, self.device);
@@ -943,14 +943,14 @@ impl Shared {
         if self.stand(workspace, standing) {
             tracing::warn!(%workspace, relay = %hex::encode(missed.relay), refused = missed.refused,
                 busy = missed.busy, epoch,
-                "the live plane is not open: no device that relays this workspace took this device in");
+                "the live session is not open: no device that relays this workspace took this device in");
         } else {
             tracing::debug!(%workspace, busy = missed.busy,
                 "no relay of this workspace was reached");
         }
     }
 
-    /// What wakes `workspace` 's reconciler when a plane of it ended.
+    /// What wakes `workspace` 's reconciler when a live session of it ended.
     fn nudge(&self, workspace: WorkspaceId) -> Arc<tokio::sync::Notify> {
         Arc::clone(self.nudges.lock_recover().entry(workspace).or_default())
     }
@@ -963,19 +963,19 @@ impl Shared {
         )
     }
 
-    /// Stop carrying `workspace` : the plane is closed and its sessions cut.
+    /// Stop carrying `workspace` : the live session is closed and its sessions cut.
     fn withdraw(&self, workspace: WorkspaceId) {
         self.rosters.lock_recover().remove(&workspace);
-        let gone = self.planes.lock_recover().remove(&workspace);
+        let gone = self.live_sessions.lock_recover().remove(&workspace);
         if gone.is_some() {
             self.bump();
         }
     }
 
-    /// A plane of `workspace` ended: settle the workspace again, through its relay.
+    /// A live session of `workspace` ended: settle the workspace again, through its relay.
     fn ended(&self, workspace: WorkspaceId) {
-        self.planes.lock_recover().remove(&workspace);
-        // Until it is settled again the plane is not open: the relay it ran through is the one it
+        self.live_sessions.lock_recover().remove(&workspace);
+        // Until it is settled again the live session is not open: the relay it ran through is the one it
         // waits to reach.
         let was = self.standings.lock_recover().get(&workspace).cloned();
         if let Some(Standing::Open { relay, .. }) = was {
@@ -990,14 +990,14 @@ impl Shared {
     }
 }
 
-/// The live plane of one session: its relay role and the planes it joined,
+/// The live session of one session: its relay role and the live sessions it joined,
 /// on a thread of their own.
 pub struct Live {
     shared: Arc<Shared>,
     /// The relay this device's ALPN handler serves, told to it once it is created: the handler is
-    /// installed before the endpoint binds, and the relay is created on the plane's own runtime.
+    /// installed before the endpoint binds, and the relay is created on the live session's own runtime.
     relayed: tokio::sync::watch::Sender<Option<Arc<Relay>>>,
-    /// Told when the session ends; dropping it ends the plane's thread.
+    /// Told when the session ends; dropping it ends the live session's thread.
     stopped: Option<tokio::sync::mpsc::UnboundedSender<()>>,
     thread: Option<std::thread::JoinHandle<()>>,
     /// The ALPN handler this session serves, handed over before the endpoint binds
@@ -1017,7 +1017,7 @@ impl std::fmt::Debug for Live {
 }
 
 impl Live {
-    /// This session's live plane, and what it answers on the endpoint for the workspaces it relays:
+    /// This session's live session, and what it answers on the endpoint for the workspaces it relays:
     /// its ALPN handler, handed to the session before the endpoint binds
     /// ([`crate::sync::Client::start`]).
     /// Nothing runs until [`Self::attach`] hands it the session's endpoint.
@@ -1030,7 +1030,7 @@ impl Live {
             epochs: Mutex::new(BTreeMap::new()),
             rosters: Mutex::new(BTreeMap::new()),
             changed,
-            planes: Mutex::new(BTreeMap::new()),
+            live_sessions: Mutex::new(BTreeMap::new()),
             standings: Mutex::new(BTreeMap::new()),
             turned: Mutex::new(BTreeMap::new()),
             moves: std::sync::atomic::AtomicU64::new(0),
@@ -1085,15 +1085,15 @@ impl Live {
     /// for its keys and joins its relay.
     ///
     /// Nothing else says so. The channel service announces a workspace's keys once this device
-    /// asked for them, and the plane is what asks: until something else moved a key of some
-    /// workspace here, a workspace taken in while the session ran had no plane, and said nothing
+    /// asked for them, and the live session is what asks: until something else moved a key of some
+    /// workspace here, a workspace taken in while the session ran had no live session, and said nothing
     /// of it.
     pub(crate) fn workspace_arrived(&self) {
         self.shared.readopt.notify_one();
     }
 
     /// Run for the rest of the session on `endpoint` : this device's relay role, for the workspaces
-    /// that name it, and one plane per workspace it holds.
+    /// that name it, and one live session per workspace it holds.
     pub(crate) fn attach(&mut self, endpoint: Endpoint) {
         let (stop, stopped) = tokio::sync::mpsc::unbounded_channel();
         let shared = Arc::clone(&self.shared);
@@ -1106,38 +1106,38 @@ impl Live {
                 self.thread = Some(thread);
                 self.stopped = Some(stop);
             }
-            Err(error) => tracing::warn!(%error, "the live plane runs no thread"),
+            Err(error) => tracing::warn!(%error, "the live session runs no thread"),
         }
     }
 
-    /// The protocols this session serves on its endpoint for the live plane.
+    /// The protocols this session serves on its endpoint for the live session.
     pub(crate) fn protocols(&mut self) -> Protocols {
         std::mem::take(&mut self.protocols)
     }
 
-    /// The next object heard in `workspace` 's live plane, or `None` .
+    /// The next object heard in `workspace` 's live session, or `None` .
     #[must_use]
     pub fn try_recv(&self, workspace: WorkspaceId) -> Option<Heard> {
         self.shared
-            .planes
+            .live_sessions
             .lock_recover()
             .get(&workspace)
-            .and_then(|joined| joined.plane.try_recv())
+            .and_then(|joined| joined.live_session.try_recv())
     }
 
-    /// The planes this device is in, by workspace: what a call's audio is published into, and who
+    /// The live sessions this device is in, by workspace: what a call's audio is published into, and who
     /// it hears there.
     #[must_use]
-    pub fn planes(&self) -> Vec<(WorkspaceId, Arc<Plane>)> {
+    pub fn live_sessions(&self) -> Vec<(WorkspaceId, Arc<LiveSession>)> {
         self.shared
-            .planes
+            .live_sessions
             .lock_recover()
             .iter()
-            .map(|(workspace, joined)| (*workspace, Arc::clone(&joined.plane)))
+            .map(|(workspace, joined)| (*workspace, Arc::clone(&joined.live_session)))
             .collect()
     }
 
-    /// How far each workspace's plane came on this device, by workspace: open, or what it waits
+    /// How far each workspace's live session came on this device, by workspace: open, or what it waits
     /// for. A workspace this session has not looked at yet is not among them.
     #[must_use]
     pub fn standings(&self) -> Vec<(WorkspaceId, Standing)> {
@@ -1149,7 +1149,7 @@ impl Live {
             .collect()
     }
 
-    /// The endpoints this device's relay turned away from each workspace's plane and has not let
+    /// The endpoints this device's relay turned away from each workspace's live session and has not let
     /// in since, by workspace, and why: what the relay knows and the device it turned away is not
     /// told.
     #[must_use]
@@ -1163,34 +1163,34 @@ impl Live {
             .collect()
     }
 
-    /// Moves whenever a standing did, a plane opened or a device was turned away or let in:
-    /// [`Self::standings`], [`Self::planes`] and [`Self::turned_away`] say nothing new while it
+    /// Moves whenever a standing did, a live session opened or a device was turned away or let in:
+    /// [`Self::standings`], [`Self::live_sessions`] and [`Self::turned_away`] say nothing new while it
     /// stands still.
     #[must_use]
     pub fn standings_revision(&self) -> u64 {
         self.shared.moves.load(std::sync::atomic::Ordering::Relaxed)
     }
 
-    /// The runtime the planes run on, once it started: a plane asked to show a track starts its
+    /// The runtime the live sessions run on, once it started: a live session asked to show a track starts its
     /// reader there.
     #[must_use]
     pub fn runtime(&self) -> Option<tokio::runtime::Handle> {
         self.shared.runtime.get().cloned()
     }
 
-    /// A handle that says this plane's presence frames, for the transport the session says on.
+    /// A handle that says this live session's presence frames, for the transport the session says on.
     pub(crate) fn saying(&self) -> Say {
         Say(Arc::clone(&self.shared))
     }
 }
 
-/// This plane's presence track, as the transport the session says on carries it: the words this
+/// This live session's presence track, as the transport the session says on carries it: the words this
 /// device says of itself, said in the workspace they are about.
 pub(crate) struct Say(Arc<Shared>);
 
 impl std::fmt::Debug for Say {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("live plane")
+        f.write_str("live session")
     }
 }
 
@@ -1200,14 +1200,14 @@ impl crate::sync::SayPresence for Say {
         workspace: WorkspaceId,
         frames: &[(u32, collab_types::presence::Presence)],
     ) -> Result<(), String> {
-        let plane = self
+        let live_session = self
             .0
-            .planes
+            .live_sessions
             .lock_recover()
             .get(&workspace)
-            .map(|joined| Arc::clone(&joined.plane))
-            .ok_or_else(|| "this workspace has no live plane".to_owned())?;
-        tilo_live::presence::say(&plane, frames).map_err(|error| error.to_string())
+            .map(|joined| Arc::clone(&joined.live_session))
+            .ok_or_else(|| "this workspace has no live session".to_owned())?;
+        tilo_live::presence::say(&live_session, frames).map_err(|error| error.to_string())
     }
 }
 
@@ -1238,7 +1238,7 @@ async fn served(
     }
 }
 
-/// The live plane's thread: its relay role, and one reconciler per workspace,
+/// The live session's thread: its relay role, and one reconciler per workspace,
 /// each woken by the channel service when the workspace moved.
 fn run(
     shared: Arc<Shared>,
@@ -1250,7 +1250,7 @@ fn run(
         .enable_all()
         .build()
     else {
-        tracing::warn!("the live plane could not start");
+        tracing::warn!("the live session could not start");
         return;
     };
     let _ = shared.runtime.set(runtime.handle().clone());
@@ -1259,15 +1259,15 @@ fn run(
         let serving = Arc::new(Relay::new(authority));
         relayed.send_replace(Some(Arc::clone(&serving)));
         tracing::debug!(device = %hex::encode(shared.device),
-            "the live plane runs on this session's endpoint");
+            "the live session runs on this session's endpoint");
         let keys = shared.engine.keys();
         let mut keyed = keys.generation();
         let mut known = BTreeSet::new();
         adopt(&shared, &endpoint, &serving, &mut known);
-        // A workspace this session joins later opens its plane the same way: the session says
+        // A workspace this session joins later opens its live session the same way: the session says
         // when its host admitted this device ([`Live::workspace_arrived`]), its channel keys
         // arriving is announced by the channel service, and the workspace list is read again then.
-        // Each workspace's own reconciler settles it again when a plane of it ended, or when no
+        // Each workspace's own reconciler settles it again when a live session of it ended, or when no
         // relay took this device in ([`reconcile`]).
         loop {
             tokio::select! {
@@ -1284,7 +1284,7 @@ fn run(
     });
 }
 
-/// Start a reconciler for every workspace of `shared` this session has not opened a plane for yet.
+/// Start a reconciler for every workspace of `shared` this session has not opened a live session for yet.
 fn adopt(
     shared: &Arc<Shared>,
     endpoint: &Endpoint,
@@ -1303,15 +1303,15 @@ fn adopt(
     }
 }
 
-/// Keep one workspace's plane in step with its membership and keys, on the event that moved them:
-/// the workspace's media channel changed, or a plane of the workspace ended.
+/// Keep one workspace's live session in step with its membership and keys, on the event that moved them:
+/// the workspace's media channel changed, or a live session of the workspace ended.
 ///
 /// One thing has no event. A relay that was away when this device asked, or that did not know this
 /// device yet, says nothing when that changes, and the keys this device already holds do not move
 /// because of it. So while the workspace names a relay and none took this device in, its relays
-/// are asked again after [`retry_wait`], until the plane opens. Without that a device whose session
+/// are asked again after [`retry_wait`], until the live session opens. Without that a device whose session
 /// started before the device relaying the workspace was reachable stayed out of the workspace's
-/// live plane for as long as both ran: no presence, no call and no shared window crossed, and
+/// live session for as long as both ran: no presence, no call and no shared window crossed, and
 /// nothing said so.
 async fn reconcile(
     shared: Arc<Shared>,
@@ -1380,7 +1380,7 @@ mod tests {
             assert_eq!(relay_of(&devices, Some([2; 32]), 10), Some([2; 32]));
             assert!(
                 relay_of(&devices, None, 10).is_none(),
-                "a workspace nobody serves has no live plane"
+                "a workspace nobody serves has no live session"
             );
             assert!(
                 relay_of(&devices, Some([7; 32]), 10).is_none(),
@@ -1532,7 +1532,7 @@ mod tests {
             elsewhere.scope = Scope::resource(workspace.to_string(), "elsewhere").id();
             assert!(
                 !admits([2; 32], &elsewhere, &devices, [2; 32], 10),
-                "a scope this session carries no plane for is refused"
+                "a scope this session carries no live session for is refused"
             );
         }
 
@@ -1604,7 +1604,7 @@ mod tests {
         // many devices as it takes at once is neither: it judged nobody, so it is no refusal.
         {
             assert_eq!(
-                Missed::of([2; 32], &PlaneError::Denied),
+                Missed::of([2; 32], &LiveError::Denied),
                 Missed {
                     relay: [2; 32],
                     refused: true,
@@ -1612,16 +1612,16 @@ mod tests {
                 }
             );
             assert_eq!(
-                Missed::of([1; 32], &PlaneError::Unavailable),
+                Missed::of([1; 32], &LiveError::Unavailable),
                 Missed {
                     relay: [1; 32],
                     refused: false,
                     busy: false
                 },
-                "the relay that was away is the one the plane waits to reach"
+                "the relay that was away is the one the live session waits to reach"
             );
             assert_eq!(
-                Missed::of([3; 32], &PlaneError::Busy),
+                Missed::of([3; 32], &LiveError::Busy),
                 Missed {
                     relay: [3; 32],
                     refused: false,
@@ -1704,19 +1704,19 @@ mod tests {
                 here: false,
             };
             assert_eq!(
-                Missed::of([3; 32], &PlaneError::Busy).standing(relay.clone(), 4),
+                Missed::of([3; 32], &LiveError::Busy).standing(relay.clone(), 4),
                 Standing::Busy {
                     relay: relay.clone()
                 }
             );
             assert_eq!(
-                Missed::of([3; 32], &PlaneError::Unavailable).standing(relay.clone(), 4),
+                Missed::of([3; 32], &LiveError::Unavailable).standing(relay.clone(), 4),
                 Standing::Unreached {
                     relay: relay.clone()
                 }
             );
             assert_eq!(
-                Missed::of([3; 32], &PlaneError::Denied).standing(relay.clone(), 4),
+                Missed::of([3; 32], &LiveError::Denied).standing(relay.clone(), 4),
                 Standing::Refused { relay, epoch: 4 }
             );
         }

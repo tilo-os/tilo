@@ -8,7 +8,7 @@
 //! the broker) and the app's own window read it.
 //!
 //! The session here is the one `dist/dev/shell-run.sh` starts: it takes part in the collaboration
-//! plane, founds its workspace on a throwaway identity, and holds its secrets in a file store, so
+//! app wire, founds its workspace on a throwaway identity, and holds its secrets in a file store, so
 //! the workspace's records are sealed with channel keys it has.
 
 #![cfg(target_os = "linux")]
@@ -23,7 +23,7 @@
 
 use serde_json::json;
 use tilo_service::Questions;
-use tilo_session::{ActionPlane, Options, Session};
+use tilo_session::{AppSocket, Options, Session};
 use tilolang_tilo::bundle::Bundle;
 use tilolang_tilo::host::Host;
 
@@ -74,7 +74,7 @@ fn session_launching(
         state: Some(home.state().to_path_buf()),
         services: crate::common::seeded_apps(),
         questions: Some(Questions::new()),
-        action_plane: ActionPlane::At(root.join("plane.sock")),
+        app_socket: AppSocket::At(root.join("app_wire.sock")),
         mcp_server: Some(root.join("agent.sock")),
         admit_repl: vec![program],
         launches,
@@ -335,7 +335,7 @@ fn checked_in_the_window(bytes: &[u8], task: &str, person: &str) -> Vec<u8> {
 }
 
 /// A task checked off in the Tasks app's window is the workspace's change: the window's write, on
-/// its route through the session's plane, reaches the workspace's record of the app, and the
+/// its route through the session's app wire, reaches the workspace's record of the app, and the
 /// person's REPL at the session's API reads it there.
 #[test]
 fn a_task_checked_in_the_apps_window_is_read_at_the_api() {
@@ -367,7 +367,7 @@ fn a_task_checked_in_the_apps_window_is_read_at_the_api() {
     // The app's process is this test's: the session admits its connection as the launch it
     // recorded.
     launches.started(std::process::id(), TASKS, &workspace, true);
-    let socket = root.path().join("plane.sock");
+    let socket = root.path().join("app_wire.sock");
     let workspace_id = uuid::Uuid::parse_str(&workspace).expect("a workspace id");
     let done = std::sync::atomic::AtomicBool::new(false);
     let mut repl = Repl::connect(&root.path().join("agent.sock"));
@@ -391,9 +391,9 @@ fn a_task_checked_in_the_apps_window_is_read_at_the_api() {
         // with ([`collaboration::CollaborationManager::join_instance`]), which seals and sends
         // what the window committed.
         let window = scope.spawn(|| -> Result<(), String> {
-            let mut plane =
+            let mut app_wire =
                 std::os::unix::net::UnixStream::connect(&socket).map_err(|e| e.to_string())?;
-            launcher::services::write_collab_handoff(&mut plane, TASKS, &workspace)
+            launcher::services::write_collab_handoff(&mut app_wire, TASKS, &workspace)
                 .map_err(|e| e.to_string())?;
             let mut identity =
                 std::os::unix::net::UnixStream::connect(launcher::services::identity_socket())
@@ -402,7 +402,7 @@ fn a_task_checked_in_the_apps_window_is_read_at_the_api() {
                 .map_err(|e| e.to_string())?;
             let manager = collaboration::CollaborationManager::join_instance(
                 &collab_types::document::ResourceType::new(kind.clone()),
-                std::os::fd::OwnedFd::from(plane),
+                std::os::fd::OwnedFd::from(app_wire),
                 std::os::fd::AsFd::as_fd(&identity),
                 collaboration::RouteSpec::app(TASKS.to_owned(), workspace_id),
             )

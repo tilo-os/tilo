@@ -1,9 +1,9 @@
-//! The device plane: what another device of a workspace asks this host
+//! The device action service: what another device of a workspace asks this host
 //! directly, with no member session in between.
 //!
 //! A host is a member device of the workspaces it governs: its own device
 //! holds their governance and their state. So those workspaces answer the
-//! devices' plane (`tilo-actions/1`) as any other member device does. A device
+//! devices' action service (`tilo-actions/1`) as any other member device does. A device
 //! of the workspace asks whether this host would run a piece of work, and the
 //! host answers with what it knows of itself ([`Offering`]) — the same round a
 //! person's devices run among themselves, in which the host is one of the
@@ -14,10 +14,10 @@
 //!
 //! An action whose declaration says it is a transform ([`HostJobs`]) is work
 //! this host can take: it says so, and it runs the invocation that comes back
-//! on the same plane as a compute job over content it keeps. Every other app
+//! on the same action service as a compute job over content it keeps. Every other app
 //! action is not answered here: those reach the host through the session its
 //! members run, where the caller's certificate and the workspace's policy
-//! decide them ([`AppServingPlane`](crate::app_serving::AppServingPlane)).
+//! decide them ([`AppActionServer`](crate::app_serving::AppActionServer)).
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -31,14 +31,14 @@ use tilo_actions::remote::{
 use tilo_actions::{ActionOutput, InvocationId, InvocationUpdate};
 use tilo_lock::{MutexRecover as _, RwLockRecover as _};
 use tilo_peer_state::StatePeer;
-use tilo_peer_state::actions::{ActionPlane, Offering, ReadFuture, Workspaces};
+use tilo_peer_state::actions::{ActionService, Offering, ReadFuture, Workspaces};
 use tilo_relay_protocol::{Machine, Whose, WorkSetting};
 use tokio::sync::Mutex as AsyncMutex;
 
 use super::GovernedWorkspace;
 
 /// The workspaces a host governs, by workspace: what [`Workspaces`](super::Workspaces)
-/// keeps and this plane reads.
+/// keeps and this action service reads.
 pub(crate) type WorkspacesMap = AsyncMutex<BTreeMap<String, Arc<AsyncMutex<GovernedWorkspace>>>>;
 
 /// The work a host runs for the devices of its workspaces: an action that
@@ -102,12 +102,12 @@ const MAX_OFFERED: usize = 256;
 /// The jobs a host runs, shared by the offering that answers offers and the
 /// dispatcher that answers invocations, and the work offered here.
 ///
-/// The plane is built before any embedder hands the host a job runner, so
+/// The action service is built before any embedder hands the host a job runner, so
 /// [`Self::serve`] fills it in. A host without one says it runs no app
 /// actions, as it always did.
 pub(crate) struct HostWork {
     jobs: std::sync::RwLock<Option<Arc<dyn HostJobs>>>,
-    /// The workspaces this host governs, as the plane decides them: who may
+    /// The workspaces this host governs, as the action service decides them: who may
     /// run an action here is what its workspace's policy grants them.
     workspaces: Arc<WorkspacesMap>,
     offered: std::sync::Mutex<Vec<Offered>>,
@@ -187,7 +187,7 @@ impl HostWork {
         *self.jobs.write_recover() = Some(jobs);
     }
 
-    /// This host for the plane of the device that signs as `device`.
+    /// This host for the action service of the device that signs as `device`.
     ///
     /// # Panics
     ///
@@ -203,32 +203,32 @@ impl HostWork {
     }
 }
 
-/// The device plane of a host governing the workspaces in `workspaces`, as the
+/// The device action service of a host governing the workspaces in `workspaces`, as the
 /// device whose signing key is `device`, running `jobs`.
 ///
 /// # Panics
 ///
 /// Outside a runtime context, where there is nothing to answer on.
-pub(crate) fn plane(
+pub(crate) fn action_service(
     workspaces: Arc<WorkspacesMap>,
     device: SigningKey,
     setting: WorkSetting,
-) -> (ActionPlane, Arc<HostWork>) {
+) -> (ActionService, Arc<HostWork>) {
     let work = HostWork::new(Arc::clone(&workspaces));
-    let plane = ActionPlane::over(
+    let action_service = ActionService::over(
         device,
         Arc::new(HostActions(Arc::clone(&work))),
         Arc::new(GovernedWorkspaces(workspaces)),
     );
-    plane.offering(HostOffering {
+    action_service.offering(HostOffering {
         work: Arc::clone(&work),
         setting,
     });
-    (plane, work)
+    (action_service, work)
 }
 
-/// The workspaces this host governs, as the plane reads them: each is locked
-/// for the read, so a roster change reaches the plane as it happens.
+/// The workspaces this host governs, as the action service reads them: each is locked
+/// for the read, so a roster change reaches the action service as it happens.
 struct GovernedWorkspaces(Arc<WorkspacesMap>);
 
 impl Workspaces for GovernedWorkspaces {
@@ -290,7 +290,7 @@ impl Offering for HostOffering {
     }
 }
 
-/// The host's answers on the device plane: the work it was offered, run as a
+/// The host's answers on the device action service: the work it was offered, run as a
 /// compute job, and nothing else.
 ///
 /// An app action reaches the host through the session its members run, which
@@ -302,7 +302,7 @@ struct HostActions(Arc<HostWork>);
 
 fn not_served() -> ActionHostError {
     ActionHostError::Unavailable {
-        reason: "this host runs only the work it was offered on the device plane".into(),
+        reason: "this host runs only the work it was offered on the device action service".into(),
     }
 }
 

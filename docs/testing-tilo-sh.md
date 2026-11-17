@@ -76,7 +76,7 @@ under their own numbers:
 | `BASE+20` | the site, `http://tilo.localhost:BASE+20` |
 | `BASE+10` | the API server (MCP, `/v1`, keys, OAuth) |
 | `BASE` | the relay's public origin (which the page dials) |
-| `BASE+6` | the live plane's origin |
+| `BASE+6` | the live origin |
 | `BASE+1`, `BASE+3` | the relay's plain and route listeners |
 | `BASE+21`, `BASE+22`, `BASE+23` | the web entry, the releases, the mail sink |
 | `BASE+40`…`BASE+42` | the fake Discord (`up --discord`) |
@@ -113,7 +113,7 @@ With `--images`, the first three are the images themselves.
 ### What differs from production
 
 - **No TLS.** In production Cloudflare terminates TLS; here the site, the relay,
-  its live plane and the API server are plain HTTP on this machine's own names.
+  its live session and the API server are plain HTTP on this machine's own names.
   Browsers treat `localhost`, names under it and loopback addresses as secure
   contexts, so the page runs as it does on tilo.sh (passkeys, WebCrypto, service
   workers) with no certificate to trust. Tilo's programs and the `tilo` command

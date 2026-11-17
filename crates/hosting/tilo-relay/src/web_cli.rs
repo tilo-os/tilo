@@ -293,7 +293,7 @@ fn announce_web_entry(cfg: &mut tilo_relay::RelayConfig, args: &WebArgs) {
 }
 
 /// Start the relay; with `--agents`, with its agent supervisor as the
-/// app-serving plane and the agents kept under `state_root/agents`; with
+/// app action server and the agents kept under `state_root/agents`; with
 /// `--workspace-documents` alone, serving the workspaces' records without agents.
 ///
 /// # Errors
@@ -1300,7 +1300,7 @@ pub async fn workspace(
 ) -> anyhow::Result<()> {
     // Every change the workspace receives is decided against its app's surface,
     // a bot's included: the workspace's own apps carry theirs, others the workspace
-    // keeps for them in its content plane.
+    // keeps for them in its content store.
     tilo_relay::surfaces::decide_receipt(&args.state.join("surfaces"));
     #[cfg(feature = "agents")]
     if args.persistent.persistent.is_some() {

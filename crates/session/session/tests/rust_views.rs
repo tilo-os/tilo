@@ -21,7 +21,7 @@ use tilo_actions::ApiError;
 use tilo_actions::ResourceSpec;
 use tilo_compositor::OutputConfig;
 use tilo_service::{Service, Started};
-use tilo_session::{ActionPlane, Options, Session};
+use tilo_session::{AppSocket, Options, Session};
 
 /// The channel the test places: a labelled sample channel with the videos its page lists.
 const CHANNEL: &str = "tube.channel:ch_lowlevel";
@@ -118,7 +118,7 @@ fn session(root: &std::path::Path) -> Session {
             collab: false,
             services,
             questions: Some(tilo_service::Questions::new()),
-            action_plane: ActionPlane::At(root.join("plane.sock")),
+            app_socket: AppSocket::At(root.join("app_wire.sock")),
             mcp_server: Some(root.join("agent.sock")),
             admit_repl: vec![program],
             test_control: Some(root.join("test-control.sock")),

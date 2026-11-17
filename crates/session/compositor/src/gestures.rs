@@ -8,7 +8,7 @@
 //! 3+ are the shell's, matching the convention every desktop trains users on.
 //!
 //! Each shell gesture maps onto an existing spatial-model interaction, with the same direction
-//! convention as its keyboard chord. Three fingers work the plane you see and four go one level
+//! convention as its keyboard chord. Three fingers work the strips you see and four go one level
 //! out to workspaces, the split Super and Ctrl+Super make on the keyboard
 //! (`docs/architecture/window-management.md`):
 //!

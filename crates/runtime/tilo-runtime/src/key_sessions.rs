@@ -21,7 +21,7 @@ use std::sync::{Arc, OnceLock};
 use tilo_actions::remote::{ActionHost, ActionHostError, Caller, Pending, RemoteActionMessage};
 use tilo_lock::MutexRecover as _;
 use tilo_user_identity::DeviceCert;
-use tilo_workspace_host::app_serving::AppServingPlane;
+use tilo_workspace_host::app_serving::AppActionServer;
 
 use collab_types::WorkspaceId;
 use tilo_mcp::devices::PersonsDevices;
@@ -50,7 +50,7 @@ pub trait Sessions: Send + Sync {
 
 /// The record actions of the workspaces a device hosts, answered for its
 /// person's keys by its own broker: the device's
-/// [`AppServingPlane`](tilo_workspace_host::app_serving::AppServingPlane).
+/// [`AppActionServer`](tilo_workspace_host::app_serving::AppActionServer).
 pub struct KeySessions {
     /// The person's devices and the broker, once they run: a host opens
     /// before the store and the broker it serves.
@@ -158,7 +158,7 @@ impl KeySessions {
     }
 }
 
-impl AppServingPlane for KeySessions {
+impl AppActionServer for KeySessions {
     /// Only a key's certified session reaches a run: without the certificate
     /// there is no key to hold to its scope.
     fn serve(

@@ -402,7 +402,7 @@ let entryJson = '{}';
 const sitePort = await freePort();
 const hostPort = await freePort();
 // The relay the host runs for the pages it serves: a page has no UDP socket,
-// so it reaches the workspace's live plane only through one.
+// so it reaches the workspace's live session only through one.
 const relayPort = await freePort();
 const plainPort = await freePort();
 // Where pages reach the host: WebTransport over UDP. The site in front of the host carries only

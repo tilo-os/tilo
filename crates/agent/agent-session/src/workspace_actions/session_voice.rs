@@ -13,8 +13,8 @@
 //! agents its person admitted at its own API ([`Board::speak_for`]): one
 //! member per invocation, its face said when it changes and again at the keep-alive,
 //! taken down when the invocation's session ends. The host says it outside the live
-//! plane ([`Cmd::SayForSession`](tilo_session_client::Cmd::SayForSession)), signed with
-//! its own device key: it is no member of the plane, holds none of its keys,
+//! live session ([`Cmd::SayForSession`](tilo_session_client::Cmd::SayForSession)), signed with
+//! its own device key: it is no member of the live session, holds none of its keys,
 //! and needs none to speak for its invocations. Only the invocations' words leave.
 
 use std::collections::HashMap;
@@ -67,7 +67,7 @@ struct Voice {
     /// The record it works in, and what its last action left selected there.
     focus: Option<LiveResource>,
     selection: Option<ShellSelection>,
-    /// The sequence of its narration on the live plane.
+    /// The sequence of its narration on the live session.
     narrated: u64,
     /// The execution its session was minted: it closes with the session, which
     /// is when the invocation leaves.

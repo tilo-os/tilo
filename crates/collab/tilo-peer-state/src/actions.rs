@@ -39,7 +39,9 @@ use collab_types::signer::DeviceSigner;
 use iroh::endpoint::{Connection, RecvStream, SendStream};
 use iroh::protocol::{AcceptError, ProtocolHandler};
 use iroh::{Endpoint, EndpointAddr};
-use neighbour_wire::actions::{ActionReplayWindow, DeviceAction, PlaneFrame, SignedDeviceAction};
+use neighbour_wire::actions::{
+    ActionReplayWindow, ActionServiceFrame, DeviceAction, SignedDeviceAction,
+};
 use neighbour_wire::offer::{Answer, Decline, Query, Route, Work};
 use std::collections::{BTreeMap, HashMap};
 use std::future::Future;
@@ -56,7 +58,7 @@ use tilo_lock::MutexRecover as _;
 use tilo_relay_protocol::{Whose, WorkspaceId};
 use web_time::SystemTime;
 
-/// ALPN of the device-to-device action plane.
+/// ALPN of the device-to-device action service.
 pub const ACTIONS_ALPN: &[u8] = b"tilo-actions/1";
 
 /// The largest frame either side writes.
@@ -111,13 +113,13 @@ const KEPT_CALLERS: usize = 4096;
 /// Most invocations one device follows at a time.
 const MAX_FOLLOWED: usize = 1024;
 
-/// The workspaces a device answers for, as the plane reads them.
+/// The workspaces a device answers for, as the action service reads them.
 ///
 /// A device whose workspaces are held in a store of its own (a session's
-/// workspace owner) hands the plane this view of them instead of
-/// [`Replica`]s: the plane then reads a workspace's state when a request names
+/// workspace owner) hands the action service this view of them instead of
+/// [`Replica`]s: the action service then reads a workspace's state when a request names
 /// it, so a revocation, a removal or a new certificate is seen as it
-/// happens rather than as it was when the plane was handed the workspace.
+/// happens rather than as it was when the action service was handed the workspace.
 ///
 /// A workspace a view keeps behind a lock of its own (a host holding its
 /// workspaces for their members) is locked for the read, so what is read is
@@ -134,7 +136,7 @@ pub trait Workspaces: Send + Sync {
     ) -> ReadFuture<'a>;
 
     /// [`Self::read`] for a request the device `asker` signed, which the
-    /// plane is deciding: a view that comes to hold a workspace on a
+    /// action service is deciding: a view that comes to hold a workspace on a
     /// device's request may do so here, and only here, for the devices it
     /// trusts to ask. Every other read only reads.
     fn read_for<'a>(
@@ -153,10 +155,10 @@ pub trait Workspaces: Send + Sync {
 /// before it can read it.
 pub type ReadFuture<'a> = Pin<Box<dyn Future<Output = bool> + Send + 'a>>;
 
-/// The workspaces a device's own native enrollment holds, as the plane reads
+/// The workspaces a device's own native enrollment holds, as the action service reads
 /// them: the store a session opens its workspaces in is asked when a request
 /// names one, so who may act there is what holds at that moment rather than as
-/// it was when the plane started.
+/// it was when the action service started.
 impl Workspaces for crate::owner::NativeWorkspaceOwner {
     fn read<'a>(
         &'a self,
@@ -178,10 +180,10 @@ impl Workspaces for crate::owner::NativeWorkspaceOwner {
     }
 }
 
-/// A device that answers no app actions on its plane: one built to ask its
-/// workspaces' devices where work runs, which serves the plane for the asks it
+/// A device that answers no app actions on its action service: one built to ask its
+/// workspaces' devices where work runs, which serves the action service for the asks it
 /// makes and the offers it answers. An app's action reaches a device through
-/// the dispatcher it serves; a request that arrives on such a plane anyway is
+/// the dispatcher it serves; a request that arrives on such an action service anyway is
 /// refused as one this device does not serve, so its caller learns at once
 /// instead of waiting.
 #[derive(Clone, Copy, Debug, Default)]
@@ -190,7 +192,7 @@ pub struct NoActions;
 /// What [`NoActions`] answers every request with.
 fn not_served() -> tilo_actions::remote::ActionHostError {
     tilo_actions::remote::ActionHostError::Unavailable {
-        reason: "this device answers no app actions on the devices' plane".into(),
+        reason: "this device answers no app actions on the devices' action service".into(),
     }
 }
 
@@ -233,13 +235,13 @@ impl ActionHost for NoActions {
 }
 
 /// What a device knows of itself when another device of its workspace offers
-/// it work ([`ActionPlane::offers`]).
+/// it work ([`ActionService::offers`]).
 ///
-/// The plane answers with what it knows without asking: that this device
+/// The action service answers with what it knows without asking: that this device
 /// answered at all, that it holds the workspace the route names. An
 /// implementation says the rest — whether the app is installed here, its
 /// power standing, the work already in hand, its operator's preference, and
-/// the choices its person made for it. A plane with no `Offering` says its
+/// the choices its person made for it. An action service with no `Offering` says its
 /// app is not installed, so it never claims work it cannot run.
 pub trait Offering: Send + Sync {
     /// What this device says of running `offer`'s route on `offer`'s work,
@@ -253,10 +255,10 @@ pub trait Offering: Send + Sync {
     fn report(&self, from: [u8; 32], whose: &Whose, offer: &Query) -> Answer;
 }
 
-/// A device's action plane: it serves the requests other devices of its
+/// A device's action service: it serves the requests other devices of its
 /// workspaces make, and asks them through [`Self::remote`].
 #[derive(Clone)]
-pub struct ActionPlane(Arc<Inner>);
+pub struct ActionService(Arc<Inner>);
 
 struct Inner {
     /// The device whose signature every request it makes carries.
@@ -274,22 +276,22 @@ struct Inner {
     bounds: Bounds,
     callers: Mutex<HashMap<[u8; 32], Bucket>>,
     /// Endpoints keyed apart from the device they answer for, by endpoint
-    /// id ([`ActionPlane::reach_device_at`]).
+    /// id ([`ActionService::reach_device_at`]).
     endpoints: Mutex<HashMap<[u8; 32], [u8; 32]>>,
     runtime: tokio::runtime::Handle,
 }
 
-impl std::fmt::Debug for ActionPlane {
+impl std::fmt::Debug for ActionService {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("ActionPlane")
+        f.debug_struct("ActionService")
             .field("device", &hex::encode(self.0.device.device_public_key()))
             .field("workspaces", &self.0.replicas.lock_recover().len())
             .finish_non_exhaustive()
     }
 }
 
-impl ActionPlane {
-    /// A plane for the device whose signing key is `device` (and whose iroh
+impl ActionService {
+    /// An action service for the device whose signing key is `device` (and whose iroh
     /// endpoint's secret key it is), handing every request it answers to
     /// `dispatcher`.
     ///
@@ -815,9 +817,9 @@ impl ActionPlane {
                 Err(iroh::endpoint::ConnectionError::ApplicationClosed(_)) => return Ok(()),
                 Err(error) => return Err(error.to_string()),
             };
-            let plane = self.clone();
+            let action_service = self.clone();
             self.0.runtime.spawn(async move {
-                if let Err(error) = plane.answer_stream(remote, send, recv).await {
+                if let Err(error) = action_service.answer_stream(remote, send, recv).await {
                     tracing::warn!(%error, "a remote action stream ended in error");
                 }
             });
@@ -834,9 +836,10 @@ impl ActionPlane {
         let Some(bytes) = read_frame(&mut recv).await? else {
             return send.finish().map_err(|error| error.to_string());
         };
-        let frame: PlaneFrame = postcard::from_bytes(&bytes).map_err(|error| error.to_string())?;
+        let frame: ActionServiceFrame =
+            postcard::from_bytes(&bytes).map_err(|error| error.to_string())?;
         match frame {
-            PlaneFrame::Action(signed) => {
+            ActionServiceFrame::Action(signed) => {
                 if let Some(reply) = self.answer(remote, *signed).await {
                     let bytes = RemoteActionFrame::new(reply)
                         .encode()
@@ -847,7 +850,7 @@ impl ActionPlane {
             // An offer this device may not be told about is left
             // unanswered: the asking device takes it as away, and nothing
             // about this one leaves with it.
-            PlaneFrame::Offer(query) => {
+            ActionServiceFrame::Offer(query) => {
                 if let Some(state) = self.answer_offer(remote, &query).await {
                     let bytes = postcard::to_allocvec(&state).map_err(|error| error.to_string())?;
                     write_frame(&mut send, &bytes).await?;
@@ -858,7 +861,7 @@ impl ActionPlane {
     }
 }
 
-impl ProtocolHandler for ActionPlane {
+impl ProtocolHandler for ActionService {
     async fn accept(&self, connection: Connection) -> Result<(), AcceptError> {
         self.serve(connection)
             .await
@@ -1081,7 +1084,7 @@ impl Device {
             self.key.as_ref(),
         )
         .map_err(|error| unavailable(&error.to_string()))?;
-        let bytes = postcard::to_allocvec(&PlaneFrame::Action(Box::new(signed)))
+        let bytes = postcard::to_allocvec(&ActionServiceFrame::Action(Box::new(signed)))
             .map_err(|error| unavailable(&error.to_string()))?;
         let answer = self.exchange(&bytes).await?;
         RemoteActionFrame::decode(&answer)
@@ -1106,7 +1109,7 @@ impl Device {
         };
         let started = tilo_clock::now();
         let heard = async {
-            let bytes = postcard::to_allocvec(&PlaneFrame::Offer(Box::new(query))).ok()?;
+            let bytes = postcard::to_allocvec(&ActionServiceFrame::Offer(Box::new(query))).ok()?;
             let answer = self.exchange(&bytes).await.ok()?;
             tilo_failure::ignored!(
                 "an answer that does not decode is no answer, and the caller answers `away`",

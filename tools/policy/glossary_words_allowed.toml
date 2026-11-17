@@ -100,3 +100,114 @@ paths = [
     "apps/settings/src/speaker_setup.rs",
     "crates/platform/tilo-media/src/calibration_fusion.rs",
 ]
+
+[[allow]]
+reason = "A plane of a pixel buffer (luma, chroma, a dma-buf's planes) or a display plane of the GPU."
+words = ["plane"]
+paths = [
+    "apps/camera/src/video.rs",
+    "apps/video-editor/src/agent_render/run.rs",
+    "apps/video-editor/src/gpu/media_source.rs",
+    "apps/video-editor/src/gpu/mod.rs",
+    "crates/collab/tilo-callstream/src/decoder.rs",
+    "crates/collab/tilo-callstream/src/surface_decoder.rs",
+    "crates/dev/tilo-vmd/src/systemd.rs",
+    "crates/media/segment/src/matte.rs",
+    "crates/media/segment/src/model.rs",
+    "crates/media/segment/src/refine.rs",
+    "crates/platform/tilo-media/src/cache.rs",
+    "crates/platform/tilo-media/src/dmabuf.rs",
+    "crates/platform/tilo-media/src/frame.rs",
+    "crates/platform/tilo-media/src/gst_backend.rs",
+    "crates/platform/tilo-media/src/gst_frames.rs",
+    "crates/platform/tilo-media/src/lib.rs",
+    "crates/platform/tilo-media/src/realtime.rs",
+    "crates/platform/tilo-media/src/realtime/capture.rs",
+    "crates/platform/tilo-media/src/realtime/gst_impl.rs",
+    "crates/platform/tilo-media/src/video_surface.rs",
+    "crates/platform/tilo-media/tests/hardware_decode.rs",
+    "crates/platform/tilo-media/tests/realtime.rs",
+    "crates/platform/tilo-render-protocol/src/control.rs",
+    "crates/sdk/ui-core/src/dmabuf_import.rs",
+    "crates/sdk/ui-core/src/gpu_video.rs",
+    "crates/sdk/ui-core/src/render_thread/remote.rs",
+    "crates/sdk/ui-kms/src/display.rs",
+    "crates/session/app-keeper/src/lib.rs",
+    "crates/session/app-keeper/src/surfaces.rs",
+    "crates/session/app-keeper/tests/dmabuf.rs",
+    "crates/session/app-keeper/tests/support.rs",
+    "crates/session/color-pipeline/src/hdr_surface.rs",
+    "crates/session/color-pipeline/src/hdr_tonemap.rs",
+    "crates/session/color-pipeline/src/software_dim.rs",
+    "crates/session/compositor/src/backend/drm/color.rs",
+    "crates/session/compositor/src/backend/drm/hdr_layers.rs",
+    "crates/session/compositor/src/backend/drm/mod.rs",
+    "crates/session/compositor/src/backend/headless.rs",
+    "crates/session/compositor/src/cursor.rs",
+    "crates/session/compositor/src/effects.rs",
+    "crates/session/compositor/src/hdr.rs",
+    "crates/session/compositor/src/lib.rs",
+    "crates/session/compositor/src/present.rs",
+    "crates/session/compositor/src/state.rs",
+    "crates/session/compositor/src/uploads.rs",
+    "crates/session/render-service/src/buffers.rs",
+    "crates/session/render-service/src/service.rs",
+    "crates/session/render-service/tests/service.rs",
+    "crates/session/session/examples/latency_client.rs",
+    "crates/session/surface-host/src/frames.rs",
+    "crates/session/window-share/src/encoder/mod.rs",
+    "crates/session/window-share/src/encoder/nv12.rs",
+    "crates/session/window-share/src/flatpak_share.rs",
+]
+
+[[allow]]
+reason = "A geometric plane: a function plot's, a map's projection, a drawn surface."
+words = ["plane"]
+paths = [
+    "apps/calculator/src/app/tests.rs",
+    "apps/calculator/src/graph2d.rs",
+    "apps/calculator/src/graph3d.rs",
+    "apps/canvas/src/resource.rs",
+    "apps/canvas/src/wand.rs",
+    "apps/maps/src/geo.rs",
+    "crates/lang/tilolang/src/prims.rs",
+    "crates/sdk/ui-core/CHARTS.md",
+    "crates/sdk/ui-core/src/charts.rs",
+    "crates/sdk/ui-core/src/widget/function_plane.rs",
+    "crates/sdk/ui-core/src/widget/mod.rs",
+]
+
+[[allow]]
+reason = "An airplane: the airplane-mode icon and words about planes in the sky."
+words = ["plane"]
+paths = [
+    "apps/feeds/src/sample.rs",
+    "apps/settings/src/panes/network/view.rs",
+    "crates/dev/ui-examples/examples/quick_tile_shots.rs",
+    "crates/dev/ui-examples/examples/widget_states_shots.rs",
+    "crates/sdk/ui-core/src/icons/mod.rs",
+    "crates/session/connectivity-service/src/effects.rs",
+    "crates/session/quick-settings/src/effect.rs",
+    "crates/session/quick-settings/src/faces.rs",
+]
+
+[[allow]]
+reason = "A control plane: the management side of a system outside Tilo."
+words = ["plane"]
+paths = [
+    "apps/windows/src/lib.rs",
+    "apps/windows/src/provider.rs",
+    "crates/agent/model-gateway/src/service.rs",
+    "crates/hosting/tilo-relay/README.md",
+    "crates/sdk/ui-core/tests/support/mod.rs",
+    "crates/windows/windows-vm/src/https_guest.rs",
+]
+
+[[allow]]
+reason = "Words of other languages and Unicode planes."
+words = ["plane"]
+paths = [
+    "apps/imager/locales/de-DE.ftl",
+    "crates/sdk/ui-core/src/webview/page/tests.rs",
+    "tools/android/mediation/README.md",
+]

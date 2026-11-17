@@ -463,7 +463,7 @@ that workspace environment's own, never in a guest sharing the host's kernel
   its desktop file) starts a second headless session in the same VM, as the
   tenant, with Xwayland ([`hosted-browser.md`](../hosted-browser.md#linux-apps)).
   It joins the workspace as a device like Browser's and shares every window
-  its apps open with the workspace's members, over the live plane. Opening one
+  its apps open with the workspace's members, over the live session. Opening one
   is a Linux action: it needs the plan and the card.
 - **Served runs:** a program that needs what only its host may hold (a
   person's model, the workspace's actions, a sign-in) is started through the
@@ -494,7 +494,7 @@ that workspace environment's own, never in a guest sharing the host's kernel
 A member with the take-work appetite serves its workspace's environments the
 way a device serves its own:
 
-- The action plane carries a request to open a session (`OpenEnvironment {
+- The action service carries a request to open a session (`OpenEnvironment {
   record, cols, rows }`) and the accepting member answers with a pty stream
   over iroh. It builds the guest exactly as a device does, with images fetched
   from the registry.
@@ -504,7 +504,7 @@ way a device serves its own:
 - A legacy launch goes to a member that advertises `kvm`; its windows reach
   the requester as a window stream (`surface_stream`), with input routed back.
 
-A member holds a workspace as any device does, so its device plane admits the
+A member holds a workspace as any device does, so its action service admits the
 relay's runs. A member that runs the workspace's VMs also answers its browser
 environments' opens there (`tilo_actions::remote::browser`), which the host's
 hosted-VM service starts beside the Linux VM; the relay asks for them the way

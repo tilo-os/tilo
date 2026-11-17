@@ -71,7 +71,7 @@ const fn word(standing: &Elsewhere) -> &'static str {
 
 impl WindowShares {
     /// Read how every window that runs on another device stands on this session, and tell the shell
-    /// where that changed: each tab says it from its next pass on. A session with no plane reads
+    /// where that changed: each tab says it from its next pass on. A session with no live session reads
     /// nothing of its workspaces, and its tabs say only where their windows run.
     pub(super) fn follow_hosted(
         &mut self,

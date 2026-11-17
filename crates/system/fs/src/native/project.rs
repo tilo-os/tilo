@@ -1,4 +1,4 @@
-//! Materialising the record plane into the live tree. Remote versions reach the live tree only
+//! Materialising the record protocol into the live tree. Remote versions reach the live tree only
 //! through here, and only in ways a reader cannot observe half done.
 //!
 //! A new or changed small file is staged in the same directory and renamed over its path, so an
@@ -68,7 +68,7 @@ pub fn rel_path(components: &[Vec<u8>]) -> PathBuf {
 
 /// Whether `rel` stays inside the tree it is joined onto: at least one component, every one of them
 /// a plain name. A `..`, a root or a prefix component would make `live.join(rel)` name something
-/// outside `live`, which this plane writes as root.
+/// outside `live`, which this backend writes as root.
 pub fn confined_rel(rel: &Path) -> bool {
     let mut components = rel.components().peekable();
     components.peek().is_some() && components.all(|c| matches!(c, Component::Normal(_)))
@@ -251,7 +251,7 @@ impl Projector {
         Ok(())
     }
 
-    /// Brings the live tree to `tree`, the record plane's current state. `changesets` are the
+    /// Brings the live tree to `tree`, the record protocol's current state. `changesets` are the
     /// version-time spans of other devices' latest changesets: a version that cannot be applied yet
     /// holds back the rest of the changeset it belongs to.
     pub fn project(
@@ -492,7 +492,7 @@ impl Projector {
                 Ok(())
             }
             Ok(_) => {
-                // A file stands where the record plane now has a directory.
+                // A file stands where the record protocol now has a directory.
                 let ours = materialized
                     .get(rel)
                     .is_some_and(|m| m.local.is_some() && m.local == LocalStat::of(&abs));

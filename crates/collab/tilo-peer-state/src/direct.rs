@@ -535,7 +535,7 @@ impl DirectSync {
     }
 
     /// Sync `replica`, which other parts of the engine read as well: the
-    /// action plane authorizes against the state this link admits into.
+    /// action service authorizes against the state this link admits into.
     #[must_use]
     pub fn over(replica: Replica, signer: impl DeviceSigner + 'static) -> Self {
         Self(Arc::new(Inner {

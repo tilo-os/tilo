@@ -1,22 +1,22 @@
-//! What the shares' resource reads: the shares as they stand, and how far the live plane they
+//! What the shares' resource reads: the shares as they stand, and how far the live session they
 //! travel came on this device.
 //!
-//! A shared window's pictures cross the workspace's live plane, and a plane that is not open says
+//! A shared window's pictures cross the workspace's live session, and a live session that is not open says
 //! nothing by itself: a share started under it captures nothing, and a window watched under it
-//! receives nothing. So the reading names each workspace's plane (`live`: open, or what it waits
+//! receives nothing. So the reading names each workspace's live session (`live`: open, or what it waits
 //! for and which device it waits to reach), and every window shared or watched in a workspace whose
-//! plane is not open says what it waits for on its own row. A row that waits for nothing is one
-//! whose pictures can flow. An open plane also says what crossed it: the epoch it seals under, how
+//! live session is not open says what it waits for on its own row. A row that waits for nothing is one
+//! whose pictures can flow. An open live session also says what crossed it: the epoch it seals under, how
 //! many objects it opened, the ones it could not open and why, and which of this device's windows
-//! another device asks it for. Two devices in one plane that hear nothing of each other read there
-//! whether they seal under keys the other lacks. A device in a plane on keys its host lent it
-//! (`lent_keys`) sends what it shares and opens nothing: a window it watches says so. A plane reads
-//! so many devices at once: a device that is in the plane beyond those is absent from presence, a
-//! call and a shared window on this device without a word, so an open plane says how many those
+//! another device asks it for. Two devices in one live session that hear nothing of each other read there
+//! whether they seal under keys the other lacks. A device in a live session on keys its host lent it
+//! (`lent_keys`) sends what it shares and opens nothing: a window it watches says so. A live session reads
+//! so many devices at once: a device that is in the live session beyond those is absent from presence, a
+//! call and a shared window on this device without a word, so an open live session says how many those
 //! are, why by the word a tool branches on, and in the person's words (`unheard`, `unheard_why`,
 //! `not_heard`).
 //!
-//! An open plane and a stream's start still put nothing on a screen, so the rows say what crossed.
+//! An open live session and a stream's start still put nothing on a screen, so the rows say what crossed.
 //! A window this device shows is `pictured` once its tile holds a decoded picture or its page's
 //! whole frame, and until then its row waits for the first one. A window this device shares is
 //! `streaming` while a member's shell asks for it and it goes out: a captured window as soon as it
@@ -39,8 +39,8 @@
 //! it waits for, `away` for a device nothing is heard of, or `left` for one the workspace no
 //! longer admits ([`super::hosts`]).
 //!
-//! A relay tells the device it turns away nothing but that. So a plane that was refused says which
-//! epoch's keys this device presented (`presented`), and the plane of the device that relays the
+//! A relay tells the device it turns away nothing but that. So a live session that was refused says which
+//! epoch's keys this device presented (`presented`), and the live session of the device that relays the
 //! workspace lists the endpoints it turned away and has not let in since, each with why
 //! (`turned_away`): the two readings side by side say what the refused device alone cannot.
 
@@ -50,14 +50,14 @@ use std::sync::Arc;
 use serde_json::{Value, json};
 use tilo_desktop_model::TabId;
 use tilo_desktop_surface::i18n::{t, t_args};
-use tilo_live::plane::{MAX_HEARD, Plane};
+use tilo_live::live_session::{LiveSession, MAX_HEARD};
 
 use super::WindowShares;
 use crate::live::{Refusal, Relayer, Standing, TurnedAway};
 use crate::sync::Client;
 
 impl WindowShares {
-    /// Read how far each workspace's live plane came, and the planes that opened, once either
+    /// Read how far each workspace's live session came, and the live sessions that opened, once either
     /// moved: nothing is read on a pass that has nothing new to find.
     pub(super) fn follow_live(&mut self, sync: &Client) {
         let seen = sync.live_revision();
@@ -67,10 +67,10 @@ impl WindowShares {
         self.live_seen = seen;
         self.live = sync.live_standings();
         self.turned = sync.live_turned_away();
-        // Held weakly: a plane that ended is its session's to drop.
-        self.planes = crate::calls::planes_of(sync)
+        // Held weakly: a live session that ended is its session's to drop.
+        self.live_sessions = crate::calls::live_sessions_of(sync)
             .into_iter()
-            .map(|(workspace, plane)| (workspace, Arc::downgrade(&plane)))
+            .map(|(workspace, live_session)| (workspace, Arc::downgrade(&live_session)))
             .collect();
         self.changed();
     }
@@ -119,13 +119,13 @@ impl WindowShares {
     }
 
     /// What the pictures of a window shared or watched in `workspace` wait for; nothing while the
-    /// workspace's live plane is open on this device.
+    /// workspace's live session is open on this device.
     fn waiting_for(&self, workspace: &str) -> String {
         waiting_for(self.live.get(workspace))
     }
 
-    /// What the pictures of a window watched in `workspace` wait for: what its plane waits for,
-    /// and in a plane this device is in on lent keys, that it opens nothing another device sends.
+    /// What the pictures of a window watched in `workspace` wait for: what its live session waits for,
+    /// and in a live session this device is in on lent keys, that it opens nothing another device sends.
     pub(super) fn watching_waits_for(&self, workspace: &str) -> String {
         match self.live.get(workspace) {
             Some(Standing::Open { lent: true, .. }) => t("session-window-share-live-lent"),
@@ -133,17 +133,17 @@ impl WindowShares {
         }
     }
 
-    /// What the window `stream` brings waits for: what its workspace's plane waits for, and under
-    /// an open plane its first page or picture, until its tile holds one.
+    /// What the window `stream` brings waits for: what its workspace's live session waits for, and under
+    /// an open live session its first page or picture, until its tile holds one.
     pub(super) fn received_waits_for(&self, stream: &super::Received) -> String {
-        let plane = self
+        let live_session = self
             .watching
             .iter()
             .find(|((_, tab), watched)| *tab == stream.tab && watched.host == stream.host)
             .map(|((workspace, _), _)| self.watching_waits_for(workspace))
             .unwrap_or_default();
-        if !plane.is_empty() || stream.pictured {
-            return plane;
+        if !live_session.is_empty() || stream.pictured {
+            return live_session;
         }
         if stream.page && stream.awaited == super::page::Awaited::Overdue {
             t("session-window-share-page-overdue")
@@ -181,7 +181,7 @@ impl WindowShares {
                         viewer["can_control"].as_bool().unwrap_or(false)
                     }),
                     "viewers": viewers,
-                    // Whether a member's shell asks the plane for the window now, so it is
+                    // Whether a member's shell asks the live session for the window now, so it is
                     // captured and sent.
                     "streaming": self.goes_out(*tab),
                     // Pictures of the window are what goes out.
@@ -206,18 +206,19 @@ impl WindowShares {
                 // An announcement is no page: the window goes out once its app handed a whole
                 // page over for a shell that asks for it. One a member shows and nothing of which
                 // went out waits for that, one whose app was asked and did not answer in time
-                // waits for its app, and one whose page is larger than the plane carries says so.
+                // waits for its app, and one whose page is larger than the live session carries says so.
                 let streaming = self.streaming.contains(tab);
-                let plane = self.waiting_for(&page.workspace);
-                let waiting_for = if !plane.is_empty() || streaming || page.announced.is_empty() {
-                    plane
-                } else if self.oversized.contains(tab) {
-                    t("session-window-share-page-too-large")
-                } else if self.withheld.contains(tab) {
-                    t("session-window-share-page-withheld")
-                } else {
-                    t("session-window-share-page-unsent")
-                };
+                let live_session = self.waiting_for(&page.workspace);
+                let waiting_for =
+                    if !live_session.is_empty() || streaming || page.announced.is_empty() {
+                        live_session
+                    } else if self.oversized.contains(tab) {
+                        t("session-window-share-page-too-large")
+                    } else if self.withheld.contains(tab) {
+                        t("session-window-share-page-withheld")
+                    } else {
+                        t("session-window-share-page-unsent")
+                    };
                 sharing.push(json!({
                     "tab": tab.to_string(),
                     "window": page.window,
@@ -291,12 +292,12 @@ impl WindowShares {
             .live
             .iter()
             .map(|(workspace, standing)| {
-                let plane = self
-                    .planes
+                let live_session = self
+                    .live_sessions
                     .get(workspace)
                     .and_then(std::sync::Weak::upgrade);
                 let turned = self.turned.get(workspace).map_or(&[][..], Vec::as_slice);
-                live_row(workspace, standing, plane.as_deref(), turned)
+                live_row(workspace, standing, live_session.as_deref(), turned)
             })
             .collect();
         json!({
@@ -310,7 +311,7 @@ impl WindowShares {
     }
 }
 
-/// The word the reading says a plane's standing by: what a tool branches on, the same in every
+/// The word the reading says a live session's standing by: what a tool branches on, the same in every
 /// language.
 const fn state_of(standing: Option<&Standing>) -> &'static str {
     match standing {
@@ -336,8 +337,8 @@ fn called(relay: &Relayer) -> String {
     }
 }
 
-/// What a workspace whose plane stands at `standing` waits for, in the person's words; nothing
-/// while it is open. `None` is a workspace this session runs no plane for.
+/// What a workspace whose live session stands at `standing` waits for, in the person's words; nothing
+/// while it is open. `None` is a workspace this session runs no live session for.
 fn waiting_for(standing: Option<&Standing>) -> String {
     match standing {
         Some(Standing::Open { .. }) => String::new(),
@@ -361,13 +362,13 @@ fn waiting_for(standing: Option<&Standing>) -> String {
     }
 }
 
-/// Why an open plane does not hear `unheard` devices that are in it, in the word a tool branches
-/// on: they are beyond what a plane reads at once. Nothing while it hears every device in it.
+/// Why an open live session does not hear `unheard` devices that are in it, in the word a tool branches
+/// on: they are beyond what a live session reads at once. Nothing while it hears every device in it.
 const fn unheard_why(unheard: usize) -> &'static str {
     if unheard > 0 { "reading-bound" } else { "" }
 }
 
-/// What a plane that does not hear `unheard` of the devices in it says of them, in the person's
+/// What a live session that does not hear `unheard` of the devices in it says of them, in the person's
 /// words: how many, and why. Nothing while it hears them all.
 fn not_heard(unheard: usize) -> String {
     if unheard == 0 {
@@ -379,18 +380,18 @@ fn not_heard(unheard: usize) -> String {
     )
 }
 
-/// One workspace's plane as the reading says it: its state, the device that relays it or that it
-/// waits to reach, and what it waits for; and of `plane`, the one open here, the epoch it seals
+/// One workspace's live session as the reading says it: its state, the device that relays it or that it
+/// waits to reach, and what it waits for; and of `live_session`, the one open here, the epoch it seals
 /// under, whether it does so on keys its host lent it, how many objects of other devices it
-/// opened, the ones it could not open by reason, how many devices that are in the plane it does
+/// opened, the ones it could not open by reason, how many devices that are in the live session it does
 /// not hear and why, and the tabs of this device's windows another
-/// device asks it for, by their pictures or by their page. A plane its relay refused says the
+/// device asks it for, by their pictures or by their page. A live session its relay refused says the
 /// epoch whose keys this device presented, and `turned` are the endpoints this device's own relay
-/// turned away from the workspace's plane, each with why.
+/// turned away from the workspace's live session, each with why.
 fn live_row(
     workspace: &str,
     standing: &Standing,
-    plane: Option<&Plane>,
+    live_session: Option<&LiveSession>,
     turned: &[TurnedAway],
 ) -> Value {
     let relay = match standing {
@@ -400,7 +401,7 @@ fn live_row(
         | Standing::Refused { relay, .. } => Some(relay),
         _ => None,
     };
-    let unheard = plane.map_or(0, Plane::unheard);
+    let unheard = live_session.map_or(0, LiveSession::unheard);
     let epoch = match standing {
         Standing::Open { epoch, .. } => Some(*epoch),
         _ => None,
@@ -410,12 +411,12 @@ fn live_row(
         _ => None,
     };
     let turned_away: Vec<Value> = turned.iter().map(turned_row).collect();
-    let asked_for: BTreeSet<TabId> = plane
-        .map(|plane| {
-            plane
+    let asked_for: BTreeSet<TabId> = live_session
+        .map(|live_session| {
+            live_session
                 .wanted_windows()
                 .into_iter()
-                .chain(plane.wanted_pages())
+                .chain(live_session.wanted_pages())
                 .collect()
         })
         .unwrap_or_default();
@@ -431,8 +432,8 @@ fn live_row(
         "lent_keys": matches!(standing, Standing::Open { lent: true, .. }),
         "presented": presented,
         "turned_away": turned_away,
-        "heard": plane.map_or(0, Plane::heard_total),
-        "refused": plane.map(Plane::refusals).unwrap_or_default(),
+        "heard": live_session.map_or(0, LiveSession::heard_total),
+        "refused": live_session.map(LiveSession::refusals).unwrap_or_default(),
         "asked_for": asked_for,
         "unheard": unheard,
         "unheard_why": unheard_why(unheard),
@@ -474,10 +475,10 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        fn a_planes_standing_reads_in_a_word_and_in_the_persons_words;
+        fn a_live_sessions_standing_reads_in_a_word_and_in_the_persons_words;
 
-        phase an_open_plane_waits_for_nothing_and_names_its_relay;
-        // An open plane waits for nothing, and says which device carries it.
+        phase an_open_live_session_waits_for_nothing_and_names_its_relay;
+        // An open live session waits for nothing, and says which device carries it.
         {
             let row = live_row(
                 WORKSPACE,
@@ -501,8 +502,8 @@ mod tests {
             assert_eq!(row["relay_here"], json!(true));
         }
 
-        phase a_plane_on_lent_keys_says_so;
-        // A device in a plane on keys its host lent it says so: it sends what it shares and opens
+        phase a_live_session_on_lent_keys_says_so;
+        // A device in a live session on keys its host lent it says so: it sends what it shares and opens
         // nothing, so that it hears nobody there is no fault, and what it shares waits for nothing.
         {
             let lent = Standing::Open {
@@ -516,8 +517,8 @@ mod tests {
             assert_eq!(row["waiting_for"], json!(""));
         }
 
-        phase a_plane_that_did_not_reach_its_relay_names_the_device_it_waits_for;
-        // A plane that waits for the device relaying the workspace names that device, by the name its
+        phase a_live_session_that_did_not_reach_its_relay_names_the_device_it_waits_for;
+        // A live session that waits for the device relaying the workspace names that device, by the name its
         // person gave it or, for one they never named, by the start of its key; one that was refused
         // says so in other words than one that merely waits.
         {
@@ -528,7 +529,7 @@ mod tests {
             assert_eq!(
                 row["epoch"],
                 Value::Null,
-                "a plane that is not open seals nothing"
+                "a live session that is not open seals nothing"
             );
             assert_eq!(row["state"], json!("relay-unreached"));
             assert_eq!(row["relay_here"], json!(false));
@@ -549,7 +550,7 @@ mod tests {
             assert_eq!(
                 row["presented"],
                 json!(3),
-                "a refused plane says whose epoch's keys it presented"
+                "a refused live session says whose epoch's keys it presented"
             );
             assert_eq!(row["epoch"], Value::Null);
             let refusal = row["waiting_for"].as_str().expect("what it waits for");
@@ -558,7 +559,7 @@ mod tests {
         }
 
         phase a_relay_says_which_devices_it_turned_away_and_why;
-        // The device that relays a workspace says which endpoints it turned away from its plane and
+        // The device that relays a workspace says which endpoints it turned away from its live session and
         // why: a device whose keys are behind with both epochs, any other by its reason alone.
         {
             let open = Standing::Open {
@@ -607,8 +608,8 @@ mod tests {
             );
         }
 
-        phase a_plane_whose_relay_was_busy_says_so_in_its_own_words;
-        // A plane whose relay was admitting as many devices as it takes says that, by the relay's
+        phase a_live_session_whose_relay_was_busy_says_so_in_its_own_words;
+        // A live session whose relay was admitting as many devices as it takes says that, by the relay's
         // name: it is a state and words of its own, apart from a relay that was not reached and from
         // one that refused this device, in English and in German.
         {
@@ -652,8 +653,8 @@ mod tests {
             );
         }
 
-        phase the_devices_a_plane_does_not_hear_are_counted_and_said_in_words;
-        // A plane that hears every device in it says nothing of the rest; one that does not says
+        phase the_devices_a_live_session_does_not_hear_are_counted_and_said_in_words;
+        // A live session that hears every device in it says nothing of the rest; one that does not says
         // how many it does not hear and why, by the word a tool branches on and in the person's
         // words, in English and in German.
         {
@@ -686,8 +687,8 @@ mod tests {
             );
         }
 
-        phase every_plane_that_is_not_open_says_what_it_waits_for;
-        // Every standing but an open one says something, each its own, and a workspace no plane runs
+        phase every_live_session_that_is_not_open_says_what_it_waits_for;
+        // Every standing but an open one says something, each its own, and a workspace no live session runs
         // for says so too: a row never reads as flowing by saying nothing.
         {
             let said: Vec<(&str, String)> = [
@@ -713,14 +714,14 @@ mod tests {
         }
     }
 
-    /// The reading of an open plane says what the plane itself says of the devices it does not
-    /// hear: with three devices more in a workspace than a plane reads, this device's row counts
-    /// three, by why, and says so, while the plane is open and waits for nothing.
+    /// The reading of an open live session says what the live session itself says of the devices it does not
+    /// hear: with three devices more in a workspace than a live session reads, this device's row counts
+    /// three, by why, and says so, while the live session is open and waits for nothing.
     #[tokio::test(flavor = "multi_thread")]
-    async fn an_open_plane_with_more_devices_than_it_reads_says_how_many_it_does_not_hear() {
+    async fn an_open_live_session_with_more_devices_than_it_reads_says_how_many_it_does_not_hear() {
         use tilo_live::relay::{Admission, Denied, Peer, Relay, RelayAuthority};
 
-        /// A relay with no one to admit: a local plane is its own relay's member.
+        /// A relay with no one to admit: a local live session is its own relay's member.
         struct Nobody;
         impl RelayAuthority for Nobody {
             fn admit<'a>(&'a self, _peer: Peer, _proof: &'a [u8]) -> Admission<'a> {
@@ -740,12 +741,12 @@ mod tests {
         let devices: Vec<[u8; 32]> = (1..=u8::try_from(MAX_HEARD + 1 + beyond).expect("few"))
             .map(|device| [device; 32])
             .collect();
-        let planes: Vec<Plane> = devices
+        let live_sessions: Vec<LiveSession> = devices
             .iter()
             .map(|device| {
-                Plane::local(
+                LiveSession::local(
                     &carrying,
-                    &tilo_live::plane::Join {
+                    &tilo_live::live_session::Join {
                         scope: collab_types::scope::Scope::workspace(WORKSPACE.to_owned()),
                         device: *device,
                         keys: keys.clone().into(),
@@ -754,15 +755,15 @@ mod tests {
                         presence: true,
                     },
                 )
-                .expect("a local plane")
+                .expect("a local live session")
             })
             .collect();
-        let here = &planes[0];
+        let here = &live_sessions[0];
         let deadline = tilo_test_env::hang_deadline();
         while here.unheard() != beyond {
             assert!(
                 std::time::Instant::now() < deadline,
-                "the plane counts the devices beyond what it reads: {:?}",
+                "the live session counts the devices beyond what it reads: {:?}",
                 here.unheard()
             );
             tokio::time::sleep(std::time::Duration::from_millis(20)).await;
@@ -784,7 +785,7 @@ mod tests {
                 .is_some_and(|says| says.starts_with("3 more devices")),
             "{row}"
         );
-        // A plane this session does not hold open says nothing of whom it does not hear.
+        // A live session this session does not hold open says nothing of whom it does not hear.
         let row = live_row(WORKSPACE, &open, None, &[]);
         assert_eq!(row["unheard"], json!(0));
         assert_eq!(row["unheard_why"], json!(""));

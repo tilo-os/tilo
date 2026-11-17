@@ -950,11 +950,11 @@ async fn authorization_rechecks_certificates_after_blocking_membership_read() {
     }
 }
 
-/// Counts what reaches the app-serving plane; needs no reply.
+/// Counts what reaches the app action server; needs no reply.
 #[derive(Default)]
-struct CountingPlane(std::sync::atomic::AtomicUsize);
+struct CountingServer(std::sync::atomic::AtomicUsize);
 
-impl crate::app_serving::AppServingPlane for CountingPlane {
+impl crate::app_serving::AppActionServer for CountingServer {
     fn serve(
         &self,
         _workspace_id: WorkspaceId,
@@ -962,7 +962,7 @@ impl crate::app_serving::AppServingPlane for CountingPlane {
         message: tilo_actions::remote::RemoteActionMessage,
     ) -> Option<tilo_actions::remote::Pending<tilo_actions::remote::RemoteActionMessage>> {
         self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        // A request is always answered: this plane counts it and refuses it.
+        // A request is always answered: this app action server counts it and refuses it.
         tilo_actions::remote::refuse(
             &message,
             tilo_actions::remote::ActionHostError::Refused {

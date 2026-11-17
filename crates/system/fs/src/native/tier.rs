@@ -1,4 +1,4 @@
-//! Choosing the data plane at startup, from probes run against the store volume rather than a
+//! Choosing the backend at startup, from probes run against the store volume rather than a
 //! kernel version string: the dedicated-volume check first (a filesystem mark on a shared volume
 //! would put every file on the machine behind the daemon), then the feature probes of
 //! `fs_native::probe`.
@@ -7,13 +7,13 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, clap::ValueEnum)]
-pub enum DataPlane {
+pub enum Backend {
     /// Tier 1 when the store volume and kernel support it, else FUSE.
     #[default]
     Auto,
-    /// Always the FUSE data plane (Tier 2/3).
+    /// Always the FUSE backend (Tier 2/3).
     Fuse,
-    /// Tier 1 or fail: an operator who asks for the native plane is never
+    /// Tier 1 or fail: an operator who asks for the native backend is never
     /// silently given FUSE.
     Native,
 }
@@ -32,12 +32,12 @@ impl TierSelection {
     pub fn summary(&self) -> String {
         if self.native {
             format!(
-                "Data plane: Tier 1 (native tree on store volume {}, probed in {} ms)",
+                "Backend: Tier 1 (native tree on store volume {}, probed in {} ms)",
                 self.store.display(),
                 self.probe_time.as_millis()
             )
         } else {
-            format!("Data plane: FUSE (Tier 2/3): {}", self.reasons.join("; "))
+            format!("Backend: FUSE (Tier 2/3): {}", self.reasons.join("; "))
         }
     }
 }
@@ -52,9 +52,9 @@ fn fuse(store: &Path, reasons: Vec<String>, report: Option<String>, t: Instant) 
     }
 }
 
-pub fn select(choice: DataPlane, store: &Path) -> TierSelection {
+pub fn select(choice: Backend, store: &Path) -> TierSelection {
     let t = Instant::now();
-    if choice == DataPlane::Fuse {
+    if choice == Backend::Fuse {
         return fuse(store, vec!["FUSE requested".into()], None, t);
     }
     if !store.is_dir() {
@@ -100,19 +100,19 @@ mod tests {
 
     #[test]
     fn a_missing_or_shared_store_selects_fuse_with_a_reason() {
-        let missing = select(DataPlane::Auto, Path::new("/nonexistent/tilo-store"));
+        let missing = select(Backend::Auto, Path::new("/nonexistent/tilo-store"));
         assert!(!missing.native);
         assert!(missing.summary().contains("no store volume"), "{missing:?}");
 
         let temp = tempfile::tempdir().unwrap();
-        let shared = select(DataPlane::Auto, temp.path());
+        let shared = select(Backend::Auto, temp.path());
         assert!(!shared.native);
         assert!(
             shared.report.is_none(),
             "probes never run on a shared volume"
         );
 
-        let forced = select(DataPlane::Fuse, temp.path());
+        let forced = select(Backend::Fuse, temp.path());
         assert_eq!(forced.reasons, ["FUSE requested"]);
     }
 }

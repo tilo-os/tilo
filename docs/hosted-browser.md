@@ -87,7 +87,7 @@ open before anything is installed.
   share's grants as the workspace's governor, as it writes a web page's share,
   once it has checked the window's id was minted under that device's own
   salt — a confined device shares its own windows and nobody else's. Its frames travel the
-  workspace's live plane, the same MoQ path a call's pictures take, through
+  workspace's live session, the same MoQ path a call's pictures take, through
   the relay; keys, pointer, scroll, text and clipboard go back to the window
   the same way.
 - **It ends** when its last window closed and the idle limit passed, at the
@@ -124,9 +124,9 @@ command.
 - **The session's device reaches one record and one page.** A page may hold
   the device's key, so the relay confines it to what its window is: the one
   Browser record the open made (`tilo_workspace_host::environment`), decided where
-  the relay certifies the device. In the state plane it is replayed and
+  the relay certifies the device. In the state protocol it is replayed and
   handed only that record's channel and may write no other; on the live
-  plane it publishes its own device namespace (its presence, its
+  session it publishes its own device namespace (its presence, its
   windows and its pages) and is offered no one else's track; a remote action
   it sends is refused unless it answers the page action the relay handed it
   or asks the relay about itself (below). It still receives the workspace's
@@ -136,7 +136,7 @@ command.
   neither kept nor forwarded. This is the relay's register beside the
   agent register, not a delegation and not a certificate capability.
 - **It is lent its own streams' keys, and holds no one else's.** Whatever
-  the device publishes on the live plane is sealed, and the workspace's media
+  the device publishes on the live session is sealed, and the workspace's media
   keys open every call, presence and window of the workspace, so the device
   is never given them. It asks the relay instead, which certified it and
   holds the workspace's keys: the relay derives, at the workspace group's
@@ -145,14 +145,14 @@ command.
   exactly the keys a member derives to open them, seals them to the device's
   key so nothing that carries the answer into the VM reads them, and answers
   only the device it placed in that workspace. The session seals its tracks
-  with them (`tilo_live::frame::PlaneKeys::Sender`) and opens nothing with
+  with them (`tilo_live::frame::LiveKeys::Sender`) and opens nothing with
   them: no other device's stream, and no stream of its own beyond those.
-  When the workspace's membership moves the epoch, the plane is cut and joins
+  When the workspace's membership moves the epoch, the live session is cut and joins
   again on the keys the relay lends then.
 - **The residual risk is the key itself:** the workspace's own agent has sudo
   in the VM and can copy the browser device's key. What it gets reaches only
   the Browser record and its page track (no power the agent does not already
-  have there) and is refused on every plane once the environment stops, or at
+  have there) and is refused on every protocol once the environment stops, or at
   most two hours later, when the certificate ends; the relay keeps that
   refusal in its own state, so a restart neither widens it nor forgives it.
   The relay sees the stop from the device's own sessions, and cuts their
@@ -168,7 +168,7 @@ The relay places a workspace's Browser where its shells run
    its apps like any other, and the host opens the workspace's Browser record
    for it. The relay asks the placer for the host of the workspace's VM;
    while every host is full the open waits and says so once.
-2. The relay asks that host's member device, over the device plane, to open
+2. The relay asks that host's member device, over the action service, to open
    Browser, handing it the material below. The member asks its hosted-VM
    service, which wakes the VM and starts the session.
 3. The session joins the workspace and opens the window; opening Browser

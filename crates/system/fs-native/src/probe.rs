@@ -1,4 +1,4 @@
-//! Capability probes for the Tier 1 data plane and the tier they select. Every
+//! Capability probes for the Tier 1 backend and the tier they select. Every
 //! probe exercises the feature on the store volume and reports what the kernel
 //! actually did; nothing is inferred from a version string.
 

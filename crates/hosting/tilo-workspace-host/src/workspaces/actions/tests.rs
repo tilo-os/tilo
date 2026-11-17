@@ -21,9 +21,9 @@ use tilo_relay_protocol::workspaces::JoinReply;
 use tilo_user_identity::DeviceCert;
 
 use super::{
-    CANCEL_INVITATION, GovernedPlane, HostWorkspaceActions, INVITATIONS, MEMBERS, NAME, VERBS,
+    CANCEL_INVITATION, GovernedServer, HostWorkspaceActions, INVITATIONS, MEMBERS, NAME, VERBS,
 };
-use crate::app_serving::AppServingPlane as _;
+use crate::app_serving::AppActionServer as _;
 use crate::workspaces::tests::{governor, guest_device, signed_pre_admission, test_host};
 use crate::workspaces::{PreAdmitRequest, SetMemberRoleRequest, Workspaces};
 use tilo_relay_protocol::WorkspaceId;
@@ -685,7 +685,7 @@ async fn the_owners_own_request_confirms_removing_a_member() {
 
 #[tokio::test]
 async fn a_host_without_apps_answers_only_its_workspaces_governance() {
-    let plane = GovernedPlane {
+    let server = GovernedServer {
         governance: HostWorkspaceActions::new(),
         apps: None,
     };
@@ -694,13 +694,13 @@ async fn a_host_without_apps_answers_only_its_workspaces_governance() {
         RemoteActionMessage::Invoke(request("workspace", governance::INVITE, json!({})));
     let mut app = request("workspace", "archive", json!({}));
     app.target.provider = "app".into();
-    assert!(plane.answers(&someone, &governance));
-    assert!(!plane.answers(&someone, &RemoteActionMessage::Invoke(app)));
+    assert!(server.answers(&someone, &governance));
+    assert!(!server.answers(&someone, &RemoteActionMessage::Invoke(app)));
     // Nothing is attached: the workspace's actions are unknown, never run.
-    let Some(answer) = plane.serve(WorkspaceId::from_u128(7), &someone, governance) else {
+    let Some(answer) = server.serve(WorkspaceId::from_u128(7), &someone, governance) else {
         panic!("an invocation is answered");
     };
-    drop(plane);
+    drop(server);
     let RemoteActionMessage::Receipt(receipt) = settled(answer).await else {
         panic!("a receipt");
     };

@@ -1,4 +1,4 @@
-//! A member's client of the collaboration plane: the workspaces it takes part in, who is here
+//! A member's client of the peer network: the workspaces it takes part in, who is here
 //! in each of them, and this device's own word on them.
 //!
 //! A host brings the transport; the client says what a member says on it. What only one host
@@ -9,7 +9,7 @@
 //! through a [`Link`], and [`device::Device`] is the one entry a program takes it by. It carries
 //! signed document envelopes ([`document`]) as acknowledged commits from a persisted outbox
 //! replayed after every reconnect, each joined workspace's governance in its replica, the live
-//! plane's presence and previews, and calls ([`voice`]).
+//! peer network's presence and previews, and calls ([`voice`]).
 
 #![cfg_attr(
     all(target_arch = "wasm32", target_os = "unknown"),
@@ -37,7 +37,7 @@ pub mod identity;
 pub mod link;
 pub mod membership;
 pub mod narration;
-pub mod plane;
+pub mod network;
 pub mod presence;
 pub mod remote;
 mod replica;
@@ -58,7 +58,7 @@ pub use link::{
     Entry, Events, Failure, FailureKind, InboundActions, Link, LocalState, PAGE_FAILURE_CODES,
     PeerStatus, Reports, TransportPhase,
 };
-pub use plane::{
+pub use network::{
     Answer, CallFrame, CallPicture, CallShown, Closed, Cmd, Device, Event, Outbox, PageShown,
     Receipt, RecvTimeoutError, RosterDevice, SayPresence, Topic, Transport, TryRecvError,
     VoiceEvent, answer, topic_of,

@@ -85,7 +85,7 @@ const finish = async (code, message) => {
     // member of: which way it took in on its next load.
     report[`${name}People`] = await read(tab, `JSON.stringify(globalThis.tiloMount?.people?.() ?? null)`);
     // Whose channels the page holds keys for: a page without its workspace's
-    // keys joins no live plane, so it hears nobody and nobody hears it.
+    // keys joins no live session, so it hears nobody and nobody hears it.
     report[`${name}Channels`] = await read(tab, `globalThis.tiloChannels?.() ?? ''`);
     // The windows the page's shell holds and which one is in view: a window
     // the workspace's layout holds but the page does not show is said here.
@@ -405,7 +405,7 @@ mark('the agent logged in and the tab is in the person\'s own workspace');
 // once restarted, and what it does shows beside its name: one tool call, said
 // as the workspace says it ("Looking at the apps" for a look at its apps).
 // Who is here is live presence alone: the agent's own, on the workspace's
-// live plane.
+// live session.
 const doing = 'Looking at the apps';
 // The agent's MCP server stays up as a restarted agent keeps it, while the
 // tab is looked at; its answers are kept for the report.

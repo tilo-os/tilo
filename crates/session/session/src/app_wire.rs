@@ -391,7 +391,7 @@ pub struct Hosted {
     /// endpoint follows a route's keys.
     pub sealed: Sealed,
     /// How an app on this device runs one of its actions on another of the
-    /// person's devices: what the collaboration plane reaches them through.
+    /// person's devices: what the peer network reaches them through.
     pub own_device: Option<std::sync::Arc<dyn tilo_broker_core::services::OwnDeviceActions>>,
     /// This device's workspaces, whose owner is the canonical copy of what
     /// the apps record in them: an app's write in a workspace the owner
@@ -407,7 +407,7 @@ pub struct Hosted {
     /// The content the workspaces' records reference: where an app keeps
     /// what its record names, and the route an app asks the workspace's other
     /// devices for what it lacks.
-    pub document_content: Option<std::sync::Arc<crate::content::Plane>>,
+    pub document_content: Option<std::sync::Arc<crate::content::ContentService>>,
     /// Where an app's offloadable action runs: the round this session asks
     /// the workspace's other devices, when it holds a workspace to ask them
     /// in.
@@ -1196,7 +1196,7 @@ fn seams(
             std::sync::Arc::new(tilo_identity_authority::NativeLocalPerson)
                 as std::sync::Arc<dyn tilo_broker_core::services::LocalPersonServices>,
         ),
-        // A record's own origin is its app's collaboration plane route, and a
+        // A record's own origin is its app's peer network route, and a
         // task's change reaches it as the app's action; the session applies
         // no record change of its own for the links to ask.
         resource_changes: Seam::unserved(
@@ -1320,7 +1320,7 @@ fn seams(
         // it sooner.
         action_offload: Seam::when(action_offload),
         // An app's action on another of the person's own devices is carried
-        // there by the collaboration plane.
+        // there by the peer network.
         own_device: Seam::when(own_device),
         // A node of a workspace's tree, as an app asks about it: a share, its end, or what the
         // person may do there, decided by the workspace's own governance.
@@ -1458,9 +1458,9 @@ fn receipt(done: Result<tilo_actions::ActionOutput, ApiError>) -> Receipt {
     }
 }
 
-/// The plane while the session serves it: what the apps ask of the services,
+/// The app wire while the session serves it: what the apps ask of the services,
 /// and the broker that answers them on the socket.
-pub(crate) struct Plane {
+pub(crate) struct AppWire {
     pub(crate) link: std::sync::Arc<Link>,
     /// The socket the broker answers on: what the launcher hands an app, and
     /// what a surface app connects for itself.
@@ -1488,7 +1488,7 @@ pub(crate) struct Plane {
     pub(crate) _personal: Option<tilo_action_broker::personal::Links>,
 }
 
-impl Plane {
+impl AppWire {
     /// Say this device's call where everyone in the workspace reads it, and take
     /// in what they say of theirs: the channel a person is in and who is in
     /// each channel's call, which is what this session's apps show of calls.
@@ -1763,7 +1763,7 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        fn the_plane_serves_an_app_what_this_session_keeps_for_it;
+        fn the_app_wire_serves_an_app_what_this_session_keeps_for_it;
 
         phase an_apps_search_publication_lands_in_the_index_search_reads;
         // An app publishes what it holds through the broker, and the index the
@@ -1819,11 +1819,11 @@ mod tests {
 
         phase an_app_keeps_and_asks_for_content_through_the_services_of_this_session;
         // An app's `offerBlob`, `wantBlob` and `subscribeBlobs`, and the content
-        // put links, are served by the plane this session keeps: the same store
+        // put links, are served by the app wire this session keeps: the same store
         // and the same asks of the workspace's other devices. A session that
         // keeps no content hands the broker none of it.
         {
-            let kept = crate::content::Plane::open(None);
+            let kept = crate::content::ContentService::open(None);
             let wake: Wake = std::sync::Arc::new(|| ());
             let with = host_services(
                 Link::new(wake),
@@ -1838,7 +1838,7 @@ mod tests {
             );
             assert!(
                 with.document_content.is_some(),
-                "the broker asks the workspace through this session's plane"
+                "the broker asks the workspace through this session's app wire"
             );
             assert!(
                 with.content_store.is_some(),
@@ -1848,7 +1848,7 @@ mod tests {
             let without = services(None);
             assert!(
                 without.document_content.is_none() && without.content_store.is_none(),
-                "a session that keeps content hands the broker no content plane"
+                "a session that keeps content hands the broker no content app wire"
             );
         }
 

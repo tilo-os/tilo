@@ -38,7 +38,7 @@ use tilo_peer_state::owner::{self, testing};
 use tilo_peer_state::{PersonalStore, PersonalSync, TransportOrigin};
 use tilo_runtime::personal_devices::PersonalDevices;
 use tilo_service::Questions;
-use tilo_session::{ActionPlane, Options, Session};
+use tilo_session::{AppSocket, Options, Session};
 use tilo_sheets::portal::PortalEffect;
 use tilo_user_identity::{
     AgentScope, DeviceCapabilities, DeviceCert, IdentityPaths, RevocationEntry, RevocationReason,
@@ -161,7 +161,7 @@ impl ThisBox {
         let session = crate::common::headless(Options {
             questions: Some(questions.clone()),
             collab: false,
-            action_plane: ActionPlane::At(root.path().join("plane.sock")),
+            app_socket: AppSocket::At(root.path().join("app_wire.sock")),
             mcp_server: Some(socket.clone()),
             state: Some(home.state().to_path_buf()),
             // The person's settings, as the session serves them: what the person sets this
@@ -867,7 +867,7 @@ fn an_agents_step_from_elsewhere_is_undone_in_the_workspace_this_desktop_holds()
         collab: true,
         state: Some(computer.state.path().to_path_buf()),
         questions: Some(questions.clone()),
-        action_plane: ActionPlane::At(root.path().join("plane.sock")),
+        app_socket: AppSocket::At(root.path().join("app_wire.sock")),
         mcp_server: Some(root.path().join("agent.sock")),
         services: vec![Box::new(notebook)],
         ..Options::default()
@@ -1085,7 +1085,7 @@ impl ShellWithNotes {
         let person = hex::encode(computer.cert.user_public_key);
         let root = private_home();
         let questions = Questions::new();
-        let plane = root.path().join("plane.sock");
+        let app_wire = root.path().join("app_wire.sock");
         let socket = root.path().join("agent.sock");
         // Notes speaks from this test's own process, so the launch the session would have recorded
         // for it names that process.
@@ -1096,7 +1096,7 @@ impl ShellWithNotes {
             collab: true,
             state: Some(computer.state.path().to_path_buf()),
             questions: Some(questions.clone()),
-            action_plane: ActionPlane::At(plane.clone()),
+            app_socket: AppSocket::At(app_wire.clone()),
             mcp_server: Some(socket.clone()),
             launches,
             // The person's settings, as the session serves them: what they set this computer's
@@ -1121,7 +1121,9 @@ impl ShellWithNotes {
                 computer.key.clone(),
                 computer.cert.clone(),
             );
-            std::thread::spawn(move || notes(&plane, &workspace, (&key, &cert), &published, &took));
+            std::thread::spawn(move || {
+                notes(&app_wire, &workspace, (&key, &cert), &published, &took);
+            });
         }
         crate::common::wait_for(&mut session, "Notes publishes its notebook", |_| {
             ready.try_recv().ok()
@@ -1226,7 +1228,7 @@ fn a_step_of(taken: &runtime_collab::Invocation, session: &str) -> bool {
 /// one action that reaches outside it (`open`), say so on `published`, then take each invocation
 /// the session hands it and hand it on to `took`.
 fn notes(
-    plane: &std::path::Path,
+    app_wire: &std::path::Path,
     workspace: &str,
     (key, cert): (&SigningKey, &DeviceCert),
     published: &mpsc::Sender<()>,
@@ -1238,7 +1240,7 @@ fn notes(
         .build()
         .expect("a runtime for the app");
     runtime.block_on(async {
-        let mut stream = UnixStream::connect(plane).expect("the plane's socket");
+        let mut stream = UnixStream::connect(app_wire).expect("the app wire's socket");
         launcher::services::write_collab_handoff(&mut stream, NOTES_APP, workspace)
             .expect("the launcher names the app on the connection");
         stream

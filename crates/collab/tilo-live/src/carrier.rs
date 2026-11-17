@@ -1,5 +1,5 @@
 //! The Tilo `MoQ` carrier preface: how a device is admitted to a live
-//! plane's session before `moq-lite` starts on it.
+//! live session's session before `moq-lite` starts on it.
 //!
 //! The carrier is generic over its transport ([`Carrier`], `moq-lite`'s poll
 //! session interface); a device reaches it over a direct iroh connection

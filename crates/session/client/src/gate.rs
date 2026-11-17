@@ -96,7 +96,7 @@ pub fn required_workspace_action(msg: &NeighbourMsg) -> Option<WorkspaceAction> 
         | NeighbourMsg::MlsGovernanceWanted { .. }
         | NeighbourMsg::WriteRefusals { .. }
         // Retired generations, refused where they enter
-        // (`NeighbourMsg::is_retired`): presence is a frame on the live plane,
+        // (`NeighbourMsg::is_retired`): presence is a frame on the live session,
         // not a message here.
         | NeighbourMsg::IdentityAnnouncement { .. }
         | NeighbourMsg::PermissionRequest { .. }

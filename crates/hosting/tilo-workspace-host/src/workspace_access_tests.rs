@@ -34,7 +34,7 @@ const OPS: [WorkspaceOperation; 11] = [
     WorkspaceOperation::KeyAccess,
 ];
 
-/// One decision as a letter, so a row reads as the planes in order.
+/// One decision as a letter, so a row reads as the protocols in order.
 fn letter(decision: Decision) -> char {
     match decision {
         Decision::Admit => 'A',
@@ -199,7 +199,7 @@ struct Case {
 #[test]
 #[allow(
     clippy::too_many_lines,
-    reason = "the matrix is one table: each row is an actor, each letter a plane"
+    reason = "the matrix is one table: each row is an actor, each letter a protocol"
 )]
 fn decide_matrix() {
     let relay = Relay::new();
@@ -225,7 +225,7 @@ fn decide_matrix() {
         },
         // An agent's grant: its person's agent where its scope reaches, it
         // redeemed its person's invitation and its person is a member, on an
-        // agent's planes only.
+        // agent's protocols only.
         Case {
             name: "a grant for all its person's workspaces, a member device of a member",
             peer: grant(owner, [13; 32], AgentScope::AllWorkspaces, Some(NOW + 1)),
@@ -469,7 +469,7 @@ fn decide_matrix() {
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
 
-/// A browser environment's device reaches the planes a window's session
+/// A browser environment's device reaches the protocols a window's session
 /// works on in its one workspace, and reaches nothing at all once its
 /// environment stopped — however the workspace lists it.
 #[test]
@@ -514,7 +514,7 @@ fn an_environments_device_is_confined_and_a_stopped_one_is_refused() {
     assert_eq!(
         letters(&runtime),
         "sssssssssss",
-        "a stopped environment's device is refused on every plane, listed or not"
+        "a stopped environment's device is refused on every protocol, listed or not"
     );
     // Past its certificate's expiry the certificate refuses it, and the
     // register need not keep the entry.
@@ -640,7 +640,7 @@ fn owners_moderators_and_editors_write() {
     assert_eq!(writers, vec![Role::Owner, Role::Moderator, Role::Editor]);
 }
 
-/// A device with an unsigned certificate for planes that read admission
+/// A device with an unsigned certificate for protocols that read admission
 /// only; signatures are the handshake's business, not [`decide`]'s.
 pub(crate) fn unsigned_peer(user: [u8; 32], device: [u8; 32]) -> AuthenticatedPeer {
     peer(user, device, false, None)

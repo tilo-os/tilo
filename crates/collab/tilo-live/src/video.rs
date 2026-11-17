@@ -11,7 +11,7 @@
 //! relay forwards only the tracks someone asked for. A publisher encodes a
 //! layer only while someone asks for it.
 //!
-//! A workspace's live plane carries one more kind of track: a single window
+//! A workspace's live session carries one more kind of track: a single window
 //! the publisher shares (a terminal, any Wayland or X client), one track per
 //! window, named by the window's tab and its layer
 //! (`window/<tab as 16 hex digits>/high`, [`crate::live::Track::Window`]).

@@ -702,7 +702,7 @@ pub struct QuickFS {
     checked_history_workspace: Option<uuid::Uuid>,
     mount_lifetime: uuid::Uuid,
     /// Makes the namespace on disk hold the current placements: run after a record group
-    /// is durable (native plane), and by `fsync`/`fsyncdir`.
+    /// is durable (native backend), and by `fsync`/`fsyncdir`.
     durability_hook: std::sync::OnceLock<DurabilityHook>,
     /// Whether a changeset is publishing: its changes are announced once, when it is
     /// durable.

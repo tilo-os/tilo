@@ -31,7 +31,7 @@ impl std::fmt::Debug for Connect {
 
 impl NativeWorkspaceOwner {
     /// Where `workspace`'s host is reached, with the device its enrollment
-    /// pins: the address a plane of the workspace dials that host at,
+    /// pins: the address a live session of the workspace dials that host at,
     /// decoded from the hint the host signed. `None` while the workspace is
     /// not held here or its enrollment names no iroh address.
     #[must_use]

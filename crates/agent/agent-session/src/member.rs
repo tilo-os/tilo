@@ -2,7 +2,7 @@
 //! native devices.
 //!
 //! [`AgentMember`] holds a certified relay session under the agent's own
-//! device key and joins the workspace's durable and live planes. It holds the
+//! device key and joins the workspace's durable and live sessions. It holds the
 //! records it works in as replicas of their resources, each in its own
 //! confined app worker ([`ConfinedReplica`]), acts
 //! only through the operations they publish, and commits each resulting
@@ -362,7 +362,7 @@ pub struct AgentMember {
 
 impl AgentMember {
     /// Connect as `identity` and join `config.workspace`'s durable and live
-    /// planes.
+    /// live sessions.
     pub fn start(
         config: MemberConfig,
         identity: AgentIdentity,
@@ -737,7 +737,7 @@ impl AgentMember {
             }) if workspace_id == self.workspace_id && from != self.device() => {
                 self.remote.push((from, frame));
             }
-            Event::LivePlane {
+            Event::LiveSession {
                 ws: workspace_id,
                 from,
                 track: tilo_live::live::Track::Presence,

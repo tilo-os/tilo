@@ -66,7 +66,7 @@ client_roots = [
 # Every Tilo crate those entry points reach, as one list. The client side is MIT
 # end to end (LICENSING.md), so a crate joining this list is a licensing
 # decision, not a build fix: one only a desktop, a relay or a workspace's own
-# host needs (the shell, the live plane, the channels, the runtime that serves a
+# host needs (the shell, the live session, the channels, the runtime that serves a
 # workspace) stays AGPL. The check fails when the graph reaches a crate that is
 # not here, and when one here is no longer reached.
 client_side = [

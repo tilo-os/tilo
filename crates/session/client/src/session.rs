@@ -10,7 +10,7 @@
 //!   answers `Committed` with its order; the local replica already shows it.
 //! - **Reconnect replays.** After any disconnect the task reconnects with
 //!   backoff, re-subscribes every joined workspace (the host replays retained
-//!   checkpoints and this device's queue), rejoins the live plane and resends
+//!   checkpoints and this device's queue), rejoins the live session and resends
 //!   the whole outbox in order. Re-applying a document change is idempotent.
 //! - **Fail closed.** An expired certificate, or a host that keeps refusing
 //!   the handshake (a revoked device), ends in [`TransportPhase::Failed`]
@@ -44,9 +44,9 @@ mod entry;
 mod governance;
 mod host_voice;
 mod inbound;
+mod live_session;
 mod opened_records;
 mod outbound;
-mod plane;
 mod voice;
 
 use agent_session::AgentSessionCompletion;
@@ -146,21 +146,21 @@ enum Command {
     Client(Cmd),
     /// The host answered the placement of this workspace.
     Placed(WorkspaceId),
-    /// What asking the host for `workspace_id`'s live plane, and joining it,
-    /// came to: the plane itself, except on wasm, where the page's carrier
-    /// cannot travel in a command and waits in [`plane::arrived`].
+    /// What asking the host for `workspace_id`'s live session, and joining it,
+    /// came to: the live session itself, except on wasm, where the page's carrier
+    /// cannot travel in a command and waits in [`live_session::arrived`].
     #[cfg(not(target_arch = "wasm32"))]
-    PlaneJoined(
+    LiveSessionJoined(
         WorkspaceId,
-        Result<Arc<tilo_live::plane::Plane>, plane::Failed>,
+        Result<Arc<tilo_live::live_session::LiveSession>, live_session::Failed>,
     ),
     #[cfg(target_arch = "wasm32")]
-    PlaneJoined(WorkspaceId),
-    /// The plane of `workspace_id` heard something: drain it.
-    PlaneHeard(WorkspaceId),
-    /// The plane of `workspace_id` ended: the relay closed it, or the plane
+    LiveSessionJoined(WorkspaceId),
+    /// The live session of `workspace_id` heard something: drain it.
+    LiveSessionHeard(WorkspaceId),
+    /// The live session of `workspace_id` ended: the relay closed it, or the live session
     /// no longer admits what it reads.
-    PlaneEnded(WorkspaceId),
+    LiveSessionEnded(WorkspaceId),
     /// The first consumer that reads the members' presence came, or the last one went.
     PresenceReaders,
 }
@@ -310,11 +310,11 @@ fn session_task(
         reports: Arc::clone(&reports),
         workspaces: BTreeSet::new(),
         emptied: false,
-        planes_due: BTreeSet::new(),
+        live_sessions_due: BTreeSet::new(),
         governance_batch: None,
         kept: BTreeMap::new(),
         placing: BTreeMap::new(),
-        planes: plane::Planes::default(),
+        live_sessions: live_session::LiveSessions::default(),
         record,
         workspace_keys,
         governance,
@@ -430,12 +430,12 @@ struct Task {
     /// nothing left to be admitted to, so it stays done instead of dialling a
     /// host that only ends the connection again.
     emptied: bool,
-    /// The joined workspaces whose live plane may have to be joined, followed
-    /// or left ([`Self::settle_planes`]): those whose governance, channel
-    /// keys or plane changed since it last looked, and every one on each
+    /// The joined workspaces whose live session may have to be joined, followed
+    /// or left ([`Self::settle_live_sessions`]): those whose governance, channel
+    /// keys or live session changed since it last looked, and every one on each
     /// channel tick. A page in many workspaces pays for the ones that
     /// changed, not for all of them on every frame it reads.
-    planes_due: BTreeSet<WorkspaceId>,
+    live_sessions_due: BTreeSet<WorkspaceId>,
     /// Governance frames received and not admitted yet, admitted together
     /// ([`Self::admit_governance`]).
     governance_batch: Option<inbound::GovernanceBatch>,
@@ -444,9 +444,9 @@ struct Task {
     /// Workspaces of this device's person joined once the host governs them:
     /// each one's UUID and name, until the host answered its placement.
     placing: BTreeMap<WorkspaceId, (String, String)>,
-    /// This page's own live plane per joined workspace
-    /// ([`crate::session::plane`]).
-    planes: plane::Planes,
+    /// This page's own live session per joined workspace
+    /// ([`crate::session::live_session`]).
+    live_sessions: live_session::LiveSessions,
     record: PeerRecord,
     /// This device's side of the workspaces' encrypted channels: the engine every member runs,
     /// here as a reader that asks for access and follows the members' commits.
@@ -1124,11 +1124,11 @@ impl Task {
         });
     }
 
-    /// Hand the host what this session owes it before waiting for the next event: its planes,
+    /// Hand the host what this session owes it before waiting for the next event: its live sessions,
     /// the app surfaces it asks for, the compactions it was asked for and its custody. Returns
     /// `false` when the session could not take an envelope.
     async fn settle_owed(&mut self, client: &RelayClient) -> bool {
-        self.settle_planes();
+        self.settle_live_sessions();
         // App surfaces this page holds documents for go out with what the
         // session owes, and a surface that arrived decides what waited
         // for it before anything else is read.
@@ -1190,8 +1190,9 @@ impl Task {
             return Exit::Lost("host session saturated during resume".into());
         }
         self.connected();
-        // Each joined workspace's plane is joined again on this connection.
-        self.planes_due.extend(self.workspaces.iter().copied());
+        // Each joined workspace's live session is joined again on this connection.
+        self.live_sessions_due
+            .extend(self.workspaces.iter().copied());
         let mut ping = n0_future::time::interval(PING_INTERVAL);
         let mut channel_tick = n0_future::time::interval(CHANNEL_TICK);
         let mut heartbeat = n0_future::time::interval(tilo_relay_protocol::voice::HEARTBEAT);
@@ -1269,8 +1270,8 @@ impl Task {
                 }
                 _ = channel_tick.tick() => {
                     self.pump_channels(false);
-                    // A plane that ended or is due to be asked again.
-                    self.planes_due.extend(self.workspaces.iter().copied());
+                    // A live session that ended or is due to be asked again.
+                    self.live_sessions_due.extend(self.workspaces.iter().copied());
                 }
                 _ = heartbeat.tick() => {
                     for beat in self.voice.heartbeats() {
@@ -1476,13 +1477,13 @@ impl Task {
     }
 
     /// Say `frames`, one burst, as one group of `workspace_id`'s presence
-    /// track, sealed under the workspace scope's keys by the plane itself.
+    /// track, sealed under the workspace scope's keys by the live session itself.
     fn publish_presence(
         &mut self,
         workspace_id: WorkspaceId,
         frames: Vec<collab_types::presence::Presence>,
     ) {
-        let Some(joined) = self.planes.joined_mut(workspace_id) else {
+        let Some(joined) = self.live_sessions.joined_mut(workspace_id) else {
             return;
         };
         let numbered: Vec<(u32, collab_types::presence::Presence)> = frames
@@ -1492,7 +1493,7 @@ impl Task {
                 (joined.presence_seq, frame)
             })
             .collect();
-        let _ = tilo_live::presence::say(&joined.plane, &numbered);
+        let _ = tilo_live::presence::say(&joined.live_session, &numbered);
     }
 
     /// Apply one command while disconnected; what it publishes commits at once.
@@ -1524,21 +1525,21 @@ impl Task {
                 self.open_resource(workspace_id, route, client)
             }
             #[cfg(not(target_arch = "wasm32"))]
-            Command::PlaneJoined(workspace_id, joined) => {
-                self.plane_joined(workspace_id, joined);
+            Command::LiveSessionJoined(workspace_id, joined) => {
+                self.live_session_joined(workspace_id, joined);
                 true
             }
             #[cfg(target_arch = "wasm32")]
-            Command::PlaneJoined(workspace_id) => {
-                self.plane_joined(workspace_id, plane::arrived(workspace_id));
+            Command::LiveSessionJoined(workspace_id) => {
+                self.live_session_joined(workspace_id, live_session::arrived(workspace_id));
                 true
             }
-            Command::PlaneHeard(workspace_id) => {
-                self.plane_heard(workspace_id);
+            Command::LiveSessionHeard(workspace_id) => {
+                self.live_session_heard(workspace_id);
                 true
             }
-            Command::PlaneEnded(workspace_id) => {
-                self.plane_ended(workspace_id);
+            Command::LiveSessionEnded(workspace_id) => {
+                self.live_session_ended(workspace_id);
                 true
             }
             Command::PresenceReaders => {
@@ -1659,7 +1660,7 @@ impl Task {
             }
             // Handled by the caller's loop.
             Command::Client(Cmd::Reconnect | Cmd::Retry | Cmd::Refresh | Cmd::Stop) => true,
-            // What only a desktop's own plane carries: nothing a relay session says.
+            // What only a desktop's own live session carries: nothing a relay session says.
             Command::Client(_) => true,
         }
     }
@@ -1704,7 +1705,7 @@ impl Task {
             return true;
         }
         self.workspaces.insert(workspace_id);
-        self.planes_due.insert(workspace_id);
+        self.live_sessions_due.insert(workspace_id);
         self.reports.change(|status| {
             status.workspaces.entry(workspace_id).or_insert(false);
         });
@@ -1769,10 +1770,10 @@ impl Task {
         // this session asks for carries every member's request to be
         // admitted to one, which only a device that admits others reads.
         let mut sent_ok = client.send(Envelope::KeyFollower).is_ok();
-        // A plane's grant is its session's token: the planes of the last
+        // A live session's grant is its session's token: the live sessions of the last
         // session ended with it, and every workspace's is joined again with
-        // this one ([`Self::settle_planes`]).
-        self.planes.end_session();
+        // this one ([`Self::settle_live_sessions`]).
+        self.live_sessions.end_session();
         // Every subscription starts whole: the host replays the workspace's
         // retained state, and duplicate detection begins with it.
         self.received.clear();
@@ -1882,14 +1883,14 @@ impl Task {
                 frame,
             } => match self.seal_live(workspace_id, &frame) {
                 Sealing::Sealed(sealed) => {
-                    // Preview frames ride the workspace's plane, the way the
+                    // Preview frames ride the workspace's live session, the way the
                     // document's own frames ride the session: only a member
                     // of its roster opens the scope's layer, and the frame
                     // inside it is sealed with the record's keys.
-                    if let Some(joined) = self.planes.joined_mut(workspace_id) {
+                    if let Some(joined) = self.live_sessions.joined_mut(workspace_id) {
                         let sequence = joined.activity_seq.wrapping_add(1);
                         joined.activity_seq = sequence;
-                        let _ = joined.plane.publish(
+                        let _ = joined.live_session.publish(
                             tilo_live::live::Track::Activity,
                             sequence,
                             &sealed,
@@ -1932,8 +1933,8 @@ impl Task {
                 from,
                 frame,
             } => match self.open_live(workspace_id, &frame) {
-                // A run's narration is the host's own, signed outside the plane.
-                Opening::Opened(opened) if host_voice::plane_narrates_a_run(&opened) => {}
+                // A run's narration is the host's own, signed outside the live session.
+                Opening::Opened(opened) if host_voice::live_session_narrates_a_run(&opened) => {}
                 Opening::Opened(opened) => self.reports.emit(&Event::Live {
                     ws: workspace_id,
                     from,
@@ -2166,7 +2167,7 @@ impl Task {
         loop {
             for route in std::mem::take(&mut self.new_keys) {
                 if let Ok(workspace_id) = route.workspace_id() {
-                    self.planes_due.insert(workspace_id);
+                    self.live_sessions_due.insert(workspace_id);
                 }
                 self.release_live(&route);
                 // What the replica holds sealed for these keys opens now.
@@ -2186,7 +2187,7 @@ impl Task {
         delivered
     }
 
-    /// The key state's diagnostics: each workspace, route, plane and held write.
+    /// The key state's diagnostics: each workspace, route, live session and held write.
     fn describe_keys(&self) -> String {
         let mut channels = self.replicas.describe();
         for (route, keys) in &self.route_keys {
@@ -2210,10 +2211,10 @@ impl Task {
                 route.app_id, route.document
             );
         }
-        let planes = self.planes.describe();
-        if !planes.is_empty() {
+        let live_sessions = self.live_sessions.describe();
+        if !live_sessions.is_empty() {
             channels.push('\n');
-            channels.push_str(&planes);
+            channels.push_str(&live_sessions);
         }
         if self.refused.0 > 0 {
             let _ = write!(channels, "\nrefused {}: {}", self.refused.0, self.refused.1);
@@ -2430,43 +2431,43 @@ mod tests {
         assert_eq!(code(LinkError::Refused("io: closed".into())), "unexplained");
     }
 
-    /// A page that lists nobody says why: each workspace's plane names what it
-    /// waits for, and only asks that reached no plane count towards the note
+    /// A page that lists nobody says why: each workspace's live session names what it
+    /// waits for, and only asks that reached no live session count towards the note
     /// in the members' place.
     #[test]
-    fn a_plane_that_was_not_reached_is_named_in_the_channel_diagnostics() {
-        let mut planes = plane::Planes::default();
-        planes.later(WorkspaceId::from_u128(7), 12_000);
+    fn a_live_session_that_was_not_reached_is_named_in_the_channel_diagnostics() {
+        let mut live_sessions = live_session::LiveSessions::default();
+        live_sessions.later(WorkspaceId::from_u128(7), 12_000);
         assert_eq!(
-            planes.describe(),
-            "plane 00000000-0000-0000-0000-000000000007: not joined. No live plane was reached; \
+            live_sessions.describe(),
+            "live session 00000000-0000-0000-0000-000000000007: not joined. No live session was reached; \
              asking again at 12000"
         );
-        assert_eq!(planes.missed(WorkspaceId::from_u128(7)), 1);
+        assert_eq!(live_sessions.missed(WorkspaceId::from_u128(7)), 1);
         assert_eq!(
-            planes.missed(WorkspaceId::from_u128(7)),
-            plane::MISSES_BEFORE_NOTE
+            live_sessions.missed(WorkspaceId::from_u128(7)),
+            live_session::MISSES_BEFORE_NOTE
         );
-        planes.refused(WorkspaceId::from_u128(7), 60_000);
+        live_sessions.refused(WorkspaceId::from_u128(7), 60_000);
         assert_eq!(
-            planes.describe(),
-            "plane 00000000-0000-0000-0000-000000000007: not joined. The workspace does not \
-             admit this page's plane; asking again at 60000"
+            live_sessions.describe(),
+            "live session 00000000-0000-0000-0000-000000000007: not joined. The workspace does not \
+             admit this page's live_session; asking again at 60000"
         );
         assert_eq!(
-            planes.missed(WorkspaceId::from_u128(7)),
+            live_sessions.missed(WorkspaceId::from_u128(7)),
             1,
             "an answer starts the count again"
         );
-        // A plane never asked for at all says what the page still lacks.
-        let mut unasked = plane::Planes::default();
+        // A live session never asked for at all says what the page still lacks.
+        let mut unasked = live_session::LiveSessions::default();
         unasked.note_unasked(
             WorkspaceId::from_u128(8),
             "This page holds no channel keys for its workspace yet.",
         );
         assert_eq!(
             unasked.describe(),
-            "plane 00000000-0000-0000-0000-000000000008: not asked. This page holds no channel \
+            "live session 00000000-0000-0000-0000-000000000008: not asked. This page holds no channel \
              keys for its workspace yet."
         );
         // Asked once, the lack is no longer what the page says.

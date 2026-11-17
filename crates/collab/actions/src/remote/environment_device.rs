@@ -10,12 +10,12 @@
 //! which certified it and holds the workspace's keys, for exactly that much:
 //!
 //! - [`MEDIA_KEYS`]: the media keys of its own streams on the workspace's
-//!   live plane — its presence, its windows and its pages — at the epoch the
+//!   live session — its presence, its windows and its pages — at the epoch the
 //!   media channel is at, derived for it alone and sealed to its device key.
 //!   They seal what it publishes and open nothing: not another device's
-//!   stream, and no stream of its own it was not handed. Its plane asks again
+//!   stream, and no stream of its own it was not handed. Its action service asks again
 //!   whenever it joins, so keys that a membership change made stale are
-//!   replaced on the plane's next join.
+//!   replaced on the action service's next join.
 //! - [`SHARE_WINDOW`] and [`END_WINDOW_SHARE`]: share one of its own windows
 //!   with the workspace's members ([`WindowShare`]), or end that share. The
 //!   host writes the grants as the workspace's governor, as it writes a web

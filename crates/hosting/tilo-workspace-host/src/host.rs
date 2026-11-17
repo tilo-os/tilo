@@ -23,7 +23,7 @@ use tilo_lock::{MutexRecover as _, RwLockRecover as _};
 use tilo_user_identity::{DeviceCert, RevocationList, verify_device_cert_at};
 use tokio::sync::Mutex as AsyncMutex;
 
-use crate::app_serving::AppServingPlane;
+use crate::app_serving::AppActionServer;
 use crate::client::{ClientError, RelayClient};
 use crate::handshake::{EndpointTrust, HandshakeError, LiveIdentity};
 use crate::metrics::Metrics;
@@ -52,7 +52,7 @@ pub struct HostConfig {
     pub max_workspace_grants: Option<usize>,
     /// Answers remote actions addressed to this host beyond its own
     /// governance (`tilo.host`, `tilo.workspace`).
-    pub apps: Option<Arc<dyn AppServingPlane>>,
+    pub apps: Option<Arc<dyn AppActionServer>>,
     /// Classifies co-edit bodies for every workspace the host opens.
     pub shell_payloads: Arc<dyn crate::payloads::ShellPayloads>,
 }
@@ -131,17 +131,17 @@ pub struct HostSessions {
     membership_watch: Arc<crate::membership_watch::WatchTask>,
 }
 
-/// A host's workspaces, when it governs them: the governance and the plane
+/// A host's workspaces, when it governs them: the governance and the app action server
 /// answering its actions.
 pub struct Governed {
     pub workspaces: crate::workspaces::Workspaces,
-    pub(crate) actions: Arc<dyn AppServingPlane>,
+    pub(crate) actions: Arc<dyn AppActionServer>,
 }
 
 impl HostSessions {
     /// Open a host's sessions and, when `governs`, its workspaces. `wrap` gives
-    /// the plane every session answers remote actions with, from the
-    /// workspaces and the host's own plane (its governance and apps): a
+    /// the app action server every session answers remote actions with, from the
+    /// workspaces and the host's own app action server (its governance and apps): a
     /// relay answers compute placement around it.
     ///
     /// # Errors
@@ -160,8 +160,8 @@ impl HostSessions {
         channels: Option<crate::workspaces::DeviceKeyGroups>,
         wrap: impl FnOnce(
             &WorkspaceRegistry,
-            Option<Arc<dyn AppServingPlane>>,
-        ) -> Option<Arc<dyn AppServingPlane>>,
+            Option<Arc<dyn AppActionServer>>,
+        ) -> Option<Arc<dyn AppActionServer>>,
     ) -> Result<(Self, Option<Governed>), HostError> {
         validate_host_device_identity(&identity)?;
         say_when_unsealed(governs, &identity.device_cert);
@@ -182,11 +182,11 @@ impl HostSessions {
         // The host answers its workspaces' governance as actions itself, beside
         // whatever apps its embedder serves.
         let governance = governs.then(crate::workspaces::HostWorkspaceActions::new);
-        let own_plane = match &governance {
-            Some(governance) => Some(Arc::new(crate::workspaces::GovernedPlane {
+        let own_server = match &governance {
+            Some(governance) => Some(Arc::new(crate::workspaces::GovernedServer {
                 governance: governance.clone(),
                 apps: cfg.apps.clone(),
-            }) as Arc<dyn AppServingPlane>),
+            }) as Arc<dyn AppActionServer>),
             None => cfg.apps.clone(),
         };
         let autobind =
@@ -200,7 +200,7 @@ impl HostSessions {
             identity: live.clone(),
             metrics: metrics.clone(),
             autobind,
-            app_serving: wrap(&workspaces, own_plane.clone()),
+            app_serving: wrap(&workspaces, own_server.clone()),
             carried_calls: Arc::default(),
             admin: Arc::default(),
             fetch: Arc::default(),
@@ -232,7 +232,7 @@ impl HostSessions {
             closing: Arc::new(tokio::sync::watch::channel(false).0),
             membership_watch: Arc::new(crate::membership_watch::WatchTask::spawn(&cfg.state_root)),
         };
-        let (Some(governance), Some(actions)) = (governance, own_plane) else {
+        let (Some(governance), Some(actions)) = (governance, own_server) else {
             return Ok((sessions, None));
         };
         let workspaces = crate::workspaces::Workspaces::open(
@@ -442,10 +442,10 @@ fn host_handlers(
         // The host's own device answers a workspace's member devices here, as
         // the members answer each other: an offer is answered by the host as
         // one of the workspace's member devices
-        // (`crate::workspaces::device_plane`).
+        // (`crate::workspaces::device_actions`).
         (
             tilo_peer_state::actions::ACTIONS_ALPN,
-            Arc::new(workspaces.plane()) as Arc<dyn DynProtocolHandler>,
+            Arc::new(workspaces.action_service()) as Arc<dyn DynProtocolHandler>,
         ),
         // A member device of a workspace syncs with the host here, the same
         // link a device runs for itself: the dial names its workspace first.
@@ -497,7 +497,7 @@ impl ProtocolHandler for Shared {
 pub struct WorkspaceHost {
     sessions: HostSessions,
     workspaces: crate::workspaces::Workspaces,
-    actions: Arc<dyn AppServingPlane>,
+    actions: Arc<dyn AppActionServer>,
     handlers: Vec<(&'static [u8], Arc<dyn DynProtocolHandler>)>,
 }
 
@@ -534,7 +534,7 @@ impl WorkspaceHost {
             ));
         }
         let (sessions, governed) =
-            HostSessions::open(cfg, identity, endpoint, true, channels, |_, plane| plane).await?;
+            HostSessions::open(cfg, identity, endpoint, true, channels, |_, server| server).await?;
         let Some(Governed {
             workspaces,
             actions,
@@ -581,12 +581,12 @@ impl WorkspaceHost {
         &self.workspaces
     }
 
-    /// The plane answering the host's own actions (`tilo.host`:
+    /// The app action server answering the host's own actions (`tilo.host`:
     /// creating, listing and entering workspaces; `tilo.workspace`: each workspace's
     /// governance) and its embedder's apps, for in-process callers. A
     /// caller is named by [`local_caller`] and its certificate.
     #[must_use]
-    pub fn actions(&self) -> Arc<dyn AppServingPlane> {
+    pub fn actions(&self) -> Arc<dyn AppActionServer> {
         Arc::clone(&self.actions)
     }
 
@@ -1061,7 +1061,7 @@ pub struct RelayProtocol {
     pub identity: LiveIdentity,
     pub metrics: Arc<Metrics>,
     pub autobind: Option<WorkspaceAutobind>,
-    pub(crate) app_serving: Option<Arc<dyn crate::app_serving::AppServingPlane>>,
+    pub(crate) app_serving: Option<Arc<dyn crate::app_serving::AppActionServer>>,
     /// Set once when the host starts serving browsers: the workspaces whose
     /// calls it carries.
     pub carried_calls: Arc<std::sync::OnceLock<crate::workspaces::WeakWorkspaces>>,

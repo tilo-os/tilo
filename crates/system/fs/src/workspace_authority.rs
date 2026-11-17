@@ -101,9 +101,9 @@ pub fn content_peers_path(cache_dir: &Path) -> PathBuf {
     cache_dir.join(CONTENT_PEERS_FILE)
 }
 
-/// A discovered Files endpoint with the namespace and record plane it serves. `ticket` is absent
+/// A discovered Files endpoint with the namespace and record protocol it serves. `ticket` is absent
 /// only for entries written by older daemons; such an entry still serves blob hydration but is not a
-/// record-plane bootstrap source.
+/// record-backend bootstrap source.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PersistedContentPeer {
@@ -118,7 +118,7 @@ pub struct PersistedContentPeer {
 impl PersistedContentPeer {
     fn validate(&self) -> anyhow::Result<()> {
         if let Some(ticket) = &self.ticket {
-            // The ticket names the shared namespace and record plane. Its node is commonly the
+            // The ticket names the shared namespace and record protocol. Its node is commonly the
             // originating owner while `endpoint` is the authenticated always-on replica discovered
             // through relay; discovery authentication pins the endpoint to the enrolled host, so only
             // the bounded ticket encoding and its workspace identity are checked here.
@@ -447,8 +447,8 @@ pub enum ContentPeerControlRequest {
 pub struct ContentPeerResponse {
     pub accepted: bool,
     /// The endpoint was durably stored, but its ticket names a different workspace from the
-    /// currently-running record plane; the daemon restarts itself after replying so it joins that
-    /// plane.
+    /// currently-running record protocol; the daemon restarts itself after replying so it joins that
+    /// backend.
     #[serde(default)]
     pub rebind_required: bool,
     /// A managed system service has scheduled that rebind after this response was flushed. Ad-hoc
@@ -525,7 +525,7 @@ pub fn serve_local_content_peer(
                 .await
                 .is_ok();
                 // The client needs a successful acknowledgement before the service exits and systemd
-                // starts the joined record plane.
+                // starts the joined record protocol.
                 if response_sent
                     && accepted
                     && restart_scheduled

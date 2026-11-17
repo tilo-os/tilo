@@ -152,7 +152,7 @@ pub(crate) struct Shared {
     #[cfg(target_os = "linux")]
     pub(crate) window_shares: Rc<RefCell<crate::window_share::WindowShares>>,
     /// The windows whose apps hand over their page as a paint stream: what
-    /// this session publishes on the workspace's live plane while someone
+    /// this session publishes on the workspace's live session while someone
     /// shows them.
     #[cfg(target_os = "linux")]
     pub(crate) pages: Rc<RefCell<crate::page_track::PageTracks>>,
@@ -330,7 +330,7 @@ pub(crate) struct Shared {
     #[cfg(target_os = "linux")]
     pub(crate) asker: crate::questions::Asker,
     /// Who is here: this session's membership of each workspace, when it
-    /// takes part in the collaboration plane.
+    /// takes part in the peer network.
     pub(crate) sync: Option<Rc<crate::sync::Client>>,
     /// This device's workspaces: what the session shows of them, and what a join takes in.
     pub(crate) engine: Option<std::sync::Arc<crate::engine::Engine>>,
@@ -598,15 +598,15 @@ pub struct Session {
     /// in one of the launcher's sandboxes.
     #[cfg(target_os = "linux")]
     pub(crate) launches: std::sync::Arc<crate::launches::Launches>,
-    /// The plane the apps it runs read and invoke its services on, while it
+    /// The app wire the apps it runs read and invoke its services on, while it
     /// serves one.
     #[cfg(target_os = "linux")]
-    pub(crate) action_plane: Option<crate::plane::Plane>,
+    pub(crate) app_wire: Option<crate::app_wire::AppWire>,
     /// The content its workspaces' records reference, and what a window it
     /// does not run is pictured into: the address is read by any caller of
     /// the action protocol.
     #[cfg(target_os = "linux")]
-    pub(crate) content: std::sync::Arc<crate::content::Plane>,
+    pub(crate) content: std::sync::Arc<crate::content::ContentService>,
     /// The control socket `tilo-control` drives this session over: the
     /// development and the device admin's sockets, when the launcher names
     /// them, and the one a program inside an app reaches.

@@ -99,7 +99,7 @@ pub struct HostInfo {
     /// The host's device certificate (pin its device key).
     pub host_cert: tilo_user_identity::DeviceCert,
     /// Where the host listens on iroh, which is how a page reaches it for
-    /// everything a session and its planes carry. `None` in a host that serves
+    /// everything a session and its live sessions carry. `None` in a host that serves
     /// no iroh endpoint.
     pub address: Option<HostAddress>,
 }
@@ -208,7 +208,7 @@ impl HostInfo {
 /// A host's WebTransport listener: HTTP/3 on the UDP port of its HTTPS
 /// origin, presenting the same certificate. A device opens one session per
 /// thing it asks, at that thing's path ([`LINK_SESSION_PATH`],
-/// [`LINK_CERTIFY_PATH`], [`LINK_PLANE_PATH`]): the same conversations a
+/// [`LINK_CERTIFY_PATH`], [`LINK_LIVE_SESSION_PATH`]): the same conversations a
 /// native device holds over the host's iroh endpoint on their ALPNs.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WebLink {
@@ -226,10 +226,10 @@ pub const LINK_SESSION_PATH: &str = "/peer/v1/link/session";
 /// Certification: each stream one conversation, as each connection on
 /// the certification ALPN.
 pub const LINK_CERTIFY_PATH: &str = "/peer/v1/link/certify";
-/// A workspace's live plane: the first stream proves which device opened
-/// the session (the relay handshake, `crate::auth`), then the plane's own
+/// A workspace's live session: the first stream proves which device opened
+/// the session (the relay handshake, `crate::auth`), then the live session's own
 /// admission and `moq-lite` follow, as over iroh.
-pub const LINK_PLANE_PATH: &str = "/peer/v1/link/plane";
+pub const LINK_LIVE_SESSION_PATH: &str = "/peer/v1/link/live-session";
 
 /// Whether its owner deleted the workspace a device names by its id, below
 /// [`API_PREFIX`]: what a device the host no longer lets in (it was a member

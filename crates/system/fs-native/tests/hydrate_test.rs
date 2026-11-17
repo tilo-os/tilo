@@ -846,7 +846,7 @@ tilo_test_env::scenario! {
 
 /// A source that never delivers one content id until the fill is
 /// cancelled, as a peer does that went quiet, and serves every other at
-/// once. It gives up when cancelled, as the content plane's fetcher does.
+/// once. It gives up when cancelled, as the content store's fetcher does.
 struct GivesUpWhenCancelled {
     pattern: Arc<PatternFetcher>,
     quiet: [u8; 32],

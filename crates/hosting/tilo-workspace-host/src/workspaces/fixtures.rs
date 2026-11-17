@@ -1,5 +1,5 @@
 //! A governing host and the devices around it, for the tests of workspaces and of
-//! the planes embedders build on them.
+//! the app action servers embedders build on them.
 #![allow(
     clippy::expect_used,
     clippy::unwrap_used,

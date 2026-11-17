@@ -4,7 +4,7 @@
 //! This module deliberately stops at the privacy boundary: verified app,
 //! workspace and session identities may request short-lived leases, while raw
 //! `PipeWire` node IDs and file descriptors remain process-local and are never
-//! serializable. A future cross-device media plane can consume a local lease;
+//! serializable. A future cross-device media service can consume a local lease;
 //! it must not copy these handles into continuity state.
 //!
 //! Every live lease is what the privacy indicator shows: the portal

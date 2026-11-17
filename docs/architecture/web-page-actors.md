@@ -318,7 +318,7 @@ it into view in its frame. A frame nobody read or acted in is not listed.
 
 A reviewer on another device sees the tab as its page. While a device shows
 the window, the Browser hands its session the page as a display list (the
-paint stream), which travels the workspace's live plane and is drawn by the
+paint stream), which travels the workspace's live session and is drawn by the
 device that shows it: no picture of the window is captured. A window that
 protects itself from capture hands over no page. The review read and the
 record are what say who set what; the page is what the window shows.
@@ -421,7 +421,7 @@ its connection offered; one that names another window is refused and
 published as nobody's. A window whose toolkit predates this names no window
 in its frames, which are its connection's page all the same.
 
-**Who is sent it.** The workspace's live plane takes any member's ask for
+**Who is sent it.** The workspace's live session takes any member's ask for
 any window's page track. The session publishes the page of a window shared
 as its page and of no other, and asks no other window's app for one: a
 device that asks for the page of a window nobody shared is sent nothing.
@@ -438,7 +438,7 @@ engine sets a page that names no face in its sans, which is a shorter list
 than the engine's standard face by name. One message from the app to its session carries less than 1 MiB, so a
 payload goes in parts of at most 700 KiB, in order, and the app sends only
 as much as its connection has room for, the rest once the session has read
-on; the session joins the parts. The plane carries a payload as one object
+on; the session joins the parts. The live session carries a payload as one object
 of at most 4 MiB less the 52 bytes sealing adds, and that is the bound: a
 whole frame larger than it reaches nobody. The app does not keep quiet
 about such a page: it sends the size and the start of the frame, the
@@ -578,7 +578,7 @@ agent's device by its key and its name and none beside the tab's own agent.
 The share step has not passed there. When it first ran, the sharing device
 said it shared the window, the other said it watched it, and no picture
 crossed. Two causes were found and are closed in the session: a device that
-did not reach the device relaying the workspace's live plane when its session
+did not reach the device relaying the workspace's live session when its session
 started never asked again, and a shell that listed the window as its own view
 of it had no tab to picture the shared window in. The second is held by the
 shares' own tests, which carry the workspace's governance between two
@@ -594,7 +594,7 @@ model's, the session's and the shares' own tests hold that; the machines have
 not run it yet.
 
 When it ran again the pictures crossed and then stopped: the device relaying
-the plane turned the sharing device away, and went on doing so through a
+the live session turned the sharing device away, and went on doing so through a
 restart of either session. A relay turns away a device whose keys are behind
 its own, and the sharing device's were. The host had been stopped and copied
 a second time; back on, it admitted the new copy, which moved the
@@ -605,7 +605,7 @@ to a member that comes back; a device that hosts one kept none. It now hands
 each member that links what its channels hold of the workspace, so a member
 that was away when the keys moved follows them when it is back, and the
 relay's check is as it was. The relay says why it turned a device away, in
-its journal and in its own reading of the workspace's plane (`turned_away`),
+its journal and in its own reading of the workspace's live session (`turned_away`),
 and the device it turned away says which epoch's keys it presented
 (`presented`): the two side by side name a refusal that read alike on both
 ends before.
@@ -694,14 +694,14 @@ happens to the one beyond it.
   these.
 - **Actors a window remembers: sixty-four**, beside every actor whose page
   action runs or waits (see "What the tab guarantees").
-- **Devices in a workspace's live plane: each hears thirty-two others.** A
-  shared window, presence and a call travel the workspace's live plane, and
-  a plane reads the devices in it one by one: three tracks of each, which
+- **Devices in a workspace's live session: each hears thirty-two others.** A
+  shared window, presence and a call travel the workspace's live session, and
+  a live session reads the devices in it one by one: three tracks of each, which
   the reading device and the relay hold open for as long as the device is
   there. Thirty-three devices of one workspace therefore all hear each
-  other (`MAX_HEARD` in `crates/collab/tilo-live/src/plane.rs`). A device
-  beyond that is in the plane and is heard by whoever has room for it. A
-  device that has no room for it does not hear it and says so: its plane's
+  other (`MAX_HEARD` in `crates/collab/tilo-live/src/live_session.rs`). A device
+  beyond that is in the live session and is heard by whoever has room for it. A
+  device that has no room for it does not hear it and says so: its live session's
   row counts the devices it does not hear (`unheard`), says why by a word
   (`unheard_why`: `reading-bound`) and in the person's words (`not_heard`),
   and reads them once one it hears has gone. The number is what a further
@@ -717,14 +717,14 @@ happens to the one beyond it.
   ends an ask that waits for a stream. It allows them on the connection
   itself, once its session is admitted, so a session's endpoint, which is
   bound with the transport of its other protocols, and an endpoint bound
-  for the plane alone allow the same. Before that a connection is allowed
+  for the live session alone allow the same. Before that a connection is allowed
   four of each (`PREFACE_BI_STREAMS`, `PREFACE_UNI_STREAMS`) on an endpoint
-  bound for the plane, and what its transport allows on a session's. The
-  relay admits no fixed number of sessions: who is in the plane is the
+  bound for the live session, and what its transport allows on a session's. The
+  relay admits no fixed number of sessions: who is in the live session is the
   workspace's membership, which has no count of its own (one person's
   devices are 256 at most, `MAX_DEVICES` in
   `crates/collab/tilo-peer-state/src/state/personal.rs`).
-- **Sessions a plane's relay is admitting: sixteen at once, four of them at
+- **Sessions a live session's relay is admitting: sixteen at once, four of them at
   most of one endpoint, and four more of strangers** (`MAX_ADMITTING`,
   `MAX_ADMITTING_OF_ONE`, `MAX_ADMITTING_STRANGERS` in
   `crates/collab/tilo-live/src/relay.rs`). That is what a relay holds for
@@ -740,9 +740,9 @@ happens to the one beyond it.
   fifteen from then on, each wait up to a quarter shorter by the device's
   own key (`retry_wait` in `crates/session/session/src/live.rs`), so that
   the devices a relay turned back in one moment do not come back in one
-  moment, and is taken in once the relay has room. Until then its plane
+  moment, and is taken in once the relay has room. Until then its live session
   reads as told busy by the relay, by name (`relay-busy`), never as
-  refused, the relay lists nobody as turned away, and a plane that was
+  refused, the relay lists nobody as turned away, and a live session that was
   open before keeps its session while it dials.
 
 What checks this: the runtime's tests reach its endpoint's sixty-four
@@ -761,8 +761,8 @@ server opened, the next is refused, and the sixteen are served on the pass
 that follows. The Browser's tests fill a tab's eight waiting turns and
 drive a tab past sixty-four actors, while one of them waits and after one
 of them was forgotten, and read the record, its history, who set each field
-and the review screen. The live plane's tests
-stand thirty-three devices in one workspace's plane through a relay their
+and the review screen. The live session's tests
+stand thirty-three devices in one workspace's live session through a relay their
 endpoints reach with four streams until they are admitted, and read that
 every one hears every other; with thirty-six, that each hears thirty-two,
 counts three as not heard, and hears everyone again once three have gone.
@@ -773,13 +773,13 @@ their own and are refused once judged; they open sixteen silent sessions
 from endpoints nobody knows and read that sixteen devices of the workspace
 are all taken in at once meanwhile; they open sixteen sessions from one
 device and read that it holds four places; and they cut the carrier of a
-plane whose relay is at its bound and read that it dials until it is
+live session whose relay is at its bound and read that it dials until it is
 carried again. Two real sessions run the stranger case: one is started
 against the relay of the session hosting its workspace while sixteen
-endpoints nobody knows hold that relay, and is in the plane at once, never
+endpoints nobody knows hold that relay, and is in the live session at once, never
 told busy. The session's own tests read the standing, the state and the
-words, English and German, of a plane whose relay was busy and of one that
-does not hear every device, the latter from a plane with three devices
+words, English and German, of a live session whose relay was busy and of one that
+does not hear every device, the latter from a live session with three devices
 more than it reads.
 
 ## Not built yet
@@ -852,7 +852,7 @@ down.
   device on those machines: when the step last ran, the share's start
   crossed and the watching tab kept the card of a window still arriving,
   while both sessions read as if it were pictured. The session handed that
-  tab's tile the page's objects in the plane's framing, which the tile cannot
+  tab's tile the page's objects in the live session's framing, which the tile cannot
   read; that is closed, and two sessions on one relay now carry a page from
   the window to the watching tab in a test. The step reads the page's text
   off the watching shell rather than take the sessions' word for it. When it
@@ -894,9 +894,9 @@ down.
   until it comes the page is said as one its app has not handed over. A
   Browser built before this, with two
   windows in one process, still mixes their frames on its side; the session
-  cannot tell them apart, since such frames name no window. Each session says how far its live plane
+  cannot tell them apart, since such frames name no window. Each session says how far its live session
   came, what a share waits for, whether a shared window went out and whether
-  the watching tile holds it, and, for the device relaying a plane, which
+  the watching tile holds it, and, for the device relaying a live session, which
   devices it turned away and why, which is what the step reads when a page
   does not arrive or does not go on arriving.
   And nothing has run more than three machines. What bounds their number is
@@ -904,14 +904,14 @@ down.
   session and the endpoints of two more devices on one machine, not by
   machines, and nothing keeps a place at the server for each device.
   Thirty-three devices that all hear each other, a
-  plane past its bound and a relay at its admission bound have run in
+  live session past its bound and a relay at its admission bound have run in
   tests on one machine, never on real ones, and no real session has been
   told busy by a real relay in a test: since endpoints nobody knows no
   longer hold a relay's places, only sixteen of a workspace's own devices
   asking at once fill them, which is sixteen sessions with a shell each.
-  The plane's bound of thirty-two devices heard is what a device costs
+  The live session's bound of thirty-two devices heard is what a device costs
   today, not what a workspace may hold. Each device read is three
-  subscriptions on the reading device and on the relay, so a plane grows
+  subscriptions on the reading device and on the relay, so a live session grows
   with the square of its devices; what takes that away is the relay
   carrying every device's presence on one track of its own, and a call's
   audio asked for only while a call runs, and neither is built. Past the
@@ -923,7 +923,7 @@ down.
   the further ones are then neither read nor counted. The relay's reading
   does not say how often it was at its bound, and each admission and each
   change of a workspace's membership reads that membership once for every
-  device in the plane. An actor that answers a hold is remembered
+  device in the live session. An actor that answers a hold is remembered
   like any other, not held on to until the engine has said how the hold
   ended, so that one entry is where a tab crowded by more than sixty-four
   actors can still say `device_unknown`.

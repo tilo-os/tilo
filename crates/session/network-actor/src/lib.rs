@@ -10,7 +10,7 @@
 //! alone: their device fabric, nearby transfers, codec adverts and their
 //! workspace list. Only what is for one exact device of a workspace (input,
 //! window streams, remote actions) goes directly to it, on the
-//! authenticated device plane.
+//! authenticated device action service.
 //! The actor is the desktop's transport, below the compositor: what arrives
 //! on it that is the desktop's business goes to the services the session
 //! installs ([`services`]), so a compositor change does not rebuild it and
@@ -307,7 +307,7 @@ pub enum NetCmd {
 }
 
 /// A piece of a record's content on its way to the device of the workspace that
-/// asked: over the direct plane when that device is a live member of the
+/// asked: over the direct peer network when that device is a live member of the
 /// workspace, else through the workspace's hosts, which hand it to that
 /// device alone and keep nothing.
 #[derive(Debug)]
@@ -368,7 +368,7 @@ pub enum NetEvent {
         membership_epoch: Option<MembershipEpoch>,
     },
     /// A member of `ws` this device reaches through the workspace host
-    /// `host` joined (`active`) or left the host's live plane.
+    /// `host` joined (`active`) or left the host's live session.
     HostMember {
         ws: WorkspaceId,
         host: PeerId,
@@ -620,7 +620,7 @@ enum HostEvent {
         channel: [u8; 32],
         answer: tilo_relay_protocol::DocumentAnswer,
     },
-    /// A member joined or left the host's live plane.
+    /// A member joined or left the host's live session.
     Member {
         device: [u8; 32],
         active: bool,
@@ -875,7 +875,7 @@ pub struct Actor;
 impl Actor {
     /// Spawn the actor for `endpoint`, also serving `served` — protocol
     /// handlers the session's own features answer on, beside the actor's: a
-    /// device's action plane, say. Each names its own ALPN and serves it for
+    /// device's action service, say. Each names its own ALPN and serves it for
     /// as long as the actor runs.
     pub fn spawn_serving(
         endpoint: Endpoint,
@@ -930,7 +930,7 @@ impl Actor {
 
 /// What this endpoint serves beside the actor's own protocols: this
 /// device's own host's handlers, when it hosts the workspaces placed on it,
-/// and the session's own (its action plane, say) — all on the one endpoint
+/// and the session's own (its action service, say) — all on the one endpoint
 /// both reach this device at.
 struct Serving {
     hosting: Option<Hosting>,
@@ -1765,7 +1765,7 @@ impl ActorState {
     }
 
     /// Queue one message for exactly `target` on the authenticated direct
-    /// surface/control plane, on the workspace's lane: the peer must be live on
+    /// surface/control peer network, on the workspace's lane: the peer must be live on
     /// this workspace. Gives the message back when it cannot go that way
     /// now; how a queued one went comes back as
     /// [`InternalEvent::DirectSent`] ([`Self::direct_sent`]).
@@ -2193,7 +2193,7 @@ impl ActorState {
                     }
                 }
                 if let Err(error) = session.live_join() {
-                    tracing::warn!(ws = %ws, %error, "could not join the workspace host's live plane");
+                    tracing::warn!(ws = %ws, %error, "could not join the workspace host's live session");
                 }
                 let replaying = Arc::new(std::sync::atomic::AtomicBool::new(true));
                 let pump = spawn_host_pump(
@@ -2214,7 +2214,7 @@ impl ActorState {
     }
 
     /// The host `host` of `ws` reports another member device joined
-    /// (`active`) or left its live plane; `None` for this device itself.
+    /// (`active`) or left its live session; `None` for this device itself.
     fn host_member(
         &self,
         ws: WorkspaceId,
@@ -2862,7 +2862,7 @@ async fn run(
         None => (None, Vec::new()),
     };
     // What the session serves beside the actor's own protocols: its action
-    // plane, say, on the one endpoint both reach this device at.
+    // peer network, say, on the one endpoint both reach this device at.
     protocols.extend(served);
     let router = protocols
         .into_iter()
@@ -3212,7 +3212,7 @@ fn message_fingerprint(bytes: &[u8]) -> [u8; 32] {
 /// a window's page says the window, its size and its codec and nothing of when, so the same
 /// window shared again after its share stopped, or shown again by a viewer that had let it go, is
 /// announced exactly as it was the first time. Dropped as a repeat, the second announcement left
-/// the watching device with a share its governance names and no page to ask the plane for, for
+/// the watching device with a share its governance names and no page to ask the peer network for, for
 /// as long as it remembered the first. A copy of either over another route changes nothing: a
 /// stream announced twice is the one stream, and one ended twice is already gone.
 const fn said_again_on_purpose(msg: &NeighbourMsg) -> bool {

@@ -26,7 +26,7 @@ use std::time::{Duration, Instant};
 use crate::authority::{AuthorityDriver, Verdict};
 use crate::carrier;
 pub use crate::carrier::{HANDSHAKE_BUDGET, SETUP_BUDGET};
-use crate::plane::{Next, next};
+use crate::live_session::{Next, next};
 use crate::voice;
 
 /// Sessions still being admitted at once: what a relay holds for peers it has
@@ -51,7 +51,7 @@ pub const MAX_ADMITTING: usize = 16;
 /// [`MAX_ADMITTING`].
 pub const MAX_ADMITTING_STRANGERS: usize = 4;
 /// Sessions of one endpoint still being admitted at once: a device asks for
-/// the plane of each workspace one relay carries for it, so it may hold a
+/// the live session of each workspace one relay carries for it, so it may hold a
 /// few, and never enough to take every place.
 pub const MAX_ADMITTING_OF_ONE: usize = 4;
 pub const MAX_AUTHORIZATION_BYTES: usize = carrier::MAX_GRANT_BYTES;
@@ -71,7 +71,7 @@ const VOICE_RETAIN: Duration = Duration::from_millis(200);
 /// Picture retention: a late subscriber starts at the newest keyframe group,
 /// and a picture older than this is not worth showing.
 const PICTURE_RETAIN: Duration = Duration::from_secs(2);
-/// Retention of the plane's opaque stream tracks, as
+/// Retention of the live session's opaque stream tracks, as
 /// [`crate::live::Delivery::Stream`] gives it: a presence record older than
 /// this says nothing about who is here now.
 const OPAQUE_RETAIN: Duration = Duration::from_secs(30);
@@ -166,7 +166,7 @@ pub trait SessionAuthorization: Send + Sync {
 }
 
 /// Who is asking to be admitted: the iroh endpoint id the QUIC/TLS handshake
-/// proved. Every device reaches the plane over iroh, a page included.
+/// proved. Every device reaches the live session over iroh, a page included.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Peer(pub [u8; 32]);
 
@@ -466,7 +466,7 @@ impl Relay {
     }
 
     /// The origin every admitted session publishes into and hears from: what
-    /// a plane on this device's own session reads and writes, so the device
+    /// a live session on this device's own session reads and writes, so the device
     /// that relays a workspace takes part in it without connecting to
     /// itself.
     #[must_use]
@@ -778,7 +778,7 @@ impl Relay {
 /// shared origin for as long as it is announced there. Every datagram bundle
 /// and object is validated before any subscriber can observe it.
 ///
-/// The plane's opaque tracks (presence, activity) are copied beside it: they
+/// The live session's opaque tracks (presence, activity) are copied beside it: they
 /// carry the scope's own sealed bytes, so the relay bounds their size and
 /// copies them unread.
 async fn forward(
@@ -806,8 +806,8 @@ async fn forward(
             counters.clone(),
         ));
         let mut opaque = Vec::new();
-        for plane_track in [crate::live::Track::Presence, crate::live::Track::Activity] {
-            let name = crate::live::track(plane_track);
+        for live_session_track in [crate::live::Track::Presence, crate::live::Track::Activity] {
+            let name = crate::live::track(live_session_track);
             let Ok(output) = out.create_track(
                 name.as_str(),
                 moq_net::track::Info::default().with_max_age(OPAQUE_RETAIN),
@@ -864,7 +864,7 @@ fn voice_bounds() -> Arc<Bounds> {
     })
 }
 
-/// The plane's opaque tracks (presence, activity): the scope's own sealed
+/// The live session's opaque tracks (presence, activity): the scope's own sealed
 /// bytes, copied unread, bounded in size.
 fn opaque_bounds() -> Arc<Bounds> {
     Arc::new(Bounds {
@@ -982,7 +982,7 @@ async fn copy_checked_group(
     }
 }
 
-/// Copy one opaque plane track (presence, activity) unread ([`opaque_bounds`]).
+/// Copy one opaque live session track (presence, activity) unread ([`opaque_bounds`]).
 async fn copy_opaque(
     source: moq_net::broadcast::Consumer,
     name: String,
@@ -1102,7 +1102,7 @@ fn scopes_well_formed(authorization: &dyn SessionAuthorization) -> bool {
         // A whole path whose every segment is checked, so the scope is exact
         // rather than a partial segment; the publication lies beneath it,
         // where the scheme's own naming puts it (a call's `call/device`, the
-        // live plane's `scope/device/device`).
+        // live session's `scope/device/device`).
         return subscriptions.is_empty()
             && valid_namespace(prefix)
             && publication.is_none_or(|name| {

@@ -4,7 +4,7 @@
 //! A workspace hosted on a relay opens Browser like any app, and the page has
 //! to run somewhere: in the workspace's own VM, on the host that
 //! keeps that VM. The relay asks that host's member device over
-//! the device plane, as the device it is, the way it asks for a shell command
+//! the device action service, as the device it is, the way it asks for a shell command
 //! ([`environment_commands`](super::environment_commands)):
 //!
 //! - [`target`] names a Browser open, an action of the workspace's

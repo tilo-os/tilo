@@ -207,8 +207,8 @@ pub struct Engine {
     keys: KeyProvider,
     /// How this host proves this device still has custody of a workspace before it commits there.
     custody: Arc<dyn crate::custody::Custody>,
-    /// The workspace transport of this session's collaboration plane, once it runs: a record the
-    /// workspace's hosts send only once asked is asked for here, and the plane is gone while this
+    /// The workspace transport of this session's peer network, once it runs: a record the
+    /// workspace's hosts send only once asked is asked for here, and the peer network is gone while this
     /// is `None` .
     link: std::sync::Mutex<Option<Arc<workspace_keys::KeyLink>>>,
     /// The layout's workspaces this device could not found here: founding one is asked for again only
@@ -1022,7 +1022,7 @@ impl Engine {
 
     /// Ask `workspace`'s hosts for `app`'s `record`
     /// (`neighbour_wire::app_document_channel`): what they hold of it, and their changes to it from
-    /// then on. Asked once per record while the plane runs; `false` when there is no plane to ask
+    /// then on. Asked once per record while the peer network runs; `false` when there is no peer network to ask
     /// on, so nothing was asked.
     pub fn open_resource(&self, workspace: &str, app: &str, record: &str) -> bool {
         let Some(workspace) = WorkspaceId::parse(workspace) else {
@@ -1061,13 +1061,13 @@ impl Engine {
             .resource_answer(workspace, &channel)
     }
 
-    /// What ticks whenever a host answered for a record this device opened; `None` with no plane.
+    /// What ticks whenever a host answered for a record this device opened; `None` with no peer network.
     #[must_use]
     pub fn record_answers(&self) -> Option<tokio::sync::watch::Receiver<u64>> {
         self.link.lock_recover().as_ref().map(|link| link.answers())
     }
 
-    /// What ticks whenever a host finished its replay; `None` with no plane.
+    /// What ticks whenever a host finished its replay; `None` with no peer network.
     #[must_use]
     pub fn replays(&self) -> Option<tokio::sync::watch::Receiver<u64>> {
         self.link.lock_recover().as_ref().map(|link| link.replays())
@@ -1083,7 +1083,7 @@ impl Engine {
     }
 
     /// Whether this device can ask its workspaces' hosts for what they retain: a session whose
-    /// collaboration plane is not running reads only what it holds.
+    /// peer network is not running reads only what it holds.
     #[must_use]
     pub fn reaches_host(&self) -> bool {
         self.link.lock_recover().is_some()
@@ -1690,7 +1690,7 @@ impl Engine {
         &self.owner
     }
 
-    /// What this device answers for the workspaces it holds, beside the planes its endpoint already
+    /// What this device answers for the workspaces it holds, beside the peer networks its endpoint already
     /// serves: the direct link their other devices sync on, and catch up from the frames this one
     /// kept.
     #[cfg(not(target_arch = "wasm32"))]
@@ -1720,7 +1720,7 @@ impl Engine {
     }
 
     /// Where `workspace` 's host is reached and the device its enrollment pins: the address its
-    /// live plane is dialled at.
+    /// live session is dialled at.
     #[cfg(target_os = "linux")]
     pub fn workspace_host(
         &self,
@@ -1759,7 +1759,7 @@ impl Engine {
             .collect()
     }
 
-    /// Where a read asks the workspaces' hosts for a record they send only once asked: the plane
+    /// Where a read asks the workspaces' hosts for a record they send only once asked: the peer network
     /// this session's channels travel on.
     pub fn attach_link(&self, link: Arc<workspace_keys::KeyLink>) {
         // The devices that take part in a workspace through this one hear its channels' governance
@@ -1779,7 +1779,7 @@ impl Engine {
     }
 
     /// Where this device's channels hear its workspaces' governance and tell which devices each
-    /// admits: the plane's side of them, `None` when this session runs no channel service.
+    /// admits: the peer network's side of them, `None` when this session runs no channel service.
     pub fn link(&self) -> Option<Arc<workspace_keys::KeyLink>> {
         self.link.lock_recover().clone()
     }
@@ -1983,7 +1983,7 @@ impl Engine {
 }
 
 /// What the broker's owner commits ask of this device's workspaces: the engine's owner is the
-/// canonical copy of every workspace it holds, and what it commits leaves on the plane's session
+/// canonical copy of every workspace it holds, and what it commits leaves on the peer network's session
 /// with the workspace's host.
 impl tilo_broker_core::custody::OwnerCustody for Engine {
     /// A held workspace whose host takes part in no channels: its records are documents the owner
@@ -2163,7 +2163,7 @@ mod tests {
     }
 
     /// A host whose own proof of custody this device's engine asks: these tests read what it asks
-    /// with, not the proof a desktop makes over the plane.
+    /// with, not the proof a desktop makes over the peer network.
     struct Kept;
 
     impl Custody for Kept {

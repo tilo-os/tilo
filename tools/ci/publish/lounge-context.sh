@@ -18,7 +18,7 @@ cp "$binaries/tilo-relay" "$binaries/discord-worker" "$out/bin/"
 cp -a "$fonts/." "$out/fonts/"
 cp apps/discord/bridge/program.json "$out/bots/discord-bridge.json"
 # Every version of each built-in app's surface.toml the apps' history holds, one
-# file per version: the relay publishes them into its content plane at start, so
+# file per version: the relay publishes them into its content store at start, so
 # a change written by an older version than this build runs is decided without
 # asking anybody.
 #

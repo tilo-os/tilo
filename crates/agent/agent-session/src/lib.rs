@@ -21,7 +21,7 @@
 //!   agent's relay session and ordered by the host with everyone else's;
 //!   browsers receive it live, attributed to the agent ([`member`]).
 //! - **Presence.** The agent publishes the record it focuses and a
-//!   member of kind agent on the live plane; browsers show it there,
+//!   member of kind agent on the live session; browsers show it there,
 //!   and it sees theirs.
 //! - **Steering.** Spawn, message, pause, resume, stop and status are
 //!   remote actions the host answers for the delegating user's devices

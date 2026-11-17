@@ -170,7 +170,7 @@ pub fn layout(workspace: &str, person: &str) -> Layout {
     }
 }
 
-/// A session of this computer taking part in the collaboration plane, keeping what it holds under
+/// A session of this computer taking part in the peer network, keeping what it holds under
 /// `state` , on the shell showing [`WORKSPACE`] owned by the person whose root key is `root`.
 pub fn hosted_session(state: &Path, root: &[u8; 32]) -> Session {
     let mut session = super::headless_on(

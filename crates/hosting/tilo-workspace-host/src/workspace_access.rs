@@ -1,19 +1,19 @@
 //! The one answer to "may this device act in this workspace now?".
 //!
-//! Every relay plane that admits a device into a workspace — subscribe, the
+//! Every relay protocol that admits a device into a workspace — subscribe, the
 //! access audit, state delivery, replay, remote actions, the browser live
-//! plane, content discovery, compute and environments — asks [`decide`] with
+//! protocol, content discovery, compute and environments — asks [`decide`] with
 //! its [`WorkspaceOperation`]. The rule is written once:
 //!
 //! 1. The certificate is current relay-wide ([`RelayTrust::cert`]): not
 //!    expired, not revoked, admitted by the live trust policy.
 //! 2. An agent device acts only inside its live delegation.
-//! 3. A host this workspace is attached to is admitted on the planes that carry
+//! 3. A host this workspace is attached to is admitted on the protocols that carry
 //!    its changes (subscribe, state, publish, replay), listed or not.
 //! 4. An exact member device — within any pending replacement's ceiling — or
 //!    a device of a user root the workspace's signed authority admits is admitted.
 //! 5. On a same-owner home host ([`AdmissionMode::SameOwner`]) the relay
-//!    owner's own devices are admitted, and enrolled where the plane enrols.
+//!    owner's own devices are admitted, and enrolled where the protocol enrols.
 //!    In a workspace this relay governs, a device of a person its governance
 //!    has as a member ([`person_device`]: a browser tab, a new computer of
 //!    theirs) is enrolled when it subscribes: governance records it under its
@@ -34,8 +34,8 @@
 //!   person, as any new device of theirs does, so the workspace's roster
 //!   holds it under its person;
 //! - in a governed workspace, its person is still a member;
-//! - and the plane is one an agent works on: subscribe, state, publish,
-//!   replay, channel access, remote actions, the live plane and content
+//! - and the protocol is one an agent works on: subscribe, state, publish,
+//!   replay, channel access, remote actions, the live session and content
 //!   discovery. Never compute, environments or governed membership, and
 //!   never by attachment or a same-owner host's enrolment.
 //!
@@ -51,20 +51,20 @@
 //! the workspace's person, and is no member: a page that escapes Chromium
 //! holds its key, so its rule replaces steps 4 to 6 as an agent's does. After
 //! step 1, it is admitted iff the relay registered it for this workspace
-//! ([`crate::environment`]), on the planes a window's session works on — and
-//! its one record is what it reaches within them: the state plane's replay,
+//! ([`crate::environment`]), on the protocols a window's session works on — and
+//! its one record is what it reaches within them: the state protocol's replay,
 //! live fan-out, opening and changes ask its scope what a frame's record is,
-//! and the live plane offers it no namespace but its own. A device whose
-//! environment stopped is refused by step 1 on every plane, as a revoked one
+//! and the live session offers it no namespace but its own. A device whose
+//! environment stopped is refused by step 1 on every protocol, as a revoked one
 //! is, until the certificate it was given expires: the register says so before
-//! anything is delisted, so no plane admits it in between.
+//! anything is delisted, so no protocol admits it in between.
 //!
 //! A public workspace is no exception to the rule: whoever visits it is a
 //! member of it with the role its owner gave them, and every device certified
 //! by that member's root is that member's device, admitted to the channels its
 //! records take part in like any other.
 //!
-//! And one plane admits a device to a workspace's governance itself:
+//! And one protocol admits a device to a workspace's governance itself:
 //! [`WorkspaceOperation::DelegateMembership`], a delegated agent of this relay's own
 //! user joining, as a governed member, a workspace this relay governs. Agents are
 //! members: each has its own device key, a certificate and a
@@ -78,7 +78,7 @@
 //! device that is no agent, an agent of another user, and any workspace this
 //! relay does not govern are refused; nothing is admitted by membership,
 //! enrolment or attachment. Being a governed member is what admits the agent
-//! to the workspace on the other planes and lets the workspace's key holders admit it
+//! to the workspace on the other protocols and lets the workspace's key holders admit it
 //! to the channels of its records.
 //!
 //! The workspace's admission mode is one value, so a governed workspace can never be
@@ -102,7 +102,7 @@ pub(crate) enum AdmissionMode {
     #[default]
     Explicit,
     /// Same-owner home host: the relay owner's devices are admitted, and
-    /// enrolled by the planes that enrol.
+    /// enrolled by the protocols that enrol.
     SameOwner,
     /// Native governance owns admission; nothing is ever auto-enrolled, and
     /// no later binding or autobind may relax it.
@@ -121,7 +121,7 @@ impl AdmissionMode {
     }
 }
 
-/// The plane asking. Planes differ only in the three properties below.
+/// The protocol asking. Protocols differ only in the three properties below.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum WorkspaceOperation {
     /// A subscribe, and the periodic audit of a live subscription.
@@ -130,13 +130,13 @@ pub enum WorkspaceOperation {
     /// request, or keeping a source's frames flowing.
     State,
     /// Taking a device's own frames into the workspace: a change or commit,
-    /// presence, record content, a compaction, or joining the live plane.
+    /// presence, record content, a compaction, or joining the live session.
     Publish,
     /// Replaying retained state to a subscriber.
     Replay,
-    /// A browser page's session in the workspace's live plane.
+    /// A browser page's session in the workspace's live session.
     Live,
-    /// A device asking one of the workspace's channels for access: the plane
+    /// A device asking one of the workspace's channels for access: the protocol
     /// its own key package arrives on (see the module documentation). The
     /// channel's group admits the devices its record's readers name.
     KeyAccess,
@@ -160,12 +160,12 @@ enum OwnerDevice {
     /// Admit it and persist it as a member.
     Enrol,
     Admit,
-    /// Refuse: this plane serves only devices already enrolled.
+    /// Refuse: this protocol serves only devices already enrolled.
     Refuse,
 }
 
 impl WorkspaceOperation {
-    /// Whether this plane carries a workspace's changes.
+    /// Whether this protocol carries a workspace's changes.
     const fn carries_changes(self) -> bool {
         matches!(
             self,
@@ -246,7 +246,7 @@ pub enum DenyReason {
     /// the one record the relay confines it to.
     OutOfEnvironmentScope,
     /// A hosted browser environment's device whose environment stopped: it
-    /// reaches nothing, and no plane admits it, until its certificate expires.
+    /// reaches nothing, and no protocol admits it, until its certificate expires.
     EnvironmentStopped,
     /// Governed membership as an agent asked for by a device that is no
     /// delegated agent of this relay's user, or for a workspace this relay does
@@ -328,9 +328,9 @@ impl RelayTrust<'_> {
         {
             return Err(DenyReason::CertExpired);
         }
-        // A device whose environment stopped is refused on every plane, as a
+        // A device whose environment stopped is refused on every protocol, as a
         // revoked one is, until the certificate it was given expires: this is
-        // the check every plane and every audit makes.
+        // the check every protocol and every audit makes.
         if matches!(
             self.environments.of(&peer.device_public_key, now_ns),
             Some(crate::environment::Environment::Stopped { .. })
@@ -492,7 +492,7 @@ pub(crate) fn listed(
         || workspace.lists(&peer.device_public_key)
 }
 
-/// The one admission decision for every plane, at the current time.
+/// The one admission decision for every protocol, at the current time.
 pub fn decide(
     workspace: &WorkspaceRuntime,
     trust: &RelayTrust<'_>,
@@ -586,10 +586,10 @@ pub fn person_device(cert: &tilo_user_identity::DeviceCert) -> bool {
 
 /// The rule for a hosted browser environment's device, whose scope the relay
 /// registered when it placed the environment ([`crate::environment`]): its one
-/// workspace, on the planes a window's session works on, and no other. Its
-/// record is narrower than a plane, so what a frame carries decides it: the
-/// state plane's replay, live fan-out, record opening and changes ask
-/// [`crate::environment::EnvironmentScope::reaches`], and the live plane
+/// workspace, on the protocols a window's session works on, and no other. Its
+/// record is narrower than a protocol, so what a frame carries decides it: the
+/// state protocol's replay, live fan-out, record opening and changes ask
+/// [`crate::environment::EnvironmentScope::reaches`], and the live session
 /// offers such a device no namespace of anyone else's.
 fn environment_decision(
     workspace: WorkspaceFacts<'_>,
@@ -605,7 +605,7 @@ fn environment_decision(
 
 /// The rule for an agent's grant whose certificate holds relay-wide (see the
 /// module): its person's agent, only where its scope reaches, it redeemed
-/// its person's invitation and its person is a member, on an agent's planes.
+/// its person's invitation and its person is a member, on an agent's protocols.
 fn grant_decision(
     workspace: WorkspaceFacts<'_>,
     peer: &AuthenticatedPeer,
@@ -619,7 +619,7 @@ fn grant_decision(
             WorkspaceId::parse(&scope.name()) == Some(here)
         }
     };
-    let agents_plane = matches!(
+    let agents_protocol = matches!(
         op,
         WorkspaceOperation::Subscribe
             | WorkspaceOperation::State
@@ -635,7 +635,7 @@ fn grant_decision(
             .runtime
             .governed_user_roots
             .contains(&peer.user_public_key);
-    if reaches && agents_plane && person_member && workspace.lists(&peer.device_public_key) {
+    if reaches && agents_protocol && person_member && workspace.lists(&peer.device_public_key) {
         Decision::Admit
     } else {
         Decision::Deny(DenyReason::NotAMember)

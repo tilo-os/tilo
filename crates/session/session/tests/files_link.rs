@@ -3,7 +3,7 @@
 //! bytes still travel both ways between the device and a peer elsewhere.
 //!
 //! The daemon here is the one `fs serve --session-link` runs, in this test's process: its link to
-//! the session, the content plane it serves and the hydrator it fetches with. The session is a
+//! the session, the content store it serves and the hydrator it fetches with. The session is a
 //! real device's, started as the login starts it.
 
 #![cfg(target_os = "linux")]

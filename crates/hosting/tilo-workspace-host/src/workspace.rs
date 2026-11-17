@@ -174,7 +174,7 @@ pub struct WorkspaceRuntime {
     /// right after the subscription it belongs to and dropped with it; a
     /// subscriber without one gets each presence on its frame queue.
     presence_mailboxes: HashMap<[u8; 32], Arc<crate::presence_mailbox::PresenceMailbox>>,
-    /// The devices on this workspace's live plane ([`Self::live_join`]):
+    /// The devices on this workspace's live session ([`Self::live_join`]):
     /// each is told of the others as they join and leave, so a device knows
     /// whom its host reaches for content and presence.
     live_members: HashSet<[u8; 32]>,
@@ -650,7 +650,7 @@ impl WorkspaceRuntime {
         Ok(())
     }
 
-    /// Add subscriber `device` to the live plane and tell the other live
+    /// Add subscriber `device` to the live session and tell the other live
     /// members. Returns the members already present. A device that is not
     /// subscribed cannot join.
     pub fn live_join(
@@ -673,14 +673,14 @@ impl WorkspaceRuntime {
         Some(existing)
     }
 
-    /// Remove `device` from the live plane and tell the remaining members.
+    /// Remove `device` from the live session and tell the remaining members.
     pub fn live_leave(&mut self, device: &[u8; 32], workspace_id: WorkspaceId) {
         if self.live_members.remove(device) {
             self.announce_live_member(*device, workspace_id, false);
         }
     }
 
-    /// Tell every other live member that `device` is on the plane (`active`)
+    /// Tell every other live member that `device` is on the live session (`active`)
     /// or left it. Ephemeral: a member notice lost to a full queue costs
     /// only a stale peer list, never a change.
     fn announce_live_member(&self, device: [u8; 32], workspace_id: WorkspaceId, active: bool) {

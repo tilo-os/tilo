@@ -20,7 +20,7 @@
 //! every governance decision and every second, so removing a member or
 //! ending a call ends their participation within one observation of the
 //! decision. The members' devices carry the call's media between them on the
-//! workspace's live plane (`tilo_live`), by the keys their participation and
+//! workspace's live session (`tilo_live`), by the keys their participation and
 //! the workspace's channels give them.
 //!
 //! A workspace this relay only carries, governed elsewhere or by no one (a

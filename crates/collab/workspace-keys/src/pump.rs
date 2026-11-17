@@ -104,7 +104,7 @@ impl Drop for GovernancePump {
 impl GovernancePump {
     /// Run `access`'s governance over `transport` on a thread named `name`,
     /// and `after_pass` after every pass: the host's own work that settles beside
-    /// the groups (a session tells the collaboration plane its rosters
+    /// the groups (a session tells the peer network its rosters
     /// there).
     ///
     /// Between passes the thread sleeps until it is poked

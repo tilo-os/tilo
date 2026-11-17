@@ -2,7 +2,7 @@
 //!
 //! A relay that hosts a workspace runs the workspace's shell on the member
 //! device holding its VM ([`crate::standalone::take_work`]). The member holds the
-//! workspace as any member does, so its device plane admits the relay's runs;
+//! workspace as any member does, so its device action service admits the relay's runs;
 //! the first time the relay asks about a workspace the member does not hold
 //! yet, the member asks the relay to enter it:
 //!
@@ -18,7 +18,7 @@
 //! its own person, with an invitation that names that person only. So a
 //! device of another person asking the member about a workspace it does not
 //! hold gets nothing from it: the invitation is not for its person, and once
-//! the member holds the workspace its plane refuses that device as it refuses
+//! the member holds the workspace its action service refuses that device as it refuses
 //! any stranger. A workspace no relay of this member's governs is refused by
 //! the relay, and the member remembers the refusal for a while rather than
 //! asking again for every request that names it.
@@ -46,7 +46,7 @@ const REFUSED_FOR: std::time::Duration = std::time::Duration::from_secs(30);
 /// that names many workspaces can grow what this member keeps.
 const KEPT_REFUSALS: usize = 64;
 
-/// The workspaces a member answers for, as its device plane reads them: those
+/// The workspaces a member answers for, as its device action service reads them: those
 /// it holds, and on a miss the one the relay it serves enters it into.
 pub(in crate::standalone) struct Entering {
     joined: Arc<Joined>,
@@ -75,7 +75,7 @@ impl Entering {
     /// refused it a moment ago.
     async fn enter(&self, workspace: &str) -> Result<(), String> {
         let Some(workspace) = WorkspaceId::parse(workspace) else {
-            return Err("the plane named no workspace".into());
+            return Err("the action service named no workspace".into());
         };
         if self.joined.owner.contains_workspace(workspace) {
             return Ok(());

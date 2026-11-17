@@ -243,7 +243,7 @@ fn control(node: &ui::a11y::AccessNode, name: &str) -> Option<String> {
 }
 
 fn session() -> Session {
-    // Headless tests take no part in the collaboration plane: no endpoint, no workspace.
+    // Headless tests take no part in the peer network: no endpoint, no workspace.
     crate::common::headless(Options {
         collab: false,
         ..Options::default()

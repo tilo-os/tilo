@@ -1,6 +1,6 @@
 //! A workspace's Browser opens in the workspace's VM: the relay asks the placer
 //! which host runs that VM, waits while none has room, then asks that host's
-//! member device over the device plane to open Browser, handing it what the
+//! member device over the device action service to open Browser, handing it what the
 //! session joins the workspace with. The member asks the hosted-VM service
 //! beside it to start the session in the VM.
 
@@ -179,7 +179,7 @@ async fn placed() -> Placed {
         legacy_vm::hosted::size::VmSize::Small,
     ));
     shells.ask_from(
-        hosted.host.workspaces().plane(),
+        hosted.host.workspaces().action_service(),
         hosted.router.endpoint().clone(),
     );
     Placed {

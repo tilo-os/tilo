@@ -1,4 +1,4 @@
-//! Ephemeral traffic the relay never keeps: the live plane's membership,
+//! Ephemeral traffic the relay never keeps: the live session's membership,
 //! presence, voice calls and record content handed to one device. Presence
 //! is every device's own, browser pages included.
 
@@ -8,7 +8,7 @@ use super::{
 use tilo_relay_protocol::WorkspaceId;
 
 /// Handle `RetiredLiveJoin`: add a subscribed device to the workspace's live
-/// plane and send it one `LiveMember` per member already present.
+/// live session and send it one `LiveMember` per member already present.
 pub(super) async fn handle_live_join(
     peer: &AuthenticatedPeer,
     session: &SessionCtx<'_>,
@@ -52,7 +52,7 @@ pub(super) async fn handle_live_join(
 }
 
 /// Why the subscription a live join needs was refused, when the host refused
-/// one. A page asks for the live plane right behind its subscription, so a
+/// one. A page asks for the live session right behind its subscription, so a
 /// refused subscription leaves this device unsubscribed too: it must hear the
 /// reason the subscription failed, not that a join needs a subscription it
 /// was never given.
@@ -330,7 +330,7 @@ pub(super) async fn handle_presence(
 /// subscribers. Only this host's own device speaks for its runs, and only
 /// with its signature over a run's word: anything else is dropped here, as
 /// every device drops it again on arrival. The frame never touches the live
-/// plane, so a host that is no member of it speaks without its keys.
+/// live session, so a host that is no member of it speaks without its keys.
 pub(super) async fn handle_host_said(
     peer: &AuthenticatedPeer,
     session: &SessionCtx<'_>,

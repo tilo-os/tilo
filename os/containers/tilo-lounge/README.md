@@ -19,7 +19,7 @@ the workspace through the ingress that forwards the workspace's origin to
 plain HTTP behind that ingress, which ends TLS.
 
 Pages reach the host over WebTransport, the browser's own transport: their
-session, certification and the live plane (live cursors, presence, window
+session, certification and the live session (live cursors, presence, window
 streams). It is HTTP/3 on UDP, which no HTTPS ingress carries, so the process
 listens on `TILO_WORKSPACES_LINK` and pages open their sessions at
 `TILO_WORKSPACES_LINK_ORIGIN`, a name that leads straight to that UDP port. The

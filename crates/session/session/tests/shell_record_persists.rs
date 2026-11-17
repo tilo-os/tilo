@@ -25,7 +25,7 @@ use std::time::Duration;
 
 use tilo_compositor::OutputConfig;
 use tilo_service::Questions;
-use tilo_session::{ActionPlane, Options, Session};
+use tilo_session::{AppSocket, Options, Session};
 
 const WIDTH: i32 = 1280;
 const HEIGHT: i32 = 800;
@@ -63,7 +63,7 @@ fn session(root: &Path, state: &Path) -> Session {
             collab: false,
             services: seeded,
             questions: Some(Questions::new()),
-            action_plane: ActionPlane::At(root.join("plane.sock")),
+            app_socket: AppSocket::At(root.join("app_wire.sock")),
             mcp_server: Some(root.join("agent.sock")),
             admit_repl: vec![program],
             state: Some(state.to_path_buf()),

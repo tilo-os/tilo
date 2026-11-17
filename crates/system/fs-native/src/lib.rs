@@ -1,4 +1,4 @@
-//! The native local data plane.
+//! The native local backend.
 //!
 //! Resident files are real files on a dedicated Btrfs store volume, so reads,
 //! writes, `stat` and `mmap` of them never leave the kernel; this crate holds

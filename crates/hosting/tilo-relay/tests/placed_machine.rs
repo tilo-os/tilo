@@ -1,6 +1,6 @@
 //! A workspace's Linux machine is branched and deleted on the VM host that
 //! holds it: the relay asks the placer where, then that host's member device,
-//! over the device plane as the relay's own device and in the workspace's name,
+//! over the device action service as the relay's own device and in the workspace's name,
 //! and the member asks its hosted-VM service on the service's own socket. A
 //! deletion asks the placer whether there is a machine at all, and forgets it
 //! there only once the member deleted it.
@@ -14,7 +14,7 @@ use std::sync::{Arc, Mutex};
 
 use legacy_vm::hosted::control::{self, Reply, Request, VmRequest};
 use legacy_vm::hosted::size::VmSize;
-use tilo_peer_state::actions::{ActionPlane, NoActions};
+use tilo_peer_state::actions::{ActionService, NoActions};
 use tilo_relay::placed_machines::PlacedMachines;
 use tilo_relay::placed_shells::{Member, Members, PlacedShells};
 use tilo_relay::workspaces::WorkspaceMachines as _;
@@ -138,7 +138,7 @@ async fn fleet() -> Fleet {
         VmSize::Small,
     ));
     shells.ask_from(
-        hosted.host.workspaces().plane(),
+        hosted.host.workspaces().action_service(),
         hosted.router.endpoint().clone(),
     );
     let machines = Arc::new(PlacedMachines::new(Arc::clone(&shells)));
@@ -296,7 +296,7 @@ async fn a_branch_the_member_refuses_fails_in_its_words() {
         VmSize::Small,
     ));
     posing.ask_from(
-        ActionPlane::new(stranger.sk.clone(), Arc::new(NoActions)),
+        ActionService::new(stranger.sk.clone(), Arc::new(NoActions)),
         stranger_endpoint,
     );
     let other = fleet.workspace("Other").await;

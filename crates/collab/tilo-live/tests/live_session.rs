@@ -1,10 +1,10 @@
-//! The live plane between native devices: a relay role on one device's own
-//! endpoint, planes on the others, sealed presence and audio through it, and
+//! The live session between native devices: a relay role on one device's own
+//! endpoint, live sessions on the others, sealed presence and audio through it, and
 //! a member removed from the workspace cut on the event.
 //!
-//! The relay and the planes here are the same code a session runs: the
+//! The relay and the live sessions here are the same code a session runs: the
 //! relay's ALPN handler is [`tilo_live::native::handler`] over
-//! [`Relay::serve_session`], the planes are [`Plane::join`] over
+//! [`Relay::serve_session`], the live sessions are [`LiveSession::join`] over
 //! [`tilo_live::native::Iroh`], and every object is sealed under the scope's
 //! channel content keys. Only the authority is the test's: it reads the grants
 //! the way a session's authority does from device certificates and the
@@ -30,11 +30,11 @@ use std::time::Duration;
 use iroh::endpoint::{Connection, VarInt};
 use iroh::{Endpoint, EndpointAddr, RelayMode};
 use key_group::{ContentKeys, KeyGroup, MemberKey};
-use tilo_live::frame::PlaneKeys;
+use tilo_live::frame::LiveKeys;
 use tilo_live::grant;
 use tilo_live::live::{self, Namespace, Track};
+use tilo_live::live_session::{self, Heard, Join, LiveError, LiveSession, MAX_HEARD};
 use tilo_live::native;
-use tilo_live::plane::{self, Heard, Join, MAX_HEARD, Plane, PlaneError};
 use tilo_live::relay::{
     Admission, AuthorizationStatus, Denied, Direction, MAX_ADMITTING, MAX_ADMITTING_OF_ONE,
     MAX_ADMITTING_STRANGERS, Peer, Relay, RelayAuthority, SessionAuthorization,
@@ -138,7 +138,7 @@ impl Authority {
         certificate
     }
 
-    /// The roster the planes open with.
+    /// The roster the live sessions open with.
     fn roster(&self) -> Roster {
         Roster::new(self.mates.lock().unwrap().keys().copied())
     }
@@ -254,7 +254,7 @@ fn grant_for(certificate: &[u8]) -> Vec<u8> {
     .encode()
 }
 
-fn join(device: [u8; 32], roster: Roster, keys: impl Into<PlaneKeys>) -> Join {
+fn join(device: [u8; 32], roster: Roster, keys: impl Into<LiveKeys>) -> Join {
     Join {
         scope: scope(),
         device,
@@ -265,7 +265,7 @@ fn join(device: [u8; 32], roster: Roster, keys: impl Into<PlaneKeys>) -> Join {
     }
 }
 
-/// The relay role on its own endpoint: the plane's ALPN handler on the
+/// The relay role on its own endpoint: the live session's ALPN handler on the
 /// session's router.
 fn serve(relay: &Relay, endpoint: &Endpoint) -> iroh::protocol::Router {
     let relay = relay.clone();
@@ -349,10 +349,10 @@ fn voice(sequence: u32, payload: &[u8]) -> Vec<u8> {
     .unwrap()
 }
 
-/// Everything `plane` heard on `track` so far.
-fn heard(plane: &Plane, track: Track) -> Vec<Heard> {
+/// Everything `live_session` heard on `track` so far.
+fn heard(live_session: &LiveSession, track: Track) -> Vec<Heard> {
     let mut bodies = Vec::new();
-    while let Some(heard) = plane.try_recv() {
+    while let Some(heard) = live_session.try_recv() {
         if heard.track == track {
             bodies.push(heard);
         }
@@ -376,17 +376,17 @@ async fn three_native_devices_exchange_sealed_presence_and_audio_through_a_relay
     let relay_key = *relay_endpoint.id().as_bytes();
     authority.admit_device(relay_key);
     let keys = keys();
-    let relay_plane =
-        Plane::local(&relay, &join(relay_key, authority.roster(), keys.clone())).unwrap();
+    let relay_live_session =
+        LiveSession::local(&relay, &join(relay_key, authority.roster(), keys.clone())).unwrap();
 
-    let a = Plane::join(
+    let a = LiveSession::join(
         Arc::new(native::Iroh::new(a_endpoint.clone(), addr(&relay_endpoint))),
         &grant_for(&a_cert),
         join(a_key, roster.clone(), keys.clone()),
     )
     .await
     .unwrap();
-    let b = Plane::join(
+    let b = LiveSession::join(
         Arc::new(native::Iroh::new(b_endpoint.clone(), addr(&relay_endpoint))),
         &grant_for(&b_cert),
         join(b_key, roster.clone(), keys.clone()),
@@ -396,7 +396,7 @@ async fn three_native_devices_exchange_sealed_presence_and_audio_through_a_relay
     wait_until("both sessions admitted", || relay.counters().accepted == 2);
 
     // Sealed presence: the relay copies it unread, and both the dialled
-    // device and the relay's own plane open it under the scope's keys.
+    // device and the relay's own live session open it under the scope's keys.
     a.publish(Track::Presence, 1, b"role=member").unwrap();
     wait_until("presence reaches the other device", || {
         heard(&b, Track::Presence)
@@ -404,7 +404,7 @@ async fn three_native_devices_exchange_sealed_presence_and_audio_through_a_relay
             .any(|object| object.body == b"role=member" && object.sender == a_key)
     });
     wait_until("presence reaches the relay's own device", || {
-        heard(&relay_plane, Track::Presence)
+        heard(&relay_live_session, Track::Presence)
             .iter()
             .any(|object| object.body == b"role=member" && object.sender == a_key)
     });
@@ -453,26 +453,26 @@ async fn three_native_devices_exchange_sealed_presence_and_audio_through_a_relay
     // reaches MoQ.
     let c_endpoint = endpoint().await;
     let c_key = *c_endpoint.id().as_bytes();
-    let refused = Plane::join(
+    let refused = LiveSession::join(
         Arc::new(native::Iroh::new(c_endpoint, addr(&relay_endpoint))),
         &grant_for(b"cert-not-on-the-roster"),
         join(c_key, authority.roster(), keys.clone()),
     )
     .await;
     assert!(
-        matches!(refused, Err(PlaneError::Denied)),
+        matches!(refused, Err(LiveError::Denied)),
         "refused at the preface"
     );
 
-    // The plane is not tied to one relay: when the appetite moves, the same
+    // The live session is not tied to one relay: when the appetite moves, the same
     // device joins the new relay and is heard there.
     let moved_endpoint = endpoint().await;
     let moved = Relay::new(authority.clone());
     let _moved_router = serve(&moved, &moved_endpoint);
     // The dial is the only handle to `a`'s iroh endpoint: dropping it closes
-    // the endpoint and the connection with it, so the plane keeps it for as
+    // the endpoint and the connection with it, so the live session keeps it for as
     // long as it runs.
-    let a_again = Plane::join(
+    let a_again = LiveSession::join(
         Arc::new(native::Iroh::new(a_endpoint, addr(&moved_endpoint))),
         &grant_for(&a_cert),
         join(a_key, authority.roster(), keys.clone()),
@@ -484,8 +484,8 @@ async fn three_native_devices_exchange_sealed_presence_and_audio_through_a_relay
     });
     let moved_key = *moved_endpoint.id().as_bytes();
     authority.admit_device(moved_key);
-    let moved_plane =
-        Plane::local(&moved, &join(moved_key, authority.roster(), keys.clone())).unwrap();
+    let moved_live_session =
+        LiveSession::local(&moved, &join(moved_key, authority.roster(), keys.clone())).unwrap();
     // Presence is a signal that repeats: one object published in the instant
     // between admission and the relay's forwarder attaching is not one a
     // subscriber is owed, so the test keeps sending while it waits.
@@ -495,15 +495,15 @@ async fn three_native_devices_exchange_sealed_presence_and_audio_through_a_relay
             .publish(Track::Presence, sequence, b"relay=moved")
             .unwrap();
         sequence = sequence.saturating_add(1);
-        heard(&moved_plane, Track::Presence)
+        heard(&moved_live_session, Track::Presence)
             .iter()
             .any(|object| object.body == b"relay=moved")
     });
-    assert_eq!(plane::TRACKS.len(), 3);
+    assert_eq!(live_session::TRACKS.len(), 3);
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_plane_seals_under_the_keys_it_now_holds() {
+async fn a_live_session_seals_under_the_keys_it_now_holds() {
     let authority = Authority::new();
     let (relay_endpoint, a_endpoint, b_endpoint) =
         (endpoint().await, endpoint().await, endpoint().await);
@@ -514,19 +514,19 @@ async fn a_plane_seals_under_the_keys_it_now_holds() {
     let _router = serve(&relay, &relay_endpoint);
 
     // `a` joins under the channel's first keys, `b` under the ones the
-    // channel moved to. The dials hold each device's endpoint, and each plane
+    // channel moved to. The dials hold each device's endpoint, and each live session
     // keeps its dial: dropping one closes the endpoint and the session with
-    // it, so they live as long as the planes.
+    // it, so they live as long as the live sessions.
     let first = keys();
     let next = keys();
-    let a = Plane::join(
+    let a = LiveSession::join(
         Arc::new(native::Iroh::new(a_endpoint, addr(&relay_endpoint))),
         &grant_for(&a_cert),
         join(a_key, roster.clone(), first),
     )
     .await
     .unwrap();
-    let b = Plane::join(
+    let b = LiveSession::join(
         Arc::new(native::Iroh::new(b_endpoint, addr(&relay_endpoint))),
         &grant_for(&b_cert),
         join(b_key, roster, next.clone()),
@@ -553,11 +553,11 @@ async fn a_plane_seals_under_the_keys_it_now_holds() {
 }
 
 /// A device where nothing shows people is sent none of their presence: its
-/// plane holds no subscription to it, while the activity note still arrives.
+/// live session holds no subscription to it, while the activity note still arrives.
 /// Once something shows people it reads presence again, from the newest word,
 /// and stops when that goes.
 #[tokio::test(flavor = "multi_thread")]
-async fn a_plane_that_hears_no_presence_is_sent_none() {
+async fn a_live_session_that_hears_no_presence_is_sent_none() {
     let authority = Authority::new();
     let (relay_endpoint, a_endpoint, b_endpoint) =
         (endpoint().await, endpoint().await, endpoint().await);
@@ -567,14 +567,14 @@ async fn a_plane_that_hears_no_presence_is_sent_none() {
     let relay = Relay::new(authority.clone());
     let _router = serve(&relay, &relay_endpoint);
     let keys = keys();
-    let a = Plane::join(
+    let a = LiveSession::join(
         Arc::new(native::Iroh::new(a_endpoint, addr(&relay_endpoint))),
         &grant_for(&a_cert),
         join(a_key, roster.clone(), keys.clone()),
     )
     .await
     .unwrap();
-    let b = Plane::join(
+    let b = LiveSession::join(
         Arc::new(native::Iroh::new(b_endpoint, addr(&relay_endpoint))),
         &grant_for(&b_cert),
         Join {
@@ -586,7 +586,7 @@ async fn a_plane_that_hears_no_presence_is_sent_none() {
     .unwrap();
     wait_until("both sessions admitted", || relay.counters().accepted == 2);
 
-    // Presence goes first, at the higher priority: a plane subscribed to it
+    // Presence goes first, at the higher priority: a live session subscribed to it
     // would have it by the time the note arrives.
     let said = |sequence: u32, at: &[u8], note: &[u8]| {
         a.publish(Track::Presence, sequence, at).unwrap();
@@ -623,11 +623,11 @@ async fn a_plane_that_hears_no_presence_is_sent_none() {
     );
 }
 
-/// A device the workspace admits while a plane is running is heard from
-/// then on: the plane started with the roster of the moment it joined, and
-/// the member arrives through [`Plane::set_roster`].
+/// A device the workspace admits while a live session is running is heard from
+/// then on: the live session started with the roster of the moment it joined, and
+/// the member arrives through [`LiveSession::set_roster`].
 #[tokio::test(flavor = "multi_thread")]
-async fn a_device_that_joins_the_roster_after_the_plane_started_is_heard() {
+async fn a_device_that_joins_the_roster_after_the_live_session_started_is_heard() {
     let authority = Authority::new();
     let (relay_endpoint, a_endpoint, b_endpoint) =
         (endpoint().await, endpoint().await, endpoint().await);
@@ -639,14 +639,14 @@ async fn a_device_that_joins_the_roster_after_the_plane_started_is_heard() {
 
     // `a` opens knowing only itself: the workspace had no other device
     // when it joined. `b` is admitted afterwards, and `a` is told so.
-    let a = Plane::join(
+    let a = LiveSession::join(
         Arc::new(native::Iroh::new(a_endpoint, addr(&relay_endpoint))),
         &grant_for(&a_cert),
         join(a_key, Roster::new([a_key]), keys.clone()),
     )
     .await
     .unwrap();
-    let b = Plane::join(
+    let b = LiveSession::join(
         Arc::new(native::Iroh::new(b_endpoint, addr(&relay_endpoint))),
         &grant_for(&b_cert),
         join(b_key, Roster::new([a_key, b_key]), keys.clone()),
@@ -659,22 +659,25 @@ async fn a_device_that_joins_the_roster_after_the_plane_started_is_heard() {
     // Presence repeats, so a subscription that attached a moment after the
     // roster moved is still proven by the next one.
     let mut sequence = 1;
-    wait_until("the plane hears the device that joined its roster", || {
-        b.publish(Track::Presence, sequence, b"joined=late")
-            .unwrap();
-        sequence = sequence.saturating_add(1);
-        heard(&a, Track::Presence)
-            .iter()
-            .any(|object| object.body == b"joined=late" && object.sender == b_key)
-    });
+    wait_until(
+        "the live session hears the device that joined its roster",
+        || {
+            b.publish(Track::Presence, sequence, b"joined=late")
+                .unwrap();
+            sequence = sequence.saturating_add(1);
+            heard(&a, Track::Presence)
+                .iter()
+                .any(|object| object.body == b"joined=late" && object.sender == b_key)
+        },
+    );
 }
 
 /// A device that joins after another has said its presence hears it
 /// within one frame of subscribing: the reader starts at the track's latest
 /// group, not at whatever is said next. Nothing is published again here, so a
-/// plane that only heard the next heartbeat could not pass.
+/// live session that only heard the next heartbeat could not pass.
 #[tokio::test(flavor = "multi_thread")]
-async fn a_plane_that_joins_after_presence_was_said_hears_it_without_a_new_one() {
+async fn a_live_session_that_joins_after_presence_was_said_hears_it_without_a_new_one() {
     let authority = Authority::new();
     let (relay_endpoint, a_endpoint, b_endpoint) =
         (endpoint().await, endpoint().await, endpoint().await);
@@ -685,7 +688,7 @@ async fn a_plane_that_joins_after_presence_was_said_hears_it_without_a_new_one()
     let _router = serve(&relay, &relay_endpoint);
     let keys = keys();
 
-    let a = Plane::join(
+    let a = LiveSession::join(
         Arc::new(native::Iroh::new(a_endpoint.clone(), addr(&relay_endpoint))),
         &grant_for(&a_cert),
         join(a_key, roster.clone(), keys.clone()),
@@ -704,7 +707,7 @@ async fn a_plane_that_joins_after_presence_was_said_hears_it_without_a_new_one()
     });
 
     let joined = std::time::Instant::now();
-    let b = Plane::join(
+    let b = LiveSession::join(
         Arc::new(native::Iroh::new(b_endpoint.clone(), addr(&relay_endpoint))),
         &grant_for(&b_cert),
         join(b_key, roster, keys),
@@ -740,11 +743,11 @@ async fn a_plane_that_joins_after_presence_was_said_hears_it_without_a_new_one()
     drop(b);
 }
 
-/// Everything `plane` heard on the presence track from `device` until `done`
+/// Everything `live_session` heard on the presence track from `device` until `done`
 /// holds of it, publishing through `say` between looks as a heartbeat would;
 /// `what` names the wait.
 async fn hear_until(
-    plane: &Plane,
+    live_session: &LiveSession,
     device: [u8; 32],
     what: &str,
     mut say: impl FnMut(),
@@ -761,7 +764,7 @@ async fn hear_until(
         say();
         tokio::time::sleep(Duration::from_millis(50)).await;
         drawn.extend(
-            heard(plane, Track::Presence)
+            heard(live_session, Track::Presence)
                 .into_iter()
                 .filter(|object| object.sender == device),
         );
@@ -770,14 +773,14 @@ async fn hear_until(
 }
 
 /// A device whose session ends and that joins again — `tilo mcp` run again on
-/// the same computer — is heard by a plane that stayed the whole time, every
+/// the same computer — is heard by a live session that stayed the whole time, every
 /// time. Each new session numbers its presence from one again, under the same
 /// name as the one before. Some sessions end before the next one joins, and
-/// the plane that stayed hears them leave; others are still held when the next
+/// the live session that stayed hears them leave; others are still held when the next
 /// one joins, as a killed process leaves its session until the relay notices,
 /// and the new one is heard all the same, and nothing of the old one after.
 #[tokio::test(flavor = "multi_thread")]
-async fn a_device_that_joins_again_is_heard_by_a_plane_that_stayed() {
+async fn a_device_that_joins_again_is_heard_by_a_live_session_that_stayed() {
     let authority = Authority::new();
     let (relay_endpoint, a_endpoint, b_endpoint) =
         (endpoint().await, endpoint().await, endpoint().await);
@@ -788,7 +791,7 @@ async fn a_device_that_joins_again_is_heard_by_a_plane_that_stayed() {
     let _router = serve(&relay, &relay_endpoint);
     let keys = keys();
     let session = || async {
-        Plane::join(
+        LiveSession::join(
             Arc::new(native::Iroh::new(a_endpoint.clone(), addr(&relay_endpoint))),
             &grant_for(&a_cert),
             join(a_key, roster.clone(), keys.clone()),
@@ -797,7 +800,7 @@ async fn a_device_that_joins_again_is_heard_by_a_plane_that_stayed() {
         .unwrap()
     };
     let first = session().await;
-    let b = Plane::join(
+    let b = LiveSession::join(
         Arc::new(native::Iroh::new(b_endpoint.clone(), addr(&relay_endpoint))),
         &grant_for(&b_cert),
         join(b_key, roster.clone(), keys.clone()),
@@ -821,7 +824,7 @@ async fn a_device_that_joins_again_is_heard_by_a_plane_that_stayed() {
         hear_until(
             &b,
             a_key,
-            &format!("run {run}: the plane that stayed never heard the device"),
+            &format!("run {run}: the live session that stayed never heard the device"),
             &mut say,
             |drawn| drawn.iter().any(|object| object.body == said),
         )
@@ -847,7 +850,7 @@ async fn a_device_that_joins_again_is_heard_by_a_plane_that_stayed() {
             .await;
             drop(a);
             // The old session goes as the relay notices it, and the new one is
-            // what the plane that stayed hears: the device is still here.
+            // what the live session that stayed hears: the device is still here.
             let mut later = Vec::new();
             let held = std::time::Instant::now();
             while held.elapsed() < Duration::from_secs(1) {
@@ -873,7 +876,7 @@ async fn a_device_that_joins_again_is_heard_by_a_plane_that_stayed() {
         hear_until(
             &b,
             a_key,
-            &format!("run {run}: the plane that stayed never heard the device leave"),
+            &format!("run {run}: the live session that stayed never heard the device leave"),
             || {},
             |drawn| drawn.iter().any(|object| object.body.is_empty()),
         )
@@ -881,11 +884,11 @@ async fn a_device_that_joins_again_is_heard_by_a_plane_that_stayed() {
     }
 }
 
-/// A carrier taken away under a plane mid-session — a Wi-Fi network that moved, a laptop that slept:
-/// the plane dials its relay again by itself, and while it is gone nobody it was reading is drawn as
+/// A carrier taken away under a live session mid-session — a Wi-Fi network that moved, a laptop that slept:
+/// the live session dials its relay again by itself, and while it is gone nobody it was reading is drawn as
 /// if they were still there. The member's next word arrives as soon as the carrier is back.
 #[tokio::test(flavor = "multi_thread")]
-async fn a_plane_whose_carrier_goes_away_dials_its_relay_again() {
+async fn a_live_session_whose_carrier_goes_away_dials_its_relay_again() {
     let authority = Authority::new();
     let (relay_endpoint, a_endpoint, b_endpoint) =
         (endpoint().await, endpoint().await, endpoint().await);
@@ -897,14 +900,14 @@ async fn a_plane_whose_carrier_goes_away_dials_its_relay_again() {
     let _router = serve_cuttable(&relay, &relay_endpoint, &carriers);
     let keys = keys();
 
-    let a = Plane::join(
+    let a = LiveSession::join(
         Arc::new(native::Iroh::new(a_endpoint.clone(), addr(&relay_endpoint))),
         &grant_for(&a_cert),
         join(a_key, roster.clone(), keys.clone()),
     )
     .await
     .unwrap();
-    let b = Plane::join(
+    let b = LiveSession::join(
         Arc::new(native::Iroh::new(b_endpoint.clone(), addr(&relay_endpoint))),
         &grant_for(&b_cert),
         join(b_key, roster.clone(), keys.clone()),
@@ -913,7 +916,7 @@ async fn a_plane_whose_carrier_goes_away_dials_its_relay_again() {
     .unwrap();
     wait_until("both sessions admitted", || relay.counters().accepted == 2);
 
-    // The member says where they are, and the other plane draws them there.
+    // The member says where they are, and the other live session draws them there.
     a.publish(Track::Presence, 1, b"at=12,34").unwrap();
     wait_until("the member is heard", || {
         heard(&b, Track::Presence)
@@ -921,9 +924,9 @@ async fn a_plane_whose_carrier_goes_away_dials_its_relay_again() {
             .any(|object| object.body == b"at=12,34" && object.sender == a_key)
     });
 
-    // The connection under the second plane goes away, as a dropped network does. It is not drawn
+    // The connection under the second live session goes away, as a dropped network does. It is not drawn
     // where they last were — they are said to have left as the session carrying them did — and the
-    // plane itself is not over.
+    // live session itself is not over.
     carriers.cut(b_key);
     wait_until("the member is no longer drawn", || {
         heard(&b, Track::Presence)
@@ -932,11 +935,11 @@ async fn a_plane_whose_carrier_goes_away_dials_its_relay_again() {
     });
     assert!(
         !b.ended(),
-        "the plane outlasts the carrier it was opened on"
+        "the live session outlasts the carrier it was opened on"
     );
 
-    // It dials the relay again, and the member's next word is drawn on the same plane.
-    wait_until("the plane dialled its relay again", || {
+    // It dials the relay again, and the member's next word is drawn on the same live session.
+    wait_until("the live session dialled its relay again", || {
         relay.counters().accepted >= 3
     });
     let mut drawn: Vec<Heard> = Vec::new();
@@ -948,7 +951,7 @@ async fn a_plane_whose_carrier_goes_away_dials_its_relay_again() {
     {
         assert!(
             since.elapsed() < Duration::from_secs(10),
-            "the member is not drawn again on the plane whose carrier came back, in {:?}: \
+            "the member is not drawn again on the live_session whose carrier came back, in {:?}: \
              {drawn:?}",
             since.elapsed()
         );
@@ -963,10 +966,10 @@ async fn a_plane_whose_carrier_goes_away_dials_its_relay_again() {
     }
     assert!(
         !b.ended(),
-        "the plane the member is drawn on is the one that lost its carrier"
+        "the live session the member is drawn on is the one that lost its carrier"
     );
 
-    // And the plane says again on the carrier it dialled: what this device publishes reaches the
+    // And the live session says again on the carrier it dialled: what this device publishes reaches the
     // member over the connection that replaced the one that went away.
     let mut sequence = 1;
     let since = std::time::Instant::now();
@@ -976,7 +979,7 @@ async fn a_plane_whose_carrier_goes_away_dials_its_relay_again() {
     {
         assert!(
             since.elapsed() < Duration::from_secs(10),
-            "the plane does not say on the carrier it dialled again, in {:?}",
+            "the live session does not say on the carrier it dialled again, in {:?}",
             since.elapsed()
         );
         b.publish(Track::Presence, sequence, b"shell=here").unwrap();
@@ -986,7 +989,7 @@ async fn a_plane_whose_carrier_goes_away_dials_its_relay_again() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_plane_let_go_closes_its_carrier() {
+async fn a_live_session_let_go_closes_its_carrier() {
     let authority = Authority::new();
     let (relay_endpoint, a_endpoint) = (endpoint().await, endpoint().await);
     let a_key = *a_endpoint.id().as_bytes();
@@ -995,7 +998,7 @@ async fn a_plane_let_go_closes_its_carrier() {
     let carriers = Carriers::default();
     let _router = serve_cuttable(&relay, &relay_endpoint, &carriers);
 
-    let a = Plane::join(
+    let a = LiveSession::join(
         Arc::new(native::Iroh::new(a_endpoint.clone(), addr(&relay_endpoint))),
         &grant_for(&a_cert),
         join(a_key, authority.roster(), keys()),
@@ -1005,7 +1008,7 @@ async fn a_plane_let_go_closes_its_carrier() {
     wait_until("the session admitted", || relay.counters().accepted == 1);
     let connection = carriers.connection(a_key);
 
-    // A device leaves the plane (the workspace went, its session started over): the connection it
+    // A device leaves the live session (the workspace went, its session started over): the connection it
     // dialled goes with it, long before the connection would idle out. One left open is kept,
     // with all it buffers, on both ends for as long as the device runs.
     drop(a);
@@ -1013,14 +1016,14 @@ async fn a_plane_let_go_closes_its_carrier() {
     while connection.close_reason().is_none() {
         assert!(
             since.elapsed() < Duration::from_secs(5),
-            "the carrier of a plane let go is still open after {:?}",
+            "the carrier of a live session let go is still open after {:?}",
             since.elapsed()
         );
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
 }
 
-/// One camera picture of `layer`, sealed and sent through `plane`.
+/// One camera picture of `layer`, sealed and sent through `live_session`.
 fn picture(
     layer: tilo_live::video::Layer,
     source: tilo_live::video::Source,
@@ -1051,10 +1054,10 @@ fn page_object(sequence: u64, whole: bool) -> tilo_live::page::PageObject {
     }
 }
 
-/// Everything `plane` received on `track` so far, decoded.
-fn pages(plane: &Plane, track: Track) -> Vec<tilo_live::page::PageObject> {
+/// Everything `live_session` received on `track` so far, decoded.
+fn pages(live_session: &LiveSession, track: Track) -> Vec<tilo_live::page::PageObject> {
     let mut objects = Vec::new();
-    while let Some(heard) = plane.try_recv() {
+    while let Some(heard) = live_session.try_recv() {
         if heard.track == track
             && let Ok(object) = tilo_live::page::PageObject::decode(&heard.body)
         {
@@ -1064,10 +1067,10 @@ fn pages(plane: &Plane, track: Track) -> Vec<tilo_live::page::PageObject> {
     objects
 }
 
-/// Everything `plane` received on `track` so far, decoded.
-fn pictures(plane: &Plane, track: Track) -> Vec<tilo_live::video::VideoObject> {
+/// Everything `live_session` received on `track` so far, decoded.
+fn pictures(live_session: &LiveSession, track: Track) -> Vec<tilo_live::video::VideoObject> {
     let mut objects = Vec::new();
-    while let Some(heard) = plane.try_recv() {
+    while let Some(heard) = live_session.try_recv() {
         if heard.track == track
             && let Ok(object) = tilo_live::video::VideoObject::decode(&heard.body)
         {
@@ -1093,14 +1096,14 @@ async fn a_peer_encodes_only_the_camera_layers_someone_shows() {
     let relay = Relay::new(authority.clone());
     let _router = serve(&relay, &relay_endpoint);
     let keys = keys();
-    let a = Plane::join(
+    let a = LiveSession::join(
         Arc::new(native::Iroh::new(a_endpoint.clone(), addr(&relay_endpoint))),
         &grant_for(&a_cert),
         join(a_key, roster.clone(), keys.clone()),
     )
     .await
     .unwrap();
-    let b = Plane::join(
+    let b = LiveSession::join(
         Arc::new(native::Iroh::new(b_endpoint.clone(), addr(&relay_endpoint))),
         &grant_for(&b_cert),
         join(b_key, roster, keys),
@@ -1160,7 +1163,7 @@ async fn a_peer_encodes_only_the_camera_layers_someone_shows() {
             Source::Camera,
             &picture(Layer::High, Source::Camera, sequence, true)
         ),
-        Err(plane::PlaneError::Unwanted)
+        Err(live_session::LiveError::Unwanted)
     );
 
     // Showing nothing stops the layer's encoding and its track.
@@ -1171,11 +1174,11 @@ async fn a_peer_encodes_only_the_camera_layers_someone_shows() {
             Source::Camera,
             &picture(Layer::Low, Source::Camera, sequence, true)
         ),
-        Err(plane::PlaneError::Unwanted)
+        Err(live_session::LiveError::Unwanted)
     );
 }
 
-/// A shared screen travels the plane as its own sealed track at the layer
+/// A shared screen travels the live session as its own sealed track at the layer
 /// shown, and a picture is published only while someone shows it: nothing of
 /// the screen is sent after the last viewer stops, which is what a locked
 /// screen's withdrawn share relies on.
@@ -1192,14 +1195,14 @@ async fn a_shared_screen_is_published_only_at_the_layer_shown() {
     let relay = Relay::new(authority.clone());
     let _router = serve(&relay, &relay_endpoint);
     let keys = keys();
-    let a = Plane::join(
+    let a = LiveSession::join(
         Arc::new(native::Iroh::new(a_endpoint.clone(), addr(&relay_endpoint))),
         &grant_for(&a_cert),
         join(a_key, roster.clone(), keys.clone()),
     )
     .await
     .unwrap();
-    let b = Plane::join(
+    let b = LiveSession::join(
         Arc::new(native::Iroh::new(b_endpoint.clone(), addr(&relay_endpoint))),
         &grant_for(&b_cert),
         join(b_key, roster, keys),
@@ -1258,11 +1261,11 @@ async fn a_shared_screen_is_published_only_at_the_layer_shown() {
             Source::Screen,
             &picture(Layer::Low, Source::Screen, sequence, true)
         ),
-        Err(plane::PlaneError::Unwanted)
+        Err(live_session::LiveError::Unwanted)
     );
 }
 
-/// One window's page travels the plane as its own sealed track: the publisher
+/// One window's page travels the live session as its own sealed track: the publisher
 /// sends it only while a member shows it, the member's first object is a whole
 /// frame, and a member that joins while the page is up starts at a whole frame
 /// too — never at a patch of a frame it does not hold.
@@ -1291,14 +1294,14 @@ async fn a_windows_page_travels_only_while_a_member_shows_it() {
     let relay = Relay::new(authority.clone());
     let _router = serve(&relay, &relay_endpoint);
     let keys = keys();
-    let a = Plane::join(
+    let a = LiveSession::join(
         Arc::new(native::Iroh::new(a_endpoint.clone(), addr(&relay_endpoint))),
         &grant_for(&a_cert),
         join(a_key, roster.clone(), keys.clone()),
     )
     .await
     .unwrap();
-    let b = Plane::join(
+    let b = LiveSession::join(
         Arc::new(native::Iroh::new(b_endpoint.clone(), addr(&relay_endpoint))),
         &grant_for(&b_cert),
         join(b_key, roster.clone(), keys.clone()),
@@ -1342,7 +1345,7 @@ async fn a_windows_page_travels_only_while_a_member_shows_it() {
 
     // A member that joins while the page is up starts at a whole frame: it
     // could not apply a change to a frame it never had.
-    let c = Plane::join(
+    let c = LiveSession::join(
         Arc::new(native::Iroh::new(c_endpoint.clone(), addr(&relay_endpoint))),
         &grant_for(&c_cert),
         join(c_key, roster, keys),
@@ -1369,7 +1372,7 @@ async fn a_windows_page_travels_only_while_a_member_shows_it() {
     });
     assert_eq!(
         a.send_page(TAB, &page_object(sequence, false)),
-        Err(PlaneError::Unwanted)
+        Err(LiveError::Unwanted)
     );
 }
 
@@ -1391,14 +1394,14 @@ async fn a_shared_window_travels_only_while_a_member_shows_it() {
     let relay = Relay::new(authority.clone());
     let _router = serve(&relay, &relay_endpoint);
     let keys = keys();
-    let a = Plane::join(
+    let a = LiveSession::join(
         Arc::new(native::Iroh::new(a_endpoint.clone(), addr(&relay_endpoint))),
         &grant_for(&a_cert),
         join(a_key, roster.clone(), keys.clone()),
     )
     .await
     .unwrap();
-    let b = Plane::join(
+    let b = LiveSession::join(
         Arc::new(native::Iroh::new(b_endpoint.clone(), addr(&relay_endpoint))),
         &grant_for(&b_cert),
         join(b_key, roster, keys),
@@ -1413,7 +1416,7 @@ async fn a_shared_window_travels_only_while_a_member_shows_it() {
     };
     assert_eq!(
         a.send_window(TAB, &window(0, true)),
-        Err(PlaneError::Unwanted),
+        Err(LiveError::Unwanted),
         "nobody shows the window: nothing of it is sent"
     );
 
@@ -1449,7 +1452,7 @@ async fn a_shared_window_travels_only_while_a_member_shows_it() {
     });
     assert_eq!(
         a.send_window(TAB, &window(sequence, true)),
-        Err(PlaneError::Unwanted)
+        Err(LiveError::Unwanted)
     );
 }
 
@@ -1490,14 +1493,14 @@ async fn a_device_on_its_own_media_keys_publishes_to_the_members_and_opens_nothi
             &[Stream::Presence.tag(), Stream::Page.tag()],
         )
         .unwrap();
-    let member = Plane::join(
+    let member = LiveSession::join(
         Arc::new(native::Iroh::new(member_endpoint, addr(&relay_endpoint))),
         &grant_for(&member_cert),
         join(member_key, roster.clone(), channel.clone()),
     )
     .await
     .unwrap();
-    let confined = Plane::join(
+    let confined = LiveSession::join(
         Arc::new(native::Iroh::new(confined_endpoint, addr(&relay_endpoint))),
         &grant_for(&confined_cert),
         join(confined_key, roster, handed),
@@ -1532,7 +1535,7 @@ async fn a_device_on_its_own_media_keys_publishes_to_the_members_and_opens_nothi
     // refused here rather than sealed under another device's key.
     assert_eq!(
         confined.publish(Track::Audio, 1, &voice(0, b"hello")),
-        Err(PlaneError::Refused(Refusal::NoKey(channel.epoch())))
+        Err(LiveError::Refused(Refusal::NoKey(channel.epoch())))
     );
 
     // Nothing the member seals is opened here, its presence included: the
@@ -1578,15 +1581,15 @@ async fn members(authority: &Authority, count: usize) -> Vec<Member> {
     members
 }
 
-/// `member` asks the relay at `relay` for the workspace's plane, and gives it `within`.
+/// `member` asks the relay at `relay` for the workspace's live session, and gives it `within`.
 async fn ask(
     member: Member,
     relay: EndpointAddr,
     roster: Roster,
     keys: ContentKeys,
     within: Duration,
-) -> Result<Plane, PlaneError> {
-    Plane::join_within(
+) -> Result<LiveSession, LiveError> {
+    LiveSession::join_within(
         Arc::new(native::Iroh::new(member.endpoint, relay)),
         &grant_for(&member.certificate),
         join(member.key, roster, keys),
@@ -1631,7 +1634,7 @@ async fn a_relay_admitting_as_many_sessions_as_it_takes_tells_the_next_it_is_bus
     let all = members(&authority, MAX_ADMITTING + 2).await;
     let (first, rest) = all.split_at(MAX_ADMITTING);
     let (seventeenth, eighteenth) = (&rest[0], &rest[1]);
-    // Every plane reads the two devices this test listens to at its end.
+    // Every live session reads the two devices this test listens to at its end.
     let roster = Roster::new([first[0].key, seventeenth.key]);
     // Devices the workspace does not hold: as many as wait in the strangers' places, and one more.
     let unknown = strangers(MAX_ADMITTING_STRANGERS + 1).await;
@@ -1663,7 +1666,7 @@ async fn a_relay_admitting_as_many_sessions_as_it_takes_tells_the_next_it_is_bus
     // One more is told the relay is busy, and the relay asked its authority nothing about it.
     assert_eq!(
         asks(seventeenth).await.err(),
-        Some(PlaneError::Busy),
+        Some(LiveError::Busy),
         "a member that arrives while sixteen are in admission is told the relay is busy"
     );
     assert_eq!(
@@ -1689,13 +1692,13 @@ async fn a_relay_admitting_as_many_sessions_as_it_takes_tells_the_next_it_is_bus
     // One more of them is told busy: busy says nothing about who asked.
     assert_eq!(
         asks(stranger).await.err(),
-        Some(PlaneError::Busy),
+        Some(LiveError::Busy),
         "a busy relay judges nobody, a device it would refuse included"
     );
     assert_eq!(authority.asked(), MAX_ADMITTING + MAX_ADMITTING_STRANGERS);
     assert_eq!(
         asks(seventeenth).await.err(),
-        Some(PlaneError::Busy),
+        Some(LiveError::Busy),
         "the strangers' places are no room for a member, as a member's are none for a stranger"
     );
 
@@ -1711,39 +1714,39 @@ async fn a_relay_admitting_as_many_sessions_as_it_takes_tells_the_next_it_is_bus
     });
     assert_eq!(
         asks(eighteenth).await.err(),
-        Some(PlaneError::Busy),
+        Some(LiveError::Busy),
         "the relay is at its bound again"
     );
 
     // Everyone the relay took into admission is judged: the members are let in, and so is the
     // member that was told busy, when it asks again; the strangers are refused.
     authority.let_through(4096);
-    let mut planes = Vec::new();
+    let mut live_sessions = Vec::new();
     for joining in admitting {
-        planes.push(
+        live_sessions.push(
             joining
                 .await
                 .unwrap()
                 .expect("a member the relay took into admission is admitted"),
         );
     }
-    planes.push(
+    live_sessions.push(
         next.await
             .unwrap()
             .expect("the member told busy is admitted when it asks again"),
     );
-    planes.push(
+    live_sessions.push(
         asks(eighteenth)
             .await
             .expect("the second member told busy is admitted when it asks again"),
     );
-    wait_until("every member is in the plane", || {
+    wait_until("every member is in the live session", || {
         admitted(&relay) == MAX_ADMITTING + 2
     });
     for judged in unjudged {
         assert_eq!(
             judged.await.unwrap().err(),
-            Some(PlaneError::Denied),
+            Some(LiveError::Denied),
             "a device the workspace does not hold is refused once it is judged"
         );
     }
@@ -1751,7 +1754,7 @@ async fn a_relay_admitting_as_many_sessions_as_it_takes_tells_the_next_it_is_bus
     // judges it: being told busy before changed nothing about who is let in.
     assert_eq!(
         asks(stranger).await.err(),
-        Some(PlaneError::Denied),
+        Some(LiveError::Denied),
         "a device the workspace does not hold is refused once the relay has room to judge it"
     );
     wait_until("the refusals are counted", || {
@@ -1764,15 +1767,15 @@ async fn a_relay_admitting_as_many_sessions_as_it_takes_tells_the_next_it_is_bus
         "four sessions were told busy, and every member is in"
     );
 
-    // The member that was told busy first is in the plane like any other: what it says reaches
+    // The member that was told busy first is in the live session like any other: what it says reaches
     // the first device.
     let mut sequence = 1;
     wait_until("the member told busy is heard", || {
-        planes[MAX_ADMITTING]
+        live_sessions[MAX_ADMITTING]
             .publish(Track::Presence, sequence, b"in=after-busy")
             .unwrap();
         sequence = sequence.saturating_add(1);
-        heard(&planes[0], Track::Presence)
+        heard(&live_sessions[0], Track::Presence)
             .iter()
             .any(|object| object.body == b"in=after-busy" && object.sender == seventeenth.key)
     });
@@ -1798,17 +1801,17 @@ async fn a_relay_that_goes_away_while_it_admits_a_session_was_not_reached() {
     router.shutdown().await.unwrap();
     assert_eq!(
         joining.await.unwrap().err(),
-        Some(PlaneError::Unavailable),
+        Some(LiveError::Unavailable),
         "a relay that went away mid-admission was not reached"
     );
     assert_eq!(relay.counters().busy, 0);
 }
 
-/// A plane whose carrier went away dials its relay again. A relay that is admitting as many
-/// sessions as it takes just then judged nobody, so the plane is not over: it keeps asking,
+/// A live session whose carrier went away dials its relay again. A relay that is admitting as many
+/// sessions as it takes just then judged nobody, so the live session is not over: it keeps asking,
 /// waiting longer each time, and is carried again once the relay has room.
 #[tokio::test(flavor = "multi_thread")]
-async fn a_plane_that_dials_a_busy_relay_again_keeps_asking_until_it_is_carried() {
+async fn a_live_session_that_dials_a_busy_relay_again_keeps_asking_until_it_is_carried() {
     let authority = Authority::holding();
     let relay_endpoint = endpoint().await;
     let relay = Relay::new(authority.clone());
@@ -1819,12 +1822,12 @@ async fn a_plane_that_dials_a_busy_relay_again_keeps_asking_until_it_is_carried(
     let all = members(&authority, MAX_ADMITTING + 1).await;
     let long = tilo_test_env::hang_bound();
     let (stayed, others) = all.split_first().unwrap();
-    // Every plane reads the two devices this test listens to at its end.
+    // Every live session reads the two devices this test listens to at its end.
     let roster = Roster::new([stayed.key, others[0].key]);
 
-    // One device is in the plane.
+    // One device is in the live session.
     authority.let_through(1);
-    let plane = ask(
+    let live_session = ask(
         stayed.clone(),
         at.clone(),
         roster.clone(),
@@ -1833,7 +1836,9 @@ async fn a_plane_that_dials_a_busy_relay_again_keeps_asking_until_it_is_carried(
     )
     .await
     .unwrap();
-    wait_until("the device is in the plane", || admitted(&relay) == 1);
+    wait_until("the device is in the live session", || {
+        admitted(&relay) == 1
+    });
 
     // Sixteen more arrive at once and are in admission when its carrier goes away, as when a
     // workspace's devices all come back together.
@@ -1853,12 +1858,13 @@ async fn a_plane_that_dials_a_busy_relay_again_keeps_asking_until_it_is_carried(
         authority.asked() == MAX_ADMITTING + 1
     });
     carriers.cut(stayed.key);
-    wait_until("the plane dialled the busy relay again, twice", || {
-        relay.counters().busy >= 2
-    });
+    wait_until(
+        "the live session dialled the busy relay again, twice",
+        || relay.counters().busy >= 2,
+    );
     assert!(
-        !plane.ended(),
-        "a plane outlasts a relay that had no room for it when it dialled again"
+        !live_session.ended(),
+        "a live session outlasts a relay that had no room for it when it dialled again"
     );
     assert_eq!(
         (authority.asked(), relay.counters().rejected),
@@ -1866,39 +1872,39 @@ async fn a_plane_that_dials_a_busy_relay_again_keeps_asking_until_it_is_carried(
         "the relay judged nobody while it was busy"
     );
 
-    // The relay has room again: the sixteen are let in, and the plane's next dial is taken.
+    // The relay has room again: the sixteen are let in, and the live session's next dial is taken.
     authority.let_through(4096);
-    let mut planes = Vec::new();
+    let mut live_sessions = Vec::new();
     for joining in admitting {
-        planes.push(joining.await.unwrap().unwrap());
+        live_sessions.push(joining.await.unwrap().unwrap());
     }
-    wait_until("the plane is carried again", || {
+    wait_until("the live session is carried again", || {
         admitted(&relay) == MAX_ADMITTING + 2
     });
     assert!(
-        !plane.ended(),
-        "the plane that is carried again is the one that lost its carrier"
+        !live_session.ended(),
+        "the live session that is carried again is the one that lost its carrier"
     );
     let mut sequence = 1;
-    wait_until("the plane says on the carrier it dialled", || {
-        plane
+    wait_until("the live session says on the carrier it dialled", || {
+        live_session
             .publish(Track::Presence, sequence, b"shell=back")
             .unwrap();
         sequence = sequence.saturating_add(1);
-        heard(&planes[0], Track::Presence)
+        heard(&live_sessions[0], Track::Presence)
             .iter()
             .any(|object| object.body == b"shell=back" && object.sender == stayed.key)
     });
 }
 
-/// `member` asks the relay at `relay` for the workspace's plane until it is in: a relay that is
+/// `member` asks the relay at `relay` for the workspace's live session until it is in: a relay that is
 /// admitting as many sessions as it takes judged nobody, and is asked again, as a session asks it.
 async fn ask_until_in(
     member: Member,
     relay: EndpointAddr,
     roster: Roster,
     keys: ContentKeys,
-) -> Plane {
+) -> LiveSession {
     let mut wait = Duration::from_millis(20);
     loop {
         let asked = ask(
@@ -1910,73 +1916,78 @@ async fn ask_until_in(
         )
         .await;
         match asked {
-            Ok(plane) => return plane,
-            Err(PlaneError::Busy) => {
+            Ok(live_session) => return live_session,
+            Err(LiveError::Busy) => {
                 tokio::time::sleep(wait).await;
                 wait = wait.saturating_mul(2).min(Duration::from_millis(500));
             }
-            Err(error) => panic!("a member was not taken into the plane: {error}"),
+            Err(error) => panic!("a member was not taken into the live session: {error}"),
         }
     }
 }
 
-/// The devices `plane` heard say something on their presence track since it was last asked,
+/// The devices `live_session` heard say something on their presence track since it was last asked,
 /// added to `heard`.
-fn hears(plane: &Plane, heard: &mut BTreeSet<[u8; 32]>) {
-    while let Some(object) = plane.try_recv() {
+fn hears(live_session: &LiveSession, heard: &mut BTreeSet<[u8; 32]>) {
+    while let Some(object) = live_session.try_recv() {
         if object.track == Track::Presence && !object.body.is_empty() {
             heard.insert(object.sender);
         }
     }
 }
 
-/// Have every plane of `planes` say where it is, again and again, until `done` says of what each
-/// of them heard that it is enough: who each plane heard, in the planes' order. `sequence`
-/// numbers what they say, across every call for the same planes. A wait past the suite's bound
+/// Have every live session of `live_sessions` say where it is, again and again, until `done` says of what each
+/// of them heard that it is enough: who each live session heard, in the live sessions' order. `sequence`
+/// numbers what they say, across every call for the same live sessions. A wait past the suite's bound
 /// fails with how many devices each heard and how many it says it does not hear.
 async fn said_until(
     what: &str,
-    planes: &[Plane],
+    live_sessions: &[LiveSession],
     sequence: &mut u32,
     mut done: impl FnMut(&[BTreeSet<[u8; 32]>]) -> bool,
 ) -> Vec<BTreeSet<[u8; 32]>> {
     let deadline = tilo_test_env::hang_deadline();
-    let mut heard = vec![BTreeSet::new(); planes.len()];
+    let mut heard = vec![BTreeSet::new(); live_sessions.len()];
     let mut said: Option<std::time::Instant> = None;
     loop {
         if said.is_none_or(|at| at.elapsed() >= Duration::from_secs(1)) {
-            // A track's objects are numbered upwards for as long as its plane lives.
+            // A track's objects are numbered upwards for as long as its live session lives.
             *sequence = sequence.saturating_add(1);
-            for plane in planes {
-                plane.publish(Track::Presence, *sequence, b"here").unwrap();
+            for live_session in live_sessions {
+                live_session
+                    .publish(Track::Presence, *sequence, b"here")
+                    .unwrap();
             }
             said = Some(std::time::Instant::now());
         }
-        for (plane, heard) in planes.iter().zip(heard.iter_mut()) {
-            hears(plane, heard);
+        for (live_session, heard) in live_sessions.iter().zip(heard.iter_mut()) {
+            hears(live_session, heard);
         }
         if done(&heard) {
             return heard;
         }
         assert!(
             std::time::Instant::now() < deadline,
-            "{what}: each plane heard {:?} devices and says of the rest {:?}",
+            "{what}: each live session heard {:?} devices and says of the rest {:?}",
             heard.iter().map(BTreeSet::len).collect::<Vec<_>>(),
-            planes.iter().map(Plane::unheard).collect::<Vec<_>>(),
+            live_sessions
+                .iter()
+                .map(LiveSession::unheard)
+                .collect::<Vec<_>>(),
         );
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
 }
 
-/// `devices` devices of one workspace in its plane through one relay, every one asking at once
+/// `devices` devices of one workspace in its live session through one relay, every one asking at once
 /// as the devices of a workspace do when its host comes back: the relay, which must outlive the
-/// planes, the devices and their planes.
-async fn a_plane_of(
+/// live sessions, the devices and their live sessions.
+async fn a_live_session_of(
     devices: usize,
 ) -> (
     (Relay, iroh::protocol::Router, Arc<Authority>),
     Vec<Member>,
-    Vec<Plane>,
+    Vec<LiveSession>,
 ) {
     let authority = Authority::new();
     let relay_endpoint = endpoint().await;
@@ -1997,26 +2008,26 @@ async fn a_plane_of(
             ))
         })
         .collect();
-    let mut planes = Vec::new();
+    let mut live_sessions = Vec::new();
     for joining in joining {
-        planes.push(joining.await.unwrap());
+        live_sessions.push(joining.await.unwrap());
     }
-    ((relay, serving, authority), all, planes)
+    ((relay, serving, authority), all, live_sessions)
 }
 
-/// As many devices as one plane reads, and the one that reads them: every one of them hears
+/// As many devices as one live session reads, and the one that reads them: every one of them hears
 /// every other, through a relay their endpoints reach with the few streams a connection is
 /// allowed before its session is admitted. Sixteen streams a connection, which is what the
 /// carrier's transport allowed before, let a device hear four others and left the rest unread
 /// without a word.
 #[tokio::test(flavor = "multi_thread")]
-async fn every_device_of_a_full_plane_hears_every_other() {
+async fn every_device_of_a_full_live_session_hears_every_other() {
     let devices = MAX_HEARD + 1;
-    let (_relay, members, planes) = a_plane_of(devices).await;
+    let (_relay, members, live_sessions) = a_live_session_of(devices).await;
     let mut sequence = 0;
     let heard = said_until(
         "every device hears every other",
-        &planes,
+        &live_sessions,
         &mut sequence,
         |heard| heard.iter().all(|heard| heard.len() == devices - 1),
     )
@@ -2029,37 +2040,39 @@ async fn every_device_of_a_full_plane_hears_every_other() {
             .collect();
         assert_eq!(heard, &others, "device {index} hears exactly the others");
     }
-    for (index, plane) in planes.iter().enumerate() {
+    for (index, live_session) in live_sessions.iter().enumerate() {
         assert_eq!(
-            plane.unheard(),
+            live_session.unheard(),
             0,
-            "device {index} reads every device that is in the plane"
+            "device {index} reads every device that is in the live session"
         );
     }
 }
 
-/// A plane reads [`MAX_HEARD`] devices at once. With more of them in the workspace, each device
+/// A live session reads [`MAX_HEARD`] devices at once. With more of them in the workspace, each device
 /// hears that many and says how many it does not hear and that they are beyond what it reads:
 /// nobody is absent without a word. Once devices go, the ones that were beyond are read in their
 /// place, and nothing is left unheard.
 #[tokio::test(flavor = "multi_thread")]
-async fn a_device_beyond_what_a_plane_reads_is_counted_and_read_once_there_is_room() {
+async fn a_device_beyond_what_a_live_session_reads_is_counted_and_read_once_there_is_room() {
     let beyond = 3;
     let devices = MAX_HEARD + 1 + beyond;
-    let (_relay, members, mut planes) = a_plane_of(devices).await;
+    let (_relay, members, mut live_sessions) = a_live_session_of(devices).await;
     let told = Arc::new(AtomicUsize::new(0));
     let counting = told.clone();
-    planes[0].set_unheard_changed(Arc::new(move || {
+    live_sessions[0].set_unheard_changed(Arc::new(move || {
         counting.fetch_add(1, Ordering::SeqCst);
     }));
     let mut sequence = 0;
     let heard = said_until(
         "every device hears as many as it reads and counts the rest",
-        &planes,
+        &live_sessions,
         &mut sequence,
         |heard| {
             heard.iter().all(|heard| heard.len() == MAX_HEARD)
-                && planes.iter().all(|plane| plane.unheard() == beyond)
+                && live_sessions
+                    .iter()
+                    .all(|live_session| live_session.unheard() == beyond)
         },
     )
     .await;
@@ -2067,20 +2080,20 @@ async fn a_device_beyond_what_a_plane_reads_is_counted_and_read_once_there_is_ro
         assert_eq!(
             heard.len(),
             MAX_HEARD,
-            "device {index} hears as many devices as a plane reads, and no more"
+            "device {index} hears as many devices as a live session reads, and no more"
         );
     }
 
     // As many devices as were beyond leave. Whoever read them reads the ones it did not hear in
     // their place, and whoever did not hear them has nobody left that it does not hear.
-    planes.truncate(devices - beyond);
+    live_sessions.truncate(devices - beyond);
     let stayed: BTreeSet<[u8; 32]> = members[..devices - beyond]
         .iter()
         .map(|member| member.key)
         .collect();
     said_until(
         "every device that stayed hears every other, and counts nobody as unheard",
-        &planes,
+        &live_sessions,
         &mut sequence,
         |heard| {
             heard.iter().zip(&members).all(|(heard, member)| {
@@ -2088,13 +2101,15 @@ async fn a_device_beyond_what_a_plane_reads_is_counted_and_read_once_there_is_ro
                     .iter()
                     .filter(|key| **key != member.key)
                     .all(|key| heard.contains(key))
-            }) && planes.iter().all(|plane| plane.unheard() == 0)
+            }) && live_sessions
+                .iter()
+                .all(|live_session| live_session.unheard() == 0)
         },
     )
     .await;
     assert!(
         told.load(Ordering::SeqCst) >= 2,
-        "a plane tells whoever reads it when the devices it does not hear change"
+        "a live session tells whoever reads it when the devices it does not hear change"
     );
 }
 
@@ -2114,7 +2129,7 @@ async fn endpoints_no_roster_names_cannot_keep_a_workspaces_devices_out() {
     let all = members(&authority, MAX_ADMITTING).await;
     let roster = authority.roster();
 
-    // Sixteen endpoints nobody knows open the plane's protocol and say nothing.
+    // Sixteen endpoints nobody knows open the live session's protocol and say nothing.
     let silent = strangers(MAX_ADMITTING).await;
     let mut holding = Vec::new();
     for stranger in &silent {
@@ -2148,13 +2163,13 @@ async fn endpoints_no_roster_names_cannot_keep_a_workspaces_devices_out() {
             ))
         })
         .collect();
-    let mut planes = Vec::new();
+    let mut live_sessions = Vec::new();
     for (index, joining) in joining.into_iter().enumerate() {
-        planes.push(joining.await.unwrap().unwrap_or_else(|error| {
+        live_sessions.push(joining.await.unwrap().unwrap_or_else(|error| {
             panic!("member {index} was kept out by endpoints nobody knows: {error}")
         }));
     }
-    wait_until("every member is in the plane", || {
+    wait_until("every member is in the live session", || {
         admitted(&relay) == MAX_ADMITTING
     });
     assert_eq!(
@@ -2168,8 +2183,10 @@ async fn endpoints_no_roster_names_cannot_keep_a_workspaces_devices_out() {
         "no member was told busy"
     );
     assert!(
-        planes.iter().all(|plane| !plane.ended()),
-        "every member's plane is carried"
+        live_sessions
+            .iter()
+            .all(|live_session| !live_session.ended()),
+        "every member's live session is carried"
     );
     assert_eq!(
         holding.len(),
@@ -2227,7 +2244,7 @@ async fn one_endpoint_holds_few_places_however_many_sessions_it_opens() {
     let mut waiting = Vec::new();
     for session in opened {
         if session.is_finished() {
-            assert_eq!(session.await.unwrap().err(), Some(PlaneError::Busy));
+            assert_eq!(session.await.unwrap().err(), Some(LiveError::Busy));
             told_busy += 1;
         } else {
             waiting.push(session);
@@ -2255,7 +2272,7 @@ async fn one_endpoint_holds_few_places_however_many_sessions_it_opens() {
     // Only now is the relay at its bound.
     assert_eq!(
         asks(&last[0]).await.err(),
-        Some(PlaneError::Busy),
+        Some(LiveError::Busy),
         "sixteen sessions of the workspace's devices are in admission"
     );
 

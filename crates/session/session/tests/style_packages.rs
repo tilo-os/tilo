@@ -92,7 +92,7 @@ fn make_it_mine_copies_strips_into_a_selectable_style() {
     let questions = tilo_service::Questions::new();
     let mut session = crate::common::headless(Options {
         collab: false,
-        action_plane: tilo_session::ActionPlane::At(root.path().join("plane.sock")),
+        app_socket: tilo_session::AppSocket::At(root.path().join("app_wire.sock")),
         mcp_server: Some(root.path().join("agent.sock")),
         admit_repl: vec![program],
         services: crate::common::seeded_apps(),
@@ -273,7 +273,7 @@ fn the_repl_makes_a_style_with_the_same_call() {
             collab: false,
             services: apps,
             questions: Some(questions),
-            action_plane: tilo_session::ActionPlane::At(root.path().join("plane.sock")),
+            app_socket: tilo_session::AppSocket::At(root.path().join("app_wire.sock")),
             mcp_server: Some(root.path().join("agent.sock")),
             admit_repl: vec![program],
             ..Options::default()

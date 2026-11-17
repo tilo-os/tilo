@@ -17,7 +17,7 @@ use super::*;
 use crate::workspace_bots::events::PersonEvents;
 
 /// One action on a person's events as `caller` takes it, through what the
-/// host's plane and an agent's turn both answer with.
+/// host's app action server and an agent's turn both answer with.
 fn take(
     events: &PersonEvents,
     workspace: &str,

@@ -189,7 +189,7 @@ pub enum Inbound {
         frame: Vec<u8>,
     },
     /// A device of the workspace joined (`active`) or left the host's live
-    /// plane: a member this device reaches through the host, which may
+    /// peer network: a member this device reaches through the host, which may
     /// hand over the content the workspace's records reference.
     Member {
         /// The device's public key.

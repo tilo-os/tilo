@@ -92,7 +92,7 @@ fn sent(said: &mut tokio::sync::mpsc::UnboundedReceiver<Cmd>) -> Vec<Cmd> {
 }
 
 /// One presence a peer said in `workspace` , as their frame on its presence track says it: this
-/// session takes frames from its plane, and one handed here is the same thing.
+/// session takes frames from its peer network, and one handed here is the same thing.
 fn presence(workspace: &str, payload: PeerPresencePayload) -> Option<Presence> {
     let payload = word(payload)?;
     Some(Presence::desktop(workspace, payload))
@@ -266,7 +266,7 @@ tilo_test_env::scenario! {
             .send(hello(2, 0x04, "Phone"))
             .expect("the transport hands what it heard");
         sync.follow();
-        // The device's own word arrives on the workspace's live plane, which this host's transport
+        // The device's own word arrives on the workspace's live session, which this host's transport
         // carries as the desktop's does.
         here(&sync, 2);
         named(&sync, 2, "Ana");
@@ -668,7 +668,7 @@ tilo_test_env::scenario! {
             1
         );
 
-        // A frame that names another workspace is that other workspace's, whatever plane it was heard
+        // A frame that names another workspace is that other workspace's, whatever peer network it was heard
         // on.
         let foreign = Presence {
             app: DESKTOP_APP.to_owned(),
@@ -961,7 +961,7 @@ tilo_test_env::scenario! {
     phase a_host_is_dialled_before_the_workspaces_it_carries;
     {
         let host = device(7);
-        let (sync, mut said) = Client::planeless(
+        let (sync, mut said) = Client::without_network(
             device(0xf0),
             OwnPresence::default(),
             vec![EndpointAddr::new(host)],
@@ -1017,7 +1017,7 @@ tilo_test_env::scenario! {
         let stated = OwnPresence {
             label: "Quinten".to_owned(),
             status: Some(tilo_live::presence::Status {
-                text: "Wiring the plane".to_owned(),
+                text: "Wiring the peer network".to_owned(),
                 automatic: false,
             }),
             ..OwnPresence::default()
@@ -1025,7 +1025,7 @@ tilo_test_env::scenario! {
         assert!(sync.set_own(stated.clone()));
         let said_payloads = payloads(&sync);
         assert!(said_payloads.contains(&Payload::Status {
-            text: "Wiring the plane".to_owned(),
+            text: "Wiring the peer network".to_owned(),
             automatic: false,
         }));
 
@@ -1287,7 +1287,7 @@ tilo_test_env::scenario! {
 
     phase a_page_and_a_shell_see_the_same_rows_and_lines_of_everyone_here;
     // A page and a native shell in one workspace, with an MCP agent of the shell's person acting there:
-    // each publishes its own presence on the workspace's live plane and reads everyone else's from
+    // each publishes its own presence on the workspace's live session and reads everyone else's from
     // it, and both list the agent as the same one row, in its colour, with what it is doing, and
     // each other's lines as their devices said them.
     {
@@ -1308,7 +1308,7 @@ tilo_test_env::scenario! {
             Some(("Editing ‘Plan’ in Notes", true)),
         ));
 
-        // Every device's certificate, then every frame, reaches the others over the plane.
+        // Every device's certificate, then every frame, reaches the others over the peer network.
         page.hear(hello(native_device, 1, "Framework"));
         page.hear(hello(agent_device, 1, "build-box"));
         native.hear(hello(page_device, 2, "Browser"));
@@ -1399,7 +1399,7 @@ fn a_browser_that_closes_without_a_word_leaves_who_is_here_within_seconds() {
             }
         }
     }
-    // Everyone's word reaches everyone else over the plane, each time anyone says one.
+    // Everyone's word reaches everyone else over the peer network, each time anyone says one.
     let carry = |clients: &[(u8, Client)]| {
         for (from, speaker) in clients {
             speaker.follow();
@@ -1481,7 +1481,7 @@ fn roster_rows(client: &Client) -> Vec<RosterRow> {
 /// rather than a colour the surface picks for it.
 const AGENT_COLOUR: (u8, u8, u8) = (0xd9, 0x77, 0x57);
 
-/// What the agent `tilo mcp` serves for person 1 says of itself on the plane, from `device`, the
+/// What the agent `tilo mcp` serves for person 1 says of itself on the peer network, from `device`, the
 /// way every agent does: a shell that is an agent, with the line it works on.
 fn mcp_agent_frames(device_seed: u8) -> Vec<Presence> {
     let mut agent =
@@ -1708,7 +1708,7 @@ fn resource_of(app: &str) -> tilo_relay_protocol::live::LiveResource {
     }
 }
 
-/// A narrated action of the run `run` in `app`, as the live plane carries it, and the device that
+/// A narrated action of the run `run` in `app`, as the live session carries it, and the device that
 /// spoke it: the frame a device of the workspace hands a session.
 fn narration_of(
     run: &str,
@@ -1736,7 +1736,7 @@ tilo_test_env::scenario! {
     fn a_persons_own_agent_at_work_is_brought_into_view_here;
 
     phase the_narrated_action_of_the_persons_own_agent_brings_its_window_into_view;
-    // An agent's action reaches a device's session as its narration does on the live plane: the
+    // An agent's action reaches a device's session as its narration does on the live session: the
     // window the person's own agent works in comes into view, so they see what it does, and the
     // cursor it drew stands where it acted.
     {

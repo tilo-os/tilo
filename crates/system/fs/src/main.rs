@@ -128,9 +128,9 @@ struct SocketArgs {
     session_link: Option<PathBuf>,
 }
 
-/// Which local data plane serves the workspace.
+/// Which local backend serves the workspace.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, clap::ValueEnum)]
-enum DataPlaneChoice {
+enum BackendChoice {
     /// The native tree (Tier 1) when the store volume and kernel support
     /// it, else FUSE.
     #[default]
@@ -141,17 +141,17 @@ enum DataPlaneChoice {
     Native,
 }
 
-/// Where and how the Tier 1 data plane runs.
+/// Where and how the Tier 1 backend runs.
 #[derive(Args, Debug, Clone)]
-struct DataPlaneArgs {
-    /// Local data plane: `auto` serves the native tree when the store volume and kernel support it.
-    #[arg(long, value_enum, default_value_t = DataPlaneChoice::Auto)]
-    data_plane: DataPlaneChoice,
+struct BackendArgs {
+    /// Local backend: `auto` serves the native tree when the store volume and kernel support it.
+    #[arg(long, value_enum, default_value_t = BackendChoice::Auto)]
+    backend: BackendChoice,
     /// Root of the dedicated Btrfs store volume holding the native workspace
     /// trees.
     #[arg(long, value_name = "DIR", default_value = "/var/lib/tilo/store")]
     store: PathBuf,
-    /// Owner (`UID:GID`) of the workspace's files, the local person: the native data plane materialises them as theirs (default: the workspace directory's owner), and FUSE presents them as theirs (default: the caller).
+    /// Owner (`UID:GID`) of the workspace's files, the local person: the native backend materialises them as theirs (default: the workspace directory's owner), and FUSE presents them as theirs (default: the caller).
     #[arg(long, value_name = "UID:GID")]
     native_owner: Option<String>,
     /// Remote files up to this many bytes are fetched before they appear; larger ones start as placeholders.
@@ -162,10 +162,10 @@ struct DataPlaneArgs {
     lease_authority: bool,
 }
 
-impl Default for DataPlaneArgs {
+impl Default for BackendArgs {
     fn default() -> Self {
         Self {
-            data_plane: DataPlaneChoice::Fuse,
+            backend: BackendChoice::Fuse,
             store: PathBuf::from("/var/lib/tilo/store"),
             native_owner: None,
             native_eager_bytes: 1024 * 1024,
@@ -216,7 +216,7 @@ enum Command {
         #[command(flatten)]
         acl: AclArgs,
         #[command(flatten)]
-        data_plane: DataPlaneArgs,
+        backend: BackendArgs,
     },
     /// Join a workspace shared by a peer (via its ticket) and mount it.
     Mount {
@@ -234,7 +234,7 @@ enum Command {
         #[command(flatten)]
         acl: AclArgs,
         #[command(flatten)]
-        data_plane: DataPlaneArgs,
+        backend: BackendArgs,
     },
     /// Run the per-user cloud account service: one mount per enabled
     /// cloud storage account under `--mounts-root` (`~/Remote`).
@@ -395,7 +395,7 @@ async fn run_command(cli: Cli) -> Result<()> {
             seed,
             sockets,
             acl,
-            data_plane,
+            backend,
         } => {
             if require_existing_workspace {
                 let cache = cache_dir
@@ -403,15 +403,7 @@ async fn run_command(cli: Cli) -> Result<()> {
                     .context("recovery requires --cache-dir")?;
                 workspace_startup::inspect(cache)?.require_existing()?;
             }
-            Box::pin(serve(
-                mount_point,
-                cache_dir,
-                seed,
-                sockets,
-                acl,
-                data_plane,
-            ))
-            .await
+            Box::pin(serve(mount_point, cache_dir, seed, sockets, acl, backend)).await
         }
         Command::Mount {
             mount_point,
@@ -419,8 +411,8 @@ async fn run_command(cli: Cli) -> Result<()> {
             cache_dir,
             sockets,
             acl,
-            data_plane,
-        } => mount(mount_point, ticket, cache_dir, sockets, acl, data_plane).await,
+            backend,
+        } => mount(mount_point, ticket, cache_dir, sockets, acl, backend).await,
         #[cfg(target_os = "linux")]
         Command::CloudService {
             mounts_root,
@@ -744,42 +736,37 @@ async fn open_store(cache_dir: Option<PathBuf>) -> Result<ContentStore> {
     }
 }
 
-/// [`open_store`] for a mount that may serve the native data plane: its file-backed content
+/// [`open_store`] for a mount that may serve the native backend: its file-backed content
 /// lives on the store volume next to the workspace, so publishing a file and filling a
 /// placeholder share extents instead of copying them.
 async fn open_workspace_store(
     cache_dir: Option<PathBuf>,
-    data_plane: &DataPlaneArgs,
+    backend: &BackendArgs,
     workspace: uuid::Uuid,
 ) -> Result<ContentStore> {
     let Some(dir) = cache_dir else {
         return Ok(ContentStore::memory());
     };
-    match native_content_dir(data_plane, workspace) {
+    match native_content_dir(backend, workspace) {
         Some(files) => ContentStore::open_with_files(dir, &files).await,
         None => ContentStore::open(dir).await,
     }
 }
 
-/// `<store>/.content/<workspace>` when the native data plane may run on a
+/// `<store>/.content/<workspace>` when the native backend may run on a
 /// dedicated store volume.
 #[cfg(target_os = "linux")]
-fn native_content_dir(data_plane: &DataPlaneArgs, workspace: uuid::Uuid) -> Option<PathBuf> {
-    if data_plane.data_plane == DataPlaneChoice::Fuse
-        || fs_native::store::check_dedicated(&data_plane.store).is_err()
+fn native_content_dir(backend: &BackendArgs, workspace: uuid::Uuid) -> Option<PathBuf> {
+    if backend.backend == BackendChoice::Fuse
+        || fs_native::store::check_dedicated(&backend.store).is_err()
     {
         return None;
     }
-    Some(
-        data_plane
-            .store
-            .join(".content")
-            .join(workspace.to_string()),
-    )
+    Some(backend.store.join(".content").join(workspace.to_string()))
 }
 
 #[cfg(not(target_os = "linux"))]
-fn native_content_dir(_data_plane: &DataPlaneArgs, _workspace: uuid::Uuid) -> Option<PathBuf> {
+fn native_content_dir(backend: &BackendArgs, _workspace: uuid::Uuid) -> Option<PathBuf> {
     None
 }
 
@@ -867,7 +854,7 @@ fn bootstrap_peers(
 }
 
 /// A daemon can serve either its own workspace or exactly one discovered remote workspace.
-/// Refuse ambiguous persisted state instead of combining record planes: records are signed
+/// Refuse ambiguous persisted state instead of combining record backends: records are signed
 /// against a workspace UUID, so an arbitrary ticket could make a member read the wrong
 /// namespace.
 fn persisted_remote_workspace_ticket(cache_dir: Option<&Path>) -> Result<Option<Ticket>> {
@@ -1257,7 +1244,7 @@ async fn serve(
     seed: Option<PathBuf>,
     sockets: SocketArgs,
     acl_args: AclArgs,
-    data_plane: DataPlaneArgs,
+    backend: BackendArgs,
 ) -> Result<()> {
     let SocketArgs {
         storage_sock,
@@ -1297,7 +1284,7 @@ async fn serve(
         || Ticket::workspace_id_for_topic(*net.id().as_bytes()),
         Ticket::workspace_id,
     );
-    let store = Arc::new(open_workspace_store(cache_dir.clone(), &data_plane, workspace_id).await?);
+    let store = Arc::new(open_workspace_store(cache_dir.clone(), &backend, workspace_id).await?);
     let author = net.id().to_string();
     let hydrator = Arc::new(Hydrator::new(net.clone(), store.clone()));
     if let Some(cache_dir) = cache_dir.as_deref() {
@@ -1415,7 +1402,7 @@ async fn serve(
         .as_ref()
         .and(content_socket)
         .map(ServedSocket);
-    // A discovered NAS ticket changes the namespace and record-plane UUID. FUSE and router state
+    // A discovered NAS ticket changes the namespace and record-backend UUID. FUSE and router state
     // cannot safely swap that identity in place, so the managed mount acknowledges the durable
     // registration and returns a rebind outcome; systemd starts the joined service again.
     let workspace_args = workspace_authority
@@ -1483,7 +1470,7 @@ async fn serve(
             allow_history_baseline,
             storage_sock,
             read_only: false,
-            data_plane: Some((data_plane, *history_actor.device.as_bytes())),
+            backend: Some((backend, *history_actor.device.as_bytes())),
         },
         MountServices {
             namespace: namespace.clone(),
@@ -1527,7 +1514,7 @@ async fn mount(
     cache_dir: Option<PathBuf>,
     sockets: SocketArgs,
     acl_args: AclArgs,
-    data_plane: DataPlaneArgs,
+    backend: BackendArgs,
 ) -> Result<()> {
     let SocketArgs {
         storage_sock,
@@ -1560,9 +1547,8 @@ async fn mount(
     let _reload = caps
         .map(|c| spawn_acl_reload(c, acl_args.acl_once))
         .transpose()?;
-    let store = Arc::new(
-        open_workspace_store(cache_dir.clone(), &data_plane, ticket.workspace_id()).await?,
-    );
+    let store =
+        Arc::new(open_workspace_store(cache_dir.clone(), &backend, ticket.workspace_id()).await?);
     let hydrator = Arc::new(Hydrator::new(net.clone(), store.clone()));
     let author = net.id().to_string();
     let bootstrap = bootstrap_peers(&ticket, cache_dir.as_deref())?;
@@ -1625,7 +1611,7 @@ async fn mount(
             allow_history_baseline: false,
             storage_sock,
             read_only: false,
-            data_plane: Some((data_plane, *history_actor.device.as_bytes())),
+            backend: Some((backend, *history_actor.device.as_bytes())),
         },
         MountServices {
             namespace: namespace.clone(),
@@ -1818,7 +1804,7 @@ fn fuse_worker_threads() -> usize {
 
 /// Where and how [`run_mount`] mounts a workspace: the workspace its history is checked against,
 /// the mount point and cache root, optional thumbnail, share-control and storage-accounting
-/// endpoints, and the data plane.
+/// endpoints, and the backend.
 struct MountConfig {
     checked_history_workspace: uuid::Uuid,
     mount_point: PathBuf,
@@ -1830,7 +1816,7 @@ struct MountConfig {
     allow_history_baseline: bool,
     storage_sock: Option<PathBuf>,
     read_only: bool,
-    data_plane: Option<(DataPlaneArgs, [u8; 32])>,
+    backend: Option<(BackendArgs, [u8; 32])>,
 }
 
 struct MountServices {
@@ -1861,7 +1847,7 @@ async fn run_mount(config: MountConfig, services: MountServices) -> Result<Mount
         allow_history_baseline,
         storage_sock,
         read_only,
-        data_plane,
+        backend,
     } = config;
     let MountServices {
         namespace,
@@ -2040,7 +2026,7 @@ async fn run_mount(config: MountConfig, services: MountServices) -> Result<Mount
             }
         });
 
-    // Both planes: the native plane after each changeset, FUSE on `fsync`
+    // Both backends: the native backend after each changeset, FUSE on `fsync`
     // and `fsyncdir`.
     if let Some(path) = durable_namespace_path {
         fs.set_durability_hook(Arc::new(move || {
@@ -2048,7 +2034,7 @@ async fn run_mount(config: MountConfig, services: MountServices) -> Result<Mount
         }));
     }
     #[cfg(target_os = "linux")]
-    if let Some((args, device)) = data_plane.as_ref()
+    if let Some((args, device)) = backend.as_ref()
         && let Some(cfg) = native_config(
             args,
             *device,
@@ -2065,7 +2051,7 @@ async fn run_mount(config: MountConfig, services: MountServices) -> Result<Mount
         return outcome;
     }
     #[cfg(not(target_os = "linux"))]
-    let _ = &data_plane;
+    let _ = &backend;
 
     // Kernel passthrough for fully local read-only opens is opt-in while the backing files are a
     // per-open materialisation of the chunk store.
@@ -2076,9 +2062,9 @@ async fn run_mount(config: MountConfig, services: MountServices) -> Result<Mount
         Some(root) => fs.with_passthrough(root.join("passthrough")),
         None => fs,
     };
-    // The local person owns the files on either plane; without one named,
+    // The local person owns the files on either backend; without one named,
     // FUSE presents each caller as their owner.
-    let owner = data_plane
+    let owner = backend
         .as_ref()
         .and_then(|(args, _)| args.native_owner.as_deref())
         .map(parse_owner)
@@ -2192,22 +2178,22 @@ async fn run_mount(config: MountConfig, services: MountServices) -> Result<Mount
     Ok(outcome)
 }
 
-/// Chooses the data plane and, for Tier 1, its configuration. `None` means the FUSE data plane
+/// Chooses the backend and, for Tier 1, its configuration. `None` means the FUSE backend
 /// serves the workspace.
 #[cfg(target_os = "linux")]
 fn native_config(
-    args: &DataPlaneArgs,
+    args: &BackendArgs,
     device: [u8; 32],
     workspace: uuid::Uuid,
     mount_point: &Path,
     cache_dir: Option<&Path>,
     read_only: bool,
 ) -> Result<Option<fs::native::NativeConfig>> {
-    use fs::native::DataPlane;
-    let choice = match args.data_plane {
-        DataPlaneChoice::Auto => DataPlane::Auto,
-        DataPlaneChoice::Fuse => DataPlane::Fuse,
-        DataPlaneChoice::Native => DataPlane::Native,
+    use fs::native::Backend;
+    let choice = match args.backend {
+        BackendChoice::Auto => Backend::Auto,
+        BackendChoice::Fuse => Backend::Fuse,
+        BackendChoice::Native => Backend::Native,
     };
     let selection = match (cache_dir, read_only) {
         (_, true) => fs::native::TierSelection {
@@ -2220,7 +2206,7 @@ fn native_config(
         (None, _) => fs::native::TierSelection {
             native: false,
             store: args.store.clone(),
-            reasons: vec!["no cache directory to keep the native plane's state in".into()],
+            reasons: vec!["no cache directory to keep the native backend's state in".into()],
             report: None,
             probe_time: Duration::ZERO,
         },
@@ -2231,9 +2217,9 @@ fn native_config(
         eprint!("{report}");
     }
     if !selection.native {
-        if choice == DataPlane::Native {
+        if choice == Backend::Native {
             bail!(
-                "the native data plane was requested but is unavailable: {}",
+                "the native backend was requested but is unavailable: {}",
                 selection.reasons.join("; ")
             );
         }
@@ -2268,8 +2254,8 @@ async fn run_native(
     let content = Arc::clone(&fs.hydrator);
     let hydrator = Arc::clone(&fs.hydrator);
     let runtime = tokio::runtime::Handle::current();
-    let plane = tokio::task::spawn_blocking(move || {
-        fs::native::NativePlane::start(cfg, fs, content, runtime)
+    let backend = tokio::task::spawn_blocking(move || {
+        fs::native::NativeBackend::start(cfg, fs, content, runtime)
     })
     .await??;
     let outcome = tokio::select! {
@@ -2286,12 +2272,12 @@ async fn run_native(
             println!("Content peer registration requested a clean workspace rebind.");
             MountOutcome::RebindRequested
         }
-        () = plane.finished() => {
-            eprintln!("the native data plane stopped");
+        () = backend.finished() => {
+            eprintln!("the native backend stopped");
             MountOutcome::Unmounted
         }
     };
-    tokio::task::spawn_blocking(move || plane.stop()).await??;
+    tokio::task::spawn_blocking(move || backend.stop()).await??;
     let (ranged, blobs) = hydrator.received_bytes();
     println!("Content received from peers: {ranged} bytes in ranges, {blobs} bytes as blobs");
     println!("Workspace unmounted.");

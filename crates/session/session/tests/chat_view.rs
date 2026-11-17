@@ -21,7 +21,7 @@
 
 use serde_json::{Map, Value, json};
 use tilo_compositor::OutputConfig;
-use tilo_session::{ActionPlane, Options, Session};
+use tilo_session::{AppSocket, Options, Session};
 
 /// The channel the test places: the demo workspace's `#design-crit`, as Chat's demo publishes
 /// it.
@@ -49,7 +49,7 @@ fn session(root: &std::path::Path) -> Session {
             collab: false,
             services,
             questions: Some(tilo_service::Questions::new()),
-            action_plane: ActionPlane::At(root.join("plane.sock")),
+            app_socket: AppSocket::At(root.join("app_wire.sock")),
             mcp_server: Some(root.join("agent.sock")),
             admit_repl: vec![program],
             test_control: Some(root.join("test-control.sock")),

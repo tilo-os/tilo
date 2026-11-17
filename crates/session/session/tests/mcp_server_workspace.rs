@@ -40,7 +40,7 @@ use tilo_mcp::devices::{ALPN, NotOpened, open};
 use tilo_peer_state::{PersonalStore, PersonalSync};
 use tilo_runtime::personal_devices::PersonalDevices;
 use tilo_service::Questions;
-use tilo_session::{ActionPlane, Options, Session};
+use tilo_session::{AppSocket, Options, Session};
 use tilo_sheets::portal::PortalEffect;
 use tilo_test_env::DiesWithTheTest as _;
 use tilo_test_env::SpawnUnderEnvLock as _;
@@ -345,7 +345,7 @@ impl Shell {
             questions: Some(questions.clone()),
             collab: false,
             person: PERSON.to_owned(),
-            action_plane: ActionPlane::At(root.path().join("plane.sock")),
+            app_socket: AppSocket::At(root.path().join("app_wire.sock")),
             mcp_server: Some(socket.clone()),
             state: Some(home.state().to_path_buf()),
             // The person's settings, as the session serves them: what the person sets this

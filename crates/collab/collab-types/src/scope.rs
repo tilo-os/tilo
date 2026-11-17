@@ -4,13 +4,13 @@
 //! records. The workspace's content keys seal every track; the scope names
 //! the id the track's name carries.
 
-/// The app whose record the live plane takes its workspace's keys through.
+/// The app whose record the live session takes its workspace's keys through.
 pub const MEDIA_APP: &str = "so.tilo.media";
 
 /// That record.
 pub const WORKSPACE_RESOURCE: &str = "live";
 
-/// One scope of a workspace's live plane.
+/// One scope of a workspace's live session.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Scope {
     /// The workspace itself: its layout, presence and activity.

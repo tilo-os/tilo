@@ -32,10 +32,10 @@ pub(super) fn handle_agent_session(
         if let (Some(admin), Some(stop)) = (session.admin, session.stop) {
             admin.note_agent(&peer.cert, label, stop);
         }
-        if let (Some(plane), Some(&workspace_id)) = (session.app_serving, subscribed.last())
+        if let (Some(server), Some(&workspace_id)) = (session.app_serving, subscribed.last())
             && let Ok(caller) = super::actions::session_caller(peer, session)
         {
-            plane.session_arrived(workspace_id, &caller);
+            server.session_arrived(workspace_id, &caller);
         }
         None
     } else {

@@ -96,7 +96,7 @@ impl Peer {
         let files = device_dir.join("files");
         std::fs::create_dir_all(&files)?;
         let store = Arc::new(tilo_fs::ContentStore::open(files.join("content")).await?);
-        // The filesystem's hydrator dials peers of a sync plane this device has
+        // The filesystem's hydrator dials peers of a sync protocol this device has
         // none of: everything it lacks comes over the session. The endpoint
         // binds loopback alone and reaches nothing by itself.
         let endpoint = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)

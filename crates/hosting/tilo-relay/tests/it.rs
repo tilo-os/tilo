@@ -48,8 +48,8 @@ mod hosted_browser;
 mod hosting_cost;
 #[path = "hosting_member.rs"]
 mod hosting_member;
-#[path = "live_plane.rs"]
-mod live_plane;
+#[path = "live_session.rs"]
+mod live_session;
 #[path = "multi_host.rs"]
 mod multi_host;
 #[path = "offloadable_action.rs"]

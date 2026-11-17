@@ -96,7 +96,7 @@ tilo-mail-session = { path = "../../platform/mail-session" }
 tilo-net = { path = "../../platform/tilo-net", features = ["http", "proxy-host"] }
 
 [dev-dependencies]
-# A dispatcher that answers as an app's own host: what a device's plane asks
+# A dispatcher that answers as an app's own host: what a device's action service asks
 # through, and what a workspace's host answers beside it.
 tilo-actions = { path = "../../collab/actions", features = ["test-support"] }
 # A direct link a test makes a reader fall behind, with the frames it hears

@@ -24,7 +24,7 @@
 use std::time::Duration;
 
 use tilo_service::Questions;
-use tilo_session::{ActionPlane, Options, Session};
+use tilo_session::{AppSocket, Options, Session};
 
 use crate::common::{
     CANVAS, PERSON, layout, on_screen, private_home, show_preset, until, wait_for,
@@ -39,7 +39,7 @@ fn session(root: &std::path::Path) -> Session {
         collab: false,
         services: crate::common::seeded_apps(),
         questions: Some(Questions::new()),
-        action_plane: ActionPlane::At(root.join("plane.sock")),
+        app_socket: AppSocket::At(root.join("app_wire.sock")),
         mcp_server: Some(root.join("agent.sock")),
         ..Options::default()
     });

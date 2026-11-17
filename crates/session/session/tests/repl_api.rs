@@ -21,7 +21,7 @@ use std::time::Duration;
 
 use serde_json::{Map, Value, json};
 use tilo_service::{Questions, Started};
-use tilo_session::{ActionPlane, Options, Session};
+use tilo_session::{AppSocket, Options, Session};
 use tilo_sheets::portal::PortalEffect;
 use tilolang_tilo::resource_service::ResourceService;
 
@@ -257,7 +257,7 @@ fn a_program_names_the_shell_package_the_session_runs_with_none_installed() {
         collab: false,
         services: Vec::new(),
         questions: Some(questions),
-        action_plane: ActionPlane::At(root.path().join("plane.sock")),
+        app_socket: AppSocket::At(root.path().join("app_wire.sock")),
         mcp_server: Some(root.path().join("agent.sock")),
         admit_repl: vec![program],
         ..Options::default()
@@ -336,7 +336,7 @@ fn a_record_the_sessions_services_publish_is_found_through_the_server() {
         collab: false,
         services: apps,
         questions: Some(questions),
-        action_plane: ActionPlane::At(root.path().join("plane.sock")),
+        app_socket: AppSocket::At(root.path().join("app_wire.sock")),
         mcp_server: Some(root.path().join("agent.sock")),
         admit_repl: vec![program],
         ..Options::default()
@@ -671,7 +671,7 @@ fn a_placed_record_is_drawn_through_its_own_apps_view() {
         collab: false,
         services: apps,
         questions: Some(questions),
-        action_plane: ActionPlane::At(root.path().join("plane.sock")),
+        app_socket: AppSocket::At(root.path().join("app_wire.sock")),
         mcp_server: Some(root.path().join("agent.sock")),
         admit_repl: vec![program],
         ..Options::default()
@@ -746,7 +746,7 @@ fn my_mails_on_the_canvas_places_mails_root() {
         collab: false,
         services: apps,
         questions: Some(questions),
-        action_plane: ActionPlane::At(root.path().join("plane.sock")),
+        app_socket: AppSocket::At(root.path().join("app_wire.sock")),
         mcp_server: Some(root.path().join("agent.sock")),
         admit_repl: vec![program],
         ..Options::default()
@@ -1155,7 +1155,7 @@ fn a_place_whose_reading_never_arrives_leaves_the_rest_of_the_screen_working() {
             })
             .collect(),
         questions: Some(Questions::new()),
-        action_plane: ActionPlane::At(root.path().join("plane.sock")),
+        app_socket: AppSocket::At(root.path().join("app_wire.sock")),
         mcp_server: Some(root.path().join("agent.sock")),
         admit_repl: vec![program],
         ..Options::default()
@@ -1239,7 +1239,7 @@ fn the_repl_finds_what_place_found_places() {
         collab: false,
         services: apps,
         questions: Some(questions),
-        action_plane: ActionPlane::At(root.path().join("plane.sock")),
+        app_socket: AppSocket::At(root.path().join("app_wire.sock")),
         mcp_server: Some(root.path().join("agent.sock")),
         admit_repl: vec![program],
         ..Options::default()
@@ -1342,7 +1342,7 @@ fn an_installed_apps_actions_and_root_are_named_as_it_declares_them() {
         shell: true,
         collab: false,
         questions: Some(Questions::new()),
-        action_plane: ActionPlane::At(root.path().join("plane.sock")),
+        app_socket: AppSocket::At(root.path().join("app_wire.sock")),
         mcp_server: Some(root.path().join("agent.sock")),
         admit_repl: vec![program],
         ..Options::default()

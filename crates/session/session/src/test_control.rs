@@ -203,7 +203,7 @@ pub(crate) struct Session<'a> {
     pub(crate) engine: Option<&'a Engine>,
     /// The agents the person admitted at its socket, as the session's bar shows them.
     pub(crate) agent_sessions: &'a std::sync::Arc<crate::agent_sessions::AgentSessions>,
-    /// Who is here, as the collaboration plane says it: this session's membership of each
+    /// Who is here, as the peer network says it: this session's membership of each
     /// workspace, when it takes part in one.
     pub(crate) sync: Option<&'a crate::sync::Client>,
     /// The windows this session shares and the ones of other devices it shows: what its

@@ -268,7 +268,7 @@ fn alpha_at(pixels: &[u8], width: u32, x: u32, y: u32) -> Option<u8> {
     pixels.get(index).copied()
 }
 
-/// The dma-bufs a surface draws its frames into on the GPU: linear, one plane each, all of one
+/// The dma-bufs a surface draws its frames into on the GPU: linear, one live session each, all of one
 /// size and format. The host composites the one a frame shows straight from it, as it would a
 /// client's.
 #[cfg(unix)]

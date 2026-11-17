@@ -1,7 +1,7 @@
-//! The page's live plane: one `moq-lite` session per joined workspace, in the
+//! The page's live session: one `moq-lite` session per joined workspace, in the
 //! workspace's own scope.
 //!
-//! A page takes part in the workspace's live plane the way a device does: it
+//! A page takes part in the workspace's live session the way a device does: it
 //! joins the relay that serves its host as its own device — never as a device
 //! that bridges anything — seals its tracks under the workspace scope's
 //! channel content keys ([`route`]) and opens only what the devices its
@@ -12,7 +12,7 @@
 //! page's endpoint speaks for it. This module is the session's bookkeeping
 //! around that join.
 //!
-//! The plane lives as long as the page is in the workspace and the session's
+//! The live session lives as long as the page is in the workspace and the session's
 //! grant holds: it is joined again after a reconnect (the grant is the
 //! session's token), its keys and roster follow the channel and the
 //! governance, and it is dropped when the page leaves the workspace or the
@@ -21,8 +21,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
-use tilo_live::plane::Join;
-use tilo_live::plane::Plane;
+use tilo_live::live_session::Join;
+use tilo_live::live_session::LiveSession;
 use tilo_live::roster::Roster;
 use tilo_live::scope::Scope;
 use tilo_peer_state::document_frame::DocumentRoute;
@@ -34,21 +34,21 @@ use super::{Command, DeviceSigner, Task};
 use key_group::ContentKeys;
 use tilo_relay_protocol::WorkspaceId;
 
-/// The message a page shows in its members' place when its live plane cannot
+/// The message a page shows in its members' place when its live session cannot
 /// be joined: the page keeps asking quietly, and nobody is listed from the
-/// plane until one opens.
+/// live session until one opens.
 pub(crate) const UNREACHABLE: &str = "this page cannot reach live presence";
 
-/// The wait before a plane this page could not reach is asked for again.
+/// The wait before a live session this page could not reach is asked for again.
 pub(crate) const RETRY_MS: u64 = 5_000;
-/// The wait before a plane a workspace refused is asked for again: a workspace
+/// The wait before a live session a workspace refused is asked for again: a workspace
 /// admits a device on its governance, not on this page's timer.
 pub(crate) const REFUSED_MS: u64 = 60_000;
 /// How long an answer to `/live` and the join may take before the page asks
 /// again.
 const JOINING_MS: u64 = 30_000;
 
-/// The record the plane takes its workspace's keys through.
+/// The record the live session takes its workspace's keys through.
 pub(crate) fn route(workspace: &str) -> DocumentRoute {
     DocumentRoute {
         app_id: collab_types::scope::MEDIA_APP.to_owned(),
@@ -57,24 +57,24 @@ pub(crate) fn route(workspace: &str) -> DocumentRoute {
     }
 }
 
-/// A plane this page is in.
+/// A live session this page is in.
 pub(crate) struct Joined {
     /// The carrier session.
-    pub(crate) plane: Arc<Plane>,
+    pub(crate) live_session: Arc<LiveSession>,
     /// The devices whose frames its opener admits, as the workspace's
     /// governance names them now.
     pub(crate) members: BTreeSet<[u8; 32]>,
     /// The channel epoch it seals under.
     pub(crate) epoch: u64,
-    /// The last presence object this page said on the plane.
+    /// The last presence object this page said on the live session.
     pub(crate) presence_seq: u32,
-    /// The last live-preview object this page said on the plane.
+    /// The last live-preview object this page said on the live session.
     pub(crate) activity_seq: u32,
-    /// The last voice object this page published on the plane: one stream per
+    /// The last voice object this page published on the live session: one stream per
     /// page across its calls and its mute, so a call that starts again is
     /// heard at once.
     pub(crate) audio_seq: u32,
-    /// The tracks this page shows of each device in the call: what the plane
+    /// The tracks this page shows of each device in the call: what the live session
     /// asks their owners to encode.
     pub(crate) shown: BTreeMap<[u8; 32], BTreeSet<tilo_live::live::Track>>,
     /// The windows whose pages this page draws, by the device hosting them.
@@ -105,12 +105,12 @@ impl Joined {
             if let Some(pages) = self.pages.get(device) {
                 tracks.extend(pages.iter().copied());
             }
-            self.plane.show(*device, &tracks);
+            self.live_session.show(*device, &tracks);
         }
     }
 }
 
-/// Why this page is not in a workspace's plane, and since when.
+/// Why this page is not in a workspace's live session, and since when.
 #[derive(Clone, Debug)]
 pub(crate) enum Waiting {
     /// `/live` was asked and the join is running: `since_ms` when it started,
@@ -126,33 +126,33 @@ pub(crate) enum Waiting {
     Refused { at_ms: u64 },
 }
 
-/// What asking for a workspace's plane came to when it did not open.
+/// What asking for a workspace's live session came to when it did not open.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Failed {
     /// The workspace does not admit this page now.
     Refused,
     /// The host or the relay was not reached, or did not answer as the live
-    /// plane does.
+    /// live session does.
     Unavailable,
 }
 
-/// How many asks in a row for a workspace's plane may fail to reach one
+/// How many asks in a row for a workspace's live session may fail to reach one
 /// before the page says so in its members' place.
 pub(crate) const MISSES_BEFORE_NOTE: u8 = 2;
 
-/// The page's planes, one per joined workspace.
+/// The page's live sessions, one per joined workspace.
 #[derive(Default)]
-pub(crate) struct Planes {
+pub(crate) struct LiveSessions {
     joined: BTreeMap<WorkspaceId, Joined>,
     asking: BTreeMap<WorkspaceId, Waiting>,
-    /// Per workspace, how many asks in a row did not reach a plane.
+    /// Per workspace, how many asks in a row did not reach a live session.
     misses: BTreeMap<WorkspaceId, u8>,
-    /// Per workspace whose plane is due, why it was not asked for after all:
+    /// Per workspace whose live session is due, why it was not asked for after all:
     /// what this page still lacks before it can ask.
     unasked: BTreeMap<WorkspaceId, &'static str>,
 }
 
-impl Planes {
+impl LiveSessions {
     pub(crate) fn joined(&self, workspace_id: WorkspaceId) -> Option<&Joined> {
         self.joined.get(&workspace_id)
     }
@@ -161,7 +161,7 @@ impl Planes {
         self.joined.get_mut(&workspace_id)
     }
 
-    /// The plane of `workspace_id`, dropped (which ends its session).
+    /// The live session of `workspace_id`, dropped (which ends its session).
     pub(crate) fn leave(&mut self, workspace_id: WorkspaceId) -> Option<Joined> {
         self.asking.remove(&workspace_id);
         self.misses.remove(&workspace_id);
@@ -169,21 +169,21 @@ impl Planes {
         self.joined.remove(&workspace_id)
     }
 
-    /// One line per plane for diagnostics: whose objects each joined plane
+    /// One line per live session for diagnostics: whose objects each joined live session
     /// reads and what it heard and could not open, and for every workspace
-    /// whose plane is not joined, what it waits for — so a page that lists
+    /// whose live session is not joined, what it waits for — so a page that lists
     /// nobody says why.
     pub(crate) fn describe(&self) -> String {
         use std::fmt::Write as _;
         let mut lines: Vec<String> = Vec::new();
         for (workspace_id, joined) in &self.joined {
             let mut line = format!(
-                "plane {workspace_id}: epoch {}, reads {} device(s), heard {} object(s)",
+                "live session {workspace_id}: epoch {}, reads {} device(s), heard {} object(s)",
                 joined.epoch,
                 joined.members.len(),
-                joined.plane.heard_total()
+                joined.live_session.heard_total()
             );
-            for (reason, count) in joined.plane.refusals() {
+            for (reason, count) in joined.live_session.refusals() {
                 let _ = write!(line, "\n  refused {count}: {reason}");
             }
             lines.push(line);
@@ -191,15 +191,15 @@ impl Planes {
         for (workspace_id, waiting) in &self.asking {
             lines.push(match waiting {
                 Waiting::Joining { since_ms, .. } => {
-                    format!("plane {workspace_id}: asking the host for its live session since {since_ms}")
+                    format!("live session {workspace_id}: asking the host for its live session since {since_ms}")
                 }
                 Waiting::Later { at_ms } => format!(
-                    "plane {workspace_id}: not joined. No live plane was reached; asking \
+                    "live session {workspace_id}: not joined. No live session was reached; asking \
                      again at {at_ms}"
                 ),
                 Waiting::Refused { at_ms } => format!(
-                    "plane {workspace_id}: not joined. The workspace does not admit this \
-                     page's plane; asking again at {at_ms}"
+                    "live session {workspace_id}: not joined. The workspace does not admit this \
+                     page's live_session; asking again at {at_ms}"
                 ),
             });
         }
@@ -207,12 +207,12 @@ impl Planes {
             if self.joined.contains_key(workspace_id) || self.asking.contains_key(workspace_id) {
                 continue;
             }
-            lines.push(format!("plane {workspace_id}: not asked. {why}"));
+            lines.push(format!("live session {workspace_id}: not asked. {why}"));
         }
         lines.join("\n")
     }
 
-    /// Drop the planes of workspaces this page is no longer in, and the asks
+    /// Drop the live sessions of workspaces this page is no longer in, and the asks
     /// for them.
     pub(crate) fn keep_only(&mut self, workspaces: &BTreeSet<WorkspaceId>) {
         self.joined
@@ -225,7 +225,7 @@ impl Planes {
             .retain(|workspace_id, _| workspaces.contains(workspace_id));
     }
 
-    /// A new session: every plane of the last one ended with its grant, and
+    /// A new session: every live session of the last one ended with its grant, and
     /// each is joined again with the new one.
     pub(crate) fn end_session(&mut self) {
         self.joined.clear();
@@ -234,7 +234,7 @@ impl Planes {
         self.unasked.clear();
     }
 
-    /// Whether `workspace_id`'s plane is to be asked for at `now_ms`: it is
+    /// Whether `workspace_id`'s live session is to be asked for at `now_ms`: it is
     /// neither joined nor waiting.
     pub(crate) fn due(&self, workspace_id: WorkspaceId, now_ms: u64) -> bool {
         if self.joined.contains_key(&workspace_id) {
@@ -274,7 +274,7 @@ impl Planes {
         self.asking.remove(&workspace_id)
     }
 
-    /// The plane of `workspace_id` opened.
+    /// The live session of `workspace_id` opened.
     pub(crate) fn insert(&mut self, workspace_id: WorkspaceId, joined: Joined) {
         self.misses.remove(&workspace_id);
         self.unasked.remove(&workspace_id);
@@ -286,21 +286,21 @@ impl Planes {
         self.asking.insert(workspace_id, Waiting::Later { at_ms });
     }
 
-    /// The workspace refused this page's plane: ask again at `at_ms`.
+    /// The workspace refused this page's live session: ask again at `at_ms`.
     pub(crate) fn refused(&mut self, workspace_id: WorkspaceId, at_ms: u64) {
-        // The host answered, so the plane was reached: only asks that reached
+        // The host answered, so the live session was reached: only asks that reached
         // nothing count towards the note in the members' place.
         self.misses.remove(&workspace_id);
         self.asking.insert(workspace_id, Waiting::Refused { at_ms });
     }
 
-    /// `workspace_id`'s plane was due and not asked for: `why` is what this
+    /// `workspace_id`'s live session was due and not asked for: `why` is what this
     /// page still lacks, said in its channel diagnostics.
     pub(crate) fn note_unasked(&mut self, workspace_id: WorkspaceId, why: &'static str) {
         self.unasked.insert(workspace_id, why);
     }
 
-    /// An ask for `workspace_id`'s plane reached no plane: how many asks in a
+    /// An ask for `workspace_id`'s live session reached no live session: how many asks in a
     /// row that is now.
     pub(crate) fn missed(&mut self, workspace_id: WorkspaceId) -> u8 {
         let misses = self.misses.entry(workspace_id).or_default();
@@ -309,29 +309,29 @@ impl Planes {
     }
 }
 
-/// Join `workspace_id`'s plane as this device, against the device that
+/// Join `workspace_id`'s live session as this device, against the device that
 /// serves it, over the session's carrier; the outcome comes back as
-/// [`Command::PlaneJoined`].
+/// [`Command::LiveSessionJoined`].
 ///
 /// The grant is this device's certificate (the roster every member applies):
 /// it seals and opens as itself, under the workspace scope's keys, and the
 /// serving device copies bytes it cannot open.
-pub(crate) struct PlaneJoin {
+pub(crate) struct LiveSessionJoin {
     /// The dialer the session reaches its host through.
     pub dialer: Arc<Dialer>,
-    /// Where the plane is served, over the session's carrier.
+    /// Where the live session is served, over the session's carrier.
     pub host: tilo_relay_client::Host,
     /// Where the outcome goes.
     pub commands: tokio::sync::mpsc::WeakUnboundedSender<Command>,
     /// This device's certificate, presented as the grant.
     pub cert: tilo_user_identity::DeviceCert,
     /// What signs for this device: over WebTransport it proves itself on the
-    /// plane's link before the grant.
+    /// live session's link before the grant.
     pub signer: Arc<dyn DeviceSigner>,
     /// The revocations this device knows, which the host's proof is read
     /// against.
     pub revocations: tilo_user_identity::RevocationList,
-    /// The certificate of the host the session reached: who the plane's
+    /// The certificate of the host the session reached: who the live session's
     /// host must prove to be over WebTransport.
     pub host_cert: tilo_user_identity::DeviceCert,
     /// This device's statement that its iroh endpoint speaks for it, when the
@@ -348,17 +348,17 @@ pub(crate) struct PlaneJoin {
     pub members: BTreeSet<[u8; 32]>,
 }
 
-pub(crate) fn join_plane(join: PlaneJoin) {
+pub(crate) fn join_live_session(join: LiveSessionJoin) {
     let commands = join.commands.clone();
     let workspace_id = join.workspace_id;
     n0_future::task::spawn(async move {
         let joined = joined(join).await;
         #[cfg(not(target_arch = "wasm32"))]
-        let joined = Command::PlaneJoined(workspace_id, joined);
+        let joined = Command::LiveSessionJoined(workspace_id, joined);
         #[cfg(target_arch = "wasm32")]
         let joined = {
             ARRIVED.with(|arrived| arrived.borrow_mut().push((workspace_id, joined)));
-            Command::PlaneJoined(workspace_id)
+            Command::LiveSessionJoined(workspace_id)
         };
         if let Some(commands) = commands.upgrade() {
             let _ = commands.send(joined);
@@ -366,10 +366,10 @@ pub(crate) fn join_plane(join: PlaneJoin) {
     });
 }
 
-/// The join itself: the grant this device presents, then the plane on the
+/// The join itself: the grant this device presents, then the live session on the
 /// serving device's carrier.
-async fn joined(join: PlaneJoin) -> Result<Arc<Plane>, Failed> {
-    use tilo_live::plane::PlaneError;
+async fn joined(join: LiveSessionJoin) -> Result<Arc<LiveSession>, Failed> {
+    use tilo_live::live_session::LiveError;
     let Some(uuid) = tilo_desktop_model::WorkspaceId::parse(&join.workspace) else {
         return Err(Failed::Unavailable);
     };
@@ -384,22 +384,22 @@ async fn joined(join: PlaneJoin) -> Result<Arc<Plane>, Failed> {
     )
     .map_err(|_| Failed::Unavailable)?
     .encode();
-    let plane = Join {
+    let live_session = Join {
         scope,
         device: join.cert.device_public_key,
         keys: join.keys.clone().into(),
         roster: Roster::new(join.members.clone()),
         publish: true,
-        // Read once the joined plane is told whether anything here shows people.
+        // Read once the joined live session is told whether anything here shows people.
         presence: false,
     };
     let joined = match join.host.carrier() {
         Carrier::WebTransport => {
-            let session = proven_plane_link(&join).await?;
-            Plane::join(
+            let session = proven_live_session_link(&join).await?;
+            LiveSession::join(
                 Arc::new(tilo_live::admit::Opened::new(session)),
                 &grant,
-                plane,
+                live_session,
             )
             .await
         }
@@ -410,10 +410,10 @@ async fn joined(join: PlaneJoin) -> Result<Arc<Plane>, Failed> {
                 .endpoint()
                 .await
                 .map_err(|_| Failed::Unavailable)?;
-            Plane::join(
+            LiveSession::join(
                 Arc::new(tilo_live::native::Iroh::new(endpoint, join.host.addr())),
                 &grant,
-                plane,
+                live_session,
             )
             .await
         }
@@ -421,18 +421,20 @@ async fn joined(join: PlaneJoin) -> Result<Arc<Plane>, Failed> {
         Carrier::Direct | Carrier::Relay => return Err(Failed::Unavailable),
     };
     joined.map(Arc::new).map_err(|error| match error {
-        PlaneError::Denied => Failed::Refused,
+        LiveError::Denied => Failed::Refused,
         _ => Failed::Unavailable,
     })
 }
 
-/// A WebTransport session to the plane's host, on which this device has
-/// proved itself with the relay handshake: what the plane is admitted on.
-async fn proven_plane_link(join: &PlaneJoin) -> Result<tilo_net::webtransport::Session, Failed> {
+/// A WebTransport session to the live session's host, on which this device has
+/// proved itself with the relay handshake: what the live session is admitted on.
+async fn proven_live_session_link(
+    join: &LiveSessionJoin,
+) -> Result<tilo_net::webtransport::Session, Failed> {
     let unavailable = |_| Failed::Unavailable;
     let link = join
         .dialer
-        .link_offering(Purpose::Plane, &[tilo_live::preface::PROTOCOL])
+        .link_offering(Purpose::LiveSession, &[tilo_live::preface::PROTOCOL])
         .await
         .map_err(unavailable)?;
     let (mut send, mut recv) = link.open_bi().await.map_err(unavailable)?;
@@ -451,20 +453,20 @@ async fn proven_plane_link(join: &PlaneJoin) -> Result<tilo_net::webtransport::S
         return Err(Failed::Refused);
     }
     send.finish();
-    // The plane's path speaks `moq-lite` alone: a browser that negotiates no
+    // The live session's path speaks `moq-lite` alone: a browser that negotiates no
     // subprotocol still carries it there.
     link.web_session()
         .map(|session| session.speaking(tilo_live::preface::PROTOCOL))
         .ok_or(Failed::Unavailable)
 }
 
-// Where a plane waits for the session's command, on the target whose carrier
-// cannot travel in one: a browser's `Plane` holds its WebTransport session,
+// Where a live session waits for the session's command, on the target whose carrier
+// cannot travel in one: a browser's `LiveSession` holds its WebTransport session,
 // which is not `Send`, while the command channel crosses the toolkit's `Send`
-// transport. Both run on the browser's one thread, so the plane is put down by
-// name for `Command::PlaneJoined` to take (`arrived`).
+// transport. Both run on the browser's one thread, so the live session is put down by
+// name for `Command::LiveSessionJoined` to take (`arrived`).
 #[cfg(target_arch = "wasm32")]
-type Arrived = Vec<(WorkspaceId, Result<Arc<Plane>, Failed>)>;
+type Arrived = Vec<(WorkspaceId, Result<Arc<LiveSession>, Failed>)>;
 
 #[cfg(target_arch = "wasm32")]
 thread_local! {
@@ -472,10 +474,10 @@ thread_local! {
 }
 
 /// What the join for `workspace_id` came to; `Unavailable` when no join put a
-/// plane down under that name, which is what an ask the session dropped for
+/// live session down under that name, which is what an ask the session dropped for
 /// another workspace leaves.
 #[cfg(target_arch = "wasm32")]
-pub(crate) fn arrived(workspace_id: WorkspaceId) -> Result<Arc<Plane>, Failed> {
+pub(crate) fn arrived(workspace_id: WorkspaceId) -> Result<Arc<LiveSession>, Failed> {
     ARRIVED
         .with(|arrived| {
             let mut arrived = arrived.borrow_mut();
@@ -485,63 +487,63 @@ pub(crate) fn arrived(workspace_id: WorkspaceId) -> Result<Arc<Plane>, Failed> {
         .unwrap_or(Err(Failed::Unavailable))
 }
 
-/// Ask the plane's `wake` to run when it hears something, and its `ended` to
+/// Ask the live session's `wake` to run when it hears something, and its `ended` to
 /// run when the session ends — as the session's own commands, so a page that
-/// has no plane left answers neither.
+/// has no live session left answers neither.
 pub(crate) fn wake_and_ended(
-    plane: &Plane,
+    live_session: &LiveSession,
     workspace_id: WorkspaceId,
     commands: &tokio::sync::mpsc::WeakUnboundedSender<Command>,
 ) {
     let heard = commands.clone();
-    plane.set_wake(Arc::new(move || {
+    live_session.set_wake(Arc::new(move || {
         if let Some(commands) = heard.upgrade() {
-            let _ = commands.send(Command::PlaneHeard(workspace_id));
+            let _ = commands.send(Command::LiveSessionHeard(workspace_id));
         }
     }));
     let ended = commands.clone();
-    plane.set_ended(Arc::new(move || {
+    live_session.set_ended(Arc::new(move || {
         if let Some(commands) = ended.upgrade() {
-            let _ = commands.send(Command::PlaneEnded(workspace_id));
+            let _ = commands.send(Command::LiveSessionEnded(workspace_id));
         }
     }));
 }
 
 impl Task {
-    /// Join, follow or leave the workspaces' live planes: each joined
-    /// workspace gets one plane of this page's own, in the workspace scope
+    /// Join, follow or leave the workspaces' live sessions: each joined
+    /// workspace gets one live session of this page's own, in the workspace scope
     /// ([`route`]'s channel keys, the devices its governance admits),
     /// joined again after a reconnect, and dropped when the page leaves the
     /// workspace.
-    pub(super) fn settle_planes(&mut self) {
-        let Some((dialer, delegation)) = self.dial.plane() else {
+    pub(super) fn settle_live_sessions(&mut self) {
+        let Some((dialer, delegation)) = self.dial.live_session() else {
             return;
         };
-        self.planes.keep_only(&self.workspaces);
+        self.live_sessions.keep_only(&self.workspaces);
         let now = tilo_clock::unix_now_ms();
-        let due: Vec<WorkspaceId> = std::mem::take(&mut self.planes_due)
+        let due: Vec<WorkspaceId> = std::mem::take(&mut self.live_sessions_due)
             .into_iter()
             .filter(|workspace_id| self.workspaces.contains(workspace_id))
             .collect();
         for workspace_id in due {
             let Some((workspace, _)) = self.replicas.members(workspace_id) else {
-                self.planes
+                self.live_sessions
                     .note_unasked(workspace_id, "This page holds none of its workspace yet.");
                 continue;
             };
-            // The page asks for the workspace's keys through the plane's
+            // The page asks for the workspace's keys through the live session's
             // record, as it does for any record, and joins once it holds them.
             let route = route(&workspace);
             self.open_channel(&route);
             let Some(keys) = self.keys_of(&route) else {
-                self.planes.note_unasked(
+                self.live_sessions.note_unasked(
                     workspace_id,
                     "This page holds no channel keys for its workspace yet.",
                 );
                 continue;
             };
             let Some(key_holders) = self.replicas.key_holders(&route) else {
-                self.planes.note_unasked(
+                self.live_sessions.note_unasked(
                     workspace_id,
                     "Its workspace's governance names none of its devices here yet.",
                 );
@@ -552,33 +554,34 @@ impl Task {
                 .map(|device| *device.as_bytes())
                 .collect();
             if self
-                .planes
+                .live_sessions
                 .joined(workspace_id)
-                .is_some_and(|joined| joined.plane.ended())
+                .is_some_and(|joined| joined.live_session.ended())
             {
-                drop(self.planes.leave(workspace_id));
-                self.planes
+                drop(self.live_sessions.leave(workspace_id));
+                self.live_sessions
                     .later(workspace_id, now.saturating_add(RETRY_MS));
                 continue;
             }
-            if let Some(joined) = self.planes.joined_mut(workspace_id) {
+            if let Some(joined) = self.live_sessions.joined_mut(workspace_id) {
                 let epoch = keys.epoch();
                 if joined.epoch != epoch {
                     joined.epoch = epoch;
-                    joined.plane.set_keys(keys);
+                    joined.live_session.set_keys(keys);
                 }
                 if joined.members != members {
                     joined
-                        .plane
+                        .live_session
                         .set_roster(Roster::new(members.iter().copied()));
                     joined.members = members;
                 }
                 continue;
             }
-            if !self.planes.due(workspace_id, now) {
+            if !self.live_sessions.due(workspace_id, now) {
                 continue;
             }
-            self.planes.began(workspace_id, now, keys.epoch(), &members);
+            self.live_sessions
+                .began(workspace_id, now, keys.epoch(), &members);
             // The workspace's own governance names where its host listens; a
             // host that has not named itself yet is dialled where the session
             // reached it.
@@ -586,7 +589,7 @@ impl Task {
                 || self.config.host.clone(),
                 |named| named.over(self.config.host.carrier()),
             );
-            join_plane(PlaneJoin {
+            join_live_session(LiveSessionJoin {
                 dialer: dialer.clone(),
                 host,
                 commands: self.commands.clone(),
@@ -603,39 +606,40 @@ impl Task {
         }
     }
 
-    /// Have every plane read the members' presence exactly while something on this device reads
+    /// Have every live session read the members' presence exactly while something on this device reads
     /// it.
     pub(super) fn hear_presence(&self) {
         let hear = self.reports.reads_presence();
-        for joined in self.planes.joined.values() {
-            joined.plane.hear_presence(hear);
+        for joined in self.live_sessions.joined.values() {
+            joined.live_session.hear_presence(hear);
         }
     }
 
-    /// The answer to this page's ask for `workspace_id`'s plane.
-    pub(super) fn plane_joined(
+    /// The answer to this page's ask for `workspace_id`'s live session.
+    pub(super) fn live_session_joined(
         &mut self,
         workspace_id: WorkspaceId,
-        joined: Result<Arc<Plane>, Failed>,
+        joined: Result<Arc<LiveSession>, Failed>,
     ) {
-        self.planes_due.insert(workspace_id);
-        let Some(Waiting::Joining { epoch, members, .. }) = self.planes.answered(workspace_id)
+        self.live_sessions_due.insert(workspace_id);
+        let Some(Waiting::Joining { epoch, members, .. }) =
+            self.live_sessions.answered(workspace_id)
         else {
             return;
         };
-        // The page left the workspace while the plane was being joined: the
-        // plane is dropped, which ends its session.
+        // The page left the workspace while the live session was being joined: the
+        // live session is dropped, which ends its session.
         if !self.workspaces.contains(&workspace_id) {
             return;
         }
         match joined {
-            Ok(plane) => {
-                plane.hear_presence(self.reports.reads_presence());
-                wake_and_ended(&plane, workspace_id, &self.commands);
-                self.planes.insert(
+            Ok(live_session) => {
+                live_session.hear_presence(self.reports.reads_presence());
+                wake_and_ended(&live_session, workspace_id, &self.commands);
+                self.live_sessions.insert(
                     workspace_id,
                     Joined {
-                        plane,
+                        live_session,
                         members,
                         epoch,
                         presence_seq: 0,
@@ -646,12 +650,12 @@ impl Task {
                         demand_at: u64::MAX,
                     },
                 );
-                // The members' place goes back to listing who is on the plane.
+                // The members' place goes back to listing who is on the live session.
                 self.reports.set_live_note(None);
             }
             Err(Failed::Refused) => {
                 // A workspace the host admitted the page to that refuses its
-                // plane does not admit the page to the plane's channel; one
+                // live session does not admit the page to the live session's channel; one
                 // that does not admit the page at all is asked again as soon
                 // as its admission may have moved.
                 let admitted = self
@@ -659,17 +663,17 @@ impl Task {
                     .read(|status| status.workspaces.get(&workspace_id).copied())
                     == Some(true);
                 let wait = if admitted { REFUSED_MS } else { RETRY_MS };
-                self.planes
+                self.live_sessions
                     .refused(workspace_id, tilo_clock::unix_now_ms().saturating_add(wait));
             }
             Err(Failed::Unavailable) => {
                 // Asking again is quiet, so the page says in its members'
-                // place that it lists nobody from the plane; the reason is in
+                // place that it lists nobody from the live session; the reason is in
                 // the channel diagnostics either way.
-                if self.planes.missed(workspace_id) >= MISSES_BEFORE_NOTE {
+                if self.live_sessions.missed(workspace_id) >= MISSES_BEFORE_NOTE {
                     self.reports.set_live_note(Some(UNREACHABLE));
                 }
-                self.planes.later(
+                self.live_sessions.later(
                     workspace_id,
                     tilo_clock::unix_now_ms().saturating_add(RETRY_MS),
                 );
@@ -677,7 +681,7 @@ impl Task {
         }
     }
 
-    /// Publish `frames` on `workspace_id`'s plane as this page's voice, in
+    /// Publish `frames` on `workspace_id`'s live session as this page's voice, in
     /// the order given: one Opus frame per voice object, numbered on from the
     /// last this page published.
     pub(super) fn publish_call_audio(
@@ -687,7 +691,7 @@ impl Task {
     ) {
         use tilo_live::live::Track;
         for frame in frames {
-            let Some(joined) = self.planes.joined_mut(workspace_id) else {
+            let Some(joined) = self.live_sessions.joined_mut(workspace_id) else {
                 return;
             };
             let sequence = joined.audio_seq;
@@ -701,15 +705,19 @@ impl Task {
             let Ok(body) = object.encode() else {
                 continue;
             };
-            if joined.plane.publish(Track::Audio, sequence, &body).is_err() {
-                // The plane ended: its next join carries what follows.
+            if joined
+                .live_session
+                .publish(Track::Audio, sequence, &body)
+                .is_err()
+            {
+                // The live session ended: its next join carries what follows.
                 return;
             }
         }
     }
 
-    /// Publish `pictures` on `workspace_id`'s plane: each one layer of this
-    /// page's camera or screen, sealed by the plane as this device and read by
+    /// Publish `pictures` on `workspace_id`'s live session: each one layer of this
+    /// page's camera or screen, sealed by the live session as this device and read by
     /// every device showing that layer.
     pub(super) fn publish_call_pictures(
         &self,
@@ -717,7 +725,7 @@ impl Task {
         pictures: Vec<super::CallPicture>,
     ) {
         for picture in pictures {
-            let Some(joined) = self.planes.joined(workspace_id) else {
+            let Some(joined) = self.live_sessions.joined(workspace_id) else {
                 return;
             };
             let object = tilo_live::video::VideoObject {
@@ -731,15 +739,15 @@ impl Task {
                 height: picture.height,
                 payload: picture.payload,
             };
-            // A layer nobody shows, or a plane that ended, drops this
+            // A layer nobody shows, or a live session that ended, drops this
             // picture: the next layer that gains a reader starts at a
             // keyframe.
-            let _ = joined.plane.send_picture(picture.source, &object);
+            let _ = joined.live_session.send_picture(picture.source, &object);
         }
     }
 
     /// Show the devices' `shown` layers here, and stop reading the devices
-    /// left out: the plane asks each owner for exactly these, and for the
+    /// left out: the live session asks each owner for exactly these, and for the
     /// pages this page draws of it.
     pub(super) fn show_call_pictures(
         &mut self,
@@ -747,7 +755,7 @@ impl Task {
         shown: &[super::CallShown],
     ) {
         use tilo_live::live::Track;
-        let Some(joined) = self.planes.joined_mut(workspace_id) else {
+        let Some(joined) = self.live_sessions.joined_mut(workspace_id) else {
             return;
         };
         let wanted: BTreeMap<[u8; 32], BTreeSet<Track>> = shown
@@ -776,7 +784,7 @@ impl Task {
     pub(super) fn show_pages(&mut self, workspace_id: WorkspaceId, shown: &[super::PageShown]) {
         use tilo_live::live::Track;
         use tilo_live::video::Layer;
-        let Some(joined) = self.planes.joined_mut(workspace_id) else {
+        let Some(joined) = self.live_sessions.joined_mut(workspace_id) else {
             return;
         };
         let mut devices = joined.devices();
@@ -804,7 +812,7 @@ impl Task {
         source: tilo_live::video::Source,
     ) {
         use tilo_live::live::Track;
-        let Some(joined) = self.planes.joined_mut(workspace_id) else {
+        let Some(joined) = self.live_sessions.joined_mut(workspace_id) else {
             return;
         };
         // Every track this page shows of the device: its call's pictures and the windows' pages.
@@ -824,19 +832,19 @@ impl Task {
         };
         let rest: Vec<Track> = tracks.iter().copied().filter(|t| !of_source(t)).collect();
         let again: Vec<Track> = tracks.iter().copied().filter(|t| of_source(t)).collect();
-        // Dropping the readers and asking again is what the plane takes as a
+        // Dropping the readers and asking again is what the live session takes as a
         // new reader: the owner answers with a keyframe.
-        joined.plane.show(device, &rest);
-        joined.plane.show(device, &again);
+        joined.live_session.show(device, &rest);
+        joined.live_session.show(device, &again);
     }
 
-    /// Take what `workspace_id`'s plane heard since the last call: each
+    /// Take what `workspace_id`'s live session heard since the last call: each
     /// member's track object, already opened with the scope's keys, as
-    /// [`crate::Event::LivePlane`].
-    pub(super) fn plane_heard(&mut self, workspace_id: WorkspaceId) {
+    /// [`crate::Event::LiveSession`].
+    pub(super) fn live_session_heard(&mut self, workspace_id: WorkspaceId) {
         use tilo_live::live::Track;
-        let heard: Vec<_> = match self.planes.joined(workspace_id) {
-            Some(joined) => std::iter::from_fn(|| joined.plane.try_recv()).collect(),
+        let heard: Vec<_> = match self.live_sessions.joined(workspace_id) {
+            Some(joined) => std::iter::from_fn(|| joined.live_session.try_recv()).collect(),
             None => return,
         };
         for heard in heard {
@@ -873,7 +881,7 @@ impl Task {
                 continue;
             }
             // A record's preview frame is still sealed with that record's
-            // keys inside the plane's own layer: it opens into the canonical
+            // keys inside the live session's own layer: it opens into the canonical
             // frame the page's live layer reads ([`crate::Event::Live`]).
             if heard.track == Track::Activity {
                 self.live_frame(
@@ -886,7 +894,7 @@ impl Task {
                 );
                 continue;
             }
-            self.reports.emit(&crate::Event::LivePlane {
+            self.reports.emit(&crate::Event::LiveSession {
                 ws: workspace_id,
                 from: heard.sender,
                 track: heard.track,
@@ -897,22 +905,22 @@ impl Task {
         // What the call's devices show of this page, and what they need
         // afresh: its encoders read it, and encode only that.
         let demand = {
-            let Some(joined) = self.planes.joined_mut(workspace_id) else {
+            let Some(joined) = self.live_sessions.joined_mut(workspace_id) else {
                 return;
             };
-            let revision = joined.plane.demand_revision();
+            let revision = joined.live_session.demand_revision();
             if joined.demand_at == revision {
                 None
             } else {
                 joined.demand_at = revision;
-                let wanted = joined.plane.wanted_pictures();
+                let wanted = joined.live_session.wanted_pictures();
                 let mut keyframes = Vec::new();
                 for source in [
                     tilo_live::video::Source::Camera,
                     tilo_live::video::Source::Screen,
                 ] {
-                    if joined.plane.wants_picture_keyframe(source) {
-                        let _ = joined.plane.take_picture_keyframes(source);
+                    if joined.live_session.wants_picture_keyframe(source) {
+                        let _ = joined.live_session.take_picture_keyframes(source);
                         keyframes.push(source);
                     }
                 }
@@ -928,13 +936,13 @@ impl Task {
         }
     }
 
-    /// `workspace_id`'s plane ended: the relay cut it (the device was removed,
+    /// `workspace_id`'s live session ended: the relay cut it (the device was removed,
     /// or the keys moved under it) or the carrier went away. It is joined
     /// again, until the workspace refuses this page.
-    pub(super) fn plane_ended(&mut self, workspace_id: WorkspaceId) {
-        self.planes_due.insert(workspace_id);
-        if self.planes.leave(workspace_id).is_some() {
-            self.planes.later(
+    pub(super) fn live_session_ended(&mut self, workspace_id: WorkspaceId) {
+        self.live_sessions_due.insert(workspace_id);
+        if self.live_sessions.leave(workspace_id).is_some() {
+            self.live_sessions.later(
                 workspace_id,
                 tilo_clock::unix_now_ms().saturating_add(RETRY_MS),
             );

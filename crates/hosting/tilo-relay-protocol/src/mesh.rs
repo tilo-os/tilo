@@ -80,7 +80,7 @@ impl ServiceCapabilities {
     /// Capabilities implemented by the standalone relay daemon.
     ///
     /// The relay durably carries authenticated workspace CRDT updates and
-    /// presence. It does not run the filesystem/blob host plane, an app
+    /// presence. It does not run the filesystem/blob host protocol, an app
     /// runtime, or a compute worker. Live workspace-control frames use this
     /// daemon's already-authenticated, non-retained presence fan-out rather
     /// than a second tunnel protocol.
@@ -95,7 +95,7 @@ impl ServiceCapabilities {
         }
     }
 
-    /// Planes started by the composite home-peer process.
+    /// Protocols started by the composite home-peer process.
     pub const fn home_peer() -> Self {
         Self {
             workspace_replication: true,
@@ -124,7 +124,7 @@ impl ServiceCapabilities {
     }
 
     /// Intersect two service sets. Used by a process to ensure its wire
-    /// advertisement cannot exceed the planes it has actually started.
+    /// advertisement cannot exceed the protocols it has actually started.
     #[must_use]
     pub const fn limited_to(&self, available: &Self) -> Self {
         Self {
@@ -213,8 +213,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn service_profiles_are_limited_to_the_planes_a_process_starts() {
-        // A relay-only device claims only its running workspace planes.
+    fn service_profiles_are_limited_to_the_protocols_a_process_starts() {
+        // A relay-only device claims only its running workspace protocols.
         let services = ServiceCapabilities::relay_only();
         assert!(services.workspace_replication);
         assert!(services.inbound_relay);

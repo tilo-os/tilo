@@ -57,11 +57,11 @@ impl WorkspaceContent for StoresContent {
 }
 
 /// Let go of each workspace `workspaces` deletes, as it goes: its content in
-/// `stores`, and what the app-serving plane `apps` holds of it.
+/// `stores`, and what the app action server `apps` holds of it.
 pub async fn forget_deleted(
     workspaces: crate::workspaces::Workspaces,
     stores: Arc<WorkspaceStores>,
-    apps: Option<Arc<dyn crate::app_serving::AppServingPlane>>,
+    apps: Option<Arc<dyn crate::app_serving::AppActionServer>>,
 ) {
     let mut deletions = workspaces.deletions();
     drop(workspaces);

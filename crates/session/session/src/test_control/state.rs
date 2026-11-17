@@ -101,8 +101,8 @@ fn locked_in(dump: &Json) -> bool {
 /// resource reads it: `sharing` (each shared window and who views it), `starting` (a share that
 /// waits, and for what), `watching` (the windows of other devices this one asks for, and of which
 /// device), `received` (the streams that reached it, and whether their tab pictures them) and
-/// `live` (each workspace's live plane, which the pictures travel: open, or what it waits for and
-/// which device it waits to reach). A window shared or watched under a plane that is not open
+/// `live` (each workspace's live session, which the pictures travel: open, or what it waits for and
+/// which device it waits to reach). A window shared or watched under a live session that is not open
 /// says what it waits for on its own row. A tool driving two sessions reads on each end how far a
 /// share came. The identifier a window is
 /// captured under is left out: it is the compositor's, for the clients it trusts.
@@ -249,8 +249,8 @@ pub(super) fn workspace_hosts(tree: &Layout, session: &Session<'_>, ctx: &Contex
 }
 
 /// Who is here, as every surface here draws them: this device's own row, and each workspace this
-/// session takes part in with everyone present in it, as the collaboration plane says. `Null` when
-/// this session takes part in no plane.
+/// session takes part in with everyone present in it, as the peer network says. `Null` when
+/// this session takes part in no live session.
 fn presence(session: &Session<'_>) -> Json {
     let Some(sync) = session.sync else {
         return Json::Null;

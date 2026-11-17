@@ -2,7 +2,7 @@
 // entry, which joins the Lounge through its entry as its own person (the
 // deployment admits everyone as an editor). Then one sends a chat message and
 // opens a window, and the other must see both, each shown present to the
-// other — the live plane's presence, the shared shell, and the chat all at
+// other — the live session's presence, the shared shell, and the chat all at
 // once.
 //
 // Then one of them is made an owner while their page is open (the stack's own
@@ -106,7 +106,7 @@ const failed = async (message, tab) => {
 
 // The relay's public directory: who is in the Lounge now, as the relay
 // counts them. Its `here` is the relay's HTTPS page sessions, not the live
-// plane's members: a page the plane never carried still counts here.
+// live session's members: a page the live session never carried still counts here.
 // The relay's origin is plain http on the local stack and https behind a
 // TLS front, so the request takes the module its scheme names; behind the
 // front it trusts exactly the certificate that front serves.
@@ -687,7 +687,7 @@ const rowsUnder = (name) => `(() => {
   return JSON.stringify(found);
 })()`;
 // The call as the page reads it: its phase, whether its microphone runs and
-// what left and arrived over the plane.
+// what left and arrived over the live session.
 // The call as the page holds it, as page code the waits above read, and as
 // the JSON this driver reads.
 const CALL = '(globalThis.tiloMount?.call?.() ?? null)';
@@ -906,7 +906,7 @@ try {
   mark('two browsers joined the Lounge');
 
   // The relay describes both as here: both pages opened their HTTPS sessions.
-  // That is the host's own count, not the live plane's — the plane is read
+  // That is the host's own count, not the live session's — the live session is read
   // from each page's channel diagnostics below.
   // A page counts there once its session is open, a moment after it joined:
   // the directory is read until both are, or a minute has passed.
@@ -968,26 +968,26 @@ try {
   await dump(a.tab, '5-a-open');
   await dump(b.tab, '5-b-open');
 
-  // Each page joined the live plane over the host's own iroh: its channel
-  // diagnostics name the plane and the devices it reads. A page whose plane
+  // Each page joined the live session over the host's own iroh: its channel
+  // diagnostics name the live session and the devices it reads. A page whose live session
   // never opened lists nobody and says so there instead, so this is the
-  // host's address, its relay and the plane all read from the page that used
+  // host's address, its relay and the live session all read from the page that used
   // them.
-  const joinedPlane = async (person, who) => {
-    // The plane of the workspace this person joined, by its own id: any
-    // other workspace's plane is not theirs.
-    const named = `plane ${person.membership.workspace}: `;
+  const joinedLiveSession = async (person, who) => {
+    // The live session of the workspace this person joined, by its own id: any
+    // other workspace's live session is not theirs.
+    const named = `live session ${person.membership.workspace}: `;
     const joined = await person.tab.waitFor(`(globalThis.tiloChannels?.() ?? '').split('\\n')
       .find(entry => entry.startsWith(${JSON.stringify(named)}) && /^epoch \\d+, reads \\d+ device\\(s\\)/.test(entry.slice(${named.length}))) ?? ''`,
     {timeout: stepLimit(3)}).catch(() => '');
     if (joined) return joined;
     const channels = await person.tab.evaluate('globalThis.tiloChannels?.() ?? ""');
-    await dump(person.tab, `timeout-plane-${who}`);
-    failed(`${who} joined no live plane: ${channels}`, person.tab);
+    await dump(person.tab, `timeout-live-session-${who}`);
+    failed(`${who} joined no live session: ${channels}`, person.tab);
   };
-  report.planes = {a: await joinedPlane(a, 'A'), b: await joinedPlane(b, 'B')};
-  console.log('ok: both pages joined the live plane');
-  mark('both pages on the live plane');
+  report.liveSessions = {a: await joinedLiveSession(a, 'A'), b: await joinedLiveSession(b, 'B')};
+  console.log('ok: both pages joined the live session');
+  mark('both pages on the live session');
 
   // Each shell shows the other as here and never itself, with a window of
   // theirs focused: the desktop's People list is what presence is on the
@@ -1025,7 +1025,7 @@ try {
     // control — the workspace's voice channel, joined muted, as every Tilo call
     // starts — and B, whose channels now list the call with A in it, opens the
     // same call from its own window. Each browser's microphone is its synthetic
-    // device, so the pages carry real Opus between them over the live plane:
+    // device, so the pages carry real Opus between them over the live session:
     // what each page sent and what the other heard is the call's own count.
     // Both read the call's card — who it is with, the run time its title bar
     // draws, and its controls — and hanging up ends it for both.
@@ -1088,7 +1088,7 @@ try {
       failed(`${what}: the call never went live (${JSON.stringify(call)})`);
     };
     // Both microphones running: the page's audio session captures the
-    // browser's synthetic device, which is what puts frames on the plane.
+    // browser's synthetic device, which is what puts frames on the live session.
     const untilCapture = async (person, what, timeout = stepLimit(3)) => {
       const running = await person.tab.waitFor(`(() => { const call = ${CALL} ?? {};
         return call.phase === 'live' && call.captureActive === true; })()`, {timeout}).catch(() => false);
@@ -1104,7 +1104,7 @@ try {
       failed(`${what}: the call is still live (${JSON.stringify(await callOn(person.tab))})`);
     };
     // What `sender`'s microphone published and `listener` heard of it: one
-    // count per page, the frames the plane carried between them.
+    // count per page, the frames the live session carried between them.
     const flows = async (sender, listener, what, timeout = stepLimit(4)) => {
       // What each page's own count says, read in the page as it changes: one
       // deadline for both, as the wait it replaces had.
@@ -1161,7 +1161,7 @@ try {
     console.log('ok: both pages are in the call');
     mark('both pages in the call');
     // Unmuted, both: each page's microphone is the browser's synthetic device,
-    // so unmuting is what puts audio on the plane.
+    // so unmuting is what puts audio on the live session.
     // The call card's microphone, pressed where the card is drawn: the shell
     // stands it over the windows and its app draws it, so the press is routed
     // to the card as on a native desktop.

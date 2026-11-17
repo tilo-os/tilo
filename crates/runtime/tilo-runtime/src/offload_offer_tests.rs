@@ -113,7 +113,7 @@ enum Reply {
     Later(Pending<Result<RanAway, String>>),
 }
 
-/// The workspace's other devices, as the host's plane serves them.
+/// The workspace's other devices, as the host's action service serves them.
 struct Peers {
     reply: Mutex<Reply>,
     asked: Mutex<Vec<(String, Route, Work)>>,

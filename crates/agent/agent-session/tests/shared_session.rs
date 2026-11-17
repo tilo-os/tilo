@@ -98,7 +98,7 @@ impl tilo_agent_session::Planner for GatedPlanner {
 const SCRATCHPAD: &str = "so.tilo.scratchpad";
 const OTHER_WORKSPACE: &str = "0b7f3c2e-5d41-4a8f-9e36-2c1d7a9b4e50";
 
-/// The host with its agent supervisor as the app-serving plane.
+/// The host with its agent supervisor as the app action server.
 async fn start_host(
     root: &SigningKey,
     host: &Device,
@@ -119,7 +119,7 @@ async fn start_host(
             device_cert: host.cert.clone(),
             revocations: RevocationList::new(),
         },
-        Some(Arc::new(tilo_relay::ActionHostPlane::new(SupervisorHost(
+        Some(Arc::new(tilo_relay::ActionHostServer::new(SupervisorHost(
             supervisor.clone(),
         )))),
     )

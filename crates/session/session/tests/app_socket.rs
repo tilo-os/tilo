@@ -25,10 +25,10 @@ use tilo_audio_service::sound::{Graph, SoundService};
 use tilo_compositor::OutputConfig;
 use tilo_crash_records::CrashRecords;
 use tilo_service::LoopWake;
-use tilo_session::{ActionPlane, Options, Service, Session};
+use tilo_session::{AppSocket, Options, Service, Session};
 
 /// The session the app talks to: headless, hosting the services `services` makes for its loop, and
-/// the plane on a socket of its own.
+/// the app wire on a socket of its own.
 fn session_hosting(
     socket: &std::path::Path,
     services: impl FnOnce(&LoopWake) -> Vec<Box<dyn Service>>,
@@ -51,7 +51,7 @@ fn session_hosting(
             collab: false,
             wake,
             launches,
-            action_plane: ActionPlane::At(socket.to_path_buf()),
+            app_socket: AppSocket::At(socket.to_path_buf()),
             ..Options::default()
         },
     )
@@ -96,7 +96,7 @@ fn app(socket: &std::path::Path, seen: &std::sync::mpsc::Sender<Seen>) {
         .expect("a runtime for the app");
     runtime.block_on(async {
         let mut stream =
-            std::os::unix::net::UnixStream::connect(socket).expect("the plane's socket");
+            std::os::unix::net::UnixStream::connect(socket).expect("the app wire's socket");
         launcher::services::write_collab_handoff(&mut stream, "so.tilo.settings", "the-workspace")
             .expect("the launcher names the app on the connection");
         stream
@@ -219,7 +219,7 @@ fn an_app_reads_what_the_session_does_not_publish_as_nothing() {
             .expect("a runtime for the app");
         runtime.block_on(async {
             let mut stream =
-                std::os::unix::net::UnixStream::connect(&socket).expect("the plane's socket");
+                std::os::unix::net::UnixStream::connect(&socket).expect("the app wire's socket");
             launcher::services::write_collab_handoff(
                 &mut stream,
                 "so.tilo.settings",
@@ -270,7 +270,7 @@ fn an_app_that_invokes_what_the_session_cannot_do_is_told_why() {
             .expect("a runtime for the app");
         runtime.block_on(async {
             let mut stream =
-                std::os::unix::net::UnixStream::connect(&socket).expect("the plane's socket");
+                std::os::unix::net::UnixStream::connect(&socket).expect("the app wire's socket");
             launcher::services::write_collab_handoff(
                 &mut stream,
                 "so.tilo.settings",
@@ -345,7 +345,7 @@ fn the_settings_app_lists_and_reads_a_crash_record_the_session_publishes() {
             .expect("a runtime for the app");
         let (listed, read) = runtime.block_on(async {
             let mut stream =
-                std::os::unix::net::UnixStream::connect(&socket).expect("the plane's socket");
+                std::os::unix::net::UnixStream::connect(&socket).expect("the app wire's socket");
             launcher::services::write_collab_handoff(
                 &mut stream,
                 "so.tilo.settings",

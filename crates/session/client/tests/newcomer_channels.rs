@@ -173,12 +173,12 @@ async fn a_newcomer_reads_writes_follows_and_rejoins_its_channel_group() {
 }
 
 /// A page that entered a workspace through its entry asks for that workspace's
-/// live plane once it holds the workspace's keys, and joins it: presence, calls
-/// and the people overlay all ride it. The page's channel state names the plane
+/// live session once it holds the workspace's keys, and joins it: presence, calls
+/// and the people overlay all ride it. The page's channel state names the live session
 /// it joined, and another member hears the page's presence there — a page that
-/// never asked for a plane lists no one, and nobody hears it.
+/// never asked for a live session lists no one, and nobody hears it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_newcomer_asks_for_its_workspaces_live_plane_and_joins_it() {
+async fn a_newcomer_asks_for_its_workspaces_live_session_and_joins_it() {
     let (owner, _) = UserIdentity::generate("Owner", 1);
     let host_device = enrol(
         &owner,
@@ -226,9 +226,9 @@ async fn a_newcomer_asks_for_its_workspaces_live_plane_and_joins_it() {
     )
     .await;
 
-    // The joined plane's line: the epoch it seals under and the devices it reads.
-    let named = format!("plane {}: epoch ", lounge.workspace_id);
-    let joined = wait_for("the page to join its workspace's live plane", || {
+    // The joined live session's line: the epoch it seals under and the devices it reads.
+    let named = format!("live session {}: epoch ", lounge.workspace_id);
+    let joined = wait_for("the page to join its workspace's live session", || {
         let line = newcomer
             .status()
             .key_state
@@ -240,22 +240,25 @@ async fn a_newcomer_asks_for_its_workspaces_live_plane_and_joins_it() {
     .await;
     assert!(joined.contains("device(s)"), "{joined}");
 
-    // The page is on the plane: its presence reaches another member of the
+    // The page is on the live session: its presence reaches another member of the
     // workspace, on the workspace scope's track.
     let events = member.events();
     let said = collab_types::presence::Presence::pointing(&lounge.workspace, 1, 0.5, 0.5);
-    wait_for("the member to hear the newcomer on the plane", || {
-        newcomer
-            .send(Cmd::Presence(lounge.workspace_id, vec![said.clone()]))
-            .unwrap();
-        let events = events.drain();
-        async move {
-            events.into_iter().find_map(|event| match event {
-                tilo_session_client::Event::LivePlane { from, .. } => Some(from),
-                _ => None,
-            })
-        }
-    })
+    wait_for(
+        "the member to hear the newcomer on the live session",
+        || {
+            newcomer
+                .send(Cmd::Presence(lounge.workspace_id, vec![said.clone()]))
+                .unwrap();
+            let events = events.drain();
+            async move {
+                events.into_iter().find_map(|event| match event {
+                    tilo_session_client::Event::LiveSession { from, .. } => Some(from),
+                    _ => None,
+                })
+            }
+        },
+    )
     .await;
 
     for page in [member, newcomer] {

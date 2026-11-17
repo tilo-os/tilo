@@ -25,7 +25,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tilo_clock::time::UNIX_EPOCH;
 
-use crate::plane::{Cmd, RosterDevice, Topic, topic_of};
+use crate::network::{Cmd, RosterDevice, Topic, topic_of};
 
 use collab_types::Ed25519PublicKey;
 use neighbour_wire::NeighbourMsg;
@@ -81,7 +81,7 @@ impl KeyService {
     /// Open this device's key service over the workspaces `engine` holds:
     /// its sealed group state under the platform secret store, and its
     /// groups settling through `link`, the workspace transport of this
-    /// session's collaboration plane. `settled` runs after every pass that
+    /// session's peer network. `settled` runs after every pass that
     /// settles them: keys a record waited for may be here since.
     ///
     /// Without a secret store the service still runs, for the workspaces this
@@ -144,7 +144,7 @@ impl KeyService {
                 settled();
             },
         )?;
-        // Every workspace this device already holds reads its roster: the plane carries a
+        // Every workspace this device already holds reads its roster: the peer network carries a
         // workspace's window streams between the devices it admits from the moment it runs, not
         // only from the workspace's next change.
         for workspace in engine.workspaces() {
@@ -172,12 +172,12 @@ struct AskedRecord {
 }
 
 /// The workspace transport the channels' governance travels on: what this session's collaboration
-/// plane hears and says, reached from the thread that settles the groups.
-/// It is also how the plane learns that a workspace's state moved ([`Self::workspace_changed`]) and
+/// peer network hears and says, reached from the thread that settles the groups.
+/// It is also how the peer network learns that a workspace's state moved ([`Self::workspace_changed`]) and
 /// which devices the workspace admits ([`Self::tell_roster`]), so a change the host published is
 /// acted on in the pass after it was taken in.
 pub struct KeyLink {
-    /// Governance the plane heard, waiting for the next settle.
+    /// Governance the peer network heard, waiting for the next settle.
     inbound: Mutex<Vec<InboundGovernance>>,
     /// The workspaces whose state moved since it was last read: their channels and their rosters
     /// are read again.
@@ -198,7 +198,7 @@ pub struct KeyLink {
     replays: tokio::sync::watch::Sender<u64>,
     /// Ticks whenever a host answered for a record this device opened.
     answers: tokio::sync::watch::Sender<u64>,
-    /// What this session says on the collaboration plane, once it is running.
+    /// What this session says on the peer network, once it is running.
     outgoing: Mutex<Option<std::sync::Arc<dyn crate::Outbox>>>,
     /// The devices that reach this one as their workspace's host, when it
     /// serves any ([`Self::serve_members`]).
@@ -240,10 +240,10 @@ impl KeyLink {
         })
     }
 
-    /// Say `message` on the collaboration plane from now on; `None` once the plane is gone.
+    /// Say `message` on the peer network from now on; `None` once the peer network is gone.
     pub fn attach(&self, outgoing: std::sync::Arc<dyn crate::Outbox>) {
         *self.outgoing.lock_recover() = Some(outgoing);
-        // What was told before the plane ran was told to no one: every workspace this device holds
+        // What was told before the peer network ran was told to no one: every workspace this device holds
         // is read and told again.
         self.park.poke();
     }
@@ -253,7 +253,7 @@ impl KeyLink {
         Arc::clone(&self.park)
     }
 
-    /// Whether the plane this device says its workspaces' rosters on is running.
+    /// Whether the peer network this device says its workspaces' rosters on is running.
     fn attached(&self) -> bool {
         self.outgoing.lock_recover().is_some()
     }
@@ -264,8 +264,8 @@ impl KeyLink {
         *self.members.lock_recover() = Some(members);
     }
 
-    /// Take in one message the plane heard. Anything but the groups' governance is left to the
-    /// plane. The members linked to this device hear it too: the plane is not their path.
+    /// Take in one message the peer network heard. Anything but the groups' governance is left to the
+    /// peer network. The members linked to this device hear it too: the peer network is not their path.
     pub fn heard(&self, message: &NeighbourMsg) {
         if !self.take_in(message) {
             return;
@@ -365,7 +365,7 @@ impl KeyLink {
     }
 
     /// Take in group governance a member linked to this device said: the key service settles
-    /// its groups with it, and the plane sends it on to the workspace's own host, so the devices
+    /// its groups with it, and the peer network sends it on to the workspace's own host, so the devices
     /// that take part there hear it. The link it came by already sent it to the other members.
     pub fn heard_from_member(&self, message: &NeighbourMsg) {
         if !self.take_in(message) {
@@ -387,7 +387,7 @@ impl KeyLink {
         true
     }
 
-    /// Say `message`, group governance of `workspace`, on the plane; `false` when the plane is
+    /// Say `message`, group governance of `workspace`, on the peer network; `false` when the peer network is
     /// not running.
     fn say(&self, workspace: ModelWorkspaceId, message: NeighbourMsg) -> bool {
         let outgoing = self.outgoing.lock_recover().clone();
@@ -476,7 +476,7 @@ impl KeyLink {
     /// Ask `workspace`'s hosts for the record on `channel`
     /// (`neighbour_wire::app_document_channel`): what they hold of it, and their changes to it from
     /// then on. Asked once per record and session; a host session that comes up later asks again
-    /// ([`Self::host_ready`]). `false` when the plane is not running, so nothing was asked.
+    /// ([`Self::host_ready`]). `false` when the peer network is not running, so nothing was asked.
     pub fn open_resource(
         &self,
         workspace: ModelWorkspaceId,
@@ -500,8 +500,8 @@ impl KeyLink {
         self.ask_for(ws, [(channel, own)])
     }
 
-    /// Say [`Cmd::OpenDocument`] for each of `channels` on the plane: whether it was taken, or `true`
-    /// when there is no plane to ask on.
+    /// Say [`Cmd::OpenDocument`] for each of `channels` on the peer network: whether it was taken, or `true`
+    /// when there is no peer network to ask on.
     fn ask_for(
         &self,
         ws: Topic,
@@ -571,7 +571,7 @@ impl KeyLink {
     }
 
     /// Send this device's owner's outgoing custody of `workspace` to its peers: what the owner
-    /// committed leaves this device on the plane's session with the workspace's host, as every
+    /// committed leaves this device on the peer network's session with the workspace's host, as every
     /// other change of the workspace does.
     pub fn publish_custody(&self, workspace: ModelWorkspaceId) {
         let outgoing = self.outgoing.lock_recover().clone();
@@ -580,7 +580,7 @@ impl KeyLink {
         }
     }
 
-    /// Tell the plane which devices workspace `ws` admits; `false` when the plane is gone, and the
+    /// Tell the peer network which devices workspace `ws` admits; `false` when the peer network is gone, and the
     /// roster is told again when a later pass finds it changed.
     fn tell_roster(&self, ws: Topic, devices: Roster) -> bool {
         let outgoing = self.outgoing.lock_recover().clone();
@@ -620,7 +620,7 @@ fn governance_workspace(message: &NeighbourMsg) -> Option<ModelWorkspaceId> {
         .and_then(ModelWorkspaceId::parse)
 }
 
-/// The workspaces whose rosters this session has told the plane, by workspace topic: a roster is
+/// The workspaces whose rosters this session has told the peer network, by workspace topic: a roster is
 /// told when the workspace it is of changed, and only then.
 #[cfg(target_os = "linux")]
 #[derive(Default)]
@@ -630,24 +630,24 @@ struct Rosters {
 
 #[cfg(target_os = "linux")]
 impl Rosters {
-    /// Whether the plane is not holding `roster` as workspace `ws` 's yet.
+    /// Whether the peer network is not holding `roster` as workspace `ws` 's yet.
     fn moved(&self, ws: Topic, roster: &Roster) -> bool {
         self.told.get(&ws) != Some(roster)
     }
 
-    /// Tell the plane the roster of each workspace that moved: the devices its governance admits
+    /// Tell the peer network the roster of each workspace that moved: the devices its governance admits
     /// now, which its window streams carry between. A device the workspace removed, or whose
     /// certificate ran out, is not on it, and what it sends or would be sent is refused from then
     /// on.
     fn sweep(&mut self, link: &KeyLink, engine: &Engine) {
-        // A session with no plane says its rosters to no one: the workspaces stay marked, and the
-        // pass after the plane starts tells them all ([`KeyLink::attach`]).
+        // A session with no peer network says its rosters to no one: the workspaces stay marked, and the
+        // pass after the peer network starts tells them all ([`KeyLink::attach`]).
         if !link.attached() {
             return;
         }
         for workspace in link.take_changed() {
             if !engine.holds(workspace) {
-                // The workspace is gone here, and what the plane held of it went with the leave.
+                // The workspace is gone here, and what the peer network held of it went with the leave.
                 self.told.remove(&topic_of(workspace));
                 continue;
             }
@@ -662,7 +662,7 @@ impl Rosters {
         }
     }
 
-    /// Tell the plane the workspace's `roster` , and remember it as told only when the plane took
+    /// Tell the peer network the workspace's `roster` , and remember it as told only when the peer network took
     /// it: one it did not take is read again on a later pass.
     fn tell(&mut self, link: &KeyLink, workspace: ModelWorkspaceId, roster: Roster) {
         let ws = topic_of(workspace);
@@ -870,7 +870,7 @@ mod tests {
         fn governance_reaches_the_groups_through_the_key_link;
 
         phase only_governance_reaches_the_group_service;
-        // What the plane heard is the groups' governance and nothing else.
+        // What the peer network heard is the groups' governance and nothing else.
         {
             let link = KeyLink::new();
             let hello = NeighbourMsg::IdentityHello {
@@ -881,7 +881,7 @@ mod tests {
             link.heard(&hello);
             assert!(
                 link.take_inbound().is_empty(),
-                "an identity hello is the plane's own, not the groups'"
+                "an identity hello is the peer network's own, not the groups'"
             );
             let workspace = ModelWorkspaceId::new();
             link.heard(&NeighbourMsg::MlsGovernance {
@@ -905,10 +905,10 @@ mod tests {
             assert!(link.take_inbound().is_empty(), "and is taken once");
         }
 
-        phase governance_passes_between_the_plane_and_the_members_linked_here;
+        phase governance_passes_between_the_network_and_the_members_linked_here;
         // The members linked to a device that hosts their workspace hear a group's governance
-        // through that device alone: what it says and what the plane brings it reach them, and what
-        // they say reaches its key service and, on the plane, the workspace's own host.
+        // through that device alone: what it says and what the peer network brings it reach them, and what
+        // they say reaches its key service and, on the peer network, the workspace's own host.
         {
             #[derive(Default)]
             struct Linked(Mutex<Vec<NeighbourMsg>>);
@@ -946,14 +946,14 @@ mod tests {
                 published
             };
 
-            // What this device's key service says goes out on the plane and to the members.
+            // What this device's key service says goes out on the peer network and to the members.
             let own = frame(1);
             assert!(link.publish(own.clone()));
             assert_eq!(published(&mut said), vec![own.clone()]);
             assert_eq!(*members.0.lock_recover(), vec![own]);
 
-            // What the plane brings reaches the key service and the members, and is not said
-            // again on the plane.
+            // What the peer network brings reaches the key service and the members, and is not said
+            // again on the peer network.
             let from_the_host = frame(2);
             link.heard(&from_the_host);
             assert_eq!(link.take_inbound().len(), 1);
@@ -971,7 +971,7 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        fn a_roster_is_told_to_the_plane_when_it_moved;
+        fn a_roster_is_told_to_the_network_when_it_moved;
 
         phase a_roster_moves_only_when_its_devices_do;
         // A roster is told when its workspace moved, and one that moved without its devices changing
@@ -990,17 +990,17 @@ mod tests {
             rosters.told.insert(workspace, both.clone());
             assert!(
                 !rosters.moved(workspace, &both),
-                "the roster the plane holds is not told again"
+                "the roster the peer network holds is not told again"
             );
             assert!(
                 rosters.moved(workspace, &one),
-                "a device the workspace removed leaves, and the plane is told"
+                "a device the workspace removed leaves, and the peer network is told"
             );
         }
 
-        phase a_roster_the_plane_did_not_take_is_told_again;
-        // A roster the plane did not take is not remembered as told: the workspace is read again and
-        // the roster told when the plane takes it.
+        phase a_roster_the_network_did_not_take_is_told_again;
+        // A roster the peer network did not take is not remembered as told: the workspace is read again and
+        // the roster told when the peer network takes it.
         {
             let link = KeyLink::new();
             let workspace = ModelWorkspaceId::new();
@@ -1010,7 +1010,7 @@ mod tests {
             assert_eq!(
                 link.take_changed(),
                 vec![workspace],
-                "the plane took nothing, so the workspace is read again"
+                "the peer network took nothing, so the workspace is read again"
             );
 
             let (outgoing, mut sent) = tokio::sync::mpsc::unbounded_channel();
@@ -1018,11 +1018,11 @@ mod tests {
             rosters.tell(&link, workspace, vec![(device, None)]);
             assert!(
                 link.take_changed().is_empty(),
-                "once the plane takes the roster, the workspace is not read again"
+                "once the peer network takes the roster, the workspace is not read again"
             );
             assert!(
                 matches!(sent.try_recv(), Ok(Cmd::Roster { .. })),
-                "and the plane was told it"
+                "and the peer network was told it"
             );
         }
     }

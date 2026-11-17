@@ -107,7 +107,7 @@ fn web_of_at(relay: &Relay, host: &Host, site: Option<&str>) -> Web {
         fetch: None,
         grants: Arc::default(),
         content_links: Arc::default(),
-        presence: Arc::new(plane::Authority::new(relay.web_context().relay.clone())),
+        presence: Arc::new(live::Authority::new(relay.web_context().relay.clone())),
         page_errors: page_errors::PageErrors::default(),
         shelf: shelf::Shelf::opening(
             relay.state_root().join("invitations"),

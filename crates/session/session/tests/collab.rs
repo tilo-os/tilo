@@ -1,5 +1,5 @@
 //! Who is here: the bar's faces open the roster, which lists everyone in the workspace and where
-//! each of them is, and the roster reads its one feed from the collaboration plane. A face opens
+//! each of them is, and the roster reads its one feed from the peer network. A face opens
 //! the person's card, from which Message opens Chat on the conversation they have.
 
 #![cfg(target_os = "linux")]
@@ -134,7 +134,7 @@ fn hello_of(person: u8, at: u8, label: &str) -> Event {
     )
 }
 
-/// One presence the other device said on the workspace's live plane: they arrived, how available
+/// One presence the other device said on the workspace's live session: they arrived, how available
 /// they are, and so on.
 fn presence(sync: &Client, from: u8, payload: collab_types::PeerPresencePayload) {
     let payload = match payload {

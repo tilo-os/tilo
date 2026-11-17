@@ -346,7 +346,7 @@ mod tests {
     use tilo_desktop_model::WorkspaceId;
     use tilo_peer_state::owner::testing::{self, governor::TestGovernor};
     use tilo_session_client::Cmd;
-    use tilo_session_client::plane::topic_of;
+    use tilo_session_client::network::topic_of;
     use tilo_user_identity::DeviceCert;
 
     use super::*;
@@ -407,7 +407,7 @@ mod tests {
 
         phase a_record_this_device_holds_nothing_of_is_the_apps_own_channel;
         // A record this device holds nothing of is the app's own channel, in a workspace it holds and
-        // one it does not. A session with no collaboration plane reaches no host, so it decides on
+        // one it does not. A session with no peer network reaches no host, so it decides on
         // what it holds.
         {
             let state = tempfile::tempdir().expect("a state directory");
@@ -513,9 +513,9 @@ mod tests {
             let state = tempfile::tempdir().expect("a state directory");
             let (engine, cert, key) = device(state.path(), 0x54);
             let workspace = workspace_with_record(&engine, &key);
-            let (_link, mut said) = planed(&engine);
+            let (_link, mut said) = networked(&engine);
             let records = Records::new(Arc::clone(&engine));
-            assert!(engine.reaches_host(), "a plane is running");
+            assert!(engine.reaches_host(), "a peer network is running");
             assert!(
                 engine.hosts_itself(&workspace.to_string()),
                 "it was founded here"
@@ -539,9 +539,9 @@ mod tests {
             let state = tempfile::tempdir().expect("a state directory");
             let (engine, _cert, key) = device(state.path(), 0x55);
             let workspace = workspace_with_record(&engine, &key);
-            let (link, mut said) = planed(&engine);
+            let (link, mut said) = networked(&engine);
             let id = workspace.to_string();
-            let replays = engine.replays().expect("a plane is running");
+            let replays = engine.replays().expect("a peer network is running");
             for record in [ON_DEMAND, PART] {
                 assert!(!engine.holds_resource(&id, APP, record));
                 assert!(
@@ -554,9 +554,9 @@ mod tests {
             }
             assert!(said.try_recv().is_err(), "nobody is asked for a record");
             assert!(!engine.host_replayed(&id));
-            link.host_ready(tilo_session_client::plane::topic_of(workspace), false);
+            link.host_ready(tilo_session_client::network::topic_of(workspace), false);
             assert!(
-                replays.has_changed().expect("the plane's word"),
+                replays.has_changed().expect("the peer network's word"),
                 "a waiting Open wakes"
             );
             assert!(engine.host_replayed(&id), "the replay ended");
@@ -571,7 +571,7 @@ mod tests {
             let state = tempfile::tempdir().expect("a state directory");
             let (engine, cert, key) = device(state.path(), 0x56);
             let (workspace, _host) = joined(&engine, &cert, &key);
-            let (link, mut said) = planed(&engine);
+            let (link, mut said) = networked(&engine);
             let records = Records::new(Arc::clone(&engine));
             let id = workspace.to_string();
             assert!(!engine.hosts_itself(&id), "another device hosts it");
@@ -612,7 +612,7 @@ mod tests {
             let state = tempfile::tempdir().expect("a state directory");
             let (engine, cert, key) = device(state.path(), 0x57);
             let (workspace, host) = joined(&engine, &cert, &key);
-            let (link, mut said) = planed(&engine);
+            let (link, mut said) = networked(&engine);
             let records = Records::new(Arc::clone(&engine));
             let id = workspace.to_string();
             link.host_ready(topic_of(workspace), true);
@@ -663,8 +663,8 @@ mod tests {
         }
     }
 
-    /// A plane this engine asks its workspaces' hosts on, the commands it says kept.
-    fn planed(
+    /// A peer network this engine asks its workspaces' hosts on, the commands it says kept.
+    fn networked(
         engine: &Engine,
     ) -> (
         Arc<tilo_session_client::workspace_keys::KeyLink>,
@@ -762,7 +762,7 @@ mod tests {
             let state = tempfile::tempdir().expect("a state directory");
             let (engine, cert, key) = device(state.path(), 0x58);
             let (workspace, host) = joined(&engine, &cert, &key);
-            let (link, mut said) = planed(&engine);
+            let (link, mut said) = networked(&engine);
             let records = Records::new(Arc::clone(&engine));
             let id = workspace.to_string();
             let (head_record, newest_record) = chain_records();
@@ -828,7 +828,7 @@ mod tests {
             let state = tempfile::tempdir().expect("a state directory");
             let (engine, cert, key) = device(state.path(), 0x59);
             let (workspace, _host) = joined(&engine, &cert, &key);
-            let (link, mut said) = planed(&engine);
+            let (link, mut said) = networked(&engine);
             let records = Records::new(Arc::clone(&engine));
             let (head_record, _) = chain_records();
             let channel = neighbour_wire::app_document_channel(APP, &head_record);
@@ -859,7 +859,7 @@ mod tests {
             let state = tempfile::tempdir().expect("a state directory");
             let (engine, cert, key) = device(state.path(), 0x5a);
             let (workspace, _host) = joined(&engine, &cert, &key);
-            let (link, mut said) = planed(&engine);
+            let (link, mut said) = networked(&engine);
             let records = Records::new(Arc::clone(&engine));
             link.host_ready(topic_of(workspace), false);
             let (head_record, _) = chain_records();

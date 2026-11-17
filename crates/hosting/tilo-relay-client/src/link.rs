@@ -2,7 +2,7 @@
 //! dialler goes through, whatever the device runs on.
 //!
 //! A device asks its host for a few things, each a conversation of its own
-//! ([`Purpose`]): the session, certification, and a workspace's live plane.
+//! ([`Purpose`]): the session, certification, and a workspace's live session.
 //! [`Dialer::link`] opens one [`Link`] for one of them, over the host's
 //! [`Carrier`]:
 //!
@@ -16,13 +16,15 @@
 //!
 //! Over iroh the endpoint's TLS says who the device is; over WebTransport the
 //! device proves it with the relay handshake on the link's first stream,
-//! where a conversation needs to know (the session's own, and the plane's).
+//! where a conversation needs to know (the session's own, and the live session's).
 //! Either way the bytes above a link are the same.
 
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
-use tilo_relay_protocol::web::{LINK_CERTIFY_PATH, LINK_PLANE_PATH, LINK_SESSION_PATH, WebLink};
+use tilo_relay_protocol::web::{
+    LINK_CERTIFY_PATH, LINK_LIVE_SESSION_PATH, LINK_SESSION_PATH, WebLink,
+};
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 
 use crate::LinkError;
@@ -46,8 +48,8 @@ pub enum Purpose {
     Session,
     /// Certification: each stream one request or approver command.
     Certify,
-    /// A workspace's live plane.
-    Plane,
+    /// A workspace's live session.
+    LiveSession,
 }
 
 impl Purpose {
@@ -57,18 +59,18 @@ impl Purpose {
         match self {
             Self::Session => LINK_SESSION_PATH,
             Self::Certify => LINK_CERTIFY_PATH,
-            Self::Plane => LINK_PLANE_PATH,
+            Self::LiveSession => LINK_LIVE_SESSION_PATH,
         }
     }
 
-    /// The ALPN an iroh connection for it negotiates. A plane's carrier over
-    /// iroh is dialled by the live plane itself, which owns its ALPN.
+    /// The ALPN an iroh connection for it negotiates. A live session's carrier over
+    /// iroh is dialled by the live session itself, which owns its ALPN.
     #[cfg(not(target_arch = "wasm32"))]
     const fn alpn(self) -> Option<&'static [u8]> {
         match self {
             Self::Session => Some(tilo_relay_protocol::transport::ALPN),
             Self::Certify => Some(tilo_relay_protocol::certify::CERTIFY_ALPN),
-            Self::Plane => None,
+            Self::LiveSession => None,
         }
     }
 }
@@ -76,7 +78,7 @@ impl Purpose {
 /// Opens links to one host, over its carrier.
 ///
 /// Over iroh it keeps the device's endpoint, bound on the first link and
-/// reused for every link after (and by the live plane, [`Self::endpoint`]):
+/// reused for every link after (and by the live session, [`Self::endpoint`]):
 /// a device speaks to its host as one endpoint. A device that already runs
 /// an endpoint under its key lends it ([`Self::from_endpoint`]), so it never
 /// binds a second one: a relay holds one connection per endpoint id and
@@ -165,7 +167,9 @@ impl Dialer {
             #[cfg(not(target_arch = "wasm32"))]
             Carrier::Direct | Carrier::Relay => {
                 let alpn = purpose.alpn().ok_or_else(|| {
-                    LinkError::Unavailable("the live plane dials its own carrier over iroh".into())
+                    LinkError::Unavailable(
+                        "the live session dials its own carrier over iroh".into(),
+                    )
                 })?;
                 let endpoint = self.endpoint().await?;
                 let connection = match tokio::time::timeout(
@@ -463,7 +467,7 @@ impl Link {
     }
 
     /// The WebTransport session under the link, when it is one: what the live
-    /// plane runs `moq-lite` on.
+    /// live session runs `moq-lite` on.
     #[must_use]
     pub fn web_session(&self) -> Option<tilo_net::webtransport::Session> {
         match &self.inner {

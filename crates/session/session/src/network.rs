@@ -1,4 +1,4 @@
-//! What this session serves the network actor beside its own planes.
+//! What this session serves the network actor beside its own peer networks.
 //!
 //! The actor is the transport, and what some of its APIs ask is the
 //! session's business: another of the person's devices asking for its

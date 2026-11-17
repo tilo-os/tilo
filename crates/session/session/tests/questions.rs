@@ -37,7 +37,7 @@ use tilo_portal::file_chooser::{
 };
 use tilo_portal::screenshot::ScreenshotQuestion;
 use tilo_service::{Answer, Asked, Question, Questions, Service, Started, decode, offer};
-use tilo_session::{ActionPlane, Options, Session};
+use tilo_session::{AppSocket, Options, Session};
 use tilo_sheets::SheetState as _;
 use tilo_sheets::file_picker::{FileMode, FilePickerEffect};
 use tilo_sheets::portal::{Body, Dialog, Field, PortalEffect, Prompt, PromptKind};
@@ -1112,7 +1112,7 @@ fn a_program_asking_to_work_as_an_agent_is_admitted_from_the_sheet() {
     let mut session = crate::common::headless(Options {
         questions: Some(questions.clone()),
         collab: false,
-        action_plane: ActionPlane::At(root.path().join("plane.sock")),
+        app_socket: AppSocket::At(root.path().join("app_wire.sock")),
         mcp_server: Some(socket.clone()),
         ..Options::default()
     });
@@ -1196,7 +1196,7 @@ fn a_program_the_person_refuses_works_nowhere() {
     let mut session = crate::common::headless(Options {
         questions: Some(questions.clone()),
         collab: false,
-        action_plane: ActionPlane::At(root.path().join("plane.sock")),
+        app_socket: AppSocket::At(root.path().join("app_wire.sock")),
         mcp_server: Some(socket.clone()),
         ..Options::default()
     });

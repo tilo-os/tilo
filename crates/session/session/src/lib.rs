@@ -90,6 +90,8 @@ pub mod app_tabs;
 #[cfg(target_os = "linux")]
 mod app_tiers;
 #[cfg(target_os = "linux")]
+mod app_wire;
+#[cfg(target_os = "linux")]
 pub mod apps;
 #[cfg(target_os = "linux")]
 mod asks;
@@ -301,8 +303,6 @@ mod pass;
 pub mod people;
 #[cfg(target_os = "linux")]
 mod personal;
-#[cfg(target_os = "linux")]
-mod plane;
 #[cfg(target_os = "linux")]
 pub mod portal_link;
 #[cfg(target_os = "linux")]

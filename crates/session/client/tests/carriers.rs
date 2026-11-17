@@ -75,7 +75,7 @@ over_each_carrier!(
     a_root_holding_device_certifies_a_new_one,
     the_persons_root_pairs_a_new_device,
     documents_sync_both_ways_until_the_device_is_revoked,
-    the_workspace_admits_the_device_and_its_live_plane_carries_it,
+    the_workspace_admits_the_device_and_its_live_session_carries_it,
     the_device_takes_part_in_a_call,
 );
 
@@ -303,8 +303,8 @@ async fn documents_sync_both_ways_until_the_device_is_revoked(carrier: Carrier) 
     ada.host.relay.shutdown().await;
 }
 
-/// The workspace scope's record: its channel keys seal the plane's tracks.
-fn plane_route() -> DocumentRoute {
+/// The workspace scope's record: its channel keys seal the live session's tracks.
+fn live_session_route() -> DocumentRoute {
     DocumentRoute {
         app_id: collab_types::scope::MEDIA_APP.to_owned(),
         cluster_id: WORKSPACE.to_owned(),
@@ -313,7 +313,7 @@ fn plane_route() -> DocumentRoute {
 }
 
 /// The scope's keys, as the workspace's members derive them.
-fn plane_keys() -> ContentKeys {
+fn live_session_keys() -> ContentKeys {
     KeyGroup::create(
         collab_types::WorkspaceId::new(),
         MemberKey::generate("ada").unwrap(),
@@ -323,29 +323,29 @@ fn plane_keys() -> ContentKeys {
     .unwrap()
 }
 
-async fn the_workspace_admits_the_device_and_its_live_plane_carries_it(carrier: Carrier) {
+async fn the_workspace_admits_the_device_and_its_live_session_carries_it(carrier: Carrier) {
     let ada = Ada::start().await;
     let (key, cert, host_cert) = ada.certified(&ada.host.over(carrier)).await;
     place(&ada.host.relay, &cert).await;
-    let keys = plane_keys();
+    let keys = live_session_keys();
 
     // The workspace's governance admits the page.
     let page = page(&ada.host, carrier, key, &cert, &host_cert);
-    page.send(Cmd::InstallGroupKeys(plane_route(), keys.clone()))
+    page.send(Cmd::InstallGroupKeys(live_session_route(), keys.clone()))
         .unwrap();
     page.join_placed(WORKSPACE, "Workspace").unwrap();
     in_workspace(&page, crate::support::workspace()).await;
     let laptop = ada.laptop_peer(&host_cert).await;
     laptop
-        .send(Cmd::InstallGroupKeys(plane_route(), keys.clone()))
+        .send(Cmd::InstallGroupKeys(live_session_route(), keys.clone()))
         .unwrap();
     in_workspace(&laptop, crate::support::workspace()).await;
 
-    // The page says where it is on the workspace's plane, and the laptop
+    // The page says where it is on the workspace's live session, and the laptop
     // hears it, opened with the scope's keys.
     let events = laptop.events();
     let said = Presence::pointing(WORKSPACE, 7, 0.25, 0.75);
-    let (from, track, body) = wait_for("the laptop to hear the page on its plane", || {
+    let (from, track, body) = wait_for("the laptop to hear the page on its live session", || {
         page.send(Cmd::Presence(
             crate::support::workspace(),
             vec![said.clone()],
@@ -354,7 +354,7 @@ async fn the_workspace_admits_the_device_and_its_live_plane_carries_it(carrier: 
         let events = events.drain();
         async move {
             events.into_iter().find_map(|event| match event {
-                Event::LivePlane {
+                Event::LiveSession {
                     ws: workspace_id,
                     from,
                     track,
@@ -369,7 +369,7 @@ async fn the_workspace_admits_the_device_and_its_live_plane_carries_it(carrier: 
     assert_eq!(from, cert.device_public_key);
     assert_eq!(track, tilo_live::live::Track::Presence);
     assert_eq!(tilo_live::presence::decode(&body).unwrap(), said);
-    assert_eq!(page.live_note(), None, "the page reached its plane");
+    assert_eq!(page.live_note(), None, "the page reached its live session");
 
     page.close();
     laptop.close();

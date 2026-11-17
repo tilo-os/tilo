@@ -23,7 +23,7 @@ use tilo_render_protocol::channel::Channel;
 use tilo_render_service::RENDER_NODE_ENV;
 use tilo_render_service::broker::{BROKER_FD_ENV, FromService, MODE, ToService};
 
-use crate::plane::LayoutAuthority;
+use crate::app_wire::LayoutAuthority;
 
 /// The service name of the person's private workspaces.
 pub(crate) const PRIVATE: &str = "private";

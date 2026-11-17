@@ -16,7 +16,7 @@ behind each binding, and how every transition moves.
                  ↓ strip below                     Ctrl+Super+↓
 
    the frame:          maximize / restore           Super+↑ / ↓
-   the plane you see:  windows along strips, spread across your displays
+   what you see:  windows along strips, spread across your displays
    one level out:      workspaces                   Super+Page Up / Page Down
    the glass:          which display                Alt+Super + arrow
 ```
@@ -40,7 +40,7 @@ Every input device says the same three things:
    windows of the strip, and plain Super+↑ / ↓ maximize and restore the focused
    group, as on Windows and GNOME; Ctrl+Super+↑ / ↓ is strips, and Super+1…9
    goes straight to a strip (1 is the top one); Super+Page Up / Page Down is workspaces; Alt+Super is
-   displays. On a touchpad or a touchscreen three fingers work the plane
+   displays. On a touchpad or a touchscreen three fingers work the strips
    (vertically, strips), four go one level out, and a pinch is the overview.
 3. **Shift carries.** Every "go" has a Shift twin that takes the focused group to
    the same place and keeps it focused. Dragging is the pointer's Shift.

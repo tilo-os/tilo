@@ -121,7 +121,7 @@ impl Site {
         install_log();
         // The site keeps the keys of the channels it seals in the platform secret store, which this
         // process keeps in memory: a site without one can host no sealed record, and its people's
-        // devices reach no plane.
+        // devices reach no app wire.
         tilo_secrets::keep_in_memory_for_process();
         let state = tempfile::tempdir().expect("a directory for the site's host");
         let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -1534,7 +1534,7 @@ impl Device {
 
     /// Wait until this device says the device `publisher` is present in `workspace` , failing with
     /// who it does say is there if it never does: presence reaches a device by itself, on the
-    /// workspace's own plane.
+    /// workspace's own app wire.
     pub fn wait_present(&self, workspace: &str, publisher: &str) {
         struct Present<'a> {
             device: &'a Device,

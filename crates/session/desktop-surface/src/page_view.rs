@@ -2,7 +2,7 @@
 //!
 //! A web page is foreign content, so its window is the one kind whose drawing
 //! leaves the device that runs the engine: the page travels as a display list
-//! (`tilo_paint_stream`) over the workspace's live plane, one track per window
+//! (`tilo_paint_stream`) over the workspace's live session, one track per window
 //! ([`tilo_live::page`] when the session publishes it). [`PageStream`] is what
 //! a viewer holds of one page: the [`Receiver`] that keeps the frame the
 //! publisher holds, the images the frame references by content hash, and the

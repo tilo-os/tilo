@@ -12,7 +12,7 @@
 //! over the collaboration endpoint; and a person the workspace never admitted
 //! is refused and keeps nothing; and two people's own desktops sharing a
 //! workspace one of them hosts, with no site at all, see each other come and
-//! go on the workspace's live plane.
+//! go on the workspace's live session.
 
 #![cfg(target_os = "linux")]
 #![allow(
@@ -146,7 +146,7 @@ fn two_people_on_two_devices_each_meet_in_one_workspace() {
 }
 
 /// Two people on their own desktops, neither of them a host, share a workspace one of them hosts:
-/// the device hosting it relays its live plane, so each sees the other present, and sees them leave.
+/// the device hosting it relays its live session, so each sees the other present, and sees them leave.
 #[test]
 fn two_peoples_own_desktops_see_each_other_come_and_go_without_a_site() {
     let ada = Person::new("Ada");

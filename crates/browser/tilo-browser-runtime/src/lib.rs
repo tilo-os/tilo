@@ -281,7 +281,7 @@ mod person_settings;
 // run on the host too.
 #[cfg(any(target_arch = "wasm32", test))]
 mod identity_api;
-// The page's collaboration plane: the session's sync over this page's endpoint.
+// The page's peer network: the session's sync over this page's endpoint.
 #[cfg(target_arch = "wasm32")]
 mod peer_sync;
 // What the page says of itself, as its live layer hands it back: its tests

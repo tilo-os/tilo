@@ -17,7 +17,7 @@
 //!
 //! HTTP goes through the page's `post(path, session, body)` (its `fetch`).
 //! Presence — who is here, their pointer, what their shell shows — rides the
-//! workspace's live plane like every other device's, kept on the session's own
+//! workspace's live session like every other device's, kept on the session's own
 //! board ([`crate::peer_sync`]) and read back as the members answer
 //! ([`WasmPeer::take_live_events`]). Documents reach the desktop's
 //! `CollaborationManager` through [`WasmPeer::collab_transport`].
@@ -449,7 +449,7 @@ type ReplicaStore = (Rc<durable_store::MemoryStore>, crate::replication::Kept);
 struct ConnectConfig {
     cert: DeviceCert,
     host_cert: DeviceCert,
-    /// Where the host's iroh endpoint is dialled: the session and its planes
+    /// Where the host's iroh endpoint is dialled: the session and its live sessions
     /// reach it there.
     address: PageHostAddress,
     /// The person's chosen name, for history and presence; empty for none.
@@ -1430,7 +1430,7 @@ enum JsVoiceEvent {
         reason: String,
     },
     /// One frame of a call's voice, as the device `from` published it on the
-    /// workspace's plane: the page's app plays it.
+    /// workspace's live session: the page's app plays it.
     Heard {
         workspace: String,
         from: String,
@@ -1438,7 +1438,7 @@ enum JsVoiceEvent {
         timestamp48k: u64,
         opus: String,
     },
-    /// One picture of a call on the workspace's plane: the tilo-video/1
+    /// One picture of a call on the workspace's live session: the tilo-video/1
     /// object of `from`'s camera or screen, in hex, as the app's decoder
     /// draws it.
     Picture {
@@ -1678,7 +1678,7 @@ fn is_durable(event: &Event) -> bool {
 
 /// The events [`WasmPeer::take_live_events`] reads.
 fn is_live(event: &Event) -> bool {
-    matches!(event, Event::LivePlane { .. } | Event::Live { .. })
+    matches!(event, Event::LiveSession { .. } | Event::Live { .. })
 }
 
 /// The events [`WasmPeer::take_voice_events`] reads: a page that never takes them (it has no
@@ -2489,7 +2489,7 @@ impl WasmPeer {
     }
 
     /// Publish `frames` (JSON array of `{timestamp48k, opus}`, `opus` in hex)
-    /// on `workspace`'s live plane as this page's voice, in the order given:
+    /// on `workspace`'s live session as this page's voice, in the order given:
     /// one voice object per frame, heard by every device in the call.
     ///
     /// # Errors
@@ -2518,7 +2518,7 @@ impl WasmPeer {
             .map_err(js_error)
     }
 
-    /// Publish `pictures` this page's camera and screen encoded on the plane
+    /// Publish `pictures` this page's camera and screen encoded on the live session
     /// of `workspace`, as JSON: `[{source, layer, sequence, keyframe,
     /// timestampUs, width, height, payload}]`, `source` and `layer` as
     /// `web/voice-video.mjs` names them and `payload` in hex. Every device
@@ -2562,7 +2562,7 @@ impl WasmPeer {
             .map_err(js_error)
     }
 
-    /// Show the devices' layers of `shown` on the plane of `workspace`, as
+    /// Show the devices' layers of `shown` on the live session of `workspace`, as
     /// JSON: `[{device, camera: [layer], screen: [layer]}]`, `device` in hex.
     /// The devices left out are no longer read, and their owners stop encoding
     /// the layers nobody shows.
@@ -2604,7 +2604,7 @@ impl WasmPeer {
     }
 
     /// Ask `device` (hex) for `source` (`camera` or `screen`) afresh on the
-    /// plane of `workspace`: its next picture starts a group this page can
+    /// live session of `workspace`: its next picture starts a group this page can
     /// begin decoding at.
     ///
     /// # Errors
@@ -2641,7 +2641,7 @@ impl WasmPeer {
     }
 
     /// Why this page shows no live presence, in the words it shows in the
-    /// members' place, or `null` while it has a plane: no plane could be
+    /// members' place, or `null` while it has a live session: no live session could be
     /// reached.
     #[wasm_bindgen(js_name = liveNote)]
     pub fn live_note(&self) -> Option<String> {
@@ -2672,7 +2672,7 @@ impl WasmPeer {
             .drain()
             .into_iter()
             .filter_map(|event| match event {
-                Event::LivePlane {
+                Event::LiveSession {
                     ws: workspace_id,
                     from,
                     track: Track::Presence,
@@ -2684,7 +2684,7 @@ impl WasmPeer {
                 }
                 // A window's page: the display list the device hosting it publishes, drawn in the
                 // tab of that window.
-                Event::LivePlane {
+                Event::LiveSession {
                     ws: workspace_id,
                     from,
                     track: Track::Page(tab),
@@ -2696,7 +2696,7 @@ impl WasmPeer {
                 }
                 // A window's pictures: the video the device hosting it publishes, drawn in the tab
                 // of that window.
-                Event::LivePlane {
+                Event::LiveSession {
                     ws: workspace_id,
                     from,
                     track: Track::Window(tab, _),

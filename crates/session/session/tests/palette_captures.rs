@@ -5,7 +5,7 @@
 //! is not running.
 //!
 //! The app speaks exactly as Tasks does: one launcher-attested connection to
-//! the session's plane, certified as the workspace's member, its surface
+//! the session's app wire, certified as the workspace's member, its surface
 //! published on the channel it joined, and the invocations the session
 //! addresses back to it read on that same connection.
 
@@ -30,7 +30,7 @@ use tilo_actions::ResourceSpec;
 use tilo_actions::remote::InvokeArgument;
 use tilo_desktop::verbs::{SEARCH_RESOURCE, SEARCH_ROW_KIND, SHELL_RESOURCE};
 use tilo_session::apps::Apps;
-use tilo_session::{ActionPlane, AppActions, Launches, Options, Session};
+use tilo_session::{AppActions, AppSocket, Launches, Options, Session};
 
 use crate::common::held::{Fixture, WORKSPACE, actor, fixture, layout, presentation};
 use tilo_user_identity::DeviceCert;
@@ -40,9 +40,10 @@ const TASKS: &str = "so.tilo.lang.tasks";
 /// The line a person writes into the palette.
 const LINE: &str = "Call the landlord fri 10am";
 
-/// A connection to the session's plane as `app` in the workspace, as the launcher hands an app one.
+/// A connection to the session's app wire as `app` in the workspace, as the launcher hands an app one.
 fn connect(socket: &Path) -> CollabClient {
-    let mut stream = std::os::unix::net::UnixStream::connect(socket).expect("the plane's socket");
+    let mut stream =
+        std::os::unix::net::UnixStream::connect(socket).expect("the app wire's socket");
     launcher::services::write_collab_handoff(&mut stream, TASKS, WORKSPACE)
         .expect("the launcher names the app on the connection");
     stream
@@ -74,7 +75,7 @@ fn session(socket: &Path, fixture: &Fixture) -> (Session, Rc<Apps>) {
     ));
     let mut session = crate::common::headless(Options {
         collab: false,
-        action_plane: ActionPlane::At(socket.to_path_buf()),
+        app_socket: AppSocket::At(socket.to_path_buf()),
         person: actor(&fixture.cert.user_public_key),
         launches,
         state: Some(fixture.state.clone()),

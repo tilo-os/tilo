@@ -3,13 +3,13 @@
 //! The relay itself runs no apps and links none: it carries
 //! [`Envelope::RemoteAction`](tilo_relay_protocol::transport::Envelope::RemoteAction) frames between
 //! devices of a workspace without executing them. A process that embeds the
-//! relay and *does* host apps supplies an [`AppServingPlane`] to the host
+//! relay and *does* host apps supplies an [`AppActionServer`] to the host
 //! ([`HostConfig::apps`](crate::host::HostConfig::apps)); frames addressed
 //! to the host's own device are then answered by it, and a relay advertises
 //! its `app_serving` service.
 //! Without one, the capability stays off and such frames are refused as
 //! undeliverable — all but the governance of the workspaces the relay governs,
-//! which it answers itself (`crate::workspaces::GovernedPlane`).
+//! which it answers itself (`crate::workspaces::GovernedServer`).
 
 use tilo_actions::remote::{ActionHost, Caller, Pending, RemoteActionMessage};
 use tilo_relay_protocol::WorkspaceId;
@@ -18,7 +18,7 @@ use tilo_relay_protocol::WorkspaceId;
 ///
 /// `caller` is the actor the relay authenticated for the connection the
 /// request arrived on; implementations decide authority from it alone.
-pub trait AppServingPlane: Send + Sync {
+pub trait AppActionServer: Send + Sync {
     /// Answer one message for `workspace_id` — whenever the answer is ready,
     /// never blocking the connection — or `None` when it needs no reply.
     fn serve(
@@ -31,7 +31,7 @@ pub trait AppServingPlane: Send + Sync {
     /// As [`Self::serve`], with the certificate the relay's handshake
     /// verified for `caller`'s device: what the relay hands every message
     /// that arrives on a session. The host's own operations need it (they
-    /// admit that certificate to a workspace); an app-serving plane has no use
+    /// admit that certificate to a workspace); an app action server has no use
     /// for it, and the default ignores it.
     fn serve_certified(
         &self,
@@ -46,7 +46,7 @@ pub trait AppServingPlane: Send + Sync {
 
     /// Answer one of the host's own operations (`tilo.host`), asked of the
     /// host itself by `caller` on the device `certificate` names, as the
-    /// relay's handshake verified it: no workspace is involved. A plane that
+    /// relay's handshake verified it: no workspace is involved. An app action server that
     /// governs no workspaces answers none.
     fn serve_host(
         &self,
@@ -58,7 +58,7 @@ pub trait AppServingPlane: Send + Sync {
         None
     }
 
-    /// Whether this plane answers `message` from `caller` at all. One that
+    /// Whether this app action server answers `message` from `caller` at all. One that
     /// does not is refused as undeliverable, as by a host that serves no
     /// apps.
     fn answers(&self, caller: &Caller, message: &RemoteActionMessage) -> bool {
@@ -66,7 +66,7 @@ pub trait AppServingPlane: Send + Sync {
         true
     }
 
-    /// The content stores this plane keeps its workspaces' content in, when
+    /// The content stores this app action server keeps its workspaces' content in, when
     /// it brings them: the host then keeps everything else it keeps for a
     /// workspace there too, so a host has one store per workspace. `None`
     /// leaves the host to open its own.
@@ -77,7 +77,7 @@ pub trait AppServingPlane: Send + Sync {
 
     /// `caller`'s session became an agent's run
     /// ([`Envelope::AgentSession`](tilo_relay_protocol::transport::Envelope::AgentSession))
-    /// in `workspace_id`, the workspace the session entered: a plane that
+    /// in `workspace_id`, the workspace the session entered: an app action server that
     /// speaks for the runs it executes makes the run present there now, so an
     /// agent that connected and has not acted yet is already seen, waiting.
     /// Nothing by default.
@@ -86,15 +86,15 @@ pub trait AppServingPlane: Send + Sync {
     }
 
     /// The workspace `workspace_id` was deleted: let go of whatever this
-    /// plane holds for it (its app workers, what it found of the
+    /// app action server holds for it (its app workers, what it found of the
     /// workspace). Nothing by default.
     fn forget_workspace(&self, workspace_id: WorkspaceId) {
         let _ = workspace_id;
     }
 
     /// Where `message`, sent to this host by `caller`, goes instead of this
-    /// plane: to the device of `workspace_id` that holds what it addresses, or
-    /// to the caller as this plane's own answer. Some actions exist only on a
+    /// app action server: to the device of `workspace_id` that holds what it addresses, or
+    /// to the caller as this app action server's own answer. Some actions exist only on a
     /// window, and the window need not be on this host (a Browser whose page
     /// runs on a VM host). The host hands the frame to that device stamped
     /// with `caller`, as it hands over every frame it routes, so the action
@@ -110,8 +110,8 @@ pub trait AppServingPlane: Send + Sync {
     }
 
     /// As [`Self::route`], with the certificate the relay's handshake
-    /// verified for `caller`'s device: what the plane may hold the caller to
-    /// beyond who it is — a key's own scope, say. A plane that needs only the
+    /// verified for `caller`'s device: what the app action server may hold the caller to
+    /// beyond who it is — a key's own scope, say. An app action server that needs only the
     /// caller routes as before.
     fn route_certified(
         &self,
@@ -125,8 +125,8 @@ pub trait AppServingPlane: Send + Sync {
     }
 
     /// What device `from` answered `message` in `workspace_id`, on its way
-    /// to the caller: the host only carries it, and a plane that handed the
-    /// frame over may want to know how it went. The answer the plane gives
+    /// to the caller: the host only carries it, and an app action server that handed the
+    /// frame over may want to know how it went. The answer the app action server gives
     /// here is what the caller receives in its place — a window that refuses
     /// an action for want of the person's word leaves its caller waiting
     /// instead of refused — and `None` carries the answer on as it is.
@@ -141,7 +141,7 @@ pub trait AppServingPlane: Send + Sync {
     }
 
     /// Whether what device `from` sends `to` in `workspace_id` answers frames
-    /// this plane routed from `to` to `from` ([`Self::route`]): the host then
+    /// this app action server routed from `to` to `from` ([`Self::route`]): the host then
     /// stamps it as its own, since `to` asked this host and hears its answers
     /// from the device it asked. `false` by default: a frame is stamped with
     /// the device that sent it.
@@ -150,7 +150,7 @@ pub trait AppServingPlane: Send + Sync {
         false
     }
 
-    /// Whether this plane waits on answers to frames of `workspace_id`: the
+    /// Whether this app action server waits on answers to frames of `workspace_id`: the
     /// host decodes what it forwards there for [`Self::relayed`], and reads
     /// the rest untouched.
     fn tracks(&self, workspace_id: WorkspaceId) -> bool {
@@ -160,26 +160,26 @@ pub trait AppServingPlane: Send + Sync {
 }
 
 /// Where a frame is served instead of on the host it was addressed to
-/// ([`AppServingPlane::route`]).
+/// ([`AppActionServer::route`]).
 pub enum Routing {
     /// The device of the workspace holding the window the frame addresses.
     Device([u8; 32]),
     /// That device, handed `message` in place of the frame the caller sent:
-    /// what a plane that answers for the person hands over — the caller's own
+    /// what an app action server that answers for the person hands over — the caller's own
     /// action, carrying an answer the caller could not put there itself.
     Replaced {
         to: [u8; 32],
         message: Box<RemoteActionMessage>,
     },
-    /// This plane answers the frame itself — the caller's typed refusal, or
+    /// This app action server answers the frame itself — the caller's typed refusal, or
     /// the answer to an invocation it holds — now or when it is ready.
     Answer(Pending<RemoteActionMessage>),
 }
 
-/// The host's own delivery of a frame a plane hands it
+/// The host's own delivery of a frame an app action server hands it
 /// ([`HostedBrowsers`](crate::hosted_browser) and its likes): every frame the
 /// host routes reaches the device it names stamped with the caller who asked
-/// for it, and this is how a plane has one carried after it answered its
+/// for it, and this is how an app action server has one carried after it answered its
 /// caller itself.
 #[derive(Clone)]
 pub struct Hand {
@@ -247,12 +247,12 @@ impl Hand {
     }
 }
 
-/// An [`AppServingPlane`] backed by one [`ActionHost`] for every workspace.
-pub struct ActionHostPlane<H> {
+/// An [`AppActionServer`] backed by one [`ActionHost`] for every workspace.
+pub struct ActionHostServer<H> {
     host: H,
 }
 
-impl<H> ActionHostPlane<H> {
+impl<H> ActionHostServer<H> {
     /// Serve every workspace from `host`.
     pub const fn new(host: H) -> Self {
         Self { host }
@@ -260,7 +260,7 @@ impl<H> ActionHostPlane<H> {
 }
 
 /// `H` is cloned into an answer that waits for an invocation to move.
-impl<H: ActionHost + Clone + Send + Sync + 'static> AppServingPlane for ActionHostPlane<H> {
+impl<H: ActionHost + Clone + Send + Sync + 'static> AppActionServer for ActionHostServer<H> {
     fn serve(
         &self,
         _workspace_id: WorkspaceId,

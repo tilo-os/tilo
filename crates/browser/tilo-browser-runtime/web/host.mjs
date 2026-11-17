@@ -942,7 +942,7 @@ export async function mountDesktop(target,options={}) {
       // stats}`), or null for a mount with no layer.
       live:()=>{const layer=liveLayer();return layer?{state:layer.state,publisher:layer.publisherId,members:layer.members(),stats:layer.stats?.()}:null;},
       // What the workspace's call says of itself here: its phase, whether this
-      // page's microphone runs, and what left and arrived over the plane
+      // page's microphone runs, and what left and arrived over the live session
       // (`{phase, captureActive, counters}`) — for tests and tools reading
       // that a call's audio went both ways, or null for a page with no call
       // lane.

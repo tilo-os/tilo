@@ -255,12 +255,12 @@ fn capture_parity_frames() {
 
     // The lock screen over the shell.
     {
-        let plane = super::lock::private_home();
+        let app_wire = super::lock::private_home();
         let mut session = crate::common::headless(Options {
             user: "ada".to_owned(),
             verifier: std::sync::Arc::new(Sesame),
             collab: false,
-            action_plane: tilo_session::ActionPlane::At(plane.path().join("actions.sock")),
+            app_socket: tilo_session::AppSocket::At(app_wire.path().join("actions.sock")),
             surfaces: vec![super::lock::lock_screen()],
             ..Options::default()
         });

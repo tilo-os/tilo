@@ -1,6 +1,6 @@
-//! Acknowledged commits and the live plane's membership through one host:
+//! Acknowledged commits and the live session's membership through one host:
 //! the author learns the host order of a persisted commit while other
-//! subscribers get it as a plain delta, and a device that joins the plane
+//! subscribers get it as a plain delta, and a device that joins the live session
 //! learns who is on it and is itself told to the others.
 
 #![allow(
@@ -20,7 +20,7 @@ const WS: WorkspaceId = WorkspaceId::from_u128(41);
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[allow(
     clippy::too_many_lines,
-    reason = "one scenario: commits, then the live plane, in order"
+    reason = "one scenario: commits, then the live session, in order"
 )]
 async fn commits_are_acknowledged_and_live_joins_are_announced() {
     let user = TestUser::fresh("Ada");
@@ -109,7 +109,7 @@ async fn commits_are_acknowledged_and_live_joins_are_announced() {
     );
 
     // Leaving is announced: b's session ends, its host drops it from the
-    // plane and tells a, which is still on it.
+    // live session and tells a, which is still on it.
     drop(b_client);
     assert!(matches!(
         next(&a_client, |env| matches!(
@@ -129,7 +129,7 @@ async fn commits_are_acknowledged_and_live_joins_are_announced() {
             if let Some(env) = c_client.recv().await {
                 assert!(
                     !matches!(env, Envelope::RetiredLiveMember { .. }),
-                    "a subscriber that never joined the plane hears no membership"
+                    "a subscriber that never joined the live session hears no membership"
                 );
             }
         }

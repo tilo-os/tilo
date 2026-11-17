@@ -12,7 +12,7 @@
 //!   that holds only its own key;
 //! - [`compaction`] — a member device's coverage statement for a sealed
 //!   route the host cannot read;
-//! - [`live`] — the ephemeral presence and preview frames of the live plane;
+//! - [`live`] — the ephemeral presence and preview frames of the live session;
 //! - [`web`] — the HTTPS routes a page asks a host before it holds a session,
 //!   and the live grant;
 //! - [`workspaces`] — governed workspaces over HTTPS: administration and joining;

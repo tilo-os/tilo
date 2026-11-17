@@ -48,7 +48,7 @@ pub struct ContentEndpointAdvertisement {
     pub workspace_id: WorkspaceId,
     /// Direct authenticated filesystem/blob endpoints currently ready for it.
     pub filesystem_endpoints: Vec<EndpointAddr>,
-    /// Authenticated Files workspace binding used to join the record plane.
+    /// Authenticated Files workspace binding used to join the record protocol.
     pub filesystem_ticket: String,
 }
 
@@ -162,7 +162,7 @@ pub enum Envelope {
     },
 
     /// Retired: a presence event, broadcast as an opaque payload. Nothing
-    /// sends it — presence rides the workspace's live plane, on its presence
+    /// sends it — presence rides the workspace's live session, on its presence
     /// track — and it stays only so every later variant keeps its postcard
     /// position.
     RetiredPresence {
@@ -253,8 +253,8 @@ pub enum Envelope {
     /// The relay routes it to the addressed device's live connection and
     /// never stores, replays or executes it: an action that ran late would
     /// be worse than one that did not run. Only when the addressed device is
-    /// the relay itself *and* an app-serving plane was supplied does the
-    /// relay answer it, through that plane. Anything else comes back as
+    /// the relay itself *and* an app action server was supplied does the
+    /// relay answer it, through that protocol. Anything else comes back as
     /// [`Envelope::RemoteActionUndeliverable`].
     RemoteAction {
         /// Workspace id both devices are subscribed to.
@@ -324,7 +324,7 @@ pub enum Envelope {
         refusal: crate::refusal::Refusal,
     },
 
-    /// Join the workspace's live plane: the host answers with the members
+    /// Join the workspace's live session: the host answers with the members
     /// already present and tells them this device joined. The name keeps the
     /// variant's place in the wire enum.
     RetiredLiveJoin {
@@ -332,7 +332,7 @@ pub enum Envelope {
         workspace_id: WorkspaceId,
     },
 
-    /// Leave the workspace's live plane. Nothing sends it — a device that
+    /// Leave the workspace's live session. Nothing sends it — a device that
     /// goes is dropped with its connection — and it stays only so every
     /// later variant keeps its postcard position.
     LiveLeave {
@@ -341,7 +341,7 @@ pub enum Envelope {
     },
 
     /// Retired: one ephemeral live frame ([`crate::live::LiveFrame`] bytes)
-    /// relayed by the host. Nothing sends it — frames travel on the plane —
+    /// relayed by the host. Nothing sends it — frames travel on the live session —
     /// and it stays only so every later variant keeps its postcard position.
     RetiredLive {
         workspace_id: WorkspaceId,
@@ -353,8 +353,8 @@ pub enum Envelope {
         frame: Vec<u8>,
     },
 
-    /// A device joined (`active`) or left the workspace's live plane, sent
-    /// by the host to the plane's other members. The name keeps the
+    /// A device joined (`active`) or left the workspace's live session, sent
+    /// by the host to the live session's other members. The name keeps the
     /// variant's place in the wire enum.
     RetiredLiveMember {
         workspace_id: WorkspaceId,
@@ -609,7 +609,7 @@ pub enum Envelope {
 
     /// Retired: a device asked the host it is joined to who is here, and the
     /// host answered ([`Self::RetiredHereReply`]). Who is here is the live
-    /// plane alone now; nothing sends it, and it stays only so every later
+    /// live session alone now; nothing sends it, and it stays only so every later
     /// variant keeps its postcard position.
     RetiredHereRequest {
         request_id: u64,
@@ -667,7 +667,7 @@ pub enum Envelope {
     /// relay that is the host, which fans it out to the workspace's other
     /// subscribers only when its own device said it. A device takes it only
     /// when `signature` is its host's over `said`. It never rides the live
-    /// plane, whose keys a host that is no member of it does not hold.
+    /// live session, whose keys a host that is no member of it does not hold.
     HostSaid {
         workspace_id: WorkspaceId,
         /// The canonical [`crate::host_voice::HostSaid`] encoding.

@@ -36,7 +36,7 @@ pub trait PeerPublishSink: Send + Sync {
     /// history; only its members are asked, and only they may answer.
     fn scrollback_request(&self, cluster_id: &str, artifact: ArtifactId, before_seq: u64, max: u16);
 
-    /// Also show typed presence on the workspace's live plane, where browsers and
+    /// Also show typed presence on the workspace's live session, where browsers and
     /// agents draw it in `document_id` (empty when the app announced none).
     fn app_live_presence(
         &self,

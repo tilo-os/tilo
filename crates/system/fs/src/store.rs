@@ -1,4 +1,4 @@
-//! The content plane: one content store with one hash space and two backings.
+//! The content store: one content store with one hash space and two backings.
 //!
 //! Loose blobs live in an iroh-blobs store (manifests, the chunks of small files, legacy content,
 //! thumbnails, package payloads). File-backed content ([`FileArea`]) is everything larger than

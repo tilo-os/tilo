@@ -1,4 +1,4 @@
-//! Live plane: bounded, inert values for ephemeral multiplayer state —
+//! Live session: bounded, inert values for ephemeral multiplayer state —
 //! pointer anchors and an app's ordered record previews — as a device
 //! publishes them on its own live track.
 //!
@@ -214,7 +214,7 @@ pub fn read_selection_anchors<'a>(
     Some((scope, start, end))
 }
 
-/// A caret (`start == end`) or selection in the editor `key`, as the live plane's selection
+/// A caret (`start == end`) or selection in the editor `key`, as the live session's selection
 /// anchors. A key too long for the anchor (a framework resource key naming a long item id) travels
 /// as its scope digest, which the receiving editor resolves against its own keys
 /// ([`PresenceKey::digest_form`]); `None` when even that does not fit.
@@ -366,7 +366,7 @@ impl OpsFrame {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum LiveFrame {
     /// Retired: latest-value presence. Presence travels per device on the
-    /// workspace's live plane; the variant stays only so every later one
+    /// workspace's live session; the variant stays only so every later one
     /// keeps its postcard position, and a frame written under it is dropped.
     RetiredPresence,
     /// Ordered per-record frame.

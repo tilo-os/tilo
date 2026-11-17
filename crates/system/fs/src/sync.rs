@@ -1,8 +1,8 @@
-//! The content plane: a mount's blobs served to the peers that hydrate from it, and the signed
+//! The content store: a mount's blobs served to the peers that hydrate from it, and the signed
 //! workspace ACL a joiner reads.
 //!
 //! A workspace's tree travels as the workspace's Files record ([`crate::tree_document`]); only file
-//! bytes and the ACL come over this plane, and every connection is authenticated as a certified
+//! bytes and the ACL come over this backend, and every connection is authenticated as a certified
 //! device of a person before it is served.
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, RwLock};
@@ -243,7 +243,7 @@ pub async fn bind_ephemeral_endpoint() -> Result<(Endpoint, MemoryLookup)> {
     bind_endpoint_with_key(iroh::SecretKey::generate()).await
 }
 
-/// The policy the network planes serve through, or `None` for an unenforced mount, the same
+/// The policy the network backends serve through, or `None` for an unenforced mount, the same
 /// opt-out as [`crate::QuickFS`]: a mount without `--acl` states no policy, and inventing one here
 /// would deny a single-user workspace its own devices. The handle is live, so a revocation lands on
 /// the next connection.
@@ -282,7 +282,7 @@ fn identity_of(id: iroh::EndpointId) -> IdentityKey {
     *id.as_bytes()
 }
 
-/// The connect-time verdict for a blob-plane caller, and the identity to remember for requests
+/// The connect-time verdict for a blob-backend caller, and the identity to remember for requests
 /// riding the connection. `None` endpoint id means the transport could not name the caller: refuse,
 /// since an unnamed caller cannot be checked.
 fn admit_blob_caller(
@@ -454,7 +454,7 @@ const RETAINED_CLOSED_CALLERS: usize = 256;
 /// hash, and [`EventSender`](iroh_blobs::provider::events::EventSender) is the protocol's only
 /// interception point, so the identity check goes here. Only the connect event names the peer, so
 /// identity is recorded at connect and looked up per request. Pushes are refused outright: this is
-/// a read plane, and content arrives through the FUSE write path where the write-side capability
+/// a read backend, and content arrives through the FUSE write path where the write-side capability
 /// model applies.
 #[allow(
     clippy::too_many_lines,
@@ -548,7 +548,7 @@ fn blob_guard(
                         }
                     } else if request.ranges.is_infinite() {
                         // An open-ended sequence would reach past the chunks
-                        // of a manifest; this plane never asks for one.
+                        // of a manifest; this backend never asks for one.
                         msg.tx.send(Err(AbortReason::Permission)).await.ok();
                         continue;
                     } else {
@@ -637,7 +637,7 @@ pub async fn submit_workspace_authority(
     Ok(response.authority)
 }
 
-/// A live workspace's content plane: the blobs this device holds, served to the peers its mount
+/// A live workspace's content store: the blobs this device holds, served to the peers its mount
 /// hydrates from.
 pub struct Workspace {
     pub namespace: Arc<Mutex<Namespace>>,
@@ -727,7 +727,7 @@ pub struct SyncNode {
 
 impl Workspace {
     /// Begin hosting a new workspace, returning a ticket to share with peers. `policy` is what the
-    /// content plane serves through ([`PeerPolicy`]); `None` hosts unenforced. `authority` is the
+    /// content store serves through ([`PeerPolicy`]); `None` hosts unenforced. `authority` is the
     /// signed ACL state a joiner reads.
     pub fn host(
         node: SyncNode,

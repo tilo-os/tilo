@@ -67,7 +67,7 @@ struct PeerHealth {
     latency: Option<Duration>,
 }
 
-/// Where blobs come from when no peer of the sync plane serves them.
+/// Where blobs come from when no peer of the sync protocol serves them.
 pub trait ContentSource: Send + Sync {
     /// The bytes named `hash`, when the source can hand them over; they are checked against `hash`
     /// before anything keeps them.
@@ -614,7 +614,7 @@ impl Hydrator {
     }
 
     /// Run `fut` to completion on the daemon runtime from a synchronous caller: a FUSE worker, the
-    /// native plane or a test. This is the one bridge from those threads into async code.
+    /// native backend or a test. This is the one bridge from those threads into async code.
     ///
     /// A FUSE worker that waits here is unavailable to every other process using the mount, so callers
     /// on one keep `fut` local or explicitly bounded (a preview's few KiB, a thumbnail). Open-ended

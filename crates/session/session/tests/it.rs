@@ -35,8 +35,6 @@ mod common;
 mod a11y_export;
 #[path = "acceptance.rs"]
 mod acceptance;
-#[path = "action_plane.rs"]
-mod action_plane;
 #[path = "agent_control.rs"]
 mod agent_control;
 #[path = "agent_environments.rs"]
@@ -49,6 +47,8 @@ mod app_records;
 mod app_sheets;
 #[path = "app_side_records.rs"]
 mod app_side_records;
+#[path = "app_socket.rs"]
+mod app_socket;
 #[path = "ask.rs"]
 mod ask;
 #[path = "atspi_bus.rs"]

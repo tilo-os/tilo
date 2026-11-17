@@ -38,7 +38,7 @@ use tilo_session_core::layout;
 use serde_json::{Map, Value, json};
 use tilo_compositor::{InputEvent, OutputConfig};
 use tilo_service::{Questions, Service as _, Started};
-use tilo_session::{ActionPlane, Options, Session};
+use tilo_session::{AppSocket, Options, Session};
 use tilolang_tilo::host::Host;
 use tilolang_tilo::resource_service::ResourceService;
 
@@ -106,7 +106,7 @@ pub const TITLES: [&str; 12] = [
     "Plumber quotes",
 ];
 
-/// A directory only this user reaches, for the server, the plane and the test-control socket.
+/// A directory only this user reaches, for the server, the app wire and the test-control socket.
 pub fn private_home() -> tempfile::TempDir {
     use std::os::unix::fs::PermissionsExt as _;
     let root = tempfile::tempdir().expect("a directory to serve the session in");
@@ -884,7 +884,7 @@ pub fn seeded_session_at(
             collab: false,
             services: seeded_apps(),
             questions: Some(Questions::new()),
-            action_plane: ActionPlane::At(root.join("plane.sock")),
+            app_socket: AppSocket::At(root.join("app_wire.sock")),
             mcp_server: Some(root.join("agent.sock")),
             admit_repl,
             test_control: Some(root.join("test-control.sock")),
@@ -902,7 +902,7 @@ pub fn seeded_session_at(
 }
 
 /// A headless session with the shell as the whole screen, the notes [`notebook`] published, its
-/// MCP server and action plane at `root`, the questions the server's admission is asked through,
+/// MCP server and app wire at `root`, the questions the server's admission is asked through,
 /// and the programs named as admitted to act as the person ahead of time.
 pub fn repl_session(
     root: &Path,
@@ -919,7 +919,7 @@ pub fn repl_session(
             collab: false,
             services: vec![Box::new(notes)],
             questions: Some(questions.clone()),
-            action_plane: ActionPlane::At(root.join("plane.sock")),
+            app_socket: AppSocket::At(root.join("app_wire.sock")),
             mcp_server: Some(root.join("agent.sock")),
             admit_repl,
             ..Options::default()

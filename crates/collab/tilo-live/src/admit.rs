@@ -332,16 +332,16 @@ pub trait Dial: Send + Sync + 'static {
     ) -> Dialling<'a>;
 
     /// Whether this dial opens another carrier after the one it opened is gone. A connection
-    /// dialled between two endpoints can be dialled again, so a plane whose network dropped is
+    /// dialled between two endpoints can be dialled again, so a live session whose network dropped is
     /// carried again without anyone above it noticing. A carrier the caller already opened
-    /// ([`Opened`]) is handed over once: a plane on one ends with it, and what holds the plane
+    /// ([`Opened`]) is handed over once: a live session on one ends with it, and what holds the live session
     /// joins again, proving itself anew.
     fn redials(&self) -> bool {
         false
     }
 }
 
-/// A carrier the caller already opened, handed to the plane once: a
+/// A carrier the caller already opened, handed to the live session once: a
 /// transport whose dial runs steps of its own before the admission (a
 /// WebTransport session the device first proved itself on). A second dial
 /// finds nothing to hand over and is unavailable.

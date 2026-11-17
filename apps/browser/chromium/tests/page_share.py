@@ -563,7 +563,7 @@ class PageShare(unittest.TestCase):
 
     def test_a_page_larger_than_the_workspace_carries_is_said_to_be(self):
         """A table of 5000 rows is a whole frame of megabytes more than one object of the
-        workspace's live plane holds. Nothing of it is handed over as a page, and the app
+        workspace's live session holds. Nothing of it is handed over as a page, and the app
         does not keep quiet about it: it says how large the frame is, which is what the
         session tells both devices in words."""
         result = self.probe(path="/register", size=LARGE, within=LARGE_WITHIN_MS,

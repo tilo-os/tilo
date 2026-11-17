@@ -180,7 +180,7 @@ pub(super) enum Carried {
 }
 
 /// How `msg` travels in a workspace this device takes part in over its
-/// host's link; `None` for what goes on the workspace's live plane instead.
+/// host's link; `None` for what goes on the workspace's live session instead.
 pub(super) fn carried(msg: &NeighbourMsg) -> Option<Carried> {
     match msg {
         NeighbourMsg::AppDocument { envelope, .. } if envelope.encryption.is_some() => {
@@ -774,7 +774,7 @@ impl ActorState {
         );
         if local {
             // A workspace this device hosts needs nothing of its own host's
-            // live plane: it is the same process.
+            // live session: it is the same process.
             tracing::debug!(ws = %ws, "joined the workspace's own host in process");
         } else {
             // The other half of "a workspace's link ended": from here on the

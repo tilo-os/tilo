@@ -1,10 +1,10 @@
-//! A call's pictures on the workspace's live plane: the camera and screen this device's call
+//! A call's pictures on the workspace's live session: the camera and screen this device's call
 //! encodes for the layers the call's devices show, and the pictures they send for its app to draw.
-//! A plane track is one layer of one source, and asking for it is the demand:
-//! [`Plane::wanted_pictures`] is everything the call's devices draw of this device, and a layer it
+//! A live session track is one layer of one source, and asking for it is the demand:
+//! [`LiveSession::wanted_pictures`] is everything the call's devices draw of this device, and a layer it
 //! does not list is never encoded. A layer that gains a reader is answered with a keyframe, so a
 //! still screen sends it the picture the encoder stands on rather than a new encode.
-//! What arrives is opened by the plane with the workspace's keys and queued in the call's inbox: a
+//! What arrives is opened by the live session with the workspace's keys and queued in the call's inbox: a
 //! page's pictures and a device's are the same objects, drawn the same way.
 
 use std::sync::atomic::Ordering;
@@ -19,15 +19,15 @@ impl Shared {
         std::sync::Arc::clone(self) as std::sync::Arc<dyn pictures::Sink>
     }
 
-    /// Stop reading the call's pictures on the plane: a call that ended draws nothing, and the
-    /// plane stops sending it the devices' layers.
+    /// Stop reading the call's pictures on the live session: a call that ended draws nothing, and the
+    /// live session stops sending it the devices' layers.
     pub(super) fn unsubscribe_pictures(&self) {
-        let Some(plane) = self.presence.plane(&self.workspace) else {
+        let Some(live_session) = self.presence.live_session(&self.workspace) else {
             return;
         };
         let mut shown = self.shown_devices.lock_recover();
         for device in std::mem::take(&mut *shown) {
-            plane.show(device, &[]);
+            live_session.show(device, &[]);
         }
     }
 
@@ -42,7 +42,7 @@ impl Shared {
         }
     }
 
-    /// Move the pictures once: what the plane showed since the last pass is drawn here, and what a
+    /// Move the pictures once: what the live session showed since the last pass is drawn here, and what a
     /// device started showing is encoded for at once.
     pub(super) fn pump_pictures(&self) {
         // The app changed what it shows, or the people of the call moved — a device joined or left:
@@ -54,12 +54,12 @@ impl Shared {
         {
             self.send_showing(&self.presence.persons(&self.call));
         }
-        let Some(plane) = self.presence.plane(&self.workspace) else {
+        let Some(live_session) = self.presence.live_session(&self.workspace) else {
             return;
         };
         // A layer gained a reader, or one left: the encoder answers with a keyframe even while a
         // still picture has no new frame.
-        let revision = plane.demand_revision();
+        let revision = live_session.demand_revision();
         if self.pictures_at.swap(revision, Ordering::Relaxed) != revision {
             self.wake_pictures();
         }
@@ -88,18 +88,18 @@ impl Shared {
 
 impl pictures::Sink for Shared {
     fn asking(&self, source: pictures::Source) -> pictures::Asking {
-        // What the plane's devices show of this source, and this person's own tile: one encode per
+        // What the live session's devices show of this source, and this person's own tile: one encode per
         // layer either way.
         let mut wanted = std::collections::BTreeSet::new();
         let mut restart = std::collections::BTreeSet::new();
-        if let Some(plane) = self.presence.plane(&self.workspace) {
-            for (of, layer) in plane.wanted_pictures() {
+        if let Some(live_session) = self.presence.live_session(&self.workspace) {
+            for (of, layer) in live_session.wanted_pictures() {
                 if of == source {
                     wanted.insert(layer);
                 }
             }
-            if plane.wants_picture_keyframe(source) {
-                let _ = plane.take_picture_keyframes(source);
+            if live_session.wants_picture_keyframe(source) {
+                let _ = live_session.take_picture_keyframes(source);
                 restart.insert(source);
             }
         }
@@ -115,15 +115,15 @@ impl pictures::Sink for Shared {
     }
 
     fn sent(&self, source: pictures::Source, object: &pictures::VideoObject) {
-        if let Some(plane) = self.presence.plane(&self.workspace)
-            && plane.send_picture(source, object).is_err()
+        if let Some(live_session) = self.presence.live_session(&self.workspace)
+            && live_session.send_picture(source, object).is_err()
         {
-            // Nobody shows this layer on the plane any more, or its group is past what one carries:
+            // Nobody shows this layer on the live session any more, or its group is past what one carries:
             // the next keyframe starts it over.
             tracing::debug!(
                 ?source,
                 layer = ?object.layer,
-                "a call picture had no plane reader"
+                "a call picture had no live session reader"
             );
         }
     }
@@ -133,7 +133,7 @@ impl pictures::Sink for Shared {
     }
 }
 
-/// The source a plane picture track carries, if it is one a call draws.
+/// The source a live session picture track carries, if it is one a call draws.
 pub(super) const fn track_source(track: Track) -> Option<pictures::Source> {
     match track {
         Track::Camera(_) => Some(pictures::Source::Camera),

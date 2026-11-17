@@ -19,7 +19,7 @@ path = "src/lib.rs"
 test-support = ["tilo-workspace-host/test-support"]
 # Agents on the host: `dev --agents` / `run --agents` run an agent supervisor
 # (tilo-agent-session, which links every web app) as the app-serving
-# plane. Needs the browser listener for steering from pages.
+# protocol. Needs the browser listener for steering from pages.
 agents = ["web", "tilo-workspace-host/agents", "dep:tilo-agent-session", "dep:tilo-session-client", "dep:tilo-secrets", "dep:tilo-moderation", "dep:tilo-workspace-emoji", "dep:ui", "dep:chat", "dep:discord", "dep:tilo-connector", "dep:tilo-automation", "dep:tilo-bot-directory", "dep:app-cli", "dep:ush", "dep:legacy-vm", "dep:tilo-host-account", "dep:tilo-mcp", "dep:tasks-model", "dep:tasks", "dep:runtime-collab", "dep:tilo-workspace-agent", "dep:tilo-model-gateway"]
 web = ["tilo-workspace-host/web", "dep:tilo-live", "dep:tilo-net", "dep:base64", "dep:hyper", "dep:hyper-util", "dep:http-body", "dep:http-body-util", "dep:tokio-rustls", "dep:rustls", "dep:rcgen", "dep:sha2", "dep:bytes", "dep:futures", "dep:hmac", "dep:ring"]
 
@@ -81,7 +81,7 @@ tilo-clock = { path = "../../platform/tilo-clock" }
 tilo-peer-state = { path = "../../collab/tilo-peer-state" }
 tilo-automerge-isolate.workspace = true
 # Remote-action vocabulary: the relay routes these frames between devices and,
-# only when an app-serving plane is supplied, answers them through ActionHost.
+# only when an app action server is supplied, answers them through ActionHost.
 tilo-actions = { path = "../../collab/actions" }
 # Handshake and wire messages plus the mesh, configuration, registry and
 # metrics records shared with the relay's clients; re-exported so the daemon's
@@ -149,7 +149,7 @@ tracing.workspace = true
 # outside a systemd session.
 sd-notify.workspace = true
 
-# The browser listener (feature `web`): HTTPS for the durable plane, device
+# The browser listener (feature `web`): HTTPS for the durable protocol, device
 # certification and the pages' calls.
 hyper = { version = "1", features = ["server", "http1", "http2"], optional = true }
 hyper-util = { version = "0.1", features = ["tokio", "server-auto"], optional = true }
@@ -159,7 +159,7 @@ tokio-rustls = { workspace = true, optional = true }
 rustls = { workspace = true, optional = true }
 rcgen = { workspace = true, optional = true }
 bytes = { workspace = true, optional = true }
-# The workspaces' live plane: the relay that copies its sealed bytes
+# The workspaces' live session: the relay that copies its sealed bytes
 # (admission preface and moq-lite) for every device, a page included, which
 # reaches it over iroh.
 tilo-live = { path = "../../collab/tilo-live", features = ["relay", "iroh"], optional = true }
@@ -281,7 +281,7 @@ getrandom03 = { package = "getrandom", version = "0.3", features = ["wasm_js"] }
 uuid = { workspace = true, features = ["js"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
-# The live plane a workspace's session publishes on, as the hosted Browser
+# The live session a workspace's session publishes on, as the hosted Browser
 # tests open one to prove an environment whose session is on it is here.
 tilo-live = { path = "../../collab/tilo-live", features = ["relay", "iroh"] }
 # A folder's link streams a zip: the tests read it back as a file manager does.
@@ -289,7 +289,7 @@ zip.workspace = true
 # The TLS tests write a PEM pair and read it back.
 rcgen.workspace = true
 # The workspace host's fixtures: a certified test host and the devices around it.
-# The tests author a workspace's record through the host's app plane
+# The tests author a workspace's record through the host's app action server
 # (`author_workspace_record`), which the `agents` feature carries: asking for it here
 # keeps them building on their own, rather than only when another crate in the
 # same build turns it on.

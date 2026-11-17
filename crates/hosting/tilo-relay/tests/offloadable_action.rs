@@ -23,7 +23,7 @@ use tilo_actions::offload::{OffloadRequest, Offloaded, content_inputs};
 use tilo_actions::remote::{InvokeArgument, InvokeRequest, application_action_target};
 use tilo_actions::{ActionAddress, InvocationId};
 use tilo_clock::unix_now_ns;
-use tilo_peer_state::actions::{ActionPlane, NoActions};
+use tilo_peer_state::actions::{ActionService, NoActions};
 use tilo_peer_state::direct::Replica;
 use tilo_peer_state::join::{Role, decode_and_verify_invitation};
 use tilo_peer_state::{SeedState, StatePeer, seed_workspace};
@@ -33,7 +33,7 @@ use tilo_relay::workspaces::IssueInvitationRequest;
 use tilo_relay::{ComputeContentStore, ComputeSandbox, ComputeSandboxInvocation, WorkspaceId};
 use tilo_relay_protocol::WorkSetting;
 use tilo_runtime::offload::{
-    BindError, MediaFuture, OutputContent, PlanePeers, WorkspaceMedia, offer_offload,
+    ActionServicePeers, BindError, MediaFuture, OutputContent, WorkspaceMedia, offer_offload,
 };
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
 
@@ -252,10 +252,10 @@ async fn invited(
     );
 }
 
-/// `laptop`'s plane: it asks the workspace's other devices and answers
+/// `laptop`'s action service: it asks the workspace's other devices and answers
 /// nothing itself, and holds the workspace as the devices its governor
 /// certified.
-fn asking_plane(laptop: &TestDevice, host: &TestDevice, workspace: &str) -> ActionPlane {
+fn asking_action_service(laptop: &TestDevice, host: &TestDevice, workspace: &str) -> ActionService {
     let now = std::time::SystemTime::now();
     let roster = vec![laptop.cert.clone(), host.cert.clone()];
     let mut peer = StatePeer::new(
@@ -276,9 +276,9 @@ fn asking_plane(laptop: &TestDevice, host: &TestDevice, workspace: &str) -> Acti
         now,
     )
     .unwrap();
-    let plane = ActionPlane::new(laptop.sk.clone(), Arc::new(NoActions));
-    plane.hold(Replica::new(peer));
-    plane
+    let action_service = ActionService::new(laptop.sk.clone(), Arc::new(NoActions));
+    action_service.hold(Replica::new(peer));
+    action_service
 }
 
 /// The resource Photos publishes `make-thumbnails` on.
@@ -368,11 +368,11 @@ async fn a_host_that_wins_the_offer_runs_the_action_as_a_job_and_answers_its_out
     // device does, so the host answers it.
     let laptop_endpoint = device_endpoint(&laptop).await;
     invited(&hosted, &workspace, &owner, &laptop, &laptop_endpoint).await;
-    let plane = asking_plane(&laptop, &tower, &workspace);
+    let action_service = asking_action_service(&laptop, &tower, &workspace);
     let host_addr = hosted.host.node_addr();
     let elsewhere = host_addr.clone();
-    let peers = PlanePeers::new(
-        plane.clone(),
+    let peers = ActionServicePeers::new(
+        action_service.clone(),
         laptop_endpoint.clone(),
         move |_device| host_addr.clone(),
         Arc::clone(&content) as Arc<dyn OutputContent>,
@@ -471,8 +471,8 @@ async fn a_host_that_wins_the_offer_runs_the_action_as_a_job_and_answers_its_out
     let unconnected = offer_offload(
         Arc::clone(&content) as Arc<dyn WorkspaceMedia>,
         Arc::new(
-            PlanePeers::new(
-                plane,
+            ActionServicePeers::new(
+                action_service,
                 laptop_endpoint,
                 move |_device| elsewhere.clone(),
                 Arc::clone(&content) as Arc<dyn OutputContent>,

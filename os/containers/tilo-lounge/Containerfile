@@ -31,7 +31,7 @@ RUN --mount=type=bind,source=verify-no-cisco-openh264.sh,target=/run/tilo-verify
 # connector finds `<app>-worker` next to the relay it runs under).
 COPY bin/ /usr/local/bin/
 # Every version of the built-in apps' surface.toml, which the relay publishes
-# into its content plane at start: history written by an older version than this
+# into its content store at start: history written by an older version than this
 # build runs is decided with the surface it was written with.
 COPY surfaces/ /usr/local/share/tilo/surfaces/
 # Bot programs the deployment installs by path (TILO_WORKSPACES_BOTS) and the app
@@ -59,7 +59,7 @@ ENV TILO_SOURCE_REVISION=${SOURCE_REVISION} \
 #       behind the ingress).
 # 9780: the relay's plain listener the ingress forwards the workspace's own
 #       host to.
-# 9781/udp: the pages' live plane (WebTransport), which the ingress publishes
+# 9781/udp: the pages' live session (WebTransport), which the ingress publishes
 #       on its own address.
 EXPOSE 8790 9780 9781/udp
 ENTRYPOINT ["/usr/local/bin/tilo-lounge"]

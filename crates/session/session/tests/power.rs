@@ -26,7 +26,7 @@ use tilo_power_mgmt::inhibit::INHIBIT_IDLE;
 use tilo_power_mgmt::{PowerAction, PowerNotification, PowerPolicy, PowerSignal};
 use tilo_session::surfaces::Surface;
 use tilo_session::unlock::{PasswordVerifier, Verdict};
-use tilo_session::{ActionPlane, Options, Service, Session};
+use tilo_session::{AppSocket, Options, Service, Session};
 use tilo_session_power::{BATTERY, PowerLink, SLEEP, SessionPower};
 use zbus::connection::Builder;
 use zbus::object_server::SignalEmitter;
@@ -332,23 +332,23 @@ fn lock_screen() -> Surface {
 }
 
 /// A session answering its power through `machine` , whose lock screen the session starts when it
-/// locks. The directory is the plane's, and only this user reaches it: the broker refuses to serve
+/// locks. The directory is the app wire's, and only this user reaches it: the broker refuses to serve
 /// one anybody else could open.
 fn lockable(machine: &Machine, service: Box<dyn Service>) -> (tempfile::TempDir, Session) {
     use std::os::unix::fs::PermissionsExt as _;
-    let plane = tempfile::tempdir().expect("a directory to serve the plane in");
-    std::fs::set_permissions(plane.path(), std::fs::Permissions::from_mode(0o700))
-        .expect("the plane's directory is this user's");
+    let app_wire = tempfile::tempdir().expect("a directory to serve the app wire in");
+    std::fs::set_permissions(app_wire.path(), std::fs::Permissions::from_mode(0o700))
+        .expect("the app wire's directory is this user's");
     let session = crate::common::headless(Options {
         services: vec![service],
         power: Some(machine.link.clone()),
         user: "ada".to_owned(),
         verifier: Arc::new(Sesame),
-        action_plane: ActionPlane::At(plane.path().join("actions.sock")),
+        app_socket: AppSocket::At(app_wire.path().join("actions.sock")),
         surfaces: vec![lock_screen()],
         ..Options::default()
     });
-    (plane, session)
+    (app_wire, session)
 }
 
 /// `XF86PowerOff` , as a laptop's power button sends it.
@@ -561,7 +561,7 @@ fn a_published_hold_keeps_the_machine_awake_until_it_is_released() {
 fn the_lid_follows_its_policy() {
     let _home = tilo_test_env::TestHome::new().unwrap();
     let (machine, service) = Machine::start(quiet());
-    let (_plane, mut session) = lockable(&machine, service);
+    let (_app_wire, mut session) = lockable(&machine, service);
     assert!(!session.compositor().locked());
 
     machine.lid(true);
@@ -586,7 +586,7 @@ fn the_lid_follows_its_policy() {
 fn the_power_key_follows_its_policy() {
     let _home = tilo_test_env::TestHome::new().unwrap();
     let (machine, service) = Machine::start(quiet());
-    let (_plane, mut session) = lockable(&machine, service);
+    let (_app_wire, mut session) = lockable(&machine, service);
 
     press(&mut session, POWER_KEY);
     assert!(session.compositor().locked(), "the policy locks");
@@ -607,7 +607,7 @@ fn the_power_key_follows_its_policy() {
 fn a_critical_battery_locks_the_session_and_tells_the_person() {
     let _home = tilo_test_env::TestHome::new().unwrap();
     let (machine, service) = Machine::start(quiet());
-    let (_plane, mut session) = lockable(&machine, service);
+    let (_app_wire, mut session) = lockable(&machine, service);
     machine.charge(3.0);
     until(&mut session, |session| session.compositor().locked());
     until(&mut session, |session| {
@@ -633,7 +633,7 @@ fn a_critical_battery_locks_the_session_and_tells_the_person() {
 fn a_sleep_locks_the_session_says_the_frame_is_drawn_and_keeps_it_on_the_wake() {
     let _home = tilo_test_env::TestHome::new().unwrap();
     let (machine, service) = Machine::start(quiet());
-    let (_plane, mut session) = lockable(&machine, service);
+    let (_app_wire, mut session) = lockable(&machine, service);
     assert!(machine.lock_held("sleep"), "the sleep delay is taken");
 
     machine.sleep(true);
@@ -653,7 +653,7 @@ fn a_sleep_locks_the_session_says_the_frame_is_drawn_and_keeps_it_on_the_wake() 
 fn a_failed_sleep_lifts_the_lock_it_installed() {
     let _home = tilo_test_env::TestHome::new().unwrap();
     let (machine, service) = Machine::start(quiet());
-    let (_plane, mut session) = lockable(&machine, service);
+    let (_app_wire, mut session) = lockable(&machine, service);
 
     machine
         .link
@@ -758,7 +758,7 @@ fn a_battery_notice_reaches_the_sessions_reading() {
 fn a_critical_battery_locks_the_session_and_publishes_its_notice() {
     let _home = tilo_test_env::TestHome::new().unwrap();
     let (machine, service) = Machine::start(quiet());
-    let (_plane, mut session) = lockable(&machine, service);
+    let (_app_wire, mut session) = lockable(&machine, service);
     machine.charge(3.0);
     until(&mut session, |session| session.compositor().locked());
     until(&mut session, |session| {

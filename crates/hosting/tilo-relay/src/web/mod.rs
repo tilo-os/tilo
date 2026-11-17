@@ -15,9 +15,9 @@ mod envelopes;
 mod fetch;
 pub mod install;
 mod link;
+pub(crate) mod live;
 mod login_codes;
 mod page_errors;
-pub(crate) mod plane;
 mod shelf;
 mod sign_in;
 mod stand_in;
@@ -144,8 +144,8 @@ pub struct WebHandle {
     tasks: Vec<tokio::task::JoinHandle<()>>,
     locator_origin: Arc<std::sync::RwLock<Option<Arc<String>>>>,
     published_origin: Option<Arc<String>>,
-    /// The live plane: the one account of who is here.
-    presence: Arc<plane::Authority>,
+    /// The live session: the one account of who is here.
+    presence: Arc<live::Authority>,
 }
 
 impl WebHandle {
@@ -200,8 +200,8 @@ struct Web {
     grants: Arc<fetch::Grants>,
     /// The links to the workspaces' files this host serves.
     content_links: Arc<crate::content_links::ContentLinks>,
-    /// The live plane: the one account of who is here.
-    presence: Arc<plane::Authority>,
+    /// The live session: the one account of who is here.
+    presence: Arc<live::Authority>,
     /// The page errors the entry logs.
     page_errors: page_errors::PageErrors,
     /// The sealed invitations this site keeps in place of their clerk: what a
@@ -446,8 +446,8 @@ impl Relay {
             tokio_rustls::TlsAcceptor::from(Arc::new(identity.https_config().map_err(failed)?));
         let fetch = fetch::Serving::start(config.fetch_proxy.as_ref()).map_err(failed)?;
         let context = self.web_context().clone();
-        let Some(plane) = self.plane.as_ref() else {
-            return Err(failed("the relay runs no live plane".into()));
+        let Some(live) = self.live_origin.as_ref() else {
+            return Err(failed("the relay runs no live session".into()));
         };
         if let Some(workspaces) = self.workspaces() {
             let _ = context.relay.carried_calls.set(workspaces.downgrade());
@@ -485,7 +485,7 @@ impl Relay {
             fetch: fetch.proxy,
             grants: Arc::default(),
             content_links: self.content_links(),
-            presence: plane.authority(),
+            presence: live.authority(),
             page_errors: page_errors::PageErrors::default(),
             // A link is read days after it was made, so what it names waits on
             // this host's disk: a restart, an upgrade or a deploy over this
@@ -530,7 +530,7 @@ impl Relay {
             link::Serving {
                 relay: context.relay.clone(),
                 certification: context.certification.clone(),
-                plane: plane.origin(),
+                live_origin: live.origin(),
             },
         )));
         tasks.push(tokio::spawn(accept_loop(tcp, acceptor, web)));
@@ -544,7 +544,7 @@ impl Relay {
             tasks,
             locator_origin: Arc::clone(&self.browser_origin),
             published_origin,
-            presence: plane.authority(),
+            presence: live.authority(),
         })
     }
 }

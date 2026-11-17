@@ -41,6 +41,15 @@ the graph may make it.
 - **Target**: the resource an action is offered on: its first parameter.
 - **Personal resources**: resources that belong to no workspace: a person's devices and keys,
   logins, settings that apply everywhere, browsing history, signature.
+- **Live session**: one device's sealed `moq-lite` session in one workspace: the presence, call
+  audio, pictures, shared windows and pages it publishes and hears. The device serving the workspace
+  copies them to the others (its live origin).
+- **Peer network**: the devices of a workspace reaching each other directly over their iroh
+  endpoints, and what the session says and hears on it.
+- **Action service**: how a device answers the action requests other devices of its workspaces
+  send it, and sends its own.
+- **App action server**: what answers the remote actions that reach a serving device for its apps.
+- **App wire**: the socket a session serves its apps' calls on.
 - **Document**: internal storage of one or more resources (an automerge document). Apps never see it.
 - **App**: what a person installs and runs. Identified by `AppId` (`so.tilo.chat`).
 - **Package**: the signed file an app ships in. `PackageId` names one build.

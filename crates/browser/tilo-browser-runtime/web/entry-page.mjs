@@ -1072,7 +1072,7 @@ export async function startEntryPage({mode}) {
     // person approves new devices elsewhere): nobody joins the home just to
     // report. It connects with this tab's device key for the home's host (a
     // second one where the workspace's peer holds the first), without calls
-    // or a live plane, gives up rather than waiting at the entry, and is kept
+    // or a live session, gives up rather than waiting at the entry, and is kept
     // while the page is.
     homePeer: async home => {
       const kept = remembering(() => keptMembership(home));

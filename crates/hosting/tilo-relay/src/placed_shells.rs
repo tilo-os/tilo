@@ -10,7 +10,7 @@
 //! 1. the placer which host runs the workspace's VM ([`Request::Place`]);
 //!    while every host is full it answers [`Reply::Busy`], and the run waits,
 //!    saying so once, never refused for workspace;
-//! 2. that host's member device, over the device plane as this host's own
+//! 2. that host's member device, over the device action service as this host's own
 //!    device, to run the command line
 //!    ([`environment_commands`](tilo_actions::remote::environment_commands)), and
 //!    follows the run until it ends.
@@ -36,7 +36,7 @@ use tilo_actions::remote::environment_commands::{self, CommandOutput, CommandRan
 use tilo_actions::remote::{ActionHost, Caller, InvokeArgument, InvokeRequest, ReceiptStatus};
 use tilo_actions::{InvocationId, InvocationUpdate};
 use tilo_agent_session::workspace_actions::{ShellRan, Watching};
-use tilo_peer_state::actions::ActionPlane;
+use tilo_peer_state::actions::ActionService;
 
 /// The placer's address (`host:port`).
 pub const PLACER_ENV: &str = "TILO_HOSTED_PLACER";
@@ -77,8 +77,8 @@ pub struct PlacedShells {
     members: Members,
     account: String,
     size: VmSize,
-    /// This host's device plane and endpoint, once the host runs.
-    asking: OnceLock<(ActionPlane, Endpoint)>,
+    /// This host's device action service and endpoint, once the host runs.
+    asking: OnceLock<(ActionService, Endpoint)>,
 }
 
 impl PlacedShells {
@@ -143,13 +143,13 @@ impl PlacedShells {
         }
     }
 
-    /// Ask as `plane`'s device, from `endpoint`: this host's own.
-    pub fn ask_from(&self, plane: ActionPlane, endpoint: Endpoint) {
-        let _ = self.asking.set((plane, endpoint));
+    /// Ask as `action_service`'s device, from `endpoint`: this host's own.
+    pub fn ask_from(&self, action_service: ActionService, endpoint: Endpoint) {
+        let _ = self.asking.set((action_service, endpoint));
     }
 
-    /// This host's device plane and endpoint, once it runs.
-    pub(crate) fn asking(&self) -> Result<&(ActionPlane, Endpoint), String> {
+    /// This host's device action service and endpoint, once it runs.
+    pub(crate) fn asking(&self) -> Result<&(ActionService, Endpoint), String> {
         self.asking
             .get()
             .ok_or_else(|| "the host is not running yet".to_owned())
@@ -223,7 +223,7 @@ impl PlacedShells {
         agent: bool,
         watching: Watching<'_>,
     ) -> Result<ShellRan, String> {
-        let (plane, endpoint) = self.asking()?;
+        let (action_service, endpoint) = self.asking()?;
         let mut waited = None;
         let Some(host) = self.placed(workspace, &mut waited, watching.stop)? else {
             return Ok(shell_ran(stopped_before_start(command, waited)));
@@ -232,7 +232,7 @@ impl PlacedShells {
             format!("the placer named {host}, which is no VM host this host knows")
         })?;
         let address = member_address(member)?;
-        let device = plane.remote(endpoint, &address, workspace);
+        let device = action_service.remote(endpoint, &address, workspace);
         let asked = CommandRequest {
             session: session.to_owned(),
             command: command.to_owned(),
@@ -344,7 +344,7 @@ fn run_on(
         wait_ms: None,
         appearance: None,
     };
-    // Who asks is the plane's device: the caller here is only what the
+    // Who asks is the action service's device: the caller here is only what the
     // trait asks for, never sent.
     let caller = Caller::local_app("tilo.relay");
     let receipt = settled(device.invoke(&caller, request))?

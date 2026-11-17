@@ -31,7 +31,7 @@ use tilo_desktop_search::{Held, ResourceKind};
 use tilo_service::Questions;
 use ui::search::system::MAX_PROVIDER_SCORE;
 
-use tilo_session::{ActionPlane, Options, SearchOptions, Session};
+use tilo_session::{AppSocket, Options, SearchOptions, Session};
 
 use crate::common::{CANVAS, PERSON, Repl, on_screen, private_home, until};
 
@@ -107,7 +107,7 @@ fn session(root: &std::path::Path, slow: &Slow, started: &Arc<AtomicBool>) -> (S
             collab: false,
             services: crate::common::seeded_apps(),
             questions: Some(Questions::new()),
-            action_plane: ActionPlane::At(root.join("plane.sock")),
+            app_socket: AppSocket::At(root.join("app_wire.sock")),
             mcp_server: Some(root.join("agent.sock")),
             admit_repl: vec![program],
             search: SearchOptions {

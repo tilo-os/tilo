@@ -523,7 +523,7 @@ Provisioning and recovery UX were not assessed by this reconciliation.
 
 The 8-step (extended to 9) validation pipeline in
 `crates/collab/collab-types/src/validator.rs:589` is implemented and thoroughly tested, and the
-broker's default state is correctly fail-closed (`crates/session/session/src/plane.rs:797-800`: an
+broker's default state is correctly fail-closed (`crates/session/session/src/app_wire.rs:797-800`: an
 empty `authorised_signers` rejects every signed op).
 
 But `register_channel_state` has no non-test caller, and no production path mints a
@@ -548,7 +548,7 @@ bootstrap shape; current authority is populated from admitted workspace state
 at the ingress boundary instead of trusting an app-supplied role attestation.
 Held by the broker ingress tests in
 `crates/collab/tilo-action-broker/src/{collab_broker.rs,collab_app_broker.rs,collab_inbound.rs}`
-and `crates/session/session/src/plane.rs`, plus
+and `crates/session/session/src/app_wire.rs`, plus
 `crates/collab/collab-types/tests/validator.rs`.
 
 ---
@@ -765,7 +765,7 @@ checked the tree against the workspace the ticket names:
   authenticated to it and merged it, with no check of the local policy at all.
 - Bootstrap merged documents from every persisted content peer, including peers registered for
   another workspace and ticketless legacy entries.
-- On the session plane only the server compared the request's `workspace_id`. The client applied
+- On the session protocol only the server compared the request's `workspace_id`. The client applied
   whatever `Sync` and `NamespaceChunk` frames came back.
 - The exact-record share client ignored the response's session, so a snapshot from a session on
   another workspace or record was taken as the invite's.
@@ -946,10 +946,10 @@ certified device identity, the AVCs were collected with the domain permissive an
 disabled, then this module was loaded and the same workload re-run enforcing: mounting
 `/var/workspace`, file create/write/append/rename/copy/truncate/chmod/xattr/delete as two local
 accounts, a 5 MB content round trip, the storage socket's snapshot and eviction requests, Iroh
-waking (relays, net report, DNS), a stop and start, and the native data plane's probes on a Btrfs
+waking (relays, net report, DNS), a stop and start, and the native backend's probes on a Btrfs
 store volume. No `tilo_fs_t` denial was logged and every operation matched the permissive run.
 Peer sync with a second device was not part of that run. The shipped kernel has no fanotify, so
-the native data plane itself cannot start there (fs serves FUSE); its own rules will come from
+the native backend itself cannot start there (fs serves FUSE); its own rules will come from
 AVCs on a kernel that has it.
 
 ## P1-11 — A Read Deny inside a workspace does not withhold keys

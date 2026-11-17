@@ -463,7 +463,7 @@ pub enum PersonalFabricAction {
         action_key: String,
     },
     /// Retired: a metadata-only realtime handoff offer. No build produced
-    /// one; a call's continuity is the live plane's, so the variant stays only
+    /// one; a call's continuity is the live session's, so the variant stays only
     /// so every later Postcard discriminant keeps its value.
     RetiredRealtimeOffer,
     /// Retired with [`Self::RetiredRealtimeOffer`].

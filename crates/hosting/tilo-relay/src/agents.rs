@@ -21,7 +21,7 @@
 //!   witnessed answer, and a question nobody answers in time is refused.
 //!
 //! [`start`] wires both into a relay: the supervisor answers the agent
-//! vocabulary as the host's app-serving plane, and the host's own agents
+//! vocabulary as the host's app action server, and the host's own agents
 //! reach it over iroh.
 
 use std::path::PathBuf;
@@ -362,7 +362,7 @@ impl HostShells {
     /// workspaces' machines branched and deleted with them.
     fn serve_from(&self, relay: &Relay) {
         if let (Self::Placed(placed), Some(workspaces)) = (self, relay.workspaces()) {
-            placed.ask_from(workspaces.plane(), relay.endpoint());
+            placed.ask_from(workspaces.action_service(), relay.endpoint());
         }
         if let (Some(machines), Some(workspaces)) = (self.machines(), relay.workspaces()) {
             workspaces.machines(machines);
@@ -452,19 +452,19 @@ impl WorkspaceShell for HostShells {
     }
 }
 
-/// The host's app-serving plane: agents and the workspaces' page actions,
+/// The host's app action server: agents and the workspaces' page actions,
 /// keeping what they make in the host's content.
-struct HostActionsPlane {
+struct HostActionsServer {
     host: HostActions,
     stores: Arc<WorkspaceStores>,
     /// The Browser this host places for its workspaces, when it places one.
     browsers: Option<Arc<crate::hosted_browser::HostedBrowsers>>,
 }
 
-/// The app-serving plane of a host that runs no agents: the workspaces' page
+/// The app action server of a host that runs no agents: the workspaces' page
 /// actions alone. A member's own actions on a workspace record (linking their
 /// account on the workspace's Discord from the profile card) need nothing more.
-struct WorkspaceRecordsPlane {
+struct WorkspaceRecordsServer {
     actions: WorkspaceActions,
     stores: Arc<WorkspaceStores>,
     /// The Browser this host places for its workspaces, when it places one.
@@ -473,7 +473,7 @@ struct WorkspaceRecordsPlane {
     events: Arc<std::sync::OnceLock<crate::workspace_bots::events::PersonEvents>>,
 }
 
-impl crate::AppServingPlane for WorkspaceRecordsPlane {
+impl crate::AppActionServer for WorkspaceRecordsServer {
     fn serve(
         &self,
         workspace_id: WorkspaceId,
@@ -569,7 +569,7 @@ impl crate::AppServingPlane for WorkspaceRecordsPlane {
     }
 }
 
-impl crate::AppServingPlane for HostActionsPlane {
+impl crate::AppActionServer for HostActionsServer {
     fn serve(
         &self,
         workspace_id: WorkspaceId,
@@ -1079,16 +1079,16 @@ pub async fn start_serving_documents_and_events(
     let catalogue = app_catalogue(catalogue, browsers.as_ref());
     cfg.services.app_serving = true;
     let events_state = cfg.state_root.join("person-events");
-    let plane = Arc::new(WorkspaceRecordsPlane {
+    let server = Arc::new(WorkspaceRecordsServer {
         actions: WorkspaceActions::new(catalogue),
         stores: crate::content::stores(&cfg.state_root),
         browsers: browsers.clone(),
         events: Arc::default(),
     });
     let web_entry = cfg.web_entry.clone();
-    let relay = Relay::start_with_app_serving(cfg, identity, Some(plane.clone())).await?;
+    let relay = Relay::start_with_app_serving(cfg, identity, Some(server.clone())).await?;
     attach_resources(
-        &plane.actions,
+        &server.actions,
         &relay,
         &host_cert,
         web_entry,
@@ -1098,9 +1098,9 @@ pub async fn start_serving_documents_and_events(
         crate::workspace_bots::events::PersonEvents::start(workspaces, events_state)
     });
     if let Some(events) = &events {
-        let _ = plane.events.set(events.clone());
+        let _ = server.events.set(events.clone());
     }
-    Ok((relay, plane.actions.clone(), events))
+    Ok((relay, server.actions.clone(), events))
 }
 
 /// The workspaces of `workspaces` that hold a notebook: those whose notes a pass brings into
@@ -1162,7 +1162,7 @@ fn attach_resources(
         });
         // The VM hosts start the sessions when this host's own device asks.
         if let Some(workspaces) = relay.workspaces() {
-            browsers.ask_from(workspaces.plane(), relay.endpoint());
+            browsers.ask_from(workspaces.action_service(), relay.endpoint());
         }
     }
     let shell = shell.map(|shell| shell as Arc<dyn WorkspaceShell>);
@@ -1226,7 +1226,7 @@ fn attach_resources(
         .map_err(RelayError::Identity)
 }
 
-/// Start `cfg`'s relay with an agent supervisor as its app-serving plane,
+/// Start `cfg`'s relay with an agent supervisor as its app action server,
 /// then start the supervisor's agents: those the state directory says were
 /// running resume.
 pub async fn start(
@@ -1266,7 +1266,7 @@ async fn start_inner(
         Arc::clone(&catalogue),
     );
     cfg.services.app_serving = true;
-    let plane = Arc::new(HostActionsPlane {
+    let server = Arc::new(HostActionsServer {
         host: HostActions {
             supervisor: SupervisorHost(agents.supervisor().clone()),
             actions: WorkspaceActions::new(catalogue),
@@ -1277,19 +1277,19 @@ async fn start_inner(
     let web_entry = cfg.web_entry.clone();
     let relay = match relay_mode {
         Some(mode) => {
-            Relay::start_with_app_serving_and_relay_mode(cfg, identity, Some(plane.clone()), mode)
+            Relay::start_with_app_serving_and_relay_mode(cfg, identity, Some(server.clone()), mode)
                 .await?
         }
-        None => Relay::start_with_app_serving(cfg, identity, Some(plane.clone())).await?,
+        None => Relay::start_with_app_serving(cfg, identity, Some(server.clone())).await?,
     };
     attach_resources(
-        &plane.host.actions,
+        &server.host.actions,
         &relay,
         &host_cert,
         web_entry,
         (options.feedback_reviewer, options.shell, options.browsers),
     )?;
-    drop(plane);
+    drop(server);
     agents
         .start(
             HostEndpoint::iroh(relay.node_addr(), host_cert),

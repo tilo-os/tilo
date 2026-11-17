@@ -1,4 +1,4 @@
-//! The namespace plane: an Automerge-backed move-tree CRDT, with nodes keyed by a
+//! The namespace backend: an Automerge-backed move-tree CRDT, with nodes keyed by a
 //! stable `NodeId` and an explicit `parent` register, so rename, move and delete are
 //! real move operations: no duplicate parents, delete reparents to the `TRASH`
 //! sentinel, and a concurrent cross-move cycle is deterministically broken by

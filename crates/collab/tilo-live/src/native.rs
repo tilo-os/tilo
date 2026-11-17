@@ -42,7 +42,7 @@ use moq_net::web_transport_trait::poll;
 use tilo_lock::MutexRecover as _;
 
 use crate::admit::{AdmissionError, Dial, Dialling, start};
-use crate::plane::{MAX_HEARD, TRACKS};
+use crate::live_session::{MAX_HEARD, TRACKS};
 use crate::preface::PROTOCOL;
 
 /// The ALPN every carrier connection negotiates: the `moq-lite` draft name.
@@ -84,9 +84,9 @@ const SHOWN_GROUPS: u32 = 8;
 ///
 /// A track is read on one stream for as long as it is read, and asked about
 /// on a second while it is opened, and nothing ends a subscription that waits
-/// for a stream: a connection that allows fewer than its plane reads leaves
+/// for a stream: a connection that allows fewer than its live session reads leaves
 /// the further devices unread for good. So the budget is twice the tracks a
-/// plane reads at once (the [`TRACKS`] of [`MAX_HEARD`] devices and
+/// live session reads at once (the [`TRACKS`] of [`MAX_HEARD`] devices and
 /// [`SHOWN_TRACKS`]) and [`CONTROL_STREAMS`]. The limit itself costs nothing:
 /// the transport allocates a stream's state when the stream is opened. What
 /// costs is the subscription behind it, which is what [`MAX_HEARD`] bounds.
@@ -97,7 +97,7 @@ pub const MAX_BI_STREAMS: u32 = 2 * (HEARD_TRACKS * HEARD + SHOWN_TRACKS) + CONT
 /// [`SHOWN_GROUPS`] of every shown track.
 pub const MAX_UNI_STREAMS: u32 = (HEARD_TRACKS - 1) * HEARD + SHOWN_GROUPS * SHOWN_TRACKS;
 
-/// The QUIC transport of an endpoint that carries only the live plane:
+/// The QUIC transport of an endpoint that carries only the live session:
 /// datagrams enabled, the session's idle timeout, and the few streams a
 /// connection may open before its session is admitted. What an admitted
 /// session opens is allowed on its own connection when it is admitted
@@ -579,7 +579,7 @@ pub async fn serve_on(relay: &crate::relay::Relay, session: Session) {
 }
 
 /// The [`ALPN`] handler alone, for a device that already runs a router: an
-/// endpoint accepts one [`ProtocolHandler`] per protocol, so a live plane
+/// endpoint accepts one [`ProtocolHandler`] per protocol, so a live session
 /// registers beside the device's other protocols instead of spawning a second
 /// router.
 #[must_use]

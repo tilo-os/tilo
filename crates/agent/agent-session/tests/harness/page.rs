@@ -160,7 +160,7 @@ impl Page {
     /// Take one event: a record that changed is kept as it stands then,
     /// everything else is the caller's to read.
     pub fn take(&mut self, event: Event) -> Option<Event> {
-        if let Event::LivePlane {
+        if let Event::LiveSession {
             ws: workspace_id,
             from,
             track: tilo_live::live::Track::Presence,

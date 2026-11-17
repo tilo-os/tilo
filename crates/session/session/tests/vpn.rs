@@ -713,7 +713,7 @@ fn this_device_carries_the_persons_other_devices_and_turns_a_stranger_away() {
         None,
     )
     .expect("this device's endpoint binds");
-    // The laptop's endpoint, serving nothing but its own planes: the route it carries is not one of
+    // The laptop's endpoint, serving nothing but its own app wires: the route it carries is not one of
     // them.
     let (_laptop_reading, laptop_vpns) = tokio::sync::watch::channel(reading(None));
     let laptop_sync = Client::start(

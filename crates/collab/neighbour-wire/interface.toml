@@ -50,7 +50,7 @@ sources = [
     "crates/collab/collab-types/src/peer.rs",
     "crates/collab/collab-types/src/presence/shell.rs",
 ]
-roots = ["Hello", "HelloAck", "HelloAck2", "EnvelopeV2", "NeighbourMsg", "DeviceAction", "SignedDeviceAction", "PlaneFrame", "crates/collab/neighbour-wire/src/offer.rs:Answer"]
+roots = ["Hello", "HelloAck", "HelloAck2", "EnvelopeV2", "NeighbourMsg", "DeviceAction", "SignedDeviceAction", "ActionServiceFrame", "crates/collab/neighbour-wire/src/offer.rs:Answer"]
 
 [opaque]
 Uuid = "uuid::Uuid: 16 bytes"
@@ -715,9 +715,9 @@ RemoteActionMessage = "tilo_actions::remote::RemoteActionMessage: the action-hos
 "PersonalHost" = "struct"
 "PersonalHost.hint" = "#1 Vec<u8> with=serde_bytes"
 "PersonalHost.workspace" = "#0 String"
-"PlaneFrame" = "enum external"
-"PlaneFrame::Action" = "#0 tuple(Box<SignedDeviceAction>)"
-"PlaneFrame::Offer" = "#1 tuple(Box<Query>)"
+"ActionServiceFrame" = "enum external"
+"ActionServiceFrame::Action" = "#0 tuple(Box<SignedDeviceAction>)"
+"ActionServiceFrame::Offer" = "#1 tuple(Box<Query>)"
 "Power" = "enum external"
 "Power::battery" = "#3 unit"
 "Power::charging" = "#1 unit"

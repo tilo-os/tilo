@@ -39,7 +39,7 @@ pub use crate::launches::Launches;
 pub use crate::lists::{AppLists, Lists};
 pub use crate::notifications::RESOURCE as NOTIFICATIONS_RESOURCE;
 use crate::options::start_collaboration;
-pub use crate::options::{ActionPlane, Machine, Options, no_session_actions};
+pub use crate::options::{AppSocket, Machine, Options, no_session_actions};
 pub use crate::platform::keys::{KEYBOARD_BACKLIGHT, MEDIA, MICROPHONE};
 pub use crate::records::Records;
 pub use crate::rotation::Accelerometer;
@@ -51,12 +51,12 @@ pub use crate::wake::{Seams as WakeSeams, WakeInterfaces};
 pub use crate::workspace_keys::KeyLink;
 pub use tilo_service::{Service, Services};
 
+use crate::app_wire::AppWire;
 use crate::notifications::mount_banners;
 use crate::panels::mount::mount_activities;
 use crate::panels::mount::{KeyContext, mount_controls, mount_setup};
-use crate::plane::Plane;
 use crate::search::SessionSearch;
-use crate::services::plane::{mount_services, start_action_plane};
+use crate::services::app_wire::{mount_services, start_app_wire};
 use tilo_app_launch::Links as WindowLinks;
 
 pub use os_actions::SessionAction;
@@ -645,7 +645,7 @@ impl Session {
             tilo_broker_core::collab_core::BrokerChannels::default(),
         ));
         // What the broker shows the apps that hold a record's route open: the
-        // collaboration plane hands it what another device wrote, so a record
+        // peer network hands it what another device wrote, so a record
         // an app holds shows everyone's writes, and the broker below shows
         // this device's own.
         let channels_fanout =
@@ -728,7 +728,7 @@ impl Session {
         // The content the workspaces' records reference: kept beside their
         // records under this session's state, and asked of the workspace's
         // other devices on the topic the records travel.
-        let document_content = crate::content::Plane::open(options.state.as_deref());
+        let document_content = crate::content::ContentService::open(options.state.as_deref());
         if let Some(sync) = &sync {
             sync.attach_content(std::sync::Arc::clone(&document_content));
             // What this session says when another of the person's devices
@@ -910,7 +910,7 @@ impl Session {
         let chrome_surface = crate::shell::chrome_surface(options.shell, &chrome, surfaces.clone());
         published.add(Rc::clone(&chrome_surface));
         // The seam the MCP server's connections ask this session's own services on: made before
-        // the plane starts, which serves the programs.
+        // the app wire starts, which serves the programs.
         let session_services = std::sync::Arc::new(crate::mcp_server::SessionServices::new(
             options.wake.handle(),
             &options.person,
@@ -1000,7 +1000,7 @@ impl Session {
                     as std::sync::Arc<dyn crate::platform::apps::Apps>),
                 handle: handle.clone(),
                 sync: sync.clone(),
-                // Who is here as the bar's faces are drawn from them: the plane's.
+                // Who is here as the bar's faces are drawn from them: the app wire's.
                 here: {
                     let sync = sync.clone();
                     let notes = std::sync::Arc::clone(&notes);
@@ -1174,7 +1174,7 @@ impl Session {
             .enable_all()
             .build()
             .map_err(crate::Error::host)?;
-        let shortcut_library = crate::plane::ShortcutLibrary::new(
+        let shortcut_library = crate::app_wire::ShortcutLibrary::new(
             automation_runtime.handle().clone(),
             engine.as_ref().map(std::sync::Arc::clone),
         );
@@ -1189,22 +1189,22 @@ impl Session {
             std::sync::Arc::clone(&options.launches),
             options.wake.handle(),
         );
-        let action_plane = start_action_plane(
+        let app_wire = start_app_wire(
             &options,
             &live_activities,
             &handle,
             std::sync::Arc::new(shortcut_library),
             &activity,
-            crate::services::plane::Knitted {
+            crate::services::app_wire::Knitted {
                 agents: Some(agents.roster()),
                 agent_sessions: Some(std::sync::Arc::clone(&agent_sessions) as _),
                 tools: Some(tools.clone()),
             },
-            crate::services::plane::Collaboration {
+            crate::services::app_wire::Collaboration {
                 revocations: std::sync::Arc::clone(&revocations),
                 sync: sync.as_deref(),
                 engine: engine.as_ref().map(std::sync::Arc::clone),
-                sealed: crate::plane::Sealed {
+                sealed: crate::app_wire::Sealed {
                     broker: std::sync::Arc::clone(&channels_broker),
                     keys: engine.as_ref().map(|engine| engine.keys()),
                 },
@@ -1221,7 +1221,7 @@ impl Session {
         // person's card, is delivered through the broker: the app starts for
         // it when it is closed, and the action reaches it wherever it runs.
         if let Some(launch) = &options.launch {
-            launch.lend_broker(action_plane.as_ref().and_then(Plane::agent_broker));
+            launch.lend_broker(app_wire.as_ref().and_then(AppWire::agent_broker));
         }
         // A session in a workspace's VM is started for one workspace, and everything it does
         // of what a person's session does is the window it holds: it is told here what wakes its
@@ -1229,21 +1229,21 @@ impl Session {
         if let Some(hosted) = &mut options.hosted_browser {
             hosted.waking(options.wake.handle());
             hosted.watching(
-                action_plane.as_ref().and_then(Plane::agent_broker).as_ref(),
-                action_plane.as_ref().and_then(Plane::hosted_workspaces),
+                app_wire.as_ref().and_then(AppWire::agent_broker).as_ref(),
+                app_wire.as_ref().and_then(AppWire::hosted_workspaces),
                 &options.person,
             );
         }
         // What Files may read, and where a received file may land, is what
         // this session's workspaces grant it: read off the shell the broker
         // decides against.
-        if let (Some(nearby), Some(plane)) = (&nearby, &action_plane) {
-            nearby.attach_authority(std::sync::Arc::clone(&plane.layout)
+        if let (Some(nearby), Some(app_wire)) = (&nearby, &app_wire) {
+            nearby.attach_authority(std::sync::Arc::clone(&app_wire.layout)
                 as std::sync::Arc<dyn tilo_broker_core::services::WorkspaceAuthority>);
         }
         // The MCP server: a program of this login asks here to work in a
         // workspace as an agent, and the person answers on their sheets. It
-        // binds first, and is served from the broker the plane starts, which
+        // binds first, and is served from the broker the app wire starts, which
         // already decides against the shell the loop shows.
         let questions = options.questions.clone().or_else(|| {
             options
@@ -1255,7 +1255,7 @@ impl Session {
         // the same sheets ([`crate::step_questions`]).
         if let (Some(questions), Some(broker)) = (
             questions.clone(),
-            action_plane.as_ref().and_then(Plane::agent_broker),
+            app_wire.as_ref().and_then(AppWire::agent_broker),
         ) {
             broker.set_app_action_consent(std::sync::Arc::new(crate::step_questions::Sheet::new(
                 questions,
@@ -1267,9 +1267,9 @@ impl Session {
         // machine's readings an app the launcher connects reads, and the
         // data this device used. They start here, before any app does.
         let table = crate::services::start(crate::services::Serving {
-            shell: action_plane
+            shell: app_wire
                 .as_ref()
-                .map(|plane| std::sync::Arc::clone(&plane.layout)),
+                .map(|app_wire| std::sync::Arc::clone(&app_wire.layout)),
             person: options.person.clone(),
             render_node: compositor.render_node(),
             keys: engine
@@ -1286,12 +1286,12 @@ impl Session {
         });
         tilo_startup_metrics::mark("published-done");
         // The control API `tilo-control` reaches: the development socket and the device admin's,
-        // both answered over the broker this session's plane starts. It exists whether or not a
+        // both answered over the broker this session's app wire starts. It exists whether or not a
         // socket opens, because a program inside an app this session started is served at it too.
         // The activity undoes an agent's run in the records it changed through the same API.
         let host = std::sync::Arc::new(
             crate::mcp_server::Host::new(
-                action_plane.as_ref().and_then(Plane::agent_broker),
+                app_wire.as_ref().and_then(AppWire::agent_broker),
                 std::sync::Arc::clone(&session_services),
             )
             .with_session_actions(Some(std::sync::Arc::clone(&session_actions))),
@@ -1316,10 +1316,10 @@ impl Session {
         });
         let mcp_server = server.map(|server| {
             let mut server = server.serve(
-                action_plane.as_ref().and_then(Plane::agent_broker),
-                action_plane
+                app_wire.as_ref().and_then(AppWire::agent_broker),
+                app_wire
                     .as_ref()
-                    .map(|plane| std::sync::Arc::clone(&plane.layout)),
+                    .map(|app_wire| std::sync::Arc::clone(&app_wire.layout)),
             );
             server.hear_device_agents(std::sync::Arc::clone(&device_agents));
             server
@@ -1360,7 +1360,7 @@ impl Session {
         let mut surfaces = crate::surfaces::Surfaces::default();
         surfaces.lend(
             std::sync::Arc::clone(&options.launches),
-            action_plane.as_ref().map(|plane| plane.path.clone()),
+            app_wire.as_ref().map(|app_wire| app_wire.path.clone()),
             options.wake.handle(),
         );
         // The lock, and the screen that shows it: the session keeps what the
@@ -1847,7 +1847,7 @@ impl Session {
             quick_settings_asked: None,
             portal: options.portal,
             launches: std::sync::Arc::clone(&options.launches),
-            action_plane,
+            app_wire,
             content: document_content,
             control,
             liveness,
@@ -2250,11 +2250,11 @@ impl Session {
         self.shared.activities.board()
     }
 
-    /// The media service the apps reach through the session's plane, while
+    /// The media service the apps reach through the session's app wire, while
     /// it serves one: what a call joins through.
     #[cfg(test)]
     pub(crate) fn media_service(&self) -> Option<&tilo_native_media::NativeMediaService> {
-        self.action_plane.as_ref()?.calls_service.as_ref()
+        self.app_wire.as_ref()?.calls_service.as_ref()
     }
 
     /// Reach `surface` (a service the session runs in its process) through
@@ -2326,7 +2326,7 @@ impl Session {
     pub fn action_broker(
         &self,
     ) -> Option<std::sync::Arc<tilo_action_broker::collab_app_broker::AppBrokerState>> {
-        self.action_plane.as_ref().and_then(Plane::agent_broker)
+        self.app_wire.as_ref().and_then(AppWire::agent_broker)
     }
 
     /// The session's copy of `record` of `app` in `workspace` as it is stored: what a test reads
@@ -2464,7 +2464,7 @@ impl Session {
             .borrow_mut()
             .invoke_confirmed(resource, action, arguments)
         {
-            Some(started) => started.map(crate::services::plane::answered),
+            Some(started) => started.map(crate::services::app_wire::answered),
             None => Err(ApiError::Unknown(ActionAddress::new(resource, action))),
         }
     }
@@ -2676,10 +2676,10 @@ impl Session {
     /// record its app holds: read every pass, so a window that opens a record,
     /// moves in it or closes is named by what it shows now.
     pub(crate) fn read_window_notes(&self) {
-        let Some(plane) = &self.action_plane else {
+        let Some(app_wire) = &self.app_wire else {
             return;
         };
-        let Some(broker) = plane.action_broker() else {
+        let Some(broker) = app_wire.action_broker() else {
             return;
         };
         // The app each window runs, and the windows the shell shows: a record of another app is
@@ -2735,7 +2735,7 @@ impl Session {
         }
         let rows = tilo_actions::api::survey_placed(&self.shared.published.resources());
         if actions.offer(rows)
-            && let Some(broker) = self.action_plane.as_ref().and_then(Plane::agent_broker)
+            && let Some(broker) = self.app_wire.as_ref().and_then(AppWire::agent_broker)
         {
             broker.host_steps_changed();
         }
@@ -2749,7 +2749,7 @@ impl Session {
             return;
         };
         if steps.offer(&self.shared.services.borrow())
-            && let Some(broker) = self.action_plane.as_ref().and_then(Plane::agent_broker)
+            && let Some(broker) = self.app_wire.as_ref().and_then(AppWire::agent_broker)
         {
             broker.host_steps_changed();
         }
@@ -2759,10 +2759,10 @@ impl Session {
     /// the pass opened, and whose each of them is, are decided here and a person's own action is
     /// decided against that copy.
     pub(crate) fn publish_layout(&mut self) {
-        let Some(plane) = &self.action_plane else {
+        let Some(app_wire) = &self.app_wire else {
             return;
         };
-        let shell = std::sync::Arc::clone(&plane.layout);
+        let shell = std::sync::Arc::clone(&app_wire.layout);
         self.automation.publish_layout(Some(&shell));
     }
 
@@ -2770,15 +2770,15 @@ impl Session {
     /// the apps' broker's copy of the shell level with the shell shown: a run
     /// starting there checks the shortcut against it.
     pub(crate) fn follow_automation(&mut self) {
-        if let Some(plane) = &self.action_plane {
+        if let Some(app_wire) = &self.app_wire {
             // The broker may take a moment to accept connections after it
             // starts; its runs start from the first pass that finds it.
             if self.automation.needs_broker()
-                && let Some(broker) = plane.action_broker()
+                && let Some(broker) = app_wire.action_broker()
             {
                 self.automation.attach(broker);
             }
-            self.automation.settle(Some(&plane.layout));
+            self.automation.settle(Some(&app_wire.layout));
         } else {
             self.automation.settle(None);
         }

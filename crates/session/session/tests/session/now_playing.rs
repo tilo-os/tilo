@@ -489,7 +489,7 @@ fn panel_session(
             std::rc::Rc::clone(&asked),
             published.clone(),
         ))],
-        action_plane: tilo_session::ActionPlane::At(home.path().join("collab.sock")),
+        app_socket: tilo_session::AppSocket::At(home.path().join("collab.sock")),
         surfaces: vec![panel],
         collab: false,
         ..Options::default()

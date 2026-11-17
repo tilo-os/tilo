@@ -1,4 +1,4 @@
-//! An agent's actions narrated on the live plane: the semantic work its
+//! An agent's actions narrated on the live session: the semantic work its
 //! device publishes on a record's stream as each action goes ([`frame`]),
 //! and what a shell admits of it ([`admit`]). A person watching sees the
 //! agent the way they see a colleague: its cursor travelling to the control
@@ -36,7 +36,7 @@ pub struct Narrated<'a> {
     pub on_behalf: Option<&'a str>,
 }
 
-/// `narrated` as the live plane carries it, numbered `seq` on the agent's
+/// `narrated` as the live session carries it, numbered `seq` on the agent's
 /// stream. `None` for work that does not hold.
 #[must_use]
 pub fn frame(narrated: &Narrated<'_>, seq: u64, sent_at_ms: u64) -> Option<SemanticFrame> {

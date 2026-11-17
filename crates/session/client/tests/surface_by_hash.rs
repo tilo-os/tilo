@@ -1,6 +1,6 @@
 //! A page that holds a record's history written by an app version it does not
 //! run asks its workspace for that version's surface by hash, on the same
-//! content plane it asks for a picture with, keeps it, and decides what waited
+//! content store it asks for a picture with, keeps it, and decides what waited
 //! for it. The hold names the surface as the reason it waits, so a reader is
 //! told what a record wants instead of being told it wants its keys.
 

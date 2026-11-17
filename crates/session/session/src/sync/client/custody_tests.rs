@@ -1,7 +1,7 @@
 //! What an app writes on one device reaches the workspace's other devices: the broker commits it to
 //! this device's owner, the canonical copy of the workspace here, and the owner's outgoing custody
-//! leaves on the plane's session with the workspace's host, which hands it to every other member.
-//! Two sessions' planes on this machine's loopback, each with its own engine, join one workspace
+//! leaves on the peer network's session with the workspace's host, which hands it to every other member.
+//! Two sessions' peer networks on this machine's loopback, each with its own engine, join one workspace
 //! governed by a host on this machine whose certificate takes part in no channels: the workspace's
 //! records are documents the owner commits.
 
@@ -24,10 +24,10 @@ use crate::engine::Engine;
 use crate::platform::fabric::Continuity;
 use crate::workspace_keys::KeyLink;
 
-/// One session's side of the workspace: its engine, and its plane.
+/// One session's side of the workspace: its engine, and its peer network.
 struct Device {
     engine: std::sync::Arc<Engine>,
-    plane: Client,
+    network: Client,
     _state: tempfile::TempDir,
 }
 
@@ -50,7 +50,7 @@ impl Device {
             .expect("the session's engine opens"),
         );
         engine.attach_link(KeyLink::new());
-        let plane = Client::start(
+        let network = Client::start(
             Entry {
                 identity: Some(identity),
                 own: OwnPresence::default(),
@@ -66,10 +66,10 @@ impl Device {
             Vec::new(),
             None,
         )
-        .expect("the session's plane starts");
+        .expect("the session's peer network starts");
         Self {
             engine,
-            plane,
+            network,
             _state: state,
         }
     }
@@ -83,7 +83,7 @@ impl Device {
     fn join(&self, host: &test_relay::Host, request: u8) -> WorkspaceId {
         let workspace_id = WorkspaceId::parse(host.workspace()).expect("a workspace id");
         self.engine.bind(workspace_id);
-        self.plane
+        self.network
             .enroll(Enrolling {
                 workspace_id,
                 way: tilo_workspace_directory::Way::Invitation(
@@ -92,7 +92,7 @@ impl Device {
                 name: String::new(),
                 renewal: None,
             })
-            .expect("the plane takes the enrollment");
+            .expect("the peer network takes the enrollment");
         self.enrolled()
             .result
             .expect("the workspace admits this device");
@@ -103,7 +103,7 @@ impl Device {
     fn enrolled(&self) -> tilo_session_client::Enrolled {
         let deadline = tilo_test_env::hang_deadline();
         loop {
-            if let Some(enrolled) = self.plane.take_enrolled().pop() {
+            if let Some(enrolled) = self.network.take_enrolled().pop() {
                 return enrolled;
             }
             assert!(
@@ -119,14 +119,14 @@ impl Device {
     /// device takes part in it from then on.
     fn enter(&self, host: &test_relay::Host) -> WorkspaceId {
         let workspace_id = WorkspaceId::parse(host.workspace()).expect("a workspace id");
-        self.plane
+        self.network
             .enter(Entering {
                 workspace_id,
                 name: "Notes".into(),
                 host: host.host_hint(),
                 held: false,
             })
-            .expect("the plane takes the entry");
+            .expect("the peer network takes the entry");
         let enrolled = self.enrolled();
         assert!(enrolled.member, "the entry is one of the person's own");
         enrolled.result.expect("the workspace admits this device");
@@ -205,7 +205,7 @@ fn write(
     invocation: uuid::Uuid,
 ) {
     let publisher =
-        crate::plane::owner_publisher(Some(std::sync::Arc::clone(&device.engine)), None);
+        crate::app_wire::owner_publisher(Some(std::sync::Arc::clone(&device.engine)), None);
     assert!(
         publisher.records_effects_for(&workspace_id.to_string()),
         "the workspace's effect receipts are the owner's to commit"

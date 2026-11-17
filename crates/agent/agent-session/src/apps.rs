@@ -539,7 +539,7 @@ impl Replica {
         &self.view.checkout().id
     }
 
-    /// Where the member's last operation left it, as the live plane's
+    /// Where the member's last operation left it, as the live session's
     /// selection anchors every member's window resolves against the
     /// record's own items: the paragraph it wrote and the caret at its end,
     /// the item it acted on. `None` before any operation, or for one that

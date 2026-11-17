@@ -179,7 +179,7 @@ impl Joined {
         Self::open(profile, custody, endpoint, refused, broker)
     }
 
-    /// What signs as this device, as its plane signs every request it makes.
+    /// What signs as this device, as its action service signs every request it makes.
     pub(in crate::standalone) fn signer(&self) -> Arc<dyn collab_types::signer::DeviceSigner> {
         Arc::clone(&self.custody.signer)
     }
@@ -195,30 +195,30 @@ impl Joined {
     }
 
     /// How this profile asks the other devices of its workspaces whether they
-    /// would run an offloadable action sooner: a plane signed as this device,
+    /// would run an offloadable action sooner: an action service signed as this device,
     /// at the endpoint they reach it on, reading the joined workspaces as this
     /// profile's owner holds them, and the runtime that carries the asks.
     /// `None` when no runtime runs.
     ///
     /// What it is asked in turn is answered by the host this profile runs
-    /// ([`super::joined_hosted`]); this plane only asks.
-    pub(super) fn offer_plane(
+    /// ([`super::joined_hosted`]); this action service only asks.
+    pub(super) fn offer_action_service(
         &self,
     ) -> Option<(
-        tilo_peer_state::actions::ActionPlane,
+        tilo_peer_state::actions::ActionService,
         iroh::Endpoint,
         tokio::runtime::Handle,
     )> {
         let runtime = tilo_rt::try_app().ok()?.handle().clone();
-        let plane = {
+        let action_service = {
             let _entered = runtime.enter();
-            tilo_peer_state::actions::ActionPlane::over(
+            tilo_peer_state::actions::ActionService::over(
                 self.signer(),
                 Arc::new(tilo_peer_state::actions::NoActions),
                 Arc::new(self.owner.clone()),
             )
         };
-        Some((plane, self.endpoint(), runtime))
+        Some((action_service, self.endpoint(), runtime))
     }
 
     /// Redeem `invitation` with the host it names and start syncing the workspace.

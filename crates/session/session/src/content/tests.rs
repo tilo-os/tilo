@@ -1,6 +1,6 @@
 //! The session's records' content: what an app kept outlives the session that kept it, and a device
 //! that joins the workspace later reads it from the device that kept it.
-//! The two planes here have no transport between them, so the test carries what one plane says to
+//! The two content services here have no transport between them, so the test carries what one content service says to
 //! the other as the workspace's hosts carry it: a want where the workspace's members hear it, and
 //! an answer to the one device that asked, with the answering device as the host stamps it.
 
@@ -12,7 +12,7 @@
     clippy::indexing_slicing,
     clippy::arithmetic_side_effects,
     clippy::significant_drop_tightening,
-    reason = "test fixtures: a failed step is the assertion, and the planes \
+    reason = "test fixtures: a failed step is the assertion, and the content services \
               outlive every call made into them"
 )]
 
@@ -28,16 +28,16 @@ use tilo_content::hash_bytes;
 use tilo_desktop_model::WorkspaceId as ModelWorkspaceId;
 use tilo_network_actor::{RecordContentDelivery, WorkspaceId};
 
-use super::Plane;
+use super::ContentService;
 use crate::sync::Cmd;
 
 /// The app whose record references the content.
 const APP: &str = "so.tilo.notes";
 /// The workspace the record is kept in.
 const WORKSPACE: &str = "0f2b7c1e-9a4d-4c8e-9d3a-1b5e6f7a8c90";
-/// How long the two planes have to hand content over.
+/// How long the two content services have to hand content over.
 const DEADLINE: Duration = Duration::from_secs(10);
-/// One turn of the loop that carries what the planes say.
+/// One turn of the loop that carries what the content services say.
 const PASS: Duration = Duration::from_millis(2);
 
 fn route() -> CrdtRoute {
@@ -48,23 +48,23 @@ fn topic() -> WorkspaceId {
     ModelWorkspaceId::parse(WORKSPACE).expect("a workspace id")
 }
 
-/// One of the workspace's devices: its plane, its address on the network, and what it said, waiting
+/// One of the workspace's devices: its content service, its address on the network, and what it said, waiting
 /// to be carried.
 struct Device {
-    plane: Arc<Plane>,
+    service: Arc<ContentService>,
     address: EndpointId,
     said: tokio::sync::mpsc::UnboundedReceiver<crate::sync::HostCmd>,
 }
 
 impl Device {
-    /// The plane of a session whose state is `state` , reached on the network as device `seed` .
+    /// The content service of a session whose state is `state` , reached on the network as device `seed` .
     fn open(state: Option<&Path>, seed: u8) -> Self {
         let address = iroh::SecretKey::from_bytes(&[seed; 32]).public();
-        let plane = Plane::open(state);
+        let service = ContentService::open(state);
         let (said, spoken) = tokio::sync::mpsc::unbounded_channel();
-        plane.bind(crate::sync::HostOutbox::of(said), address);
+        service.bind(crate::sync::HostOutbox::of(said), address);
         Self {
-            plane,
+            service,
             address,
             said: spoken,
         }
@@ -73,7 +73,7 @@ impl Device {
     /// This device hears that `other` could hand the workspace's content over.
     fn sees(&self, other: &Self) {
         let peer = neighbour_wire::peer_handle(other.address.as_bytes());
-        self.plane.sources_changed(
+        self.service.sources_changed(
             topic(),
             ContentSources {
                 peers: [peer].into_iter().collect(),
@@ -88,9 +88,9 @@ impl Device {
     fn carry(&mut self, other: &Self) {
         while let Ok(outgoing) = self.said.try_recv() {
             match outgoing {
-                crate::sync::HostCmd::Plane(Cmd::Publish { ws, msg }) => {
+                crate::sync::HostCmd::Network(Cmd::Publish { ws, msg }) => {
                     assert_eq!(ws, topic(), "content on its own workspace's topic");
-                    other.plane.heard(ws, WORKSPACE, self.address, &msg);
+                    other.service.heard(ws, WORKSPACE, self.address, &msg);
                 }
                 crate::sync::HostCmd::Content(RecordContentDelivery { ws, target, msg }) => {
                     assert_eq!(ws, topic(), "content on its own workspace's topic");
@@ -107,7 +107,7 @@ impl Device {
                         Some(other.address),
                         "the answer names the device that asked"
                     );
-                    other.plane.heard(ws, WORKSPACE, self.address, &msg);
+                    other.service.heard(ws, WORKSPACE, self.address, &msg);
                 }
                 other => panic!("a record's content says nothing else: {other:?}"),
             }
@@ -115,7 +115,7 @@ impl Device {
     }
 }
 
-/// Run the planes' passes until `done` holds, or the deadline passes: whether `done` held.
+/// Run the content services' passes until `done` holds, or the deadline passes: whether `done` held.
 fn until(mut done: impl FnMut() -> bool) -> bool {
     let deadline = Instant::now() + DEADLINE;
     loop {
@@ -142,16 +142,16 @@ fn content_an_app_kept_is_read_back_after_the_session_restarted() {
     let bytes = picture();
     let hash = hash_bytes(&bytes);
     {
-        let plane = Plane::open(Some(state.path()));
-        plane
+        let service = ContentService::open(Some(state.path()));
+        service
             .route()
             .offer(&route(), &hash, &bytes)
             .expect("the app's content is kept");
     }
-    // The session restarted: nothing of the plane that kept it is left, and the app opens its
+    // The session restarted: nothing of the content service that kept it is left, and the app opens its
     // record again and asks for the content it references.
-    let plane = Plane::open(Some(state.path()));
-    let content = plane.route();
+    let service = ContentService::open(Some(state.path()));
+    let content = service.route();
     let mut news = content.subscribe(&route());
     content.want(&route(), &hash);
     let arrived = news
@@ -170,8 +170,8 @@ fn a_device_that_joins_later_reads_content_another_device_kept() {
     let hash = hash_bytes(&bytes);
     // The first device's app stored the content, and that session ended since.
     {
-        let plane = Plane::open(Some(kept.path()));
-        plane
+        let service = ContentService::open(Some(kept.path()));
+        service
             .route()
             .offer(&route(), &hash, &bytes)
             .expect("the app's content is kept");
@@ -182,7 +182,7 @@ fn a_device_that_joins_later_reads_content_another_device_kept() {
     keeping.sees(&joining);
     joining.sees(&keeping);
 
-    let content = joining.plane.route();
+    let content = joining.service.route();
     let mut news = content.subscribe(&route());
     content.want(&route(), &hash);
     let mut heard = Vec::new();
@@ -209,8 +209,8 @@ fn a_device_that_joins_later_reads_content_another_device_kept() {
     // And the device that asked now keeps it: its next session reads it without anybody else on the
     // workspace.
     drop(joining);
-    let plane = Plane::open(Some(joined.path()));
-    let content = plane.route();
+    let service = ContentService::open(Some(joined.path()));
+    let content = service.route();
     let mut news = content.subscribe(&route());
     content.want(&route(), &hash);
     let arrived = news.try_recv().expect("the content this device kept");
@@ -232,7 +232,7 @@ fn a_record_the_session_keeps_itself_keeps_its_parts_where_its_devices_fetch_the
     joining.sees(&keeping);
 
     // The record's store keeps the part as the session lends it: sealed, beside the record.
-    let mine = keeping.plane.store(WORKSPACE, APP);
+    let mine = keeping.service.store(WORKSPACE, APP);
     let reference = mine.put(&bytes).expect("the record's store keeps the part");
     assert!(
         tilo_content::is_sealed(&reference),
@@ -245,7 +245,7 @@ fn a_record_the_session_keeps_itself_keeps_its_parts_where_its_devices_fetch_the
     );
 
     // The workspace's other device lacks it, asks the record's route, and reads it once it comes.
-    let theirs = joining.plane.store(WORKSPACE, APP);
+    let theirs = joining.service.store(WORKSPACE, APP);
     assert!(
         theirs.read(&reference).is_none(),
         "the other device lacks the part until it arrives"
@@ -273,7 +273,7 @@ fn content_a_device_cannot_serve_is_reported_as_such_not_waited_on() {
     joining.sees(&keeping);
 
     let missing = hash_bytes(b"content nobody on the workspace keeps");
-    let content = joining.plane.route();
+    let content = joining.service.route();
     let mut news = content.subscribe(&route());
     content.want(&route(), &missing);
     let mut heard = Vec::new();
@@ -295,18 +295,18 @@ fn content_a_device_cannot_serve_is_reported_as_such_not_waited_on() {
 #[test]
 fn a_workspace_or_app_name_that_leaves_the_store_keeps_no_content() {
     let state = tempfile::tempdir().expect("a session's state");
-    let plane = Plane::open(Some(state.path()));
+    let service = ContentService::open(Some(state.path()));
     let bytes = picture();
     let hash = hash_bytes(&bytes);
     for escaping in ["../outside", "a/b", "", ".."] {
         let escaped = CrdtRoute::app(APP, escaping);
         assert!(
-            plane.route().offer(&escaped, &hash, &bytes).is_err(),
+            service.route().offer(&escaped, &hash, &bytes).is_err(),
             "{escaping:?} names no store of this device's"
         );
     }
     // And the put API refuses the same names rather than opening an upload it could never finish.
-    assert!(plane.puts().begin("../outside").is_err());
+    assert!(service.puts().begin("../outside").is_err());
     assert!(!Path::new(&state.path().join("tilo").join("record-content")).exists());
 }
 
@@ -317,19 +317,19 @@ fn what_an_app_uploaded_through_the_put_api_outlives_the_session() {
     let rest = b" of it".as_slice();
     let bytes = [first, rest].concat();
     let hash = {
-        let plane = Plane::open(Some(state.path()));
-        let mut upload = plane.puts().begin(WORKSPACE).expect("an upload");
+        let service = ContentService::open(Some(state.path()));
+        let mut upload = service.puts().begin(WORKSPACE).expect("an upload");
         upload.append(first).expect("the first half");
         upload.append(rest).expect("the rest");
         let (hash, len) = upload.finish().expect("the upload is kept");
         assert_eq!(hash, hash_bytes(&bytes));
         assert_eq!(len, bytes.len() as u64, "the length the app was told");
-        assert!(plane.puts().holds(WORKSPACE, &hash));
+        assert!(service.puts().holds(WORKSPACE, &hash));
         hash
     };
-    let plane = Plane::open(Some(state.path()));
+    let service = ContentService::open(Some(state.path()));
     assert!(
-        plane.puts().holds(WORKSPACE, &hash),
+        service.puts().holds(WORKSPACE, &hash),
         "an upload outlives the session that made it"
     );
 }

@@ -1119,7 +1119,7 @@ impl crate::Shared {
     /// with its invitation: this device becomes a member of the workspace and
     /// takes in its state. A
     /// session that holds no workspaces, or takes no part in the collaboration
-    /// plane,
+    /// peer network,
     /// shows the workspace with what this computer itself keeps in it.
     ///
     /// A workspace the session does not already hold is put on it when the
@@ -1141,7 +1141,7 @@ impl crate::Shared {
                 target: JOIN_FLOW_TARGET,
                 workspace = %joined.granted.workspace,
                 held_locally = true,
-                "join: this session holds no workspaces or takes no part in the collaboration plane, so the workspace stays as this computer keeps it"
+                "join: this session holds no workspaces or takes no part in the peer network, so the workspace stays as this computer keeps it"
             );
             self.open_joined_workspace(&joined.granted.workspace, &joined.name, Arrival::Joined);
             return;
@@ -1254,7 +1254,7 @@ impl crate::Shared {
                         outcome = "enrolled",
                         "join: the host admitted this device and the workspace is held here"
                     );
-                    // The workspace's live plane opens now, not when a key of some workspace
+                    // The workspace's live session opens now, not when a key of some workspace
                     // next moves here.
                     sync.workspace_arrived();
                     // The workspace is put on the shell now, once the host admitted this

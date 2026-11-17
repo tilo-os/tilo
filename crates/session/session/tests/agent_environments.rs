@@ -32,7 +32,7 @@ use serde_json::{Map, Value, json};
 use tilo_compositor::OutputConfig;
 use tilo_desktop_model::{Layout, Workspace, WorkspaceId};
 use tilo_service::Questions;
-use tilo_session::{ActionPlane, Options, Session};
+use tilo_session::{AppSocket, Options, Session};
 use tilo_sheets::portal::{Dialog, PortalEffect};
 use tilo_test_env::DiesWithTheTest as _;
 use tilo_test_env::SpawnUnderEnvLock as _;
@@ -339,7 +339,7 @@ fn session(root: &Path) -> (Session, Questions, PathBuf) {
             questions: Some(questions.clone()),
             collab: false,
             person: PERSON.to_owned(),
-            action_plane: ActionPlane::At(root.join("plane.sock")),
+            app_socket: AppSocket::At(root.join("app_wire.sock")),
             mcp_server: Some(socket.clone()),
             ..Options::default()
         },

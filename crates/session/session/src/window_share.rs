@@ -3,12 +3,12 @@
 //! A person shares a window with the workspace they are in (`share`): the session
 //! captures it through the compositor's own read-back, where capture protection
 //! blanks a secret window, encodes it on a thread of its own, and publishes its
-//! pictures on the workspace's live plane, one sealed track per window
-//! (`window/<tab>/high`, [`Track::Window`]). The plane is the demand: a window is
+//! pictures on the workspace's live session, one sealed track per window
+//! (`window/<tab>/high`, [`Track::Window`]). The live session is the demand: a window is
 //! captured and encoded only while a member's session shows it, and a member that
 //! starts showing it is sent a keyframe. The share ends when the person stops it
 //! or the window closes, and the workspace's governance stops naming it.
-//! A member views a window another device shares by asking the plane for its
+//! A member views a window another device shares by asking the live session for its
 //! track; the keyframe's header says the codec, size and colour, and what comes
 //! is decoded into that tab's tile here ([`PeerRead`]). Its viewer also says it
 //! views the window ([`SurfaceViewRequest`]) and sends its input back, as
@@ -53,7 +53,7 @@ use tilo_desktop_model::{
 use tilo_desktop_surface::i18n::t;
 use tilo_desktop_surface::{DesktopHandle, PeerStreamStart, WhyEnded};
 use tilo_live::live::Track;
-use tilo_live::plane::Plane;
+use tilo_live::live_session::LiveSession;
 use tilo_live::video::{Layer, VideoObject};
 use tilo_network_actor::WorkspaceId;
 use tilo_service::{Service, Started, Wake};
@@ -112,7 +112,7 @@ struct Hosted {
     app_id: String,
     workspace: String,
     share: Arc<SharedFlatpakSession>,
-    /// Whether a member's session shows the window: its track is asked for on the plane, so it is
+    /// Whether a member's session shows the window: its track is asked for on the live session, so it is
     /// captured and encoded.
     shown: bool,
     /// Whether every member the workspace lets edit controls the window, without the person
@@ -168,7 +168,7 @@ struct Received {
     /// The stream as its keyframe or its page's announcement says it.
     start: PeerStreamStart,
     /// Whether the stream is the window's page (a `tilo-paint` display list, announced by its
-    /// host, [`crate::page_track`]) rather than its pictures: this device asks the plane for the
+    /// host, [`crate::page_track`]) rather than its pictures: this device asks the live session for the
     /// page's track instead of the window's.
     page: bool,
     /// Whether the tile holds the window now, a decoded picture or its page's whole frame: a
@@ -180,7 +180,7 @@ struct Received {
 
 /// The state behind the resource: what this session shares, what it watches and what reached it.
 /// The service reads it and queues commands; the session's pass carries them out with the
-/// compositor and the plane.
+/// compositor and the live session.
 #[derive(Default)]
 pub(crate) struct WindowShares {
     hosted: BTreeMap<TabId, Hosted>,
@@ -190,7 +190,7 @@ pub(crate) struct WindowShares {
     /// Which apps' packages say a window of theirs is its page ([`paged`]).
     declared: paged::Declared,
     /// The tracks this device shows of other members' windows (their pictures or pages), by
-    /// workspace and the device hosting them: what each plane is asked for, so the ones it stops
+    /// workspace and the device hosting them: what each live session is asked for, so the ones it stops
     /// showing are published no longer.
     shown_tracks: BTreeMap<String, BTreeMap<EndpointId, BTreeSet<Track>>>,
     starting: Vec<Starting>,
@@ -201,19 +201,19 @@ pub(crate) struct WindowShares {
     /// Shares whose viewers' decoders changed, so their stream is encoded again for the codecs all
     /// of them take.
     renegotiate: BTreeSet<TabId>,
-    /// How far each workspace's live plane came on this device, the planes themselves, read
+    /// How far each workspace's live session came on this device, the live sessions themselves, read
     /// again when `live_seen` moved, and the windows a member's session is sent pictures of now: what
     /// the reading says beside the shares ([`reading`]).
     live: BTreeMap<String, crate::live::Standing>,
-    /// The endpoints this device's relay turned away from each workspace's plane, and why.
+    /// The endpoints this device's relay turned away from each workspace's live session, and why.
     turned: BTreeMap<String, Vec<crate::live::TurnedAway>>,
     live_seen: u64,
-    planes: BTreeMap<String, std::sync::Weak<Plane>>,
+    live_sessions: BTreeMap<String, std::sync::Weak<LiveSession>>,
     streaming: BTreeSet<TabId>,
     /// The windows a member shows whose app was asked for its page and has not handed it over
     /// ([`crate::page_track::PageTracks::withheld`]).
     withheld: BTreeSet<TabId>,
-    /// The windows a member shows whose page is larger than the plane carries.
+    /// The windows a member shows whose page is larger than the live session carries.
     oversized: BTreeSet<TabId>,
     /// When the next page that was asked for is overdue, here or at its app: what the reading
     /// says of it changes then, with nothing arriving to say so.
@@ -367,7 +367,7 @@ impl WindowShares {
         self.revision = self.revision.wrapping_add(1);
     }
 
-    /// One pass of the shares: take what the plane brought and carry out what the person asked,
+    /// One pass of the shares: take what the live session brought and carry out what the person asked,
     /// then show what the workspaces' governance says the members share, encode and publish the
     /// shared windows, and end what is gone.
     pub(crate) fn step(
@@ -381,7 +381,7 @@ impl WindowShares {
         now: Instant,
     ) {
         let Some(sync) = sync else {
-            // Without the plane a window cannot be shared: nothing reaches a member, and nothing of
+            // Without the live session a window cannot be shared: nothing reaches a member, and nothing of
             // theirs arrives.
             if !self.commands.is_empty()
                 || !self.hosted.is_empty()
@@ -401,7 +401,7 @@ impl WindowShares {
         self.take_received(compositor, session, sync);
         self.follow_live(sync);
         // The workspaces' governance is this device's engine's: the one the session holds, which a
-        // plane it started itself holds too.
+        // live session it started itself holds too.
         let engine = engine.or_else(|| sync.engine());
         // What was written into a governance since the last pass shows now, and a share that
         // ended while its write was under way is taken out of the governance it landed in.
@@ -427,7 +427,7 @@ impl WindowShares {
         self.ask_again(compositor, sync, now);
         self.capture(compositor, sync, now);
         self.follow_streams(&pages.borrow(), now);
-        // What the members' windows this device shows bring: the pictures and pages the planes
+        // What the members' windows this device shows bring: the pictures and pages the live sessions
         // sent, and the tracks of a window that left the session no longer asked for.
         self.follow_windows(session, sync);
         self.follow_pictured(session);
@@ -1134,7 +1134,7 @@ impl WindowShares {
             };
             // A member that came or went with the decoders the others have changes nothing about
             // the stream: it goes on as it is for the members viewing it, and a member that came
-            // starts at the keyframe its plane asks for.
+            // starts at the keyframe its live session asks for.
             if decode_alike(&hosted.receivers, &receivers) {
                 hosted.receivers = receivers;
                 continue;
@@ -1193,7 +1193,7 @@ impl WindowShares {
         }
     }
 
-    /// End every share: the session takes part in no plane.
+    /// End every share: the session takes part in no live session.
     fn end_all(
         &mut self,
         _compositor: &mut Compositor,
@@ -1229,7 +1229,7 @@ impl WindowShares {
     }
 
     /// Take away every window this session showed because a workspace's governance said a member
-    /// shared it: without the plane no stream of it comes, and the governance that named it is gone
+    /// shared it: without the live session no stream of it comes, and the governance that named it is gone
     /// with it.
     fn end_governed(&mut self, session: &DesktopHandle) {
         let governed = std::mem::take(&mut self.governed);
@@ -1269,7 +1269,7 @@ impl WindowShares {
         }
     }
 
-    /// Take what the plane carried in: a member's ask to view this device's windows, their input,
+    /// Take what the live session carried in: a member's ask to view this device's windows, their input,
     /// their stream of a window this device shows.
     fn take_received(
         &mut self,
@@ -1372,10 +1372,10 @@ impl WindowShares {
     /// Show the windows of other members this device shows, and let go of the ones that left the
     /// session.
     ///
-    /// A shared window travels the workspace's live plane, one track per window: its pictures
+    /// A shared window travels the workspace's live session, one track per window: its pictures
     /// (`tilo-video/1`) or, for a window whose app draws its page, its page (`tilo-page/1`,
     /// announced by its host). This device asks for exactly the tracks of the windows the session
-    /// holds and watches, and the plane tells the hosting device to publish those, and only those,
+    /// holds and watches, and the live session tells the hosting device to publish those, and only those,
     /// while it does. A picture's keyframe makes or remakes the tile it is decoded in; a page is
     /// drawn into the tile its announcement made ([`crate::page_track`]).
     fn follow_windows(&mut self, session: &DesktopHandle, sync: &Client) {
@@ -1384,19 +1384,19 @@ impl WindowShares {
             shown(&tree, self.pictured_in(tab))
         });
         if wanted != self.shown_tracks || !wanted.is_empty() {
-            let planes = crate::calls::planes_of(sync);
+            let live_sessions = crate::calls::live_sessions_of(sync);
             for (workspace, hosts) in &wanted {
-                let Some(plane) = planes.get(workspace) else {
+                let Some(live_session) = live_sessions.get(workspace) else {
                     continue;
                 };
                 for (host, tracks) in hosts {
                     let tracks: Vec<Track> = tracks.iter().copied().collect();
-                    sync.show_tracks(plane, *host.as_bytes(), &tracks);
+                    sync.show_tracks(live_session, *host.as_bytes(), &tracks);
                 }
             }
             // A device whose windows this session showed and no longer does stops publishing them.
             for (workspace, hosts) in &self.shown_tracks {
-                let Some(plane) = planes.get(workspace) else {
+                let Some(live_session) = live_sessions.get(workspace) else {
                     continue;
                 };
                 for host in hosts.keys() {
@@ -1404,7 +1404,7 @@ impl WindowShares {
                         .get(workspace)
                         .is_none_or(|showing| !showing.contains_key(host))
                     {
-                        sync.show_tracks(plane, *host.as_bytes(), &[]);
+                        sync.show_tracks(live_session, *host.as_bytes(), &[]);
                     }
                 }
             }
@@ -1444,7 +1444,7 @@ impl WindowShares {
             return;
         }
         let Ok(object) = tilo_failure::ignored!(
-            "the plane opened only what its relay validated as a picture",
+            "the live session opened only what its relay validated as a picture",
             VideoObject::decode(body)
         ) else {
             return;
@@ -1913,7 +1913,7 @@ impl WindowShares {
     /// Stop naming the members this device stopped hearing say they view its windows. A viewer
     /// that went away, or stopped showing the window, says nothing: its last ask keeps it among
     /// the window's viewers for [`VIEW_EXPIRY`] and no longer, whether or not this device watches
-    /// a window itself. The window's pictures are the plane's to stop: its track is published
+    /// a window itself. The window's pictures are the live session's to stop: its track is published
     /// only while a member's session asks for it.
     fn end_silent_viewers(&mut self, now: Instant) {
         let expired: Vec<(TabId, PeerId)> = self
@@ -2009,7 +2009,7 @@ impl WindowShares {
     }
 
     /// Capture the shared windows a member's session shows that are due, and publish what they
-    /// encoded on their workspace's plane. A window nobody shows is neither captured nor encoded,
+    /// encoded on their workspace's live session. A window nobody shows is neither captured nor encoded,
     /// and a member that starts showing one starts at a keyframe.
     fn capture(&mut self, compositor: &mut Compositor, sync: &Client, now: Instant) {
         if !self.pages.is_empty() {
@@ -2018,16 +2018,16 @@ impl WindowShares {
         if self.hosted.is_empty() {
             return;
         }
-        let planes = crate::calls::planes_of(sync);
-        // The windows each plane's members show, and those a viewer needs a keyframe of: one that
+        let live_sessions = crate::calls::live_sessions_of(sync);
+        // The windows each live session's members show, and those a viewer needs a keyframe of: one that
         // started showing it, or one whose group could not take another picture.
         let mut wanted = BTreeSet::new();
         let mut keyframes = BTreeSet::new();
-        for (workspace, plane) in &planes {
-            for tab in plane.wanted_windows() {
+        for (workspace, live_session) in &live_sessions {
+            for tab in live_session.wanted_windows() {
                 wanted.insert((workspace.clone(), tab));
             }
-            for tab in plane.take_window_keyframes() {
+            for tab in live_session.take_window_keyframes() {
                 keyframes.insert((workspace.clone(), tab));
             }
         }
@@ -2037,7 +2037,7 @@ impl WindowShares {
                 continue;
             };
             let key = (hosted.workspace.clone(), tab);
-            let Some(plane) = planes
+            let Some(live_session) = live_sessions
                 .get(&hosted.workspace)
                 .filter(|_| wanted.contains(&key))
             else {
@@ -2048,7 +2048,7 @@ impl WindowShares {
                 // A still window sends its new viewer the keyframe it stands on; otherwise the next
                 // frame is one, captured now.
                 if let Some(standing) = hosted.share.start_reader()
-                    && let Err(error) = send_picture(plane, tab, &hosted.share, standing)
+                    && let Err(error) = send_picture(live_session, tab, &hosted.share, standing)
                 {
                     tracing::warn!(%error, tab, "a shared window's standing keyframe did not go out");
                 }
@@ -2082,7 +2082,7 @@ impl WindowShares {
             }
             for frame in hosted.share.pump(now) {
                 let seq = frame.seq;
-                if let Err(error) = send_picture(plane, tab, &hosted.share, frame) {
+                if let Err(error) = send_picture(live_session, tab, &hosted.share, frame) {
                     // The window's group is past what one carries, or the picture past what an
                     // object does: the next frame starts it over at a keyframe.
                     tilo_failure::ignored!(
@@ -2152,13 +2152,13 @@ fn decode_alike(one: &[CodecCapabilities], other: &[CodecCapabilities]) -> bool 
     one.iter().all(|caps| other.contains(caps)) && other.iter().all(|caps| one.contains(caps))
 }
 
-/// Send one encoded picture of the window `tab` on `plane`, as its share describes it.
+/// Send one encoded picture of the window `tab` on `live_session`, as its share describes it.
 fn send_picture(
-    plane: &Plane,
+    live_session: &LiveSession,
     tab: TabId,
     share: &SharedFlatpakSession,
     frame: EncodedFrame,
-) -> Result<(), tilo_live::plane::PlaneError> {
+) -> Result<(), tilo_live::live_session::LiveError> {
     let picture = share.picture();
     let side = |side: u32| u16::try_from(side).unwrap_or(tilo_live::video::MAX_SIDE);
     let object = VideoObject {
@@ -2172,7 +2172,7 @@ fn send_picture(
         height: side(picture.height),
         payload: frame.nalus,
     };
-    plane.send_window(tab, &object)
+    live_session.send_window(tab, &object)
 }
 
 /// The `tilo-video/1` codec of a share's stream.
@@ -2878,7 +2878,7 @@ mod window_tracks {
             assert_eq!(
                 wanted.get(WORKSPACE).and_then(|hosts| hosts.get(&host(5))),
                 Some(&BTreeSet::from([Track::Page(TAB)])),
-                "the plane is asked for that window's page"
+                "the live session is asked for that window's page"
             );
         }
 
@@ -2905,7 +2905,7 @@ mod window_tracks {
             assert_eq!(
                 wanted.get(WORKSPACE).and_then(|hosts| hosts.get(&host(5))),
                 Some(&BTreeSet::from([Track::Window(TAB, Layer::High)])),
-                "the plane is asked for that window's pictures"
+                "the live session is asked for that window's pictures"
             );
         }
     }

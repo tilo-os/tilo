@@ -1,5 +1,5 @@
 //! This session's presence tracks, as a member's client says on them: the workspace's live
-//! plane, which every device of the workspace says its word on.
+//! peer network, which every device of the workspace says its word on.
 
 use std::sync::Arc;
 
@@ -8,7 +8,7 @@ use iroh_base::{EndpointAddr, EndpointId};
 use tilo_desktop_model::WorkspaceId;
 use tilo_user_identity::DeviceCert;
 
-/// Where a client's presence frames go on `peer`'s session: the live plane of the workspace each
+/// Where a client's presence frames go on `peer`'s session: the live session of the workspace each
 /// frame names, or nothing where this session holds none — presence is ephemeral, and the next
 /// change says where its sender is.
 #[must_use]
@@ -16,7 +16,7 @@ pub fn saying(peer: &Link) -> Arc<dyn SayPresence> {
     Arc::new(Saying { peer: peer.clone() })
 }
 
-/// The device `cert` makes on the plane: its own device key and label, belonging to the person its
+/// The device `cert` makes on the peer network: its own device key and label, belonging to the person its
 /// root signed for.
 #[must_use]
 pub fn device(cert: &DeviceCert) -> Option<Device> {
@@ -55,7 +55,7 @@ struct Saying {
 
 impl std::fmt::Debug for Saying {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("live plane")
+        f.write_str("live session")
     }
 }
 
@@ -65,7 +65,7 @@ impl SayPresence for Saying {
         workspace: WorkspaceId,
         frames: &[(u32, collab_types::presence::Presence)],
     ) -> Result<(), String> {
-        // The plane numbers the objects it carries itself; the numbers are the board's count.
+        // The peer network numbers the objects it carries itself; the numbers are the board's count.
         let frames = frames.iter().map(|(_, frame)| frame.clone()).collect();
         Ok(self.peer.send(Cmd::Presence(topic_of(workspace), frames))?)
     }

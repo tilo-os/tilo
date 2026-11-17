@@ -119,7 +119,7 @@ impl DeviceAgents {
             None => tilo_mcp::devices::refuse_forward(
                 stream,
                 "this desktop reaches none of your other devices: it takes no part in the \
-                 collaboration plane"
+                 peer network"
                     .into(),
             ),
         }

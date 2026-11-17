@@ -23,7 +23,7 @@ use crate::displays;
 use crate::i18n::t;
 use crate::keys::{DeviceKey, Invocation, Press, SessionKeys};
 use crate::platform::surfaces::ShellGesture;
-use crate::services::plane::answered;
+use crate::services::app_wire::answered;
 use crate::shell::state::WINDOW_MENU;
 
 /// What plays: the audio service's media, whose own controls reach the player in front.

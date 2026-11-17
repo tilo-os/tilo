@@ -5,7 +5,7 @@
 //! workspace's host branches the workspace, the branch's machine is made on
 //! that same host as a copy of the source's disk; when the host deletes a
 //! workspace, its machine goes first. The host asks the member device of that
-//! VM host over the device plane, as the device it is, the way it asks for a
+//! VM host over the device action service, as the device it is, the way it asks for a
 //! shell command ([`environment_commands`](super::environment_commands)):
 //!
 //! - [`branch_target`] names a branch, an action of the branch's environment

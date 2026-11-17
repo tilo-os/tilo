@@ -179,7 +179,7 @@ impl Automation {
     /// which cannot read this one.
     /// The shell belongs to the loop ([`DesktopHandle`] hands it out here only) and `shell` reads it
     /// on the broker's thread, so the loop hands over a copy when the shell moved.
-    pub(crate) fn publish_layout(&mut self, shell: Option<&crate::plane::LayoutAuthority>) {
+    pub(crate) fn publish_layout(&mut self, shell: Option<&crate::app_wire::LayoutAuthority>) {
         let Some(shell) = shell else {
             return;
         };
@@ -193,7 +193,7 @@ impl Automation {
 
     /// Take what the broker finished, show the schedules the passing of time, and start whatever
     /// fired. Once per pass.
-    pub fn settle(&mut self, shell: Option<&crate::plane::LayoutAuthority>) {
+    pub fn settle(&mut self, shell: Option<&crate::app_wire::LayoutAuthority>) {
         self.keep_finished();
         // What fired while the broker was starting starts now that it serves. What it fired was
         // decided against a shell this loop had already published, so the broker knows the workspace
@@ -292,7 +292,7 @@ impl Automation {
 
     /// Arm the shortcuts the shell shows, show every source what this device sees now, and start
     /// what fired. `tick` says the passing of time came round, which the schedules alone are shown.
-    fn observe(&mut self, tick: bool, shell: Option<&crate::plane::LayoutAuthority>) {
+    fn observe(&mut self, tick: bool, shell: Option<&crate::app_wire::LayoutAuthority>) {
         self.devices.set(devices_of(self.fabric.as_ref()));
         let now_ns = unix_ns(self.triggers.clock().now());
         let armed = self.armed(now_ns);

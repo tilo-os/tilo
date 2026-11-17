@@ -1349,7 +1349,7 @@ fn a_persons_presence_shows_their_face_and_opens_the_roster() {
         session.shell_control("Mia Clayton").is_none(),
         "no face of a person who is not here"
     );
-    // Someone here, as the collaboration plane lists them: their face, named for assistive
+    // Someone here, as the peer network lists them: their face, named for assistive
     // technology, on the one button that opens the roster.
     set_here(&session, 1);
     until(&mut session, |session| says(session, "Mia Clayton is here"));
@@ -2314,7 +2314,7 @@ const HERE: [&str; 5] = [
     "Nils Berg",
 ];
 
-/// Who is here, as the collaboration plane lists them: the first `count` of [`HERE`].
+/// Who is here, as the peer network lists them: the first `count` of [`HERE`].
 fn set_here(session: &Session, count: usize) {
     let here: Vec<_> = HERE
         .iter()
@@ -2329,7 +2329,7 @@ fn set_here(session: &Session, count: usize) {
         .collect();
     session
         .sync()
-        .expect("the session takes part in the plane")
+        .expect("the session takes part in the app wire")
         .here()
         .borrow_mut()
         .set_members(None, Some(here));

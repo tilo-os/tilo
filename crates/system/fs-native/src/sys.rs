@@ -1,4 +1,4 @@
-//! Checked wrappers over the Linux syscalls the data plane uses and that
+//! Checked wrappers over the Linux syscalls the backend uses and that
 //! neither `std` nor `libc` wrap safely.
 //!
 //! Everything unsafe in the crate lives here or in [`crate::fanotify`]. Each

@@ -212,7 +212,7 @@ fn a_mention_in_a_record_is_told_and_choosing_it_opens_the_record() {
         collab: true,
         apps: Some(Rc::clone(&opens) as Rc<dyn AppActions>),
         state: Some(home.state().to_path_buf()),
-        action_plane: tilo_session::ActionPlane::At(home.runtime().join("plane.sock")),
+        app_socket: tilo_session::AppSocket::At(home.runtime().join("app_wire.sock")),
         search: SearchOptions {
             records: Some(records),
             ..SearchOptions::default()

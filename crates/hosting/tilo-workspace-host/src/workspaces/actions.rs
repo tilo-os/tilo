@@ -17,7 +17,7 @@
 //!   which only devices of the relay's own person may, decided as
 //!   [`Workspaces::authorize`] decides every [`WorkspaceOp::Host`]. They are asked of
 //!   the host itself over the device's session with it, naming no workspace
-//!   (`Envelope::HostAction`, [`AppServingPlane::serve_host`]), or on a workspace
+//!   (`Envelope::HostAction`, [`AppActionServer::serve_host`]), or on a workspace
 //!   the device holds there, and need the device's certificate as the
 //!   relay's handshake verified it,
 //!   which entering admits to the workspace. Creating a workspace may issue its first
@@ -45,9 +45,9 @@
 //! and stopping one's run. Only a device of that person's own asks it, never
 //! an agent's.
 //!
-//! What the host does for its embedder is unchanged: [`GovernedPlane`]
+//! What the host does for its embedder is unchanged: [`GovernedServer`]
 //! answers this provider and hands every other request to the app-serving
-//! plane the embedder supplied, if any.
+//! app action server the embedder supplied, if any.
 
 use std::future::Future;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -82,7 +82,7 @@ use super::{
     CancelInvitationRequest, CollaborationError, GovernedWorkspace, IssueInvitationRequest,
     RemoveMemberRequest, Workspaces,
 };
-use crate::app_serving::AppServingPlane;
+use crate::app_serving::AppActionServer;
 use tilo_lock::MutexRecover as _;
 use tilo_relay_protocol::WorkspaceId;
 
@@ -2601,15 +2601,15 @@ const PROVIDERS: [&str; 7] = [
 
 /// What a relay that governs workspaces answers remote actions addressed to it
 /// with: the workspaces' governance (provider [`WORKSPACE_GOVERNANCE_PROVIDER`]), the
-/// host's own operations ([`HOST_ACTIONS_PROVIDER`]), and the app-serving plane its
+/// host's own operations ([`HOST_ACTIONS_PROVIDER`]), and the app action server its
 /// embedder supplied for everything else.
-pub(crate) struct GovernedPlane {
+pub(crate) struct GovernedServer {
     pub(crate) governance: HostWorkspaceActions,
     /// Answers everything else, when the embedder serves apps.
-    pub(crate) apps: Option<Arc<dyn AppServingPlane>>,
+    pub(crate) apps: Option<Arc<dyn AppActionServer>>,
 }
 
-impl GovernedPlane {
+impl GovernedServer {
     /// Whether `message` from `caller` is the workspaces' to answer.
     fn governs(&self, caller: &Caller, message: &RemoteActionMessage) -> bool {
         match message {
@@ -2637,7 +2637,7 @@ impl GovernedPlane {
     }
 }
 
-impl GovernedPlane {
+impl GovernedServer {
     /// Where a frame of `workspace_id`'s goes: this host's own governance
     /// stays here, and what its embedder's apps place elsewhere (a Browser
     /// window on a VM host) is theirs, with the caller's certificate where
@@ -2665,7 +2665,7 @@ impl GovernedPlane {
     }
 }
 
-impl AppServingPlane for GovernedPlane {
+impl AppActionServer for GovernedServer {
     fn answers(&self, caller: &Caller, message: &RemoteActionMessage) -> bool {
         self.governs(caller, message)
             || self

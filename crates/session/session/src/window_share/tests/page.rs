@@ -1,5 +1,5 @@
 //! A window whose app draws its own page, shared with the workspace. Nothing of such a window is
-//! captured: its app hands the session the page as a display list, the workspace's live plane
+//! captured: its app hands the session the page as a display list, the workspace's live session
 //! carries it on a track of its own, and the device showing the window draws it in the tab its
 //! shell lists the window in. The test plays the app: it says its window runs a page engine, and
 //! hands over what a page engine captured of a page. Where a test is about what the session and
@@ -31,7 +31,7 @@ const TOP: &str =
 /// How long one link of the page's way may take on a machine busy with the rest of the suite.
 const LINK: Duration = Duration::from_secs(120);
 
-/// How long the app may wait to be asked for its page once a shell asks the plane for it. The ask
+/// How long the app may wait to be asked for its page once a shell asks the live session for it. The ask
 /// is one pass of the session; this is what a machine busy with the rest of the suite may take.
 const ASKED: Duration = Duration::from_secs(30);
 
@@ -327,7 +327,7 @@ impl Two {
         }
     }
 
-    /// One pass of the window's client and of both sessions, with what their planes said carried
+    /// One pass of the window's client and of both sessions, with what their live sessions said carried
     /// after it. With `hands_over`, the app hands the session its page as it stands.
     fn pass(&mut self, hands_over: bool) {
         let due = self.handed_at.is_none_or(|at| at.elapsed() >= HANDED_EVERY);
@@ -427,7 +427,7 @@ impl Two {
         self.viewer.session.handle().peer_surface_read(self.tab)
     }
 
-    /// The tracks the watching device asks the workspace's live plane for of the sharing device.
+    /// The tracks the watching device asks the workspace's live session for of the sharing device.
     fn asked(&self) -> Vec<Track> {
         self.viewer
             .session
@@ -441,17 +441,17 @@ impl Two {
             .unwrap_or_default()
     }
 
-    /// The windows whose page the sharing session's plane is asked for.
+    /// The windows whose page the sharing session's live session is asked for.
     fn wanted(&self) -> Vec<u64> {
         self.host.session.shared.pages.borrow().viewed()
     }
 
-    /// How many objects the watching device's live plane opened in the workspace. It asks its
-    /// plane for the one window's page and nothing else, so these are objects of that page.
+    /// How many objects the watching device's live session opened in the workspace. It asks its
+    /// live session for the one window's page and nothing else, so these are objects of that page.
     fn opened(&self) -> u64 {
-        crate::calls::planes_of(&self.viewer.sync)
+        crate::calls::live_sessions_of(&self.viewer.sync)
             .get(WORKSPACE)
-            .map_or(0, |plane| plane.heard_total())
+            .map_or(0, |live_session| live_session.heard_total())
     }
 
     /// What both sessions say of their shares, for a failure's message.
@@ -467,8 +467,8 @@ impl Two {
 
 /// The page of a shared window is drawn on the device watching it, in the tab its shell lists the
 /// window in. Every link of its way is checked in order: the sharing device announces the page,
-/// the watching shell mounts its tile and asks the plane for the page's track, the app is asked for
-/// the page and hands it over, the plane carries it, and the tile leaves its arriving card for the
+/// the watching shell mounts its tile and asks the live session for the page's track, the app is asked for
+/// the page and hands it over, the live session carries it, and the tile leaves its arriving card for the
 /// page it now holds.
 #[test]
 fn a_shared_page_is_drawn_in_the_tab_the_watching_shell_lists_its_window_in() {
@@ -500,14 +500,14 @@ fn a_shared_page_is_drawn_in_the_tab_the_watching_shell_lists_its_window_in() {
         "nothing of the page was handed over yet"
     );
 
-    // Asked for: the watching shell asks the workspace's live plane for the page's track, and the
+    // Asked for: the watching shell asks the workspace's live session for the page's track, and the
     // sharing session reads that the page is wanted, which is when it asks the app for it.
     assert!(
         two.within(LINK, false, |two| {
             two.asked() == [Track::Page(tab)] && two.wanted() == [tab]
         }),
         "the page's track was never asked for: the watching device asks for {:?}, the sharing \
-         device's plane is asked for the pages of {:?}:{}",
+         device's live_session is asked for the pages of {:?}:{}",
         two.asked(),
         two.wanted(),
         two.said()
@@ -523,12 +523,12 @@ fn a_shared_page_is_drawn_in_the_tab_the_watching_shell_lists_its_window_in() {
     let opened = two.opened().saturating_sub(before);
     assert!(
         opened > 0,
-        "no object of the page reached the watching device's plane:{}",
+        "no object of the page reached the watching device's live session:{}",
         two.said()
     );
     assert!(
         drawn,
-        "{opened} objects of the page reached the watching device's plane, and its tile still \
+        "{opened} objects of the page reached the watching device's live_session, and its tile still \
          shows the arriving card:{}",
         two.said()
     );
@@ -568,7 +568,7 @@ fn a_shared_page_is_drawn_in_the_tab_the_watching_shell_lists_its_window_in() {
 /// What the two sessions say of a shared page is what is on the two screens. While the watching
 /// device holds only the page's start, it does not say the window is pictured, and says what it
 /// waits for; while the app has handed over nothing, the sharing device does not say it sends the
-/// window. Both say so once the page crossed, and the sharing device's plane names the window it is
+/// window. Both say so once the page crossed, and the sharing device's live session names the window it is
 /// asked for.
 #[test]
 fn a_page_that_only_started_is_not_said_to_be_pictured_or_sent() {
@@ -615,14 +615,14 @@ fn a_page_that_only_started_is_not_said_to_be_pictured_or_sent() {
         two.said()
     );
     let reading = shares(&two.host.session);
-    let plane = rows(&reading, "live")
+    let live_session = rows(&reading, "live")
         .iter()
-        .find(|plane| plane["workspace"].as_str() == Some(WORKSPACE))
-        .expect("the reading names the workspace's live plane");
+        .find(|live_session| live_session["workspace"].as_str() == Some(WORKSPACE))
+        .expect("the reading names the workspace's live session");
     assert_eq!(
-        plane["asked_for"].as_array().map(Vec::as_slice),
+        live_session["asked_for"].as_array().map(Vec::as_slice),
         Some(&[Value::String(tab)][..]),
-        "the sharing device's plane names the window it is asked for:{}",
+        "the sharing device's live session names the window it is asked for:{}",
         two.said()
     );
 
@@ -668,7 +668,7 @@ fn a_page_that_only_started_is_not_said_to_be_pictured_or_sent() {
 }
 
 /// The app of a shared window is asked for its page where it listens: on the connection its
-/// launcher made for its window, which names no tab. When a shell asks the plane for the page, the
+/// launcher made for its window, which names no tab. When a shell asks the live session for the page, the
 /// session writes the ask for a whole frame to that connection; what the app answers there is
 /// published, and the watching shell draws it. Nothing here hands the session a page behind the
 /// app's back.
@@ -676,7 +676,7 @@ fn a_page_that_only_started_is_not_said_to_be_pictured_or_sent() {
 fn the_app_of_a_shared_page_is_asked_for_it_on_its_own_connection() {
     let mut two = Two::sharing_from_its_app([0xc5, 0xc6]);
 
-    // Announced and asked for: the watching shell asks the plane for the page's track, and the
+    // Announced and asked for: the watching shell asks the live session for the page's track, and the
     // sharing session reads that the page is wanted.
     assert!(
         two.within(LINK, false, |two| {
@@ -690,7 +690,7 @@ fn the_app_of_a_shared_page_is_asked_for_it_on_its_own_connection() {
     let asked = two.within(ASKED, false, Two::app_asked);
     assert!(
         asked,
-        "a shell asks the plane for the window's page, and the session never asked the window's \
+        "a shell asks the live_session for the window's page, and the session never asked the window's \
          app for it on the app's connection, which heard {:?}:{}",
         two.app.as_ref().map(App::told),
         two.said()
@@ -847,7 +847,7 @@ fn an_app_that_hands_nothing_over_is_said_to_withhold_its_page() {
 
 /// A whole frame of the page in [`TOP`] made as large as a long article's: the same page with its
 /// text set down again and again, encoded as the engine encodes it. More than one message of the
-/// app's connection carries, and less than the plane's one object.
+/// app's connection carries, and less than the live session's one object.
 fn large_whole_frame() -> Vec<u8> {
     let (_, key) = page_objects()
         .into_iter()
@@ -884,7 +884,7 @@ fn large_whole_frame() -> Vec<u8> {
     assert!(
         bytes.len() > 2 * ui::webview::paint::MAX_SHARE_PART
             && bytes.len() <= crate::page_track::MAX_PAYLOAD,
-        "the page is one of three parts that the plane carries as one object: {} bytes",
+        "the page is one of three parts that the live session carries as one object: {} bytes",
         bytes.len()
     );
     bytes
@@ -1031,7 +1031,7 @@ fn a_page_too_large_to_carry_is_said_to_be_on_both_devices() {
         two.said()
     );
 
-    // The app's whole frame is one byte more than the plane carries: it says so with the first
+    // The app's whole frame is one byte more than the live session carries: it says so with the first
     // part, and sends no more of it.
     let start = large_whole_frame();
     let before = two.opened();
@@ -1111,22 +1111,22 @@ fn texts(receiver: &Receiver) -> Vec<String> {
         .unwrap_or_default()
 }
 
-/// A device of the workspace that only watches: its plane, asked for the pages of some of the
-/// sharing device's windows, and the page it holds of each, joined from what the plane brought
+/// A device of the workspace that only watches: its live session, asked for the pages of some of the
+/// sharing device's windows, and the page it holds of each, joined from what the live session brought
 /// on that window's track. What a shell watching a window is shown is what its track carries.
 struct Watcher {
-    plane: Arc<Plane>,
+    live_session: Arc<LiveSession>,
     host: [u8; 32],
     held: BTreeMap<u64, Receiver>,
 }
 
 impl Watcher {
     fn of(seed: u8, host: EndpointId) -> Self {
-        let plane = live_plane(device(seed))
+        let live_session = live_session(device(seed))
             .remove(WORKSPACE)
-            .expect("the watching device's plane");
+            .expect("the watching device's live session");
         Self {
-            plane,
+            live_session,
             host: *host.as_bytes(),
             held: BTreeMap::new(),
         }
@@ -1134,15 +1134,15 @@ impl Watcher {
 
     /// Ask the sharing device for the pages of `tabs`, and of nothing else.
     fn show(&self, tabs: &[u64]) {
-        // The plane reads on the planes' runtime, as a session's does.
-        let _entered = live_planes().runtime.enter();
+        // The live session reads on the live sessions' runtime, as a session's does.
+        let _entered = live_sessions().runtime.enter();
         let tracks: Vec<Track> = tabs.iter().map(|tab| Track::Page(*tab)).collect();
-        self.plane.show(self.host, &tracks);
+        self.live_session.show(self.host, &tracks);
     }
 
-    /// Take what the plane brought.
+    /// Take what the live session brought.
     fn hear(&mut self) {
-        while let Some(heard) = self.plane.try_recv() {
+        while let Some(heard) = self.live_session.try_recv() {
             let Track::Page(tab) = heard.track else {
                 continue;
             };
@@ -1251,7 +1251,7 @@ impl TwoWindows {
         }
     }
 
-    /// One pass of the windows' clients and of both sessions, with what their planes said carried
+    /// One pass of the windows' clients and of both sessions, with what their live sessions said carried
     /// after it; the apps in `apps` hear what the session told them.
     fn pass(&mut self, apps: &mut [&mut App]) {
         for client in &mut self.clients {
@@ -1479,7 +1479,7 @@ fn each_window_of_an_app_is_asked_for_its_own_page_and_published_as_itself() {
     );
 }
 
-/// The page of a window nobody shared reaches nobody. The workspace's plane takes any member's
+/// The page of a window nobody shared reaches nobody. The workspace's live session takes any member's
 /// ask for any window's page track, so a device asks for the page of a Browser window that was
 /// never shared: the session publishes nothing, and the window's app is never asked for it.
 #[test]
@@ -1517,18 +1517,18 @@ fn the_page_of_a_window_nobody_shared_reaches_nobody_who_asks_for_it() {
         );
     };
 
-    // Another device of the workspace asks the plane for that window's page.
+    // Another device of the workspace asks the live session for that window's page.
     let mut watcher = Watcher::of(0xd9, device(0xd8));
     watcher.show(&[tab]);
-    let plane = crate::calls::planes_of(&host.sync)
+    let live_session = crate::calls::live_sessions_of(&host.sync)
         .remove(WORKSPACE)
-        .expect("the sharing device's plane");
+        .expect("the sharing device's live session");
     let deadline = Instant::now() + Duration::from_secs(60);
-    while plane.wanted_pages() != [tab] {
+    while live_session.wanted_pages() != [tab] {
         pass(&mut host, &mut app);
         assert!(
             Instant::now() < deadline,
-            "the ask for the window's page never reached its device's plane"
+            "the ask for the window's page never reached its device's live session"
         );
     }
     for _ in 0..32 {
@@ -1572,7 +1572,7 @@ fn names_the_share(session: &Session, tab: u64) -> bool {
 /// two machines took: the window is shared and drawn there, its share is stopped, the tab that
 /// lists the window says it is not shared, and the window is shared again. The second share is
 /// announced in the very bytes of the first, and the watching shell takes that announcement as it
-/// took the first: it asks the plane for the page again and draws it. Between two machines the
+/// took the first: it asks the live session for the page again and draws it. Between two machines the
 /// second announcement was dropped on its way as a copy of the first, which is the network's to
 /// carry and is tested there; here the test carries what the devices say to each other, so this is
 /// what the shares do with a second announcement that arrives.
@@ -1610,7 +1610,7 @@ fn a_page_shared_again_after_its_share_stopped_is_drawn_again() {
     let first = two.received().expect("the first share's announcement");
 
     // Stopped: the sharing device names no share, and the watching shell, once the workspace's
-    // governance says so there too, holds nothing of the window, asks the plane for nothing and
+    // governance says so there too, holds nothing of the window, asks the live session for nothing and
     // says in the window's tab that it is not shared.
     two.host
         .session
@@ -1637,7 +1637,7 @@ fn a_page_shared_again_after_its_share_stopped_is_drawn_again() {
                 && stands(two).as_deref() == Some("not-shared")
         }),
         "the watching shell does not say the window is not shared once its share ended: it reads \
-         {:?} and asks the plane for {:?}:{}",
+         {:?} and asks the live_session for {:?}:{}",
         stands(&two),
         two.asked(),
         two.said()
@@ -1670,7 +1670,7 @@ fn a_page_shared_again_after_its_share_stopped_is_drawn_again() {
                 && two.asked() == [Track::Page(two.tab)]
         }),
         "the second share's page was not announced to the watching device, or it does not ask \
-         the plane for it: it asks for {:?}:{}",
+         the live_session for it: it asks for {:?}:{}",
         two.asked(),
         two.said()
     );

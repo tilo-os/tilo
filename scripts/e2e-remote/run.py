@@ -1385,7 +1385,7 @@ class Run:
         shells. Before the share and after it, the tab A lists the window in holds no picture of
         it and says so: that the window runs on B, on A's screen, and that it is not shared with
         the workspace, as A's session reads it."""
-        # How long after the first picture the share is read again: longer than a plane that
+        # How long after the first picture the share is read again: longer than a live session that
         # lost its relay takes to say so, and than the wait before it asks the relay again.
         stays_live_s = 20
         def shell(box: Box) -> dict:
@@ -1441,7 +1441,7 @@ class Run:
 
         def shares(state: dict, part: str) -> list:
             """What the session says of its window shares: `sharing` with each window's viewers,
-            `starting`, `watching`, `received`, and `live`, the workspaces' live planes."""
+            `starting`, `watching`, `received`, and `live`, the workspaces' live sessions."""
             return (state.get("sharing") or {}).get(part) or []
 
         def show_tab(box: Box, shown) -> str:
@@ -1463,17 +1463,17 @@ class Run:
                 return json.dumps(answer, ensure_ascii=False)[:300]
             return "not brought into view: " + "; ".join(refused)
 
-        def plane(state: dict) -> dict | None:
-            """The live plane of the workspace the window is shared in, as a session says it
+        def live_session(state: dict) -> dict | None:
+            """The live session of the workspace the window is shared in, as a session says it
             stands: `state` is `open`, or what it lacks, with `waiting_for` in words and `relay`
             the device it runs through or waits to reach. None for a session that does not
-            publish its planes, which says nothing either way."""
+            publish its live sessions, which says nothing either way."""
             said = state.get("sharing") or {}
             if "live" not in said:
                 return None
             return next((row for row in said.get("live") or [] if row.get("workspace") == workspace),
                         {"state": "absent",
-                         "waiting_for": "its session names no live plane for the workspace"})
+                         "waiting_for": "its session names no live session for the workspace"})
 
         self.person_opens_browser(b, res)
         on_b = shell(b)
@@ -1659,8 +1659,8 @@ class Run:
                          and (seen["scope"] == "tile" or not seen["placeholder"]))
                 return seen if shown else None
 
-            # The window's content travels the workspace's live plane, on a track of its own that
-            # A's plane asks B's for while A's shell holds the window's tab: its pictures, or for a
+            # The window's content travels the workspace's live session, on a track of its own that
+            # A's live session asks B's for while A's shell holds the window's tab: its pictures, or for a
             # window whose app draws its page, as the Browser's does, that page. What A's session
             # publishes says how far it came: the window's `received` row is there once the first
             # keyframe or the page's announcement reached A, and says `pictured` once its tile
@@ -1693,8 +1693,8 @@ class Run:
                 # and the tab that pictures it: the same tab.
                 "listed_on_a": listed_on_a(on_a),
                 "hosted_tab_on_a": hosted_on_a(on_a),
-                # The pictures travel the workspace's live plane: how it stands on each end.
-                "live_on_b": plane(on_b), "live_on_a": plane(on_a),
+                # The pictures travel the workspace's live session: how it stands on each end.
+                "live_on_b": live_session(on_b), "live_on_a": live_session(on_a),
             }
             for name, value in seen.items():
                 res.facts[name] = json.dumps(value, ensure_ascii=False)[:800]
@@ -1716,13 +1716,13 @@ class Run:
                 res.facts["windows_on_a"] = a.vm.raw({"op": "windows"})
                 viewers = [viewer for shared in seen["sharing_on_b"]
                            for viewer in shared.get("viewers") or []]
-                # A plane that is not open carries nothing, whatever the shares say: the sharing
+                # A live session that is not open carries nothing, whatever the shares say: the sharing
                 # device's first, since nothing is captured without it.
                 closed = next(((letter, stands) for letter, stands
                                in (("B", seen["live_on_b"]), ("A", seen["live_on_a"]))
                                if stands is not None and stands.get("state") != "open"), None)
                 # Whether B sends the window: its row says `streaming` once the window goes out
-                # to a shell that asks for it. Whether a shell asks is what B's plane says it is
+                # to a shell that asks for it. Whether a shell asks is what B's live session says it is
                 # asked for (`asked_for`), the window's tab among them.
                 unasked = [shared for shared in seen["sharing_on_b"]
                            if str(shared.get("tab")) == str(tab) and shared.get("streaming") is False]
@@ -1747,11 +1747,11 @@ class Run:
                 elif closed:
                     letter, stands = closed
                     relay = stands.get("relay_name") or stands.get("relay") or "no device"
-                    why = (f"the workspace's live plane is not open on {letter} "
+                    why = (f"the workspace's live session is not open on {letter} "
                            f"({stands.get('state')}, through {relay}): {stands.get('waiting_for')}")
                 elif unasked and not asked and not seen["received_on_a"]:
-                    why = ("the live plane is open on both and B's was never asked for the window's "
-                           f"track, so B captures nothing: A's plane runs through "
+                    why = ("the live session is open on both and B's was never asked for the window's "
+                           f"track, so B captures nothing: A's live session runs through "
                            f"{(seen['live_on_a'] or {}).get('relay')}, B's through "
                            f"{(seen['live_on_b'] or {}).get('relay')}; A watches "
                            f"{res.facts['watching_on_a'][:300]}")
@@ -1759,7 +1759,7 @@ class Run:
                     heard = ("B names A as viewing it" if viewers
                              else "nor did A's word that it views it reach B")
                     why = ("A watches the window and no keyframe of its track reached A over the "
-                           f"workspace's live plane ({heard}): {res.facts['watching_on_a'][:300]}")
+                           f"workspace's live session ({heard}): {res.facts['watching_on_a'][:300]}")
                 elif not seen["hosted_tab_on_a"]:
                     why = ("the window's pictures reached A and its shell holds no tab for the window "
                            f"that runs on B: A received {res.facts['received_on_a'][:300]}; under "
@@ -1770,10 +1770,10 @@ class Run:
                     row = received_on_a(on_a) or {}
                     sent = sharing_on_b(on_b) or {}
                     if not asked:
-                        link = ("B's plane is not asked for the window's track: "
+                        link = ("B's live session is not asked for the window's track: "
                                 f"{res.facts['live_on_b'][:300]}")
                     elif sent.get("streaming") is not True:
-                        link = ("B's plane is asked for the window and B sent nothing of it: "
+                        link = ("B's live session is asked for the window and B sent nothing of it: "
                                 f"{sent.get('waiting_for') or res.facts['sharing_on_b'][:300]}")
                     else:
                         link = ("B says it sends the window and nothing A's tile can draw "
@@ -1796,7 +1796,7 @@ class Run:
                              f"{res.facts['screen_on_a'][:500]}; A received "
                              f"{res.facts['received_on_a'][:300]}")
             # A share is not a moment. Some seconds on, the window is still received and pictured
-            # on A, the workspace's live plane reads open on both, and B still sends the window
+            # on A, the workspace's live session reads open on both, and B still sends the window
             # and waits for nothing: a stream that started and died fails here, by what the two
             # sessions publish.
             time.sleep(stays_live_s)
@@ -1804,12 +1804,12 @@ class Run:
             later = {
                 "received_on_a_later": received_on_a(on_a),
                 "sharing_on_b_later": sharing_on_b(on_b),
-                "live_on_b_later": plane(on_b), "live_on_a_later": plane(on_a),
+                "live_on_b_later": live_session(on_b), "live_on_a_later": live_session(on_a),
             }
             for name, value in later.items():
                 res.facts[name] = json.dumps(value, ensure_ascii=False)[:800]
             # The first thing that no longer holds, in the order a share travels. A session that
-            # publishes no live plane cannot say its plane is open.
+            # publishes no live session cannot say its live session is open.
             closed = next(((letter, stands) for letter, stands
                            in (("B", later["live_on_b_later"]), ("A", later["live_on_a_later"]))
                            if stands is None or stands.get("state") != "open"), None)
@@ -1818,9 +1818,9 @@ class Run:
             if closed:
                 letter, stands = closed
                 stands = stands or {"state": "unpublished",
-                                    "waiting_for": "its session publishes no live plane"}
+                                    "waiting_for": "its session publishes no live session"}
                 relay = stands.get("relay_name") or stands.get("relay") or "no device"
-                why = (f"the workspace's live plane is not open on {letter} "
+                why = (f"the workspace's live session is not open on {letter} "
                        f"({stands.get('state')}, through {relay}): {stands.get('waiting_for')}")
             elif sent is None:
                 why = "B no longer says it shares the window"
@@ -1844,8 +1844,8 @@ class Run:
                 raise Failed(f"the window B shares was pictured on A and did not stay live for "
                              f"{stays_live_s} s: {why}; B shares: "
                              f"{res.facts['sharing_on_b_later'][:300]}; A received: "
-                             f"{res.facts['received_on_a_later'][:300]}; B's plane: "
-                             f"{res.facts['live_on_b_later'][:300]}; A's plane: "
+                             f"{res.facts['received_on_a_later'][:300]}; B's live session: "
+                             f"{res.facts['live_on_b_later'][:300]}; A's live session: "
                              f"{res.facts['live_on_a_later'][:300]}")
             if change:
                 # A share carries what changes, not only what stood there when it began. B's
@@ -1935,7 +1935,7 @@ class Run:
         the sessions say. What the hosting device shares is a change of the governance it keeps
         itself, with no host to hand it on: the direction in which a share never arrived. When
         the share ends the window is still A's on both shells."""
-        # As in E14: longer than a plane that lost its relay takes to say so.
+        # As in E14: longer than a live session that lost its relay takes to say so.
         stays_live_s = 20
         a_key = (a.identity.get("this_device") or {}).get("device", "")
 
@@ -1999,11 +1999,11 @@ class Run:
                     for grant in (workspace.get("policy") or {}).get("grants") or []
                     if "kind:window" in str(grant.get("node"))]
 
-        def plane(state: dict) -> dict:
-            """How the session says the live plane of the window's workspace stands."""
+        def live_session(state: dict) -> dict:
+            """How the session says the live session of the window's workspace stands."""
             return next((row for row in shares(state, "live") if row.get("workspace") == workspace),
                         {"state": "absent",
-                         "waiting_for": "its session names no live plane for the workspace"})
+                         "waiting_for": "its session names no live session for the workspace"})
 
         def bring_to_front(box: Box, shown) -> str:
             """Bring the tab `shown` to the front of `box`'s shell with the shell's own `focus`:
@@ -2164,7 +2164,7 @@ class Run:
                 "sharing_on_a": shares(on_a, "sharing"), "starting_on_a": shares(on_a, "starting"),
                 "watching_on_b": shares(on_b, "watching"), "received_on_b": shares(on_b, "received"),
                 "listed_on_b": tile_of(on_b, tab), "hosted_tab_on_b": hosted_on_b(on_b),
-                "live_on_a": plane(on_a), "live_on_b": plane(on_b),
+                "live_on_a": live_session(on_a), "live_on_b": live_session(on_b),
             }
             for name, value in seen.items():
                 res.facts[name] = json.dumps(value, ensure_ascii=False)[:800]
@@ -2202,11 +2202,11 @@ class Run:
                 elif closed:
                     letter, stands = closed
                     relay = stands.get("relay_name") or stands.get("relay") or "no device"
-                    why = (f"the workspace's live plane is not open on {letter} "
+                    why = (f"the workspace's live session is not open on {letter} "
                            f"({stands.get('state')}, through {relay}): {stands.get('waiting_for')}")
                 elif not seen["received_on_b"]:
                     why = ("B watches the window and nothing of it reached B over the workspace's "
-                           f"live plane: B watches {res.facts['watching_on_b'][:300]}; A shares "
+                           f"live session: B watches {res.facts['watching_on_b'][:300]}; A shares "
                            f"{res.facts['sharing_on_a'][:300]}")
                 elif not seen["hosted_tab_on_b"]:
                     why = ("the window's start reached B and its shell holds no tab for the window "
@@ -2236,7 +2236,7 @@ class Run:
             on_a, on_b = shell(a), shell(b)
             sent, kept = row_for(on_a, "sharing"), row_for(on_b, "received")
             later = {"sharing_on_a_later": sent, "received_on_b_later": kept,
-                     "live_on_a_later": plane(on_a), "live_on_b_later": plane(on_b)}
+                     "live_on_a_later": live_session(on_a), "live_on_b_later": live_session(on_b)}
             for name, value in later.items():
                 res.facts[name] = json.dumps(value, ensure_ascii=False)[:800]
             closed = next(((letter, stands) for letter, stands
@@ -2246,7 +2246,7 @@ class Run:
             if closed:
                 letter, stands = closed
                 relay = stands.get("relay_name") or stands.get("relay") or "no device"
-                why = (f"the workspace's live plane is not open on {letter} "
+                why = (f"the workspace's live session is not open on {letter} "
                        f"({stands.get('state')}, through {relay}): {stands.get('waiting_for')}")
             elif sent is None:
                 why = "A no longer says it shares the window"

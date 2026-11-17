@@ -1,13 +1,13 @@
 /**
  * A browser member in a call: its voice and its pictures on the
- * workspace's live plane (`tilo-session-client` `session/plane.rs`).
+ * workspace's live session (`tilo-session-client` `session/live session.rs`).
  *
  * The page is a member of the call's channel and holds its content keys, so
  * it seals what its microphone and camera make itself and opens what the
  * call's devices send. Its voice is published frame by frame on the
- * workspace's plane (`signalling.audio`), and a picture the moment an
+ * workspace's live session (`signalling.audio`), and a picture the moment an
  * encoder makes one (`signalling.picture`): every device in the call hears
- * and sees them as the plane delivers them. This module is the app around
+ * and sees them as the live session delivers them. This module is the app around
  * that:
  *
  * - the microphone and playback (web/voice-audio.mjs): a call starts muted
@@ -16,11 +16,11 @@
  *   reason in `micIssue`; muting stops the microphone; what the call
  *   publishes is played as it arrives (`heard` events);
  * - the camera and a shared screen (web/voice-video.mjs), encoded in the
- *   layers the call's devices show: the plane says which layers those are
+ *   layers the call's devices show: the live session says which layers those are
  *   (`demand` events), what the page shows of each device is told to the
- *   plane (`signalling.showing`), and a device that starts showing a source
+ *   live session (`signalling.showing`), and a device that starts showing a source
  *   is asked for a keyframe (`signalling.keyframe`) until one arrives;
- * - the pictures the plane delivers for the call's devices, admitted to the
+ * - the pictures the live session delivers for the call's devices, admitted to the
  *   inbox as they come (`picture` events), for the app to draw;
  * - who is speaking, from the levels the audio thread measures;
  * - whether this person is muted or deafened, told to the host with what they
@@ -120,7 +120,7 @@ export function createVoiceCall({
   const speaking = new Map();
   /** How loud each member plays here, by id (`callIdOf`). */
   const volumes = new Map();
-  /** The newest frame played from each device, by hex: a plane that is joined
+  /** The newest frame played from each device, by hex: a live session that is joined
    * again announces its stream's first object again, which plays once. */
   const heardUpTo = new Map();
   /** The layers each device in the call shows of this page's sources, by
@@ -141,7 +141,7 @@ export function createVoiceCall({
   const asking = new Set();
   const ready = new Set();
   const inbox = createPictureInbox();
-  /** What left and arrived over the plane, for diagnostics and tests. */
+  /** What left and arrived over the live session, for diagnostics and tests. */
   const counters = {frames: 0, heard: 0, sent: 0, pictures: 0, showing: 0};
 
   function idle() {
@@ -220,7 +220,7 @@ export function createVoiceCall({
     if (!inCall() || state.deafened) return;
     counters.heard += 1;
     const played = heardUpTo.get(frame.from);
-    // A plane joined again announces the first object of its stream again,
+    // A live session joined again announces the first object of its stream again,
     // and a stream that started over numbers its frames from the start.
     if (played !== undefined && frame.sequence <= played && frame.sequence !== 0) return;
     heardUpTo.set(frame.from, frame.sequence);
@@ -327,7 +327,7 @@ export function createVoiceCall({
     }
   }
 
-  /** One picture this page's encoder made: published on the plane as it is
+  /** One picture this page's encoder made: published on the live session as it is
    * made, never queued for a later turn. */
   function ownPicture(picture) {
     try {
@@ -357,7 +357,7 @@ export function createVoiceCall({
     encoders.clear();
   }
 
-  /** What this page shows of each device, as the plane is told it: the
+  /** What this page shows of each device, as the live session is told it: the
    * devices' layers the page draws (`signalling.showing`). */
   function showsOfPage() {
     const byDevice = new Map();
@@ -373,7 +373,7 @@ export function createVoiceCall({
     return [...byDevice.values()];
   }
 
-  /** Tell the plane what this page shows of each device, so it reads exactly
+  /** Tell the live session what this page shows of each device, so it reads exactly
    * those layers and their owners encode exactly those. */
   function sendShowing() {
     counters.showing += 1;
@@ -430,7 +430,7 @@ export function createVoiceCall({
     update({[source]: true, videoIssue: null});
   }
 
-  /** One picture the plane delivered for a device: admitted to the inbox as
+  /** One picture the live session delivered for a device: admitted to the inbox as
    * it comes, for the app to draw. */
   function heardPicture(picture) {
     const person = grant?.members.find(member => member.device === picture.from)?.user;
@@ -444,7 +444,7 @@ export function createVoiceCall({
     inbox.admit({person, stream: `${picture.from}/${generation}`, source, object: bytesOfHex(picture.object ?? '')}, picture.keyframe);
   }
 
-  /** What the plane says the call shows of this page: the layers its encoders
+  /** What the live session says the call shows of this page: the layers its encoders
    * make, and the sources a device needs started over. */
   function demanded(demand) {
     const shownNow = {camera: new Set(), screen: new Set()};
@@ -558,7 +558,7 @@ export function createVoiceCall({
   const connection = environment.navigator?.connection;
   connection?.addEventListener?.('change', online);
 
-  /** The network changed: the session joins the plane again, and the
+  /** The network changed: the session joins the live session again, and the
    * microphone stays quiet until the call is granted again. */
   function networkChanged() {
     if (!inCall()) return;
@@ -676,7 +676,7 @@ export function createVoiceCall({
     },
     /** Why this browser cannot take part in calls, or null when it can. */
     unsupported: () => null,
-    /** What left and arrived over the plane, for diagnostics and tests; the
+    /** What left and arrived over the live session, for diagnostics and tests; the
      * audio ones say why a microphone that is not running is not: still
      * starting, muted by the person, or refused by the browser (`micIssue`). */
     stats: () => ({
@@ -700,14 +700,14 @@ export function createVoiceCall({
   };
 }
 
-/** `bytes` in hex, as the plane's voice events carry an Opus frame. */
+/** `bytes` in hex, as the live session's voice events carry an Opus frame. */
 export function hexOfBytes(bytes) {
   let text = '';
   for (const byte of bytes) text += byte.toString(16).padStart(2, '0');
   return text;
 }
 
-/** Bytes from hex, as the plane's voice events carry an Opus frame. */
+/** Bytes from hex, as the live session's voice events carry an Opus frame. */
 export function bytesOfHex(text) {
   const bytes = new Uint8Array(text.length >> 1);
   for (let index = 0; index < bytes.length; index++) bytes[index] = parseInt(text.slice(index * 2, index * 2 + 2), 16);

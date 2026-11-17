@@ -225,7 +225,7 @@ pub struct HereState {
     /// The live layer's members, or `None` while it is not live.
     members: Option<Vec<LiveMember>>,
     /// Why this page cannot join the live layer at all, in the words it shows in the members'
-    /// place: a live plane that could not be reached.
+    /// place: a live session that could not be reached.
     unavailable: Option<String>,
     /// This page itself: its publisher, name and colour.
     own: Option<LiveMember>,

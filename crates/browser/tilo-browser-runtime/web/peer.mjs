@@ -11,7 +11,7 @@
  *   in host order, replayed after every reconnect;
  * - device certification: the page shows the pairing code while a
  *   root-holding device of the user approves;
- * - the live plane (`peer.live`): this page as one member device of the
+ * - the live session (`peer.live`): this page as one member device of the
  *   workspace beside every other, its presence, pointers, previews and shell
  *   on the same session link they use. Never authority;
  * - the workspace's calls (`peer.voice`, `voice-peer.mjs`): the session holds
@@ -148,7 +148,7 @@ const hostNamespace = (hostCert, slot) => {
 const pageRuntime = async desktop => (desktop ?? await import('./host.mjs')).loadRuntime?.();
 /** Ask for a new live grant this long before the current one expires. */
 const GRANT_RENEW_MS = 60_000;
-/** Rejoining the live plane: the first wait and the longest, exponential
+/** Rejoining the live session: the first wait and the longest, exponential
  * between, each jittered by `reconnect.mjs` (`backoffDelay`) so the members
  * of a workspace whose relay restarted do not all come back in the same tick. */
 const LIVE_RETRY = {firstMs: 250, factor: 4, capMs: 10_000, jitter: 0.2};
@@ -391,7 +391,7 @@ export function createLiveLayer(peer, runtime, workspace, {
  *                               defaults to the page host's (`desktop`'s)
  * @param options.fetch          defaults to `globalThis.fetch`
  * @param options.desktop        `{mountDesktop(target, options)}`; defaults to `host.mjs`
- * @param options.live           `false`: join no live plane
+ * @param options.live           `false`: join no live session
  * @param options.onPairingCode  shown while an approver decides
  * @param options.identity       an unlocked root (`identity.mjs`): the
  *                               page certifies its own device with it, no
@@ -1038,7 +1038,7 @@ async function connect({
     throw error;
   }
 
-  // Leaving the page leaves the workspace's live plane at once: closing its
+  // Leaving the page leaves the workspace's live session at once: closing its
   // sessions withdraws this page's announcement, so everyone else takes its
   // pointer and face down now, not when the link times out, and its host
   // session ends with it. A page kept to come back to (`persisted`) is frozen,
@@ -1183,9 +1183,9 @@ async function connect({
     onStatus(listener) { statusListeners.add(listener); return () => statusListeners.delete(listener); },
     /** The live layer of the joined workspace, or `undefined` without a workspace. */
     get live() { return live; },
-    /** Why this page cannot join the workspace's live plane at all, in the
+    /** Why this page cannot join the workspace's live session at all, in the
      * words shown in the members' place, or `null` while it can
-     * (or did): a plane that could not be reached. */
+     * (or did): a live session that could not be reached. */
     liveNote: () => { try { return peer?.liveNote?.() ?? null; } catch { return null; } },
     /** This person as their presence names them: `{label, color}`. */
     get member() {

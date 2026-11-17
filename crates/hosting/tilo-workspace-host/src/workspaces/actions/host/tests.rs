@@ -24,8 +24,8 @@ use tilo_relay_session::workspaces::{
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_device_cert};
 
 use super::super::tests::{caller, settled};
-use super::super::{GovernedPlane, HostWorkspaceActions};
-use crate::app_serving::AppServingPlane as _;
+use super::super::{GovernedServer, HostWorkspaceActions};
+use crate::app_serving::AppActionServer as _;
 use crate::workspaces::tests::{governor, guest_device, test_host};
 use tilo_relay_protocol::WorkspaceId;
 
@@ -324,14 +324,14 @@ async fn no_one_else_and_nothing_uncertified_runs_the_hosts_operations() {
     .await;
     assert_eq!(unverified.unwrap_err(), ActionHostError::UnknownAction);
 
-    // The plane hands the certificate on: through it, the laptop lists.
-    let plane = GovernedPlane {
+    // The app action server hands the certificate on: through it, the laptop lists.
+    let server = GovernedServer {
         governance: host.clone(),
         apps: None,
     };
     let list = RemoteActionMessage::Invoke(host_request(LIST_WORKSPACES, json!({})));
-    assert!(plane.answers(&caller(&laptop), &list));
-    let answer = plane
+    assert!(server.answers(&caller(&laptop), &list));
+    let answer = server
         .serve_host(&caller(&laptop), &laptop, list)
         .expect("an invocation is answered");
     let RemoteActionMessage::Receipt(receipt) = settled(answer).await else {

@@ -1,6 +1,6 @@
 //! Remote-action envelopes: the relay routes a frame to the one addressed
 //! device, stamps the authenticated sender, never stores it, and answers
-//! frames addressed to itself only through a supplied app-serving plane.
+//! frames addressed to itself only through a supplied app action server.
 
 #![allow(
     clippy::significant_drop_tightening,
@@ -16,7 +16,7 @@ use tilo_actions::remote::{
 };
 use tilo_actions::{ActionAddress, InvocationId, InvocationUpdate};
 use tilo_relay::transport::REMOTE_ACTION_ENVELOPE_VERSION;
-use tilo_relay::{ActionHostPlane, Envelope, RelayClient, WorkspaceId};
+use tilo_relay::{ActionHostServer, Envelope, RelayClient, WorkspaceId};
 use tilo_relay_protocol::delegation::{DelegateScope, Delegation};
 use tilo_relay_protocol::refusal::Refusal;
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
@@ -233,7 +233,7 @@ async fn stamped_action_frames_route_to_their_addressee_or_are_answered() {
             host,
             &[WS],
             &[a.device_pubkey()],
-            Arc::new(ActionHostPlane::new(SharedHost(Arc::clone(&actions)))),
+            Arc::new(ActionHostServer::new(SharedHost(Arc::clone(&actions)))),
         ))
         .await;
         assert!(relay.relay.handle().advertised_services().app_serving);
@@ -264,7 +264,7 @@ async fn stamped_action_frames_route_to_their_addressee_or_are_answered() {
         assert_eq!(
             *actions.callers.lock().unwrap(),
             [Caller::authenticated(user.user_pk, a.device_pubkey())],
-            "the plane sees the actor the relay authenticated, not the claimed sender"
+            "the app action server sees the actor the relay authenticated, not the claimed sender"
         );
     }
 }
@@ -298,7 +298,7 @@ async fn removed_member_session_ends_without_serving_an_action() {
         host,
         &[WS],
         &[a.device_pubkey(), b.device_pubkey()],
-        Arc::new(ActionHostPlane::new(SharedHost(Arc::clone(&actions)))),
+        Arc::new(ActionHostServer::new(SharedHost(Arc::clone(&actions)))),
     ))
     .await;
     let addr = relay.relay.node_addr();
@@ -327,7 +327,7 @@ async fn removed_member_session_ends_without_serving_an_action() {
     );
     assert!(
         actions.callers.lock().unwrap().is_empty(),
-        "a removed member never reaches the app-serving plane"
+        "a removed member never reaches the app action server"
     );
 }
 
@@ -391,7 +391,7 @@ async fn expired_agent_delegation_cannot_invoke_host() {
         host,
         &[ws],
         &[agent.device_pubkey()],
-        Arc::new(ActionHostPlane::new(SharedHost(Arc::clone(&actions)))),
+        Arc::new(ActionHostServer::new(SharedHost(Arc::clone(&actions)))),
     ))
     .await;
     let to_host = |frame| Envelope::RemoteAction {
@@ -492,7 +492,7 @@ async fn expired_agent_delegation_cannot_invoke_host() {
     assert_eq!(
         *actions.callers.lock().unwrap(),
         [admitted],
-        "an expired delegation never reaches the app-serving plane"
+        "an expired delegation never reaches the app action server"
     );
 }
 

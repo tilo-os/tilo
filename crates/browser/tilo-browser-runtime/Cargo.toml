@@ -97,7 +97,7 @@ web-sys = { version = "=0.3.85", features = [
     "HtmlVideoElement",
     "console",
 ] }
-# The certified peer over WebTransport, its live plane and the member's client.
+# The certified peer over WebTransport, its live session and the member's client.
 tilo-session-client = { version = "0.1.0", path = "../../session/client", features = ["toolkit"] }
 # The identity layer's device side: certification, pairing, the sign-in proof.
 tilo-relay-client = { version = "0.1.0", path = "../../hosting/tilo-relay-client", features = ["dial"] }
@@ -106,7 +106,7 @@ tilo-peer-state = { version = "0.1.0", path = "../../collab/tilo-peer-state" }
 # in the same secret store the session's own vault uses.
 tilo-workspace-keys = { version = "0.1.0", path = "../../collab/workspace-keys" }
 # The picture sources and layers a call of the page encodes and shows.
-tilo-live = { version = "0.1.0", path = "../../collab/tilo-live", features = ["plane"] }
+tilo-live = { version = "0.1.0", path = "../../collab/tilo-live", features = ["live_session"] }
 # Which records a join does not replay, so a mount asks for them.
 neighbour-wire = { version = "0.1.0", path = "../../collab/neighbour-wire" }
 # The browser's decoder for another device's window pictures (src/window_pictures.rs).

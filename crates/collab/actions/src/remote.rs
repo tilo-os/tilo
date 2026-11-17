@@ -566,7 +566,7 @@ pub struct InvocationState {
     pub left_at: Option<ActorPlace>,
 }
 
-/// A caret or selection in a record, as the live plane's selection anchors
+/// A caret or selection in a record, as the live session's selection anchors
 /// (hex): every member's editor resolves them against its own items.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ActorPlace {

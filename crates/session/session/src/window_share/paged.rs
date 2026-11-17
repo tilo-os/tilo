@@ -236,7 +236,7 @@ impl WindowShares {
 
     /// Announce the windows whose page this session publishes to the members showing them, and tell
     /// the ones that stopped showing it. Nothing of a page is captured or encoded here: its app
-    /// draws it, and the plane carries it.
+    /// draws it, and the live session carries it.
     pub(super) fn announce_pages(&mut self, sync: &Client) {
         let tabs: Vec<TabId> = self.pages.keys().copied().collect();
         for tab in tabs {
@@ -283,7 +283,7 @@ impl WindowShares {
 }
 
 /// The page of a window whose app draws it: the members showing it read the workspace's live
-/// plane, so no picture of it is captured or encoded here.
+/// live session, so no picture of it is captured or encoded here.
 fn page_of(compositor: &Compositor, start: &Starting, ws: WorkspaceId) -> Paged {
     let (_, _, width, height) = compositor
         .shareable_window_rect(&start.window)

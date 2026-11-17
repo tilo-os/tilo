@@ -1,12 +1,12 @@
-//! Voice calls on the collaboration plane: the channel this device's call is in,
+//! Voice calls on the peer network: the channel this device's call is in,
 //! and who is in the channels every workspace this session takes part in shows.
 //! Being in a call is the presence every member reads: joining publishes the
 //! channel, leaving stops saying it, and a channel's roster is what the members in
 //! it say of themselves. A channel id is the whole of a call's identity on the wire.
-//! What a call carries is the workspace's live plane ([`tilo_live::plane`]): its
+//! What a call carries is the workspace's live session ([`tilo_live::live_session`]): its
 //! voice is one more sealed track, and its pictures are tracks, one per camera and
 //! screen layer a device shows, so a layer nobody draws is never encoded. A page in
-//! a call publishes and reads its pictures on its own joined plane, as one more
+//! a call publishes and reads its pictures on its own joined live session, as one more
 //! device of the workspace.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
@@ -21,7 +21,7 @@ use runtime_collab::native_media::{
 };
 use tilo_desktop_model::WorkspaceId;
 use tilo_live::live::Track;
-use tilo_live::plane::{Heard, Plane};
+use tilo_live::live_session::{Heard, LiveSession};
 use tilo_live::roster::Roster as LiveRoster;
 use tilo_live::voice::{self, VoiceObject};
 use tilo_lock::MutexRecover as _;
@@ -30,19 +30,19 @@ use tilo_native_media::{CallTarget, MediaFactory, MediaSession, Prepare, Rosters
 use crate::sync::{self, LiveCall};
 use media::voice::call::{self, Audio, Source, Voice};
 
+mod live_pictures;
 mod pictures;
-mod plane_pictures;
 
 /// How often a live call moves what it carries: one frame's worth, so a captured frame is sealed
 /// and sent as soon as the microphone or the camera has it.
 const PUMP: Duration = Duration::from_millis(10);
-/// Voice objects one workspace's plane may have heard before a call plays them: a call that starts
+/// Voice objects one workspace's live session may have heard before a call plays them: a call that starts
 /// late plays the newest of them, never a backlog.
 const HEARD: usize = 256;
-/// Bytes of pictures one workspace's plane may have heard before its calls draw them: a call that
+/// Bytes of pictures one workspace's live session may have heard before its calls draw them: a call that
 /// stops taking them drops streams whole, which start over at their next keyframe.
 const CARRIED_PICTURES: usize = 8 * 1024 * 1024;
-/// Pictures one workspace's plane may have heard before its calls draw them: a burst of them is a
+/// Pictures one workspace's live session may have heard before its calls draw them: a burst of them is a
 /// few passes' worth, never a backlog.
 const CARRIED: usize = 256;
 /// What the person's answer covers when an app turns a camera on, by the name every app's device
@@ -73,16 +73,16 @@ pub(crate) struct Calls {
     said: Mutex<String>,
     /// Woken whenever a workspace's calls may have changed.
     changed: Arc<tokio::sync::Notify>,
-    /// Woken whenever a call may have pictures to draw: a plane heard one, or a call changed what
+    /// Woken whenever a call may have pictures to draw: a live session heard one, or a call changed what
     /// it shows.
     arrived: Arc<tokio::sync::Notify>,
-    /// This session's live plane in each workspace, as it stands: what a call's voice is published
+    /// This session's live session in each workspace, as it stands: what a call's voice is published
     /// into and heard from.
-    planes: Mutex<BTreeMap<String, Arc<Plane>>>,
-    /// What each workspace's plane heard since the last call, newest last: the calls of that
+    live_sessions: Mutex<BTreeMap<String, Arc<LiveSession>>>,
+    /// What each workspace's live session heard since the last call, newest last: the calls of that
     /// workspace play it.
     heard: Mutex<BTreeMap<String, VecDeque<Heard>>>,
-    /// What the plane of each workspace showed for a call of `channel`,
+    /// What the live session of each workspace showed for a call of `channel`,
     /// newest last: that call draws it, and no other.
     pictures: Mutex<BTreeMap<(String, String), Carried>>,
     /// Who is in each channel, as a device of it: the person each device in a call is, and the
@@ -105,7 +105,7 @@ impl Calls {
             said: Mutex::new(String::new()),
             changed: Arc::new(tokio::sync::Notify::new()),
             arrived: Arc::new(tokio::sync::Notify::new()),
-            planes: Mutex::new(BTreeMap::new()),
+            live_sessions: Mutex::new(BTreeMap::new()),
             heard: Mutex::new(BTreeMap::new()),
             pictures: Mutex::new(BTreeMap::new()),
             people: Mutex::new(BTreeMap::new()),
@@ -194,14 +194,14 @@ impl Calls {
                 );
             }
         }
-        let planes = planes_of(sync);
+        let live_sessions = live_sessions_of(sync);
         {
-            let mut held = self.planes.lock_recover();
-            if held.len() != planes.len() || held.keys().ne(planes.keys()) {
-                *held = planes;
+            let mut held = self.live_sessions.lock_recover();
+            if held.len() != live_sessions.len() || held.keys().ne(live_sessions.keys()) {
+                *held = live_sessions;
             }
         }
-        // What the planes heard and showed since the last pass, each workspace's own: the calls
+        // What the live sessions heard and showed since the last pass, each workspace's own: the calls
         // playing it take it.
         for (workspace, heard) in sync.take_call_audio() {
             self.hear(&workspace, heard);
@@ -224,13 +224,13 @@ impl Calls {
         self.arrived.notify_waiters();
     }
 
-    /// The plane `workspace` 's call's voice runs on, while this session is in the workspace's
-    /// plane.
-    pub(crate) fn plane(&self, workspace: &str) -> Option<Arc<Plane>> {
-        self.planes.lock_recover().get(workspace).cloned()
+    /// The live session `workspace` 's call's voice runs on, while this session is in the workspace's
+    /// live session.
+    pub(crate) fn live_session(&self, workspace: &str) -> Option<Arc<LiveSession>> {
+        self.live_sessions.lock_recover().get(workspace).cloned()
     }
 
-    /// Put one object `workspace` 's plane heard where the calls playing that workspace take it:
+    /// Put one object `workspace` 's live session heard where the calls playing that workspace take it:
     /// the voice it plays, or the pictures it draws.
     fn hear(&self, workspace: &str, heard: Heard) {
         if heard.track == Track::Audio {
@@ -263,7 +263,7 @@ impl Calls {
         }
     }
 
-    /// What `workspace` 's plane heard since the last call, oldest first.
+    /// What `workspace` 's live session heard since the last call, oldest first.
     fn took(&self, workspace: &str) -> Vec<Heard> {
         self.heard
             .lock_recover()
@@ -272,7 +272,7 @@ impl Calls {
             .unwrap_or_default()
     }
 
-    /// What the plane of `workspace` showed for `channel` 's call since the last pass, oldest
+    /// What the live session of `workspace` showed for `channel` 's call since the last pass, oldest
     /// first, and the streams that lost a picture since: nothing of those is drawn until their next
     /// keyframe.
     fn took_pictures(
@@ -412,10 +412,10 @@ fn callers_in(live: &[LiveCall]) -> BTreeMap<String, BTreeMap<[u8; 32], String>>
     devices
 }
 
-/// The workspace planes this session is in now: a call's voice and pictures run on the one its
+/// The workspace live sessions this session is in now: a call's voice and pictures run on the one its
 /// workspace is in, and are no longer carried once this device leaves the workspace.
-pub(crate) fn planes_of(sync: &sync::Client) -> BTreeMap<String, Arc<Plane>> {
-    sync.planes()
+pub(crate) fn live_sessions_of(sync: &sync::Client) -> BTreeMap<String, Arc<LiveSession>> {
+    sync.live_sessions()
 }
 
 /// Keep `heard` with the newest voice `bucket` holds: a call reads only what arrived since its last
@@ -525,7 +525,7 @@ pub(crate) struct Sources {
 
 /// This session as the carrier of a call: being in the channel is joining
 /// it, which the session's presence then says to everyone in the workspace;
-/// the audio and the pictures travel the workspace's live plane.
+/// the audio and the pictures travel the workspace's live session.
 pub(crate) struct Factory {
     sources: Arc<Sources>,
     /// The person's answers about the microphone: the prompt the session's apps get, so one
@@ -834,15 +834,15 @@ struct Shared {
     screen: Arc<ScreenShare>,
     /// What the app shows of the people in this call, as it last said.
     showing: Mutex<Vec<Shown>>,
-    /// The devices this call has shown the app's layers to, on the plane: one that left the call is
-    /// unsubscribed, and the plane stops reading its pictures.
+    /// The devices this call has shown the app's layers to, on the live session: one that left the call is
+    /// unsubscribed, and the live session stops reading its pictures.
     shown_devices: Mutex<BTreeSet<[u8; 32]>>,
     /// The revision of the call's people this call last showed itself to,
-    /// and the plane's picture demand it last woke its encoders for.
+    /// and the live session's picture demand it last woke its encoders for.
     shows_at: AtomicU64,
     pictures_at: AtomicU64,
-    /// The app changed what it shows, and the call has not told the plane since: the app asks from
-    /// wherever its question arrives, and the plane's tracks are made from the call's own task.
+    /// The app changed what it shows, and the call has not told the live session since: the app asks from
+    /// wherever its question arrives, and the live session's tracks are made from the call's own task.
     shows_dirty: AtomicBool,
     /// This person, as the workspace names them: whose tile their own camera feeds, and what their
     /// own pictures are labelled.
@@ -935,7 +935,7 @@ impl Shared {
 
     /// Show these people's pictures here, each at the layer named: every device of theirs in the
     /// call is told, and encodes only that. The app asks from wherever its question arrives, so the
-    /// plane's tracks are made on the call's own pass, from what is recorded here.
+    /// live session's tracks are made on the call's own pass, from what is recorded here.
     fn show(&self, shown: Vec<Shown>) {
         // This person's own camera tile is fed here, at the largest layer the app shows of them.
         let own = self.person.as_ref().and_then(|own| {
@@ -956,26 +956,26 @@ impl Shared {
     fn send_showing(&self, persons: &BTreeMap<[u8; 32], String>) {
         let showing = self.showing.lock_recover().clone();
         let devices: BTreeSet<[u8; 32]> = persons.keys().copied().collect();
-        let plane = self.presence.plane(&self.workspace);
+        let live_session = self.presence.live_session(&self.workspace);
         {
             let mut shown = self.shown_devices.lock_recover();
             let gone: Vec<[u8; 32]> = shown.difference(&devices).copied().collect();
-            if let Some(plane) = &plane {
+            if let Some(live_session) = &live_session {
                 for device in gone {
-                    plane.show(device, &[]);
+                    live_session.show(device, &[]);
                 }
             }
             shown.clone_from(&devices);
         }
         for device in devices {
             let (camera, screen) = layers_shown(&showing, persons.get(&device));
-            if let Some(plane) = &plane {
+            if let Some(live_session) = &live_session {
                 let tracks: Vec<Track> = camera
                     .iter()
                     .map(|layer| Track::Camera(*layer))
                     .chain(screen.iter().map(|layer| Track::Screen(*layer)))
                     .collect();
-                plane.show(device, &tracks);
+                live_session.show(device, &tracks);
             }
         }
     }
@@ -1144,9 +1144,9 @@ impl Shared {
         self.closed.load(Ordering::Acquire)
     }
 
-    /// Move the call's audio once: publish what the microphone captured on the workspace's plane,
+    /// Move the call's audio once: publish what the microphone captured on the workspace's live session,
     /// and play what the call's devices published there.
-    /// The plane carries one voice track per device per workspace, so what it heard is played only
+    /// The live session carries one voice track per device per workspace, so what it heard is played only
     /// from the devices this call's channel says are in it. A deafened call drops the frames rather
     /// than holding them.
     fn pump(&self) {
@@ -1211,8 +1211,8 @@ impl Shared {
                 return;
             }
         };
-        let plane = self.presence.plane(&self.workspace);
-        if let Some(plane) = plane {
+        let live_session = self.presence.live_session(&self.workspace);
+        if let Some(live_session) = live_session {
             for frame in captured {
                 let sequence = self.presence.next_audio(&self.workspace);
                 let Ok(body) = (VoiceObject {
@@ -1224,8 +1224,8 @@ impl Shared {
                 .encode() else {
                     continue;
                 };
-                if plane.publish(Track::Audio, sequence, &body).is_err() {
-                    // The plane ended: what follows is published when this session's pass joins it
+                if live_session.publish(Track::Audio, sequence, &body).is_err() {
+                    // The live session ended: what follows is published when this session's pass joins it
                     // again.
                     break;
                 }
@@ -1298,11 +1298,11 @@ impl Shared {
     }
 }
 
-/// Carry `shared` 's call: move what it carries until it ends, and draw the pictures the plane
+/// Carry `shared` 's call: move what it carries until it ends, and draw the pictures the live session
 /// heard the moment they arrive.
 async fn run(shared: Arc<Shared>) {
     // The audio moves on the call's own clock, one frame's worth at a time;
-    // a picture is drawn as soon as the plane heard it, never on a pass.
+    // a picture is drawn as soon as the live session heard it, never on a pass.
     let arrived = shared.presence.arrived();
     // Whether the call is live is the channel's keys to say, not this task's starting: a call whose
     // keys are still on their way joins the channel and says so until `refresh` brings it up.
@@ -1313,7 +1313,7 @@ async fn run(shared: Arc<Shared>) {
         if shared.closed() {
             break;
         }
-        // Wait on the call's clock and on the plane in the same pass: the wake is registered before
+        // Wait on the call's clock and on the live session in the same pass: the wake is registered before
         // the pictures are taken, so one that arrives while they are taken wakes the next pass
         // rather than the next tick.
         let arrived = arrived.notified();

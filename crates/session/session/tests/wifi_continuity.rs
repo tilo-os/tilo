@@ -21,7 +21,7 @@ use runtime_collab::{
 use tilo_desktop_model::{Layout, Workspace, WorkspaceId};
 use tilo_identity_host::provisioning::{FILE_SECRETS_ENV, IdentityStorage};
 use tilo_service::LoopWake;
-use tilo_session::{ActionPlane, Launches, Options, Session};
+use tilo_session::{AppSocket, Launches, Options, Session};
 use tilo_user_identity::{DeviceCert, IdentityPaths};
 
 use crate::common::held::{WORKSPACE, actor, presentation};
@@ -87,13 +87,13 @@ fn shell(person: &Person) -> Layout {
     }
 }
 
-/// A directory for the plane's socket that only this user reaches: the broker refuses to serve one
+/// A directory for the app wire's socket that only this user reaches: the broker refuses to serve one
 /// anybody else could open.
 fn private_socket() -> (tempfile::TempDir, PathBuf) {
     use std::os::unix::fs::PermissionsExt as _;
-    let root = tempfile::tempdir().expect("a directory to serve the plane in");
+    let root = tempfile::tempdir().expect("a directory to serve the app wire in");
     std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700))
-        .expect("the plane's directory is this user's");
+        .expect("the app wire's directory is this user's");
     let socket = root.path().join("collab.sock");
     (root, socket)
 }
@@ -108,7 +108,7 @@ fn session(socket: &Path, person: &Person) -> Session {
     let mut session = crate::common::headless(Options {
         collab: true,
         wake: LoopWake::default(),
-        action_plane: ActionPlane::At(socket.to_path_buf()),
+        app_socket: AppSocket::At(socket.to_path_buf()),
         person: "Ada".to_owned(),
         launches,
         ..Options::default()
@@ -127,10 +127,11 @@ fn channel() -> String {
     tilo_action_broker::route::CrdtRoute::record(SETTINGS, WORKSPACE, RECORD).channel_key()
 }
 
-/// An app connected to the session's plane as Settings in the workspace, as the launcher hands it
+/// An app connected to the session's app wire as Settings in the workspace, as the launcher hands it
 /// the connection.
 fn connect(socket: &Path) -> CollabClient {
-    let mut stream = std::os::unix::net::UnixStream::connect(socket).expect("the plane's socket");
+    let mut stream =
+        std::os::unix::net::UnixStream::connect(socket).expect("the app wire's socket");
     launcher::services::write_collab_handoff(&mut stream, SETTINGS, WORKSPACE)
         .expect("the launcher names the app on the connection");
     stream
@@ -143,7 +144,7 @@ fn connect(socket: &Path) -> CollabClient {
     client
 }
 
-/// Settings' own calls, on a connection to the session's plane: the passphrase it learned here is
+/// Settings' own calls, on a connection to the session's app wire: the passphrase it learned here is
 /// shared, then read back, as their other device would.
 fn app(
     socket: &Path,

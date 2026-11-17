@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Loop-mounted Btrfs store volumes for the native data plane's privileged
+# Loop-mounted Btrfs store volumes for the native backend's privileged
 # suites (`fs --test it native_tier1::`, `fs-native --test it`).
 #
 #   sudo tools/ci/native-stores.sh up DIR     # prints the environment to use

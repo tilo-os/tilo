@@ -22,7 +22,7 @@ fn holds_picture(viewer: &Member, tab: u64) -> bool {
 /// after every turn, the reading says so exactly when the tile holds one.
 ///
 /// The picture reaches the tile the slow way. The sharing device stands still once the window's
-/// first picture is on the viewing device's plane, so nothing pushed after it brings it out of
+/// first picture is on the viewing device's live session, so nothing pushed after it brings it out of
 /// the decoder: it comes out between two turns, and the shell takes it while it builds a frame.
 #[test]
 fn a_window_is_said_to_be_pictured_in_the_turn_its_tile_takes_the_picture() {
@@ -34,7 +34,7 @@ fn a_window_is_said_to_be_pictured_in_the_turn_its_tile_takes_the_picture() {
     let mut viewer = member(0x1b, showing(host.sync.publisher(), APP, tab));
     watch(&mut viewer, tab);
 
-    // Both devices turn until the window's first picture is on the viewing device's plane.
+    // Both devices turn until the window's first picture is on the viewing device's live session.
     until(&mut host, &mut window, &mut viewer, |_, viewer, _| {
         pictures_heard(viewer) > 0
     });
@@ -57,7 +57,7 @@ fn a_window_is_said_to_be_pictured_in_the_turn_its_tile_takes_the_picture() {
         }
         assert!(
             Instant::now() < deadline,
-            "the tile never took the picture its plane heard:\n  sharing: {}\n  viewing: {}",
+            "the tile never took the picture its live session heard:\n  sharing: {}\n  viewing: {}",
             shares(&host.session),
             shares(&viewer.session)
         );

@@ -26,7 +26,7 @@ use tilo_actions::ResourceSpec;
 use tilo_desktop::verbs::{SEARCH_RESOURCE, SEARCH_ROW_KIND, SHELL_RESOURCE};
 use tilo_session::{Options, Session};
 
-/// A session on the headless backend, taking no part in the collaboration plane.
+/// A session on the headless backend, taking no part in the peer network.
 fn session() -> Session {
     crate::common::headless(Options {
         collab: false,

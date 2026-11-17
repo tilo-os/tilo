@@ -89,12 +89,12 @@ weather = { path = "../../../apps/weather" }
 word-processor = { path = "../../../apps/word-processor" }
 # generated apps: end
 # The member's client: the certified relay session (iroh for a host-side agent) with its live
-# plane, the same code a browser page runs, and the board of who is here and the agent's own word
+# live session, the same code a browser page runs, and the board of who is here and the agent's own word
 # on it.
 tilo-session-client = { path = "../../session/client", features = ["toolkit"] }
 # The identity layer's device side: the host an agent's session dials, and the signer it holds.
 tilo-relay-client = { path = "../../hosting/tilo-relay-client" }
-# A device on the plane is named by its endpoint id.
+# A device on the live session is named by its endpoint id.
 iroh.workspace = true
 iroh-base.workspace = true
 tilo-relay-protocol = { path = "../../hosting/tilo-relay-protocol" }

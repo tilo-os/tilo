@@ -392,16 +392,16 @@ impl AppTabs {
 
     /// Publish the pages someone shows, and tell the apps how their windows are watched: a window
     /// that gained a viewer is asked for a whole frame and starts sending, one that lost its last
-    /// viewer is told to stop, and a window's whole frame the plane needs again (a viewer joined, or
+    /// viewer is told to stop, and a window's whole frame the live session needs again (a viewer joined, or
     /// lost the chain of changes) is asked for as the app can only answer. The app is asked on the
     /// connection it offered the page on, which for an app's first window is the one its launcher
     /// made and names no tab; an app that hands nothing over is asked again
     /// ([`crate::page_track::HAND_OVER_BOUND`]).
     fn follow_pages(&mut self, shared: &crate::Shared) {
-        let planes = shared
+        let live_sessions = shared
             .sync
             .as_deref()
-            .map(crate::calls::planes_of)
+            .map(crate::calls::live_sessions_of)
             .unwrap_or_default();
         let now_us = tilo_clock::unix_now_ms().saturating_mul(1000);
         // Only a window shared as its page goes out, and only in the workspace it is shared
@@ -411,7 +411,7 @@ impl AppTabs {
         let asks = shared
             .pages
             .borrow_mut()
-            .step(&planes, &shared_pages, now_us);
+            .step(&live_sessions, &shared_pages, now_us);
         for (tab, watch) in asks {
             let offered = self
                 .links
@@ -826,7 +826,7 @@ impl Answers<'_> {
 
     /// The payload a frame of the page of `tab` completes: the frame's own, or the one whose
     /// last part it brings ([`ui::floating_surface::PaintPart`]); `None` while parts are still
-    /// to come. A payload that says it is larger than the plane carries is not waited for: its
+    /// to come. A payload that says it is larger than the live session carries is not waited for: its
     /// first part is enough to say so ([`PageTracks::too_large`]). Parts that do not follow
     /// each other join nothing, and the window is asked for a whole frame again.
     fn page_payload(
@@ -1147,7 +1147,7 @@ impl Answers<'_> {
             }
             // A window that runs a page engine offers its page as the thing the
             // workspace sees of it: what it draws is published on the live
-            // plane as its window's page track, and only while a member shows
+            // live session as its window's page track, and only while a member shows
             // it. Tilo apps' own views are never streamed, and neither is
             // anything but a page.
             //

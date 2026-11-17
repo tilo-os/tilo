@@ -10,7 +10,7 @@
 //!
 //! The key is read in here and goes to the provider's request alone
 //! ([`ProviderCall::key`]). No answer, refusal, log line or `Debug` output
-//! carries it, and nothing on the action plane reads it: the store's own
+//! carries it, and nothing on the action service reads it: the store's own
 //! actions refuse every agent and answer only whether a key is kept.
 //!
 //! There is no model of the host's own behind this. A person who linked none

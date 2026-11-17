@@ -1,9 +1,9 @@
-//! The host's own word for the runs it executes, outside the live plane.
+//! The host's own word for the runs it executes, outside the live session.
 //!
 //! A workspace's host executes the actions of agents and keys that act
 //! through it, and says so: each run is present in the workspace as a member
 //! of its own, and each action is narrated on its record's stream. The live
-//! plane cannot carry that word where the host is no member of the plane: its
+//! live session cannot carry that word where the host is no member of the live session: its
 //! content keys open every member-readable record, and a host that belongs to
 //! an operator never holds them. The host says it here instead, signed with
 //! its own device key, on its own sessions with the workspace's devices: the
@@ -336,7 +336,7 @@ mod tests {
         phase the_host_speaks_only_for_runs_and_says_no_more_than_their_word;
         {
             let host = key(1);
-            // Of itself: the host's own presence rides the plane, never this.
+            // Of itself: the host's own presence rides the live session, never this.
             assert_eq!(
                 said(&host, Payload::Arrived, None).signing_bytes(),
                 Err(HostSaidError::NotARunsWord)

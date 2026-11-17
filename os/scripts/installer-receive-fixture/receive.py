@@ -410,7 +410,7 @@ def target_child(candidate, evidence, delivery_context, target, parent_control):
                                     '--cache-dir', '/var/cache/quick-fs', '--storage-sock',
                                     '/run/tilo/fs-storage/storage.sock', '--blob-sock', '/run/tilo/fs-blobs.sock',
                                     '--acl', '/var/lib/tilo/fs-capabilities.json', '--member',
-                                    'person:local', '--data-plane=fuse'])
+                                    'person:local', '--backend=fuse'])
                     fs_started = True
                 if os.waitid(os.P_PID, user_child.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT):
                     break

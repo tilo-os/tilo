@@ -1,4 +1,4 @@
-//! What a member says to the collaboration plane, and how a host carries it.
+//! What a member says to the peer network, and how a host carries it.
 //!
 //! The client says these commands and never a transport: a peer actor, a page's endpoint or a
 //! program's session carries them. What only one host can do is that host's own vocabulary beside
@@ -9,16 +9,16 @@ use neighbour_wire::NeighbourMsg;
 use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_relay_protocol::DocumentAnswer;
 
-/// A host's own transport of the plane: the client says `outgoing`, reads `arrived` and what became
+/// A host's own transport of the peer network: the client says `outgoing`, reads `arrived` and what became
 /// of what it asked a host for, and the transport holds the other ends.
 pub struct Transport {
-    /// What the client says to the plane.
+    /// What the client says to the peer network.
     pub outgoing: std::sync::Arc<dyn Outbox>,
-    /// What the plane heard, as the client reads it.
+    /// What the peer network heard, as the client reads it.
     pub arrived: std::sync::mpsc::Receiver<Event>,
     /// What became of the enrollments and entries asked for since the last call.
     pub enrolled: std::sync::mpsc::Receiver<crate::Enrolled>,
-    /// The workspace presence tracks this host says on: this desktop's live plane, or a page's own
+    /// The workspace presence tracks this host says on: this desktop's live session, or a page's own
     /// endpoint. `None` where the host says presence nowhere.
     pub saying: Option<std::sync::Arc<dyn SayPresence>>,
 }
@@ -56,9 +56,9 @@ pub fn answer<T>() -> (Answer<T>, Receipt<T>) {
     oneshot::channel()
 }
 
-/// Where a client says what it says to the plane.
+/// Where a client says what it says to the peer network.
 pub trait Outbox: std::fmt::Debug + collab_types::signer::MaybeSendSync {
-    /// Say `command` to the plane.
+    /// Say `command` to the peer network.
     ///
     /// # Errors
     /// The transport is gone.
@@ -126,14 +126,14 @@ impl Outbox for std::sync::Arc<tokio::sync::mpsc::UnboundedSender<Cmd>> {
     }
 }
 
-/// Where a client's presence frames go: one host's live plane. Presence is ephemeral, so a frame
-/// that finds no plane is dropped rather than held.
+/// Where a client's presence frames go: one host's live session. Presence is ephemeral, so a frame
+/// that finds no peer network is dropped rather than held.
 pub trait SayPresence: std::fmt::Debug + collab_types::signer::MaybeSendSync {
     /// Say `frames`, one burst, each as the object its number names, on `workspace`'s presence
     /// track: the burst travels whole, so the newest one carries all of it.
     ///
     /// # Errors
-    /// This host holds no plane for the workspace, or the plane could not carry it.
+    /// This host holds no peer network for the workspace, or the peer network could not carry it.
     fn say(
         &self,
         workspace: tilo_desktop_model::WorkspaceId,
@@ -141,11 +141,11 @@ pub trait SayPresence: std::fmt::Debug + collab_types::signer::MaybeSendSync {
     ) -> Result<(), String>;
 }
 
-/// What a host's transport announces about the device it runs for: where the plane knows it and
+/// What a host's transport announces about the device it runs for: where the peer network knows it and
 /// where the others reach it, and the person and the name its certificate gives it.
 #[derive(Clone, Debug)]
 pub struct Device {
-    /// Where the plane knows this device.
+    /// Where the peer network knows this device.
     pub publisher: EndpointId,
     /// Where the others reach it.
     pub endpoint: EndpointAddr,
@@ -155,7 +155,7 @@ pub struct Device {
     pub name: String,
 }
 
-/// Something the plane heard, as every host hands it to the client.
+/// Something the peer network heard, as every host hands it to the client.
 #[derive(Clone, Debug)]
 pub enum Event {
     /// A member of `ws` said `msg`.
@@ -167,7 +167,7 @@ pub enum Event {
     /// A member of `ws` is gone.
     PeerLeft { ws: Topic, peer: EndpointId },
     /// A member of `ws` this device reaches through the workspace host `host` joined (`active`) or
-    /// left the host's live plane.
+    /// left the host's live session.
     HostMember {
         ws: Topic,
         host: EndpointId,
@@ -229,8 +229,8 @@ pub enum Event {
         from: [u8; 32],
         frame: Vec<u8>,
     },
-    /// What `from` sealed on `track` of `ws`'s live plane, object `sequence`, opened.
-    LivePlane {
+    /// What `from` sealed on `track` of `ws`'s live session, object `sequence`, opened.
+    LiveSession {
         ws: Topic,
         from: [u8; 32],
         track: tilo_live::live::Track,
@@ -323,21 +323,21 @@ pub enum VoiceEvent {
     },
 }
 
-/// How the plane numbers one workspace's topic.
+/// How the peer network numbers one workspace's topic.
 pub type Topic = tilo_desktop_model::WorkspaceId;
 
 /// A device on a workspace's roster, and when its certificate expires (Unix nanoseconds; `None` when
 /// it never does).
 pub type RosterDevice = (EndpointId, Option<u64>);
 
-/// The topic a workspace's plane numbers itself by: the workspace's id, and
+/// The topic a workspace's peer network numbers itself by: the workspace's id, and
 /// nothing for a layout that shows no workspace.
 #[must_use]
 pub fn topic_of(workspace: tilo_desktop_model::WorkspaceId) -> Topic {
     workspace
 }
 
-/// A command a client sends to the plane.
+/// A command a client sends to the peer network.
 #[derive(Debug)]
 pub enum Cmd {
     /// Take part in the topic of a workspace.
@@ -349,7 +349,7 @@ pub enum Cmd {
     /// Say one shared window's control message (a viewer's ask, input or keyframe request, a page's
     /// announcement) to `target` alone: over the authenticated direct route while one is up, and
     /// through the workspace's host to that device alone otherwise. A window's pictures travel the
-    /// workspace's live plane ([`tilo_live::live::Track::Window`]).
+    /// workspace's live session ([`tilo_live::live::Track::Window`]).
     SendControl {
         ws: Topic,
         msg: Box<NeighbourMsg>,
@@ -414,7 +414,7 @@ pub enum Cmd {
     Presence(Topic, Vec<collab_types::presence::Presence>),
     /// The host's word for a run it executes, on the workspace on the topic.
     SayForSession(Topic, tilo_relay_protocol::host_voice::HostWords),
-    /// Microphone frames, said on the plane of the workspace on the topic as this device's voice.
+    /// Microphone frames, said on the peer network of the workspace on the topic as this device's voice.
     CallAudio(Topic, Vec<CallFrame>),
     /// Ask for the calls of the workspace on the topic: the answer is a [`VoiceEvent::Calls`].
     VoiceCalls(Topic),
@@ -427,7 +427,7 @@ pub enum Cmd {
     VoiceLeave(Topic),
     /// What this device shows of the call it takes part in on the topic.
     VoiceShow(Topic, tilo_relay_protocol::voice::Showing),
-    /// Pictures this device's camera and screen encoded, for the plane of the workspace on the
+    /// Pictures this device's camera and screen encoded, for the peer network of the workspace on the
     /// topic.
     CallPictures(Topic, Vec<CallPicture>),
     /// What this device shows of each device in its call on the topic.
@@ -468,7 +468,7 @@ pub enum Cmd {
     Retry,
     /// Ask the host for every joined workspace's shared state again.
     Refresh,
-    /// The client is going: stop the plane.
+    /// The client is going: stop the peer network.
     Stop,
 }
 
@@ -481,7 +481,7 @@ pub struct CallFrame {
     pub opus: Vec<u8>,
 }
 
-/// One tilo-video/1 object this device encoded for its call's plane: one layer of its camera or
+/// One tilo-video/1 object this device encoded for its call's peer network: one layer of its camera or
 /// screen.
 #[derive(Clone, Debug)]
 pub struct CallPicture {
@@ -497,7 +497,7 @@ pub struct CallPicture {
     pub payload: Vec<u8>,
 }
 
-/// What this device shows of one device in its call's plane.
+/// What this device shows of one device in its call's peer network.
 #[derive(Clone, Debug)]
 pub struct CallShown {
     pub device: [u8; 32],

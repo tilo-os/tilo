@@ -189,7 +189,7 @@ impl StateSource {
         self.authorized_for(runtime, WorkspaceOperation::State)
     }
     /// Whether this source may take a frame of its own into the workspace now,
-    /// on the plane `op`, changing the record on `channel` (`None` for a frame
+    /// on the protocol `op`, changing the record on `channel` (`None` for a frame
     /// that belongs to no record): a browser environment's device writes its
     /// own record and nothing else.
     fn publishes(
@@ -448,9 +448,9 @@ pub(super) async fn handle_delta(
         tracing::warn!(device = %hex::encode(peer.device_public_key), "refused a change to a full workspace");
         return Ok(None);
     }
-    // A page asks a record's channel for access on a plane of its own, and is
+    // A page asks a record's channel for access on a protocol of its own, and is
     // refused there by name.
-    let op = crate::peer::admission::plane_of(&env);
+    let op = crate::peer::admission::protocol_of(&env);
     let channel = crate::peer::admission::resource_of(&env);
     let Some(source) = authorized_state_source(&ws, peer, session, op, channel).await? else {
         trace_native_publication("server_source_refused", &env, None);
@@ -716,8 +716,8 @@ pub(super) async fn handle_delta_prefix(
             "delta sent before subscribing to workspace".into(),
         ));
     }
-    // A prefix of changes rides on the plane its first change does.
-    let op = crate::peer::admission::plane_of(first);
+    // A prefix of changes rides on the protocol its first change does.
+    let op = crate::peer::admission::protocol_of(first);
     let channel = crate::peer::admission::resource_of(first);
     let Some(workspace) = session.workspaces.lock().await.get(workspace_id).cloned() else {
         return Ok(Some(Envelope::NotAuthorised {

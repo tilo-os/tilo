@@ -146,17 +146,17 @@ pub fn with_persisted_revocations(
 }
 
 /// What an embedder plugs into a relay it starts.
-struct Planes {
+struct Servers {
     /// Answers remote-action frames addressed to this host, see
     /// [`Relay::start_with_app_serving`].
-    app_serving: Option<Arc<dyn crate::app_serving::AppServingPlane>>,
+    app_serving: Option<Arc<dyn crate::app_serving::AppActionServer>>,
     /// Classifies co-edit bodies.
     shell_payloads: Arc<dyn crate::payloads::ShellPayloads>,
 }
 
-impl Planes {
+impl Servers {
     /// The desktop's payload adapter, with `app_serving` if any.
-    fn desktop(app_serving: Option<Arc<dyn crate::app_serving::AppServingPlane>>) -> Self {
+    fn desktop(app_serving: Option<Arc<dyn crate::app_serving::AppActionServer>>) -> Self {
         Self {
             app_serving,
             shell_payloads: crate::payloads::neighbour(),
@@ -177,9 +177,9 @@ pub struct Relay {
     /// Only the browser listener publishes this public navigation origin.
     #[cfg(feature = "web")]
     pub(crate) browser_origin: Arc<std::sync::RwLock<Option<Arc<String>>>>,
-    /// The relay's live plane, which its browsers serve and its devices dial.
+    /// The relay's live session, which its browsers serve and its devices dial.
     #[cfg(feature = "web")]
-    pub(crate) plane: Option<crate::web::plane::Plane>,
+    pub(crate) live_origin: Option<crate::web::live::LiveOrigin>,
     /// Background tasks (revocation refresh, metrics persistence). Aborted
     /// (per-handle) when the `Relay` drops.
     background_tasks: Arc<std::sync::Mutex<Vec<AbortOnDrop>>>,
@@ -344,7 +344,7 @@ impl Relay {
             Some(relay_mode),
             None,
             Vec::new(),
-            Planes::desktop(None),
+            Servers::desktop(None),
             Arc::new(tilo_clock::SystemClock),
         ))
         .await
@@ -377,7 +377,7 @@ impl Relay {
             None,
             Some(endpoint),
             protocols,
-            Planes::desktop(None),
+            Servers::desktop(None),
             Arc::new(tilo_clock::SystemClock),
         ))
         .await
@@ -402,13 +402,13 @@ impl Relay {
         Self::start_with_app_serving(cfg, identity, None).await
     }
 
-    /// [`Relay::start`], with an optional plane that answers remote-action
+    /// [`Relay::start`], with an optional app action server that answers remote-action
     /// frames addressed to this host.
     ///
-    /// The relay links no apps; a process that hosts them passes a plane
+    /// The relay links no apps; a process that hosts them passes an app action server
     /// here. Supplying one makes `app_serving` available, still subject to
     /// the configuration requesting it and the certificate authorising it.
-    /// When the effective services leave `app_serving` off, the plane is
+    /// When the effective services leave `app_serving` off, the app action server is
     /// dropped and such frames are refused as undeliverable.
     ///
     /// # Errors
@@ -417,7 +417,7 @@ impl Relay {
     pub async fn start_with_app_serving(
         cfg: RelayConfig,
         identity: RelayIdentity,
-        app_serving: Option<Arc<dyn crate::app_serving::AppServingPlane>>,
+        app_serving: Option<Arc<dyn crate::app_serving::AppActionServer>>,
     ) -> Result<Self, RelayError> {
         Box::pin(Self::start_inner(
             cfg,
@@ -425,7 +425,7 @@ impl Relay {
             None,
             None,
             Vec::new(),
-            Planes::desktop(app_serving),
+            Servers::desktop(app_serving),
             Arc::new(tilo_clock::SystemClock),
         ))
         .await
@@ -438,7 +438,7 @@ impl Relay {
     pub async fn start_with_app_serving_and_relay_mode(
         cfg: RelayConfig,
         identity: RelayIdentity,
-        app_serving: Option<Arc<dyn crate::app_serving::AppServingPlane>>,
+        app_serving: Option<Arc<dyn crate::app_serving::AppActionServer>>,
         relay_mode: iroh::RelayMode,
     ) -> Result<Self, RelayError> {
         Box::pin(Self::start_inner(
@@ -447,7 +447,7 @@ impl Relay {
             Some(relay_mode),
             None,
             Vec::new(),
-            Planes::desktop(app_serving),
+            Servers::desktop(app_serving),
             Arc::new(tilo_clock::SystemClock),
         ))
         .await
@@ -470,7 +470,7 @@ impl Relay {
             None,
             None,
             Vec::new(),
-            Planes::desktop(None),
+            Servers::desktop(None),
             replica_clock,
         ))
         .await
@@ -489,19 +489,19 @@ impl Relay {
         relay_mode: Option<iroh::RelayMode>,
         endpoint: Option<Endpoint>,
         additional_protocols: Vec<(Vec<u8>, Box<dyn DynProtocolHandler>)>,
-        planes: Planes,
+        servers: Servers,
         replica_clock: Arc<dyn Clock>,
     ) -> Result<Self, RelayError> {
-        let Planes {
+        let Servers {
             app_serving,
             shell_payloads,
-        } = planes;
-        // The host's one content store per workspace: the app-serving plane's
+        } = servers;
+        // The host's one content store per workspace: the app action server's
         // when it brings one (its uploads and app workers keep there), so
         // everything this host keeps for a workspace is in one place.
         let content = app_serving
             .as_ref()
-            .and_then(|plane| plane.content())
+            .and_then(|server| server.content())
             .unwrap_or_else(|| crate::content::stores(&cfg.state_root));
         validate_additional_protocols(&additional_protocols)?;
         import_home_peer(&mut cfg)?;
@@ -511,9 +511,9 @@ impl Relay {
                 "a device that takes no work serves no workspace".into(),
             ));
         }
-        // The composite process starts relay + filesystem planes; live
-        // workspace control uses relay's non-retained presence plane, and app
-        // serving needs a plane supplied by an embedding process.
+        // The composite process starts relay + filesystem protocols; live
+        // workspace control uses relay's non-retained presence track, and app
+        // serving needs an app action server supplied by an embedding process.
         let mut available_services = crate::mesh::ServiceCapabilities::home_peer();
         available_services.app_serving = app_serving.is_some();
         cfg.services = cfg.services.limited_to(&available_services);
@@ -612,11 +612,11 @@ impl Relay {
         let metrics = sessions.metrics.clone();
         let live = sessions.identity.clone();
         let handler = sessions.handler.clone();
-        // The live plane belongs to the relay: every key holder, a page
+        // The live session belongs to the relay: every key holder, a page
         // included, reaches it over the relay's own iroh endpoint, and all
         // land in one origin whether or not browsers are served.
         #[cfg(feature = "web")]
-        let mut plane = Some(crate::web::plane::Plane::start(handler.clone()));
+        let mut live_origin = Some(crate::web::live::LiveOrigin::start(handler.clone()));
         let live_trust_policy = handler.trust_policy.clone();
         let discovery = DiscoveryProtocol {
             workspaces: workspaces.clone(),
@@ -675,17 +675,17 @@ impl Relay {
             router = router.accept(alpn, handler);
         }
         #[cfg(feature = "web")]
-        if let Some(plane) = plane.as_ref() {
-            let (alpn, handler) = plane.protocol();
+        if let Some(origin) = live_origin.as_ref() {
+            let (alpn, handler) = origin.protocol();
             router = router.accept(alpn, handler);
         }
         let router = router.spawn();
 
         let background_tasks = spawn_background_tasks(&cfg, &identity, &metrics, &live);
         #[cfg(feature = "web")]
-        if let Some(plane) = plane.as_mut() {
+        if let Some(origin) = live_origin.as_mut() {
             let mut tasks = lock_background_tasks(&background_tasks);
-            tasks.extend(plane.tasks().into_iter().map(AbortOnDrop));
+            tasks.extend(origin.tasks().into_iter().map(AbortOnDrop));
         }
         // Members read what this host keeps for their workspace from its
         // content, and the files of the workspaces it governs are kept there
@@ -747,7 +747,7 @@ impl Relay {
             #[cfg(feature = "web")]
             browser_origin: Arc::new(std::sync::RwLock::new(None)),
             #[cfg(feature = "web")]
-            plane,
+            live_origin,
             background_tasks,
             mesh_profile,
             full_replica: full_replica.clone(),
@@ -902,7 +902,7 @@ impl Relay {
             .await?)
     }
 
-    /// Where a plane hands a frame to a device of one of its workspaces after
+    /// Where the app action server hands a frame to a device of one of its workspaces after
     /// answering its caller itself (a page action the person allowed, running
     /// on the window that refused it): this host's own delivery, stamped as
     /// every frame it forwards is.
@@ -926,7 +926,7 @@ impl Relay {
 
     /// The devices this relay certified for its browser environments, and the
     /// one record each reaches ([`crate::environment`]): what the relay
-    /// confines each environment to when it places it, and what every plane of
+    /// confines each environment to when it places it, and what every app action server of
     /// its workspaces asks before it lets one in.
     #[must_use]
     pub fn environments(&self) -> crate::environment::EnvironmentRegistry {
@@ -1071,7 +1071,7 @@ async fn spawn_packet_relay(
     Ok((server, url))
 }
 
-/// Bind the relay plane with a domain-separated transport key. This is one
+/// Bind the relay protocol with a domain-separated transport key. This is one
 /// physical certified device, not a second user identity: protocol auth uses
 /// `device_key` and its device certificate after QUIC connects.
 async fn bind_endpoint(

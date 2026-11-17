@@ -1,9 +1,9 @@
 //! Who is here: the roster the bar's faces open, and every other person's pointer where they are
 //! working. The roster can also be kept on screen, waiting at an edge of the shell with a mirror of
 //! each person's screen beside their row, pressed to follow them.
-//! The roster reads the shell's member rows and presence, which the collaboration plane writes each frame
+//! The roster reads the shell's member rows and presence, which the peer network writes each frame
 //! ([`crate::sync`]): the one feed the bar's faces and the launcher's Happening now list read too.
-//! Everyone's pointer is the plane's tile pointer, drawn over the tile of the tab they are on, in
+//! Everyone's pointer is the live session's tile pointer, drawn over the tile of the tab they are on, in
 //! their own colour.
 
 use std::cell::{Cell, RefCell};
@@ -556,7 +556,7 @@ pub struct Given {
     pub apps: Option<std::sync::Arc<dyn crate::platform::apps::Apps>>,
     /// The shell the roster is drawn over.
     pub handle: DesktopHandle,
-    /// Who is here, when this session takes part in the collaboration plane.
+    /// Who is here, when this session takes part in the peer network.
     pub sync: Option<Rc<crate::sync::Client>>,
     /// Who is here, written into a copy of the layout as its members and their presence: what the bar's
     /// faces are drawn from, so the roster they open lists the same people. A host that hears
@@ -1083,7 +1083,7 @@ impl Panel {
         }
     }
 
-    /// Read who is here, as the plane wrote them into the shell's member rows this frame: the
+    /// Read who is here, as the live session wrote them into the shell's member rows this frame: the
     /// roster, each person's screen with its windows named by the records this session shows, and the
     /// workspace it is of: the panel's title, kept on screen or opened from the bar.
     fn read_roster(&self, shown: &mut Shown) {

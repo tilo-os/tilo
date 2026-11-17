@@ -341,9 +341,9 @@ fn state_timing_steps(host: bool, delta: &[u8]) -> (&'static str, &'static str) 
     }
 }
 
-/// The plane `envelope` rides on: a device asks a record's channel for access
+/// The protocol `envelope` rides on: a device asks a record's channel for access
 /// with the frame its own key package came in, and everything else is a change.
-pub(super) fn plane_of(envelope: &Envelope) -> WorkspaceOperation {
+pub(super) fn protocol_of(envelope: &Envelope) -> WorkspaceOperation {
     if carries_channel_access(envelope) {
         WorkspaceOperation::KeyAccess
     } else {

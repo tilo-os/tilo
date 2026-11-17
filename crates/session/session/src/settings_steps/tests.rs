@@ -107,9 +107,9 @@ fn shell(fixture: &Fixture) -> Layout {
     }
 }
 
-/// A headless session keeping the person's settings, its broker on `plane`: what every control of
+/// A headless session keeping the person's settings, its broker on `app_wire`: what every control of
 /// Settings' window reaches.
-fn serving(fixture: &Fixture, plane: &Path) -> crate::Session {
+fn serving(fixture: &Fixture, app_wire: &Path) -> crate::Session {
     let mut session = crate::Session::headless(
         crate::Options {
             presentation: ui::headless::fixture_runner_inputs,
@@ -117,7 +117,7 @@ fn serving(fixture: &Fixture, plane: &Path) -> crate::Session {
             person: person_id(&fixture.cert.user_public_key),
             collab: false,
             state: Some(fixture.state.clone()),
-            action_plane: crate::ActionPlane::At(plane.join("collab.sock")),
+            app_socket: crate::AppSocket::At(app_wire.join("collab.sock")),
             ..crate::Options::default()
         },
         &[tilo_compositor::OutputConfig::new("HEADLESS-1", 1280, 800)],
@@ -188,13 +188,13 @@ fn stored(session: &crate::Session, section: &str, field: &str) -> Value {
 fn settings_controls_change_the_settings_the_session_keeps() {
     let _settled = ui::motion::testing::settled();
     let fixture = fixture();
-    let plane = tempfile::tempdir().expect("a directory to serve the broker in");
+    let app_wire = tempfile::tempdir().expect("a directory to serve the broker in");
     std::fs::set_permissions(
-        plane.path(),
+        app_wire.path(),
         std::os::unix::fs::PermissionsExt::from_mode(0o700),
     )
     .expect("the broker's directory is this user's");
-    let mut session = serving(&fixture, plane.path());
+    let mut session = serving(&fixture, app_wire.path());
     let broker = session
         .action_broker()
         .expect("the session serves a broker");

@@ -21,7 +21,7 @@ impl WorkspaceKeys {
     /// back. The members of a workspace a device hosts itself reach it over
     /// their own links, where nothing keeps that frame: a member whose link
     /// came up after a commit never heard of it, sealed under keys the others
-    /// had moved past, and was turned away from the workspace's live plane for
+    /// had moved past, and was turned away from the workspace's live session for
     /// as long as nobody committed again.
     pub fn standing_governance(&mut self, workspace: WorkspaceId) -> Vec<NeighbourMsg> {
         let mut messages = Vec::new();

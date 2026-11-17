@@ -1,5 +1,5 @@
 //! Remote actions on the v1 `RemoteAction` envelope: routing to another
-//! subscribed device, and the app-serving plane for frames addressed to this
+//! subscribed device, and the app action server for frames addressed to this
 //! relay.
 
 use super::{
@@ -18,7 +18,7 @@ pub(super) struct RemoteActionRoute {
 
 /// Handle an inbound `RemoteAction`: stamp the authenticated sender, then
 /// hand it to the addressed device's live connection, or — when addressed to
-/// this relay — to the app-serving plane. Never stored, never executed by the
+/// this relay — to the app action server. Never stored, never executed by the
 /// relay itself; every failure is answered as undeliverable so the sender
 /// need not wait out a timeout, with its typed [`Refusal`].
 ///
@@ -99,13 +99,13 @@ pub(super) async fn handle_remote_action(
     if to == *session.own_device_public_key {
         // An action of a window this host serves but does not hold (a Browser
         // whose page runs on a VM host) is handed to the device that holds it,
-        // stamped with this sender, or answered by the plane itself, which may
+        // stamped with this sender, or answered by the app action server itself, which may
         // take its time about it.
-        if let Some(plane) = session.app_serving
+        if let Some(server) = session.app_serving
             && let Ok(decoded) = tilo_actions::remote::RemoteActionFrame::decode(&frame)
             && let Ok(caller) = session_caller(peer, session)
             && let Some(route) =
-                plane.route_certified(workspace_id, &caller, &peer.cert, &decoded.message)
+                server.route_certified(workspace_id, &caller, &peer.cert, &decoded.message)
         {
             return hand_routed(
                 peer,
@@ -117,13 +117,13 @@ pub(super) async fn handle_remote_action(
             );
         }
         let standing = super::change_standing(peer, &wr);
-        // Never hold the workspace across the plane: it may take its time.
+        // Never hold the workspace across the app action server: it may take its time.
         drop(wr);
-        let Some(plane) = session.app_serving else {
+        let Some(server) = session.app_serving else {
             return refuse(Refusal::Other("this host does not serve apps".into()));
         };
         let local = Local {
-            plane: plane.as_ref(),
+            server: server.as_ref(),
             workspace_id,
             standing,
         };
@@ -132,11 +132,11 @@ pub(super) async fn handle_remote_action(
     hand_over(peer, session, &mut wr, workspace_id, version, to, frame)
 }
 
-/// Write the answer the plane routed a request to, on the connection of the
-/// device that asked, whenever the plane has it: an answer it drops is the
+/// Write the answer the app action server routed a request to, on the connection of the
+/// device that asked, whenever the app action server has it: an answer it drops is the
 /// refusal the request's kind takes. `None`: nothing is returned to the
 /// connection handler, which is how a later answer is written.
-fn answered_by_plane(
+fn answered_by_server(
     session: &SessionCtx<'_>,
     peer: &AuthenticatedPeer,
     workspace_id: WorkspaceId,
@@ -176,9 +176,9 @@ fn answered_by_plane(
 /// Hand `frame` to the connected device `to` of the workspace, stamped with
 /// the authenticated `peer` as its sender: the relay routes what it forwards,
 /// and never runs it.
-/// Where a plane routed the frame of `decoded`'s — `frame`, as the caller
+/// Where an app action server routed the frame of `decoded`'s — `frame`, as the caller
 /// wrote it — in `workspace_id`: handed to the device holding the window, as
-/// the caller wrote it or as the plane wrote it in the caller's place, or
+/// the caller wrote it or as the app action server wrote it in the caller's place, or
 /// answered here.
 fn hand_routed(
     peer: &AuthenticatedPeer,
@@ -196,7 +196,7 @@ fn hand_routed(
             hand_over_replaced(peer, session, wr, (workspace_id, version), to, *message)
         }
         crate::app_serving::Routing::Answer(answer) => {
-            return answered_by_plane(session, peer, workspace_id, version, decoded, answer);
+            return answered_by_server(session, peer, workspace_id, version, decoded, answer);
         }
     };
     // The caller asked this host: a frame the device holding the window could
@@ -217,7 +217,7 @@ fn hand_routed(
 }
 
 /// [`hand_over`] of the frame `message` writes in place of the caller's: what
-/// a plane that answers for the person hands the window.
+/// an app action server that answers for the person hands the window.
 ///
 /// # Errors
 ///
@@ -267,10 +267,10 @@ fn hand_over(
         ));
     }
     let mut frame = frame;
-    if let Some(plane) = session.app_serving
-        && plane.tracks(workspace_id)
+    if let Some(server) = session.app_serving
+        && server.tracks(workspace_id)
         && let Ok(decoded) = tilo_actions::remote::RemoteActionFrame::decode(&frame)
-        && let Some(answer) = plane.relayed(workspace_id, peer.device_public_key, &decoded.message)
+        && let Some(answer) = server.relayed(workspace_id, peer.device_public_key, &decoded.message)
         && let Ok(encoded) = tilo_actions::remote::RemoteActionFrame::new(answer).encode()
     {
         frame = encoded;
@@ -280,8 +280,8 @@ fn hand_over(
     // host's: the caller asked this host, and hears its answer from the
     // device it asked. Who ran what stays the window's own record of it, as
     // the caller's.
-    let (from_device_public_key, from_user_public_key) = if let Some(plane) = session.app_serving
-        && plane.answers_for_host(workspace_id, peer.device_public_key, to)
+    let (from_device_public_key, from_user_public_key) = if let Some(server) = session.app_serving
+        && server.answers_for_host(workspace_id, peer.device_public_key, to)
     {
         (*session.own_device_public_key, *session.own_user_public_key)
     } else {
@@ -309,7 +309,7 @@ fn hand_over(
 /// only the devices of the host's own person, speaking for themselves.
 ///
 /// Every request that can be read is answered: a refusal comes back at once
-/// as the returned envelope, and an answer the plane abandons comes back as a
+/// as the returned envelope, and an answer the app action server abandons comes back as a
 /// refusal ([`answer_later`]). A frame too large to read or that does not
 /// decode names no request to answer; it is logged.
 pub(super) fn handle_host_action(
@@ -347,7 +347,7 @@ pub(super) fn handle_host_action(
         Err(crate::workspace_access::DenyReason::NotTrusted) if asks_to_hold(&request.message) => {}
         Err(_) => return refused(ActionHostError::NotPermitted),
     }
-    let Some(plane) = session.app_serving else {
+    let Some(server) = session.app_serving else {
         return refused(ActionHostError::Unavailable {
             reason: "this host serves no host operations".into(),
         });
@@ -399,9 +399,9 @@ pub(super) fn handle_host_action(
             reason: "the host dropped the request".into(),
         },
     );
-    let Some(reply) = plane.serve_host(&caller, &peer.cert, request.message) else {
+    let Some(reply) = server.serve_host(&caller, &peer.cert, request.message) else {
         // `None` for a response (which needs no answer) or an operation the
-        // plane does not serve, which is refused.
+        // app action server does not serve, which is refused.
         return host_action_envelope(unanswered?);
     };
     let outbound = session.outbound.clone();
@@ -424,7 +424,7 @@ fn host_action_envelope(message: tilo_actions::remote::RemoteActionMessage) -> O
 }
 
 /// Write the answer `reply` resolves to on the connection once it is ready;
-/// an answer the plane drops is `abandoned` instead (a refusal, or `None` for
+/// an answer the app action server drops is `abandoned` instead (a refusal, or `None` for
 /// a message that needed no answer). The answer waits for workspace in the
 /// connection's queue rather than being dropped when the workspace's own traffic
 /// filled it, and ends with the connection.
@@ -455,17 +455,17 @@ fn answer_later(
     });
 }
 
-/// Where [`serve_locally`] answers: the relay's app-serving plane, in one
+/// Where [`serve_locally`] answers: the relay's app action server, in one
 /// workspace, for a caller of the standing the change budget sees there.
 struct Local<'a> {
-    plane: &'a dyn crate::app_serving::AppServingPlane,
+    server: &'a dyn crate::app_serving::AppActionServer,
     workspace_id: WorkspaceId,
     standing: crate::member_limits::Standing,
 }
 
-/// Answer a frame addressed to this relay through its app-serving plane,
+/// Answer a frame addressed to this relay through its app action server,
 /// with the caller the connection authenticated. The answer is written to
-/// the connection whenever the plane has it, so a request that needs an
+/// the connection whenever the app action server has it, so a request that needs an
 /// application's help never stalls this peer's other traffic. `Err` when
 /// the frame cannot be used. The caller was already admitted for the workspace
 /// by [`handle_remote_action`], agent delegation included.
@@ -477,14 +477,14 @@ fn serve_locally(
 ) -> Result<Option<Envelope>, Refusal> {
     use tilo_actions::remote::RemoteActionFrame;
     let Local {
-        plane,
+        server,
         workspace_id,
         standing,
     } = *local;
     let request = RemoteActionFrame::decode(frame)
         .map_err(|_| Refusal::Invalid("malformed remote action frame".into()))?;
     let caller = session_caller(peer, session)?;
-    if !plane.answers(&caller, &request.message) {
+    if !server.answers(&caller, &request.message) {
         return Err(Refusal::Other("this host does not serve apps".into()));
     }
     // An action the host runs for a member (a comment, linking their own
@@ -505,9 +505,9 @@ fn serve_locally(
             reason: "the host dropped the request".into(),
         },
     );
-    let Some(reply) = plane.serve_certified(workspace_id, &caller, &peer.cert, request.message)
+    let Some(reply) = server.serve_certified(workspace_id, &caller, &peer.cert, request.message)
     else {
-        // A response needs no answer; a request the plane leaves unanswered
+        // A response needs no answer; a request the app action server leaves unanswered
         // is refused, so its asker does not wait for nothing.
         return if abandoned.is_some() {
             Err(Refusal::Other(
@@ -521,7 +521,7 @@ fn serve_locally(
     let to_device_public_key = peer.device_public_key;
     let from_device_public_key = *session.own_device_public_key;
     let from_user_public_key = *session.own_user_public_key;
-    // The answer is all the asker waits for: one the plane drops is a
+    // The answer is all the asker waits for: one the app action server drops is a
     // refusal, never nothing.
     answer_later(reply, abandoned, move |reply| {
         let frame = match RemoteActionFrame::new(reply).encode() {

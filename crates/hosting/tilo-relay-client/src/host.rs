@@ -5,7 +5,7 @@
 //! device dials the host's own addresses or the relay it names; a page has no
 //! UDP socket, so every packet it sends goes through that relay. The relay is
 //! part of the host's address ([`Host::addr`]), never a separate field beside
-//! it, so whatever dials a host (the session, its planes, certification)
+//! it, so whatever dials a host (the session, its live sessions, certification)
 //! dials it the same way.
 //!
 //! How a device reaches it is its [`Carrier`]: a page's is the browser's

@@ -6,7 +6,7 @@
 //! its Terminal sessions. The VM host that holds the workspace's VM does
 //! instead, as a member device of the relay's own person: it holds the
 //! workspace and its files as any member does, and answers the relay's runs
-//! on its device plane ([`ACTIONS_ALPN`]) with a
+//! on its device action service ([`ACTIONS_ALPN`]) with a
 //! [`EnvironmentCommands`](ush::environment_commands::EnvironmentCommands) dispatcher over
 //! the workspace's shells ([`ush::workspace_shell::WorkspaceShells`]):
 //!
@@ -38,7 +38,7 @@ use std::net::ToSocketAddrs as _;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tilo_actions::remote::ActionHost;
-use tilo_peer_state::actions::{ACTIONS_ALPN, ActionPlane};
+use tilo_peer_state::actions::{ACTIONS_ALPN, ActionService};
 use tilo_user_identity::DeviceCert;
 
 /// The UDP port a member's endpoint listens on, and the one the relay's
@@ -172,19 +172,19 @@ fn named(workspace: &str) -> String {
         .collect()
 }
 
-/// The device plane that serves the work of the workspaces `joined` holds,
+/// The device action service that serves the work of the workspaces `joined` holds,
 /// entering the ones `relay` places here that this member does not hold yet.
 ///
 /// # Errors
 ///
 /// This host cannot run a workspace's shell at all.
-pub(in crate::standalone) fn plane(
+pub(in crate::standalone) fn action_service(
     profile: &Path,
     joined: &Arc<Joined>,
     relay: Relay,
     replicas: Option<super::files::ReplicaSlot>,
     browsers: Option<PathBuf>,
-) -> std::io::Result<ActionPlane> {
+) -> std::io::Result<ActionService> {
     let dispatcher = shell_runs(profile, joined, replicas, browsers).ok_or_else(|| {
         std::io::Error::new(
             std::io::ErrorKind::Unsupported,
@@ -196,14 +196,14 @@ pub(in crate::standalone) fn plane(
         Arc::clone(joined),
         relay,
     ));
-    let plane = {
+    let action_service = {
         let _entered = tilo_rt::app().handle().enter();
-        ActionPlane::over(joined.signer(), dispatcher, entering)
+        ActionService::over(joined.signer(), dispatcher, entering)
     };
     // The relay asks from its endpoint, which a Tilo relay keys apart from
     // the device it signs its runs as.
-    plane.reach_device_at(device, endpoint);
-    Ok(plane)
+    action_service.reach_device_at(device, endpoint);
+    Ok(action_service)
 }
 
 /// The runs this member answers with: the workspace's shell, asked by the
@@ -265,10 +265,10 @@ fn shell_runs(
 }
 
 /// A member device that takes work over a profile of its own: the workspaces
-/// it holds, and the device plane their runs are answered on. Drop it to stop
+/// it holds, and the device action service their runs are answered on. Drop it to stop
 /// serving; the workspaces it entered stay held in the profile.
 pub struct Member {
-    /// Answers the member's plane on its endpoint, holding the workspaces it
+    /// Answers the member's action service on its endpoint, holding the workspaces it
     /// serves.
     _router: iroh::protocol::Router,
     profile: PathBuf,
@@ -294,14 +294,14 @@ impl Member {
     ) -> std::io::Result<Self> {
         let custody = tilo_identity_host::custody::HostIdentity::kept(cert, key);
         let joined = Joined::from_profile(profile, custody, endpoint.clone())?;
-        let plane = plane(profile, &joined, relay, None, browsers)?;
-        // The plane holds the workspaces it serves; this member answers them
+        let action_service = action_service(profile, &joined, relay, None, browsers)?;
+        // The action service holds the workspaces it serves; this member answers them
         // through the router.
         drop(joined);
         let router = {
             let _entered = tilo_rt::app().handle().enter();
             iroh::protocol::Router::builder(endpoint)
-                .accept(ACTIONS_ALPN, plane)
+                .accept(ACTIONS_ALPN, action_service)
                 .spawn()
         };
         Ok(Self {

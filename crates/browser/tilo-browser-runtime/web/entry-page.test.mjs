@@ -484,7 +484,7 @@ test('the person’s own desktop writes as their root identity and shows them by
   assert.ok(own[1].label && own[1].label !== 'Guest', own[1].label);
 });
 
-test('the home workspace’s peer that carries reports from another workspace joins it without calls or a live plane', async () => {
+test('the home workspace’s peer that carries reports from another workspace joins it without calls or a live session', async () => {
   let homePeer;
   await fixture({boot: async (options, page) => { homePeer = options.deps.homePeer; return page; }});
   const home = {name: 'Lounge', host: {origin: 'https://lounge.example'}, admission: 'https://lounge.example/'};

@@ -2,7 +2,7 @@
 # tests/*.rs are modules of tests/it.rs, not separate binaries
 autotests = false
 name = "tilo-session-client"
-description = "A member's client of the collaboration plane: the workspaces it takes part in, who is here in each, and this device's own word on them; and the certified relay session a page, an agent or a program is a device of its person by, with its commit outbox, reconnect replay and live plane."
+description = "A member's client of the peer network: the workspaces it takes part in, who is here in each, and this device's own word on them; and the certified relay session a page, an agent or a program is a device of its person by, with its commit outbox, reconnect replay and live session."
 version = "0.1.0"
 edition = "2024"
 publish.workspace = true
@@ -23,16 +23,16 @@ tilo-desktop-model = { path = "../desktop-model" }
 collab-types = { path = "../../collab/collab-types" }
 # What a file uploaded through the session is, and so the app it lands in.
 tilo-content-types = { path = "../../system/content-types" }
-# The workspace's live plane: the board of who is here, and the tracks presence travels on.
-tilo-live = { path = "../../collab/tilo-live", features = ["plane"] }
+# The workspace's live session: the board of who is here, and the tracks presence travels on.
+tilo-live = { path = "../../collab/tilo-live", features = ["live_session"] }
 # This device's workspaces as its host keeps them, and where a device hosting one is reached.
 tilo-peer-state = { path = "../../collab/tilo-peer-state" }
 # The certificates that say which person a device belongs to, and their revocations.
 tilo-user-identity = { path = "../../collab/tilo-user-identity" }
-# What members say on a workspace's plane.
+# What members say on a workspace's peer network.
 neighbour-wire = { path = "../../collab/neighbour-wire" }
 tilo-clock = { path = "../../platform/tilo-clock" }
-# How a workspace numbers itself on the plane.
+# How a workspace numbers itself on the peer network.
 tilo-relay-protocol = { path = "../../hosting/tilo-relay-protocol" }
 # The identity layer's device side: certification, invitations and the link to a person's host,
 # over iroh natively and over the browser's WebTransport in a page.
@@ -45,9 +45,9 @@ tilo-actions = { path = "../../collab/actions" }
 tilo-sort = { path = "../../platform/tilo-sort" }
 # The signed hint a workspace's governance keeps of its host's address.
 tilo-delivery-protocol = { path = "../../hosting/tilo-delivery-protocol" }
-# A plane's WebTransport session: the browser's own in a page.
+# A live session's WebTransport session: the browser's own in a page.
 tilo-net = { path = "../../platform/tilo-net", features = ["webtransport"] }
-# `moq-lite` itself: a session's live plane is a publisher and a subscriber.
+# `moq-lite` itself: a session's live session is a publisher and a subscriber.
 moq-net.workspace = true
 bytes.workspace = true
 n0-future = "0.3"
@@ -122,8 +122,8 @@ test-http = { path = "../../dev/test-http" }
 tilo-relay = { path = "../../hosting/tilo-relay", features = ["web", "test-support"] }
 # The fetch proxy's host side, as the page's test of it drives it.
 tilo-net = { version = "0.1.0", path = "../../platform/tilo-net" }
-# A relay listener on loopback, as the live plane's acceptance test drives it.
-tilo-live = { path = "../../collab/tilo-live", features = ["plane", "relay", "iroh"] }
+# A relay listener on loopback, as the live session's acceptance test drives it.
+tilo-live = { path = "../../collab/tilo-live", features = ["live_session", "relay", "iroh"] }
 # The call's native side sends and hears a real tone, as a call does.
 opus = "0.4"
 automerge.workspace = true
@@ -161,7 +161,7 @@ bounded-command = { path = "../../system/bounded-command" }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 iroh.workspace = true
-tilo-live = { path = "../../collab/tilo-live", features = ["plane", "iroh"] }
+tilo-live = { path = "../../collab/tilo-live", features = ["live_session", "iroh"] }
 # A login code is a Tilo link, read under the grammar the page writes it with.
 tilo-reference = { path = "../../collab/reference" }
 # The workspace-hack's native feature set does not build for wasm32.

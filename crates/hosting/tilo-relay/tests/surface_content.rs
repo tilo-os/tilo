@@ -79,15 +79,15 @@ fn gathered(frames: &[Vec<u8>]) -> Option<Vec<u8>> {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_surface_a_member_answers_with_is_the_workspaces_from_then_on() {
-    // The plane it installs is the process's: no other test runs here.
+    // The content store it installs is the process's: no other test runs here.
     if !crate::common::in_own_process(
         "surface_content::a_surface_a_member_answers_with_is_the_workspaces_from_then_on",
     ) {
         return;
     }
     let scratch = tempfile::tempdir().unwrap();
-    let plane = scratch.path().join("surfaces");
-    tilo_workspace_host::surfaces::decide_receipt(&plane);
+    let content_store = scratch.path().join("surfaces");
+    tilo_workspace_host::surfaces::decide_receipt(&content_store);
     let (key, cert) = tilo_workspace_host::workspaces::fixtures::governor();
     let host =
         tilo_workspace_host::workspaces::fixtures::test_host(scratch.path(), &key, &cert).await;
@@ -124,8 +124,8 @@ async fn a_surface_a_member_answers_with_is_the_workspaces_from_then_on() {
 
     // Kept beside the workspace's state: a start after this one has it without
     // asking anybody.
-    assert_eq!(std::fs::read(plane.join(&hash)).unwrap(), surface);
-    tilo_workspace_host::surfaces::decide_receipt(&plane);
+    assert_eq!(std::fs::read(content_store.join(&hash)).unwrap(), surface);
+    tilo_workspace_host::surfaces::decide_receipt(&content_store);
     assert_eq!(
         gathered(&workspaces.content_answer(&workspace, &want(42, &workspace, &hash))),
         Some(surface),

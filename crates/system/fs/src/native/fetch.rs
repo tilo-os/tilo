@@ -1,4 +1,4 @@
-//! Placeholder bytes from the content plane. Filling a range makes it resident in
+//! Placeholder bytes from the content store. Filling a range makes it resident in
 //! the content store first, and on the store volume copying it into the
 //! placeholder clones extents instead of writing the bytes twice.
 //!

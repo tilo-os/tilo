@@ -3,7 +3,7 @@
 //! while a text field waits for typing on the glass.
 //!
 //! These start the keyboard the way the session does — through its own surface
-//! machinery, over a plane only this test reaches — and touch a window's text
+//! machinery, over an app wire only this test reaches — and touch a window's text
 //! field through the compositor: what a person with the machine in their hands
 //! does. What the keyboard does is read from the session's published resource,
 //! which is what its own app reads, and from what the displays show.
@@ -15,7 +15,7 @@ use std::time::Instant;
 
 use tilo_accessibility_settings::OnScreenKeyboard;
 use tilo_desktop::verbs::SHELL_RESOURCE;
-use tilo_session::ActionPlane;
+use tilo_session::AppSocket;
 use tilo_session::keyboard;
 
 use super::lock::{CLOSE, apart, pictures, private_home};
@@ -47,7 +47,7 @@ fn keyboard_session(socket: &Path, choice: OnScreenKeyboard) -> Session {
         Options {
             user: "ada".to_owned(),
             collab: false,
-            action_plane: ActionPlane::At(socket.to_path_buf()),
+            app_socket: AppSocket::At(socket.to_path_buf()),
             surfaces: vec![keyboard::surface_of(keyboard_binary())],
             config: tilo_session::SessionConfig {
                 on_screen_keyboard: choice,

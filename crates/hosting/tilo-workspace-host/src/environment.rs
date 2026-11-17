@@ -15,15 +15,15 @@
 //! to its delegation ([`crate::peer::AgentRegistry`]): the devices this relay
 //! certified for its environments, by device key, with the one record each
 //! reaches. It is the relay's, and nothing here is asked of the session in the
-//! VM: [`crate::workspace_access::decide`] answers every plane with it, the
-//! state plane's replay, its live fan-out, its record opening and its changes
-//! ask it what a record is, and the live plane offers such a device no one
+//! VM: [`crate::workspace_access::decide`] answers every protocol with it, the
+//! state protocol's replay, its live fan-out, its record opening and its changes
+//! ask it what a record is, and the live session offers such a device no one
 //! else's tracks. A device that asked to be one is confined whether or not its
 //! session cooperates.
 //!
 //! What it is given besides its record is the workspace's own document — the
 //! layout every device needs to join at all — and its own device's presence on
-//! the live plane: never one record of the workspace's, its channels' keys, a
+//! the live session: never one record of the workspace's, its channels' keys, a
 //! call, or another window's page.
 //!
 //! # Durable, and never wider than its scope
@@ -40,7 +40,7 @@
 //! An environment that stops is a [`Environment::Stopped`] entry in the same
 //! register, written before the device is delisted and kept until the
 //! certificate it was given would have expired: a device whose environment
-//! stopped is refused on every plane — the certificate check every plane and
+//! stopped is refused on every protocol — the certificate check every protocol and
 //! every audit already makes asks this register — and a delisting that fails
 //! leaves it refused rather than open. The register also counts the sessions
 //! each environment device has here ([`EnvironmentRegistry::arrived`],
@@ -64,8 +64,8 @@ use tilo_lock::RwLockRecover as _;
 use crate::workspace_access::WorkspaceOperation;
 use tilo_relay_protocol::WorkspaceId;
 
-/// The record's channel on the state plane: [`neighbour_wire::app_document_channel`]
-/// for the record's app and id. The state plane names a record by this alone;
+/// The record's channel on the state protocol: [`neighbour_wire::app_document_channel`]
+/// for the record's app and id. The state protocol names a record by this alone;
 /// the workspace a record belongs to is the scope's
 /// [`workspace`](Self::workspace).
 #[must_use]
@@ -94,14 +94,14 @@ impl EnvironmentScope {
     }
 
     /// Whether the device this scope confines is admitted to `workspace` for
-    /// `op`: the planes a window's session works on, in its one workspace, and
-    /// no other plane anywhere.
+    /// `op`: the protocols a window's session works on, in its one workspace, and
+    /// no other protocol anywhere.
     ///
     /// Subscription, state, replay and publishing are what joining, syncing
-    /// and writing its record need; the live plane carries its window's page;
+    /// and writing its record need; the live session carries its window's page;
     /// a remote action is how the window answers the page action the relay
     /// handed it; and a channel is how it asks its record's keys for access.
-    /// Every other plane — compute, an environment, content discovery,
+    /// Every other protocol — compute, an environment, content discovery,
     /// membership — is not its to ask.
     #[must_use]
     pub fn admits(self, workspace: WorkspaceId, op: WorkspaceOperation) -> bool {
@@ -135,7 +135,7 @@ impl EnvironmentScope {
 pub enum Environment {
     /// Placed, and its session may run: it reaches this one scope.
     Placed(EnvironmentScope),
-    /// Its environment stopped: it reaches nothing, and no plane admits it,
+    /// Its environment stopped: it reaches nothing, and no protocol admits it,
     /// until `until_ns` — the expiry of the certificate it was given, after
     /// which the certificate refuses it on its own. Kept at least that long,
     /// and written before the device is delisted, so a delisting that fails
@@ -299,7 +299,7 @@ impl EnvironmentRegistry {
         )
     }
 
-    /// Refuse `device` on every plane from now on, until `until_ns` — when the
+    /// Refuse `device` on every protocol from now on, until `until_ns` — when the
     /// certificate it was given expires. Written before the device is
     /// delisted; a write that fails keeps it refused here and in the process,
     /// never open.
@@ -366,10 +366,10 @@ impl EnvironmentRegistry {
     }
 
     /// A connection of `device` authenticated here: its environment is up, and
-    /// an end that was being waited on is not one. Every plane feeds this — a
-    /// state-plane session, and the live plane a session in a workspace's VM
+    /// an end that was being waited on is not one. Every protocol feeds this — a
+    /// state-protocol session, and the live session a session in a workspace's VM
     /// publishes its window on — so "still here" is one count of the device's
-    /// open connections, not one per plane.
+    /// open connections, not one per protocol.
     pub fn arrived(&self, device: [u8; 32]) {
         if !matches!(
             self.of(&device, tilo_clock::unix_now_ns()),
@@ -425,7 +425,7 @@ impl EnvironmentRegistry {
         *self.table.ended.write_recover() = Some(ended);
     }
 
-    /// Write `device`'s entry and keep it: in memory first, so no plane admits
+    /// Write `device`'s entry and keep it: in memory first, so no protocol admits
     /// it whatever the file does, then the file.
     fn keep(&self, device: [u8; 32], environment: Option<Kept>, what: &str) -> Result<(), String> {
         let mut devices = self.table.devices.write_recover();
@@ -469,7 +469,7 @@ impl EnvironmentRegistry {
     }
 }
 
-/// A register that confines nobody: what a plane no browser environment
+/// A register that confines nobody: what a protocol no browser environment
 /// reaches asks its [`crate::workspace_access::RelayTrust`] with, so that a
 /// decision it takes about a device of another kind asks the same rule as
 /// every other.
@@ -611,7 +611,7 @@ mod tests {
     }
 
     #[test]
-    fn a_record_has_one_channel_on_the_state_plane() {
+    fn a_record_has_one_channel_on_the_state_protocol() {
         assert_eq!(
             scope().channel,
             neighbour_wire::app_document_channel("so.tilo.browser", "record-1")
@@ -633,7 +633,7 @@ mod tests {
     }
 
     #[test]
-    fn an_environment_works_on_a_windows_planes_and_no_other() {
+    fn an_environment_works_on_a_windows_protocols_and_no_other() {
         for op in [
             WorkspaceOperation::Subscribe,
             WorkspaceOperation::State,

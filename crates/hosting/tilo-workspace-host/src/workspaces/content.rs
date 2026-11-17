@@ -314,7 +314,7 @@ impl Workspaces {
 
     /// `frame`, a piece of content the member device `from` sent this host
     /// in `workspace`: to the keeper that asked for it, or, when it is a
-    /// surface the host asked for, into the content plane the host decides
+    /// surface the host asked for, into the content store the host decides
     /// with. Dropped when the host expects neither.
     pub fn content_for_host(&self, workspace: &str, from: [u8; 32], frame: &[u8]) {
         for keeper in self.inner.content.keepers() {
@@ -384,9 +384,9 @@ impl Workspaces {
     /// host, to `workspace`'s members: the ones keeping the content answer the
     /// host. A member reaches the workspace's other devices only through this
     /// host, and the host asks them the same way they ask it — on the live
-    /// plane for the members reaching it there, and on the workspace's own
+    /// content store for the members reaching it there, and on the workspace's own
     /// link for those directly connected, which is where their answers come
-    /// from. The number of devices it reached on the live plane.
+    /// from. The number of devices it reached on the live session.
     ///
     /// # Errors
     ///
@@ -420,7 +420,7 @@ impl Workspaces {
     /// asks for content: the pieces of what this host keeps, or word that
     /// it keeps none, as frames for the member's device alone. Empty for
     /// any other presence. What it keeps of app surfaces is the workspace's
-    /// content plane, never a registry.
+    /// content store, never a registry.
     pub fn content_answer(&self, workspace: &str, body: &[u8]) -> Vec<Vec<u8>> {
         let Ok(NeighbourMsg::DocumentContentWant {
             requester,
@@ -450,7 +450,7 @@ impl Workspaces {
                     .find_map(|source| source.read(workspace, &app_id, &hash))
             })
             // A record started by an older version of an app reads its writes
-            // with that version's surface, which the workspace's content plane
+            // with that version's surface, which the workspace's content store
             // keeps ([`crate::surfaces`]).
             .or_else(|| crate::surfaces::kept(&app_id, &hash))
             .filter(|bytes| bytes.len() <= MAX_CONTENT_BYTES)

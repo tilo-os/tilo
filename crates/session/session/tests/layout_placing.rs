@@ -61,7 +61,7 @@ fn mailbox() -> ResourceSpec {
         .with_view(ResourceViewSpec::new("reader", "Reader", "open-reader"))
 }
 
-/// The app and its mailbox, published on the session's plane; it records every action it is asked
+/// The app and its mailbox, published on the session's app wire; it records every action it is asked
 /// to run, so a test can say showing ran none.
 struct Mailbox {
     app: String,
@@ -183,7 +183,7 @@ fn front_row(session: &Session) -> u64 {
     workspace.strips.first().expect("a row").id.0
 }
 
-/// An app with a mailbox is published on the session's plane.
+/// An app with a mailbox is published on the session's app wire.
 fn with_mailbox(session: &mut Session) -> (String, Rc<std::cell::RefCell<Vec<String>>>) {
     let app = "so.tilo.lang.mail".to_owned();
     let asked = Rc::new(std::cell::RefCell::new(Vec::new()));

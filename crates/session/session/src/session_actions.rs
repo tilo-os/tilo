@@ -146,15 +146,15 @@ mod tests {
 
     use tilo_actions::remote::{ActionHostError, Caller, CatalogueQuery, PendingPoll};
 
-    /// A headless session serving its own broker on `plane`, so the session's own actions reach
+    /// A headless session serving its own broker on `app_wire`, so the session's own actions reach
     /// the catalogue every caller of the desktop is offered.
-    fn serving(state: &std::path::Path, plane: &std::path::Path) -> crate::Session {
+    fn serving(state: &std::path::Path, app_wire: &std::path::Path) -> crate::Session {
         crate::Session::headless(
             crate::Options {
                 presentation: ui::headless::fixture_runner_inputs,
                 collab: false,
                 state: Some(state.to_path_buf()),
-                action_plane: crate::ActionPlane::At(plane.join("collab.sock")),
+                app_socket: crate::AppSocket::At(app_wire.join("collab.sock")),
                 ..crate::Options::default()
             },
             &[tilo_compositor::OutputConfig::new("HEADLESS-1", 1280, 800)],
@@ -194,10 +194,10 @@ mod tests {
         let _settled = ui::motion::testing::settled();
         let state = tempfile::tempdir().expect("a state directory");
         // The broker binds in a directory only this account reaches.
-        let plane = tempfile::tempdir().expect("a directory to serve the broker in");
-        std::fs::set_permissions(plane.path(), std::fs::Permissions::from_mode(0o700))
+        let app_wire = tempfile::tempdir().expect("a directory to serve the broker in");
+        std::fs::set_permissions(app_wire.path(), std::fs::Permissions::from_mode(0o700))
             .expect("the broker's directory is this user's");
-        let mut session = serving(state.path(), plane.path());
+        let mut session = serving(state.path(), app_wire.path());
         session.step(Duration::from_millis(1)).expect("a frame");
         let me = session.shared.person.clone();
         let broker = session

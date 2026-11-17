@@ -488,7 +488,7 @@ pub(crate) fn revoke(
 ///
 /// Why `person` may not administer it.
 pub(crate) fn authorize(
-    session: &crate::plane::LayoutAuthority,
+    session: &crate::app_wire::LayoutAuthority,
     workspace: &str,
     person: &str,
 ) -> Result<IdentityProfile, String> {
@@ -627,7 +627,7 @@ pub(crate) fn outcome(answer: Answer) -> tilo_broker_core::steps::HostStepOutcom
 /// browser certified in its own tab, is listed here too. `engine` is the
 /// workspaces whose hosts answer it.
 pub(crate) struct BrokerApi {
-    pub(crate) layout: Arc<crate::plane::LayoutAuthority>,
+    pub(crate) layout: Arc<crate::app_wire::LayoutAuthority>,
     pub(crate) admin: &'static IdentityAdmin,
     pub(crate) hosting: Option<crate::hosted_workspaces::HostedWorkspaces>,
     pub(crate) engine: Option<Arc<crate::engine::Engine>>,
@@ -1103,9 +1103,9 @@ mod tests {
     }
 
     /// A session hosting `workspace` , with nothing else on it.
-    fn shell_with(workspace: tilo_desktop_model::Workspace) -> crate::plane::LayoutAuthority {
+    fn shell_with(workspace: tilo_desktop_model::Workspace) -> crate::app_wire::LayoutAuthority {
         let active = workspace.id();
-        crate::plane::LayoutAuthority::new(
+        crate::app_wire::LayoutAuthority::new(
             tilo_desktop_model::Layout {
                 workspaces: vec![workspace],
                 active,
@@ -1113,7 +1113,7 @@ mod tests {
             },
             crate::engine::revocations_of(None),
             None,
-            crate::plane::Names::default(),
+            crate::app_wire::Names::default(),
         )
     }
 

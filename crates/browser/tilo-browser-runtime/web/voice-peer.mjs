@@ -4,11 +4,11 @@
  * The wasm peer carries the call's presence and its media:
  * `WasmPeer.voiceCalls`, `voiceCall`, `voiceJoin`, `voiceLeave` and
  * `takeVoiceEvents` keep this page's participation alive in the call and say
- * who is in it, and the workspace's live plane carries the call's media:
+ * who is in it, and the workspace's live session carries the call's media:
  * `callAudio` publishes the microphone's frames as they are made,
  * `callPictures` the pictures its encoders make, `callShowing` what the page
  * draws of the call's devices and `callPictureRestart` a keyframe it needs;
- * `takeVoiceEvents` carries what the plane delivers. This adapts all of it to
+ * `takeVoiceEvents` carries what the live session delivers. This adapts all of it to
  * the signalling web/voice.mjs follows, and lists and governs the workspace's
  * calls for the desktop.
  */
@@ -33,12 +33,12 @@ export function createPeerVoice({peer, workspace, device = null, createCall = cr
     leave: () => { try { peer().voiceLeave(workspace); } catch {} },
     show: (camera, screen, muted, deafened) => { try { peer().voiceShow(workspace, camera, screen, muted, deafened); } catch {} },
     // The microphone's frames, as they are made: published on the
-    // workspace's plane as this page's voice.
+    // workspace's live session as this page's voice.
     audio: frames => { try { peer().callAudio(workspace, JSON.stringify(frames)); } catch {} },
     // The pictures the page's encoders made, as they are made: published on
-    // the plane as this page's camera and screen.
+    // the live session as this page's camera and screen.
     picture: pictures => { try { peer().callPictures(workspace, JSON.stringify(pictures)); } catch {} },
-    // What the page draws of each device: the plane reads exactly those
+    // What the page draws of each device: the live session reads exactly those
     // layers, and their owners encode only them.
     showing: shown => { try { peer().callShowing(workspace, JSON.stringify(shown)); } catch {} },
     // A device's next picture of `source` starts a group this page can decode

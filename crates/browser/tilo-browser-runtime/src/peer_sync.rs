@@ -1,8 +1,8 @@
-//! The page's collaboration plane: the session's own sync, over this page's endpoint.
+//! The page's peer network: the session's own sync, over this page's endpoint.
 //!
 //! A started page runs the session's client as a desktop does — the board of who is here in each
 //! workspace it shows, its own word on each presence track — and supplies the transport: the
-//! certified peer's live plane. This module names the page's own values and hands the board's
+//! certified peer's live session. This module names the page's own values and hands the board's
 //! members to JavaScript as the `Shown` record every surface reads.
 
 use std::cell::RefCell;
@@ -21,7 +21,7 @@ use crate::peer::{js_error, workspace_id};
 use crate::presence_value::{JsPresence, pointer_of, shell_from_js};
 use tilo_relay_protocol::WorkspaceId;
 
-/// A started page's plane: the session's client, the transport ends it says through, and the
+/// A started page's live session: the session's client, the transport ends it says through, and the
 /// workspaces its mounts show.
 struct Page {
     /// The device of the host this page's session is with.
@@ -71,7 +71,7 @@ pub(crate) struct BoardView {
     /// Everyone here, as the board merged their words: where each of them
     /// points, on the tiles the surface passed.
     pub(crate) members: Vec<Shown>,
-    /// Why this page has no live plane at all, in the words shown in the
+    /// Why this page has no live session at all, in the words shown in the
     /// members' place.
     pub(crate) note: Option<String>,
 }
@@ -383,7 +383,7 @@ pub(crate) fn view(peer: u32, workspace: &str) -> Option<BoardView> {
 }
 
 /// `members` each as the person whose device they are: the workspace's governance names whose
-/// each member device is (`devices`, device to person), so a member the live plane never
+/// each member device is (`devices`, device to person), so a member the live session never
 /// certified to this page is still shown, called and counted as their person. With how many of
 /// them the governance named.
 fn with_persons(

@@ -58,7 +58,7 @@
 //!   the person did not allow is never counted.
 //!
 //! - **Stop** ([`HostedBrowsers::stopped`]): the environment's device is
-//!   refused on every plane first — its entry in the relay's register says it
+//!   refused on every protocol first — its entry in the relay's register says it
 //!   stopped, before anything is delisted, so a delisting that fails leaves it
 //!   refused rather than open — then the session in the VM is ended, its
 //!   device delisted, and every connection it had is cut. The register says so
@@ -301,11 +301,11 @@ pub trait BrowserSessions: Send + Sync {
         let _ = workspace;
     }
 
-    /// Ask the hosts that run sessions as `plane`'s device, from `endpoint`:
+    /// Ask the hosts that run sessions as `actions`'s device, from `endpoint`:
     /// this host's own, once it runs. Sessions that need no host to ask
     /// ignore it.
-    fn ask_from(&self, plane: tilo_peer_state::actions::ActionPlane, endpoint: iroh::Endpoint) {
-        let _ = (plane, endpoint);
+    fn ask_from(&self, actions: tilo_peer_state::actions::ActionService, endpoint: iroh::Endpoint) {
+        let _ = (actions, endpoint);
     }
 }
 
@@ -376,7 +376,7 @@ pub struct Authority {
     pub relay: EndpointAddr,
     pub workspaces: Option<crate::workspaces::Workspaces>,
     /// The relay's environments' devices, confined to the record each was
-    /// placed for ([`crate::environment`]): what every plane of the workspace
+    /// placed for ([`crate::environment`]): what every protocol of the workspace
     /// asks before it lets one in, or hands it a change.
     pub environments: crate::environment::EnvironmentRegistry,
     /// The runtime the workspaces run on: listing a device writes membership
@@ -600,11 +600,15 @@ impl HostedBrowsers {
         *self.authority.lock_recover() = Some(authority);
     }
 
-    /// Ask the VM hosts that start sessions as `plane`'s device, from
+    /// Ask the VM hosts that start sessions as `actions`'s device, from
     /// `endpoint`: this host's own. Until then every open is refused, as
     /// the host is not running yet.
-    pub fn ask_from(&self, plane: tilo_peer_state::actions::ActionPlane, endpoint: iroh::Endpoint) {
-        self.sessions.ask_from(plane, endpoint);
+    pub fn ask_from(
+        &self,
+        actions: tilo_peer_state::actions::ActionService,
+        endpoint: iroh::Endpoint,
+    ) {
+        self.sessions.ask_from(actions, endpoint);
     }
 
     /// The runtime this host serves on, when it runs: where what it follows between messages — an
@@ -1473,7 +1477,7 @@ impl HostedBrowsers {
     }
 
     /// The workspace's browser session stopped: refuse its device on every
-    /// plane, end the session in the VM, forget the device and its window, and
+    /// protocol, end the session in the VM, forget the device and its window, and
     /// cut every connection the device has here.
     ///
     /// The refusal comes first and is written down, so a stop leaves the
@@ -1501,13 +1505,13 @@ impl HostedBrowsers {
             self.sessions.stop_apps(&stopped.workspace);
             self.list(workspace_id, &stopped.device, false);
         }
-        // Every connection the devices had here audits on this: the planes
+        // Every connection the devices had here audits on this: the protocols
         // that carried them refuse them, and their sessions end.
         crate::authority_epoch::bump();
     }
 
     /// One environment's device stopped — its session ended and did not come
-    /// back: refuse it on every plane, forget its window, end what is left of
+    /// back: refuse it on every protocol, forget its window, end what is left of
     /// the session in the VM and delist it. A device placed for the same
     /// workspace since is another environment, and is not this stop's.
     ///
@@ -1548,7 +1552,7 @@ impl HostedBrowsers {
         crate::authority_epoch::bump();
     }
 
-    /// Refuse `devices`, on every plane, until the certificate each was given
+    /// Refuse `devices`, on every protocol, until the certificate each was given
     /// expires. A refusal that cannot be written down is still refused here,
     /// and a restart confines it no wider than its scope.
     fn refuse(&self, devices: impl Iterator<Item = ([u8; 32], u64)>) {
@@ -2253,7 +2257,7 @@ pub fn refused(invocation: tilo_actions::InvocationId, reason: String) -> Remote
 }
 
 /// Whether `request` opens Browser (`app.so.tilo.browser#open`): the open the
-/// plane places a session after.
+/// action service places a session after.
 #[must_use]
 pub fn opens_browser(request: &InvokeRequest) -> bool {
     provider_workspace(&request.target.provider).is_some()

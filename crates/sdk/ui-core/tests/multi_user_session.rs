@@ -150,7 +150,7 @@ fn relay_fans_out_presence_and_status_to_remote_peers() {
 }
 
 #[test]
-fn control_reports_and_crdt_deltas_reach_the_right_plane() {
+fn control_reports_and_crdt_deltas_reach_the_right_protocol() {
     {
         let mut relay = MemoryRelay::new();
         let alice = relay.attach("alice");

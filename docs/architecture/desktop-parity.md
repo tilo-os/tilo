@@ -158,7 +158,7 @@ What differs is the host around it.
 | A window moved to another display, and a group carried across the seam | `move_focused_group_to_display`, `carry_focused_group_across_seam` | `desktop:shell` `move-to-display`; `surface/displays.rs` | same |
 | Touch: a tap is one click where the finger was, a hold is a context menu, a drag on an edge resizes, the top edge reveals the bar | `compositor/touch_pointer.rs` `TouchPointer`, `ui-core/src/interaction.rs` `TouchPointerEmulator` | the same unchanged | same |
 | On-screen keyboard: follows touch typing and tablet mode | `compositor/input_method.rs` `osk_wanted` | unchanged | same |
-| Touchpad: three fingers the plane, four workspaces, a pinch the overview | `compositor/gestures.rs` | `compositor/src/gestures.rs`, unchanged; the **host** side lost the direct stream (§1) | worse (host only) |
+| Touchpad: three fingers the strips, four workspaces, a pinch the overview | `compositor/gestures.rs` | `compositor/src/gestures.rs`, unchanged; the **host** side lost the direct stream (§1) | worse (host only) |
 
 ## 8. The gaps, worst first
 

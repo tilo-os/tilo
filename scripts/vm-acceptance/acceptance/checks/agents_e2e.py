@@ -289,7 +289,7 @@ FILES_S = 60
 
 def files_served(ctx) -> None:
     """The device's files folder is served: fs.service is active and its mount is on
-    /var/workspace (its FUSE mount, or the native data plane's bind of the store volume's
+    /var/workspace (its FUSE mount, or the native backend's bind of the store volume's
     tree). Without it no workspace has a tree, and an environment's `~` cannot be its
     workspace's (fs.service's SELinux domain once refused it its session link, and it
     restarted every five seconds while the shells wrote into homes nobody looks at)."""

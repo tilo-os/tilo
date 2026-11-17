@@ -973,7 +973,10 @@ impl crate::Session {
     /// where other people are involved, then the record goes along, the app runs there,
     /// and the window it left closes once the app has one there.
     pub(crate) fn follow_window_moves(&mut self) {
-        let handoff = self.action_plane.as_ref().map(crate::plane::Plane::handoff);
+        let handoff = self
+            .app_wire
+            .as_ref()
+            .map(crate::app_wire::AppWire::handoff);
         self.shared
             .moves
             .follow(&self.shared, &mut self.compositor, handoff.as_ref());

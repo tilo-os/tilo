@@ -46,8 +46,8 @@ async fn invalidated_device_remote_action_is_refused(remove_membership: bool) {
     ));
     let revocations = Arc::new(std::sync::RwLock::new(RevocationList::new()));
     let metrics = Arc::new(crate::metrics::Metrics::default());
-    let counting = Arc::new(CountingPlane::default());
-    let plane: Arc<dyn crate::app_serving::AppServingPlane> = counting.clone();
+    let counting = Arc::new(CountingServer::default());
+    let server: Arc<dyn crate::app_serving::AppActionServer> = counting.clone();
     let session = SessionCtx {
         workspaces: &registry,
         autobind: None,
@@ -56,7 +56,7 @@ async fn invalidated_device_remote_action_is_refused(remove_membership: bool) {
         connection_live: None,
         own_user_public_key: &user.public_key,
         own_device_public_key: &host.cert.device_public_key,
-        app_serving: Some(&plane),
+        app_serving: Some(&server),
         metrics: &metrics,
         trust_policy: &trust,
         disconnect: &disconnect,
@@ -92,7 +92,7 @@ async fn invalidated_device_remote_action_is_refused(remove_membership: bool) {
     };
     let served = || counting.0.load(std::sync::atomic::Ordering::SeqCst);
 
-    // A current member reaches the plane through this very path.
+    // A current member reaches the app action server through this very path.
     assert_eq!(
         handle_remote_action(&a, &session, &[id], route(), frame.clone()).await,
         None
@@ -139,7 +139,11 @@ async fn invalidated_device_remote_action_is_refused(remove_membership: bool) {
         ),
         "{refusal}"
     );
-    assert_eq!(served(), 1, "an invalidated device never reaches the plane");
+    assert_eq!(
+        served(),
+        1,
+        "an invalidated device never reaches the app action server"
+    );
 }
 
 /// An action the host runs for a member spends that member's change
@@ -175,8 +179,8 @@ async fn a_members_actions_served_by_the_host_spend_their_change_budget() {
     let trust = Arc::new(std::sync::RwLock::new(crate::policy::TrustPolicy::AllowAny));
     let revocations = Arc::new(std::sync::RwLock::new(RevocationList::new()));
     let metrics = Arc::new(crate::metrics::Metrics::default());
-    let counting = Arc::new(CountingPlane::default());
-    let plane: Arc<dyn crate::app_serving::AppServingPlane> = counting.clone();
+    let counting = Arc::new(CountingServer::default());
+    let server: Arc<dyn crate::app_serving::AppActionServer> = counting.clone();
     let limits =
         crate::member_limits::MemberLimits::new(crate::member_limits::MemberLimitsConfig {
             changes_per_window: 1,
@@ -192,7 +196,7 @@ async fn a_members_actions_served_by_the_host_spend_their_change_budget() {
         connection_live: None,
         own_user_public_key: &user.public_key,
         own_device_public_key: &host.cert.device_public_key,
-        app_serving: Some(&plane),
+        app_serving: Some(&server),
         metrics: &metrics,
         trust_policy: &trust,
         disconnect: &disconnect,
@@ -303,13 +307,13 @@ async fn a_members_actions_served_by_the_host_spend_their_change_budget() {
     assert_eq!(served(), 5, "reading spends no change budget");
 }
 
-/// A plane that leaves every request unanswered (`None`), or answers each
+/// An app action server that leaves every request unanswered (`None`), or answers each
 /// with a `Pending` whose completer it drops.
-struct SilentPlane {
+struct SilentServer {
     abandons: bool,
 }
 
-impl crate::app_serving::AppServingPlane for SilentPlane {
+impl crate::app_serving::AppActionServer for SilentServer {
     fn serve(
         &self,
         _workspace_id: WorkspaceId,
@@ -355,11 +359,11 @@ fn refusal(frame: &[u8]) -> tilo_actions::remote::ActionHostError {
     }
 }
 
-/// Every request a host can read is answered: one the plane leaves
+/// Every request a host can read is answered: one the app action server leaves
 /// unanswered, one it abandons, and a host operation it does not serve are
 /// refusals with a reason, never silence the asker waits on forever.
 #[tokio::test]
-async fn requests_the_plane_does_not_answer_are_refused() {
+async fn requests_the_server_does_not_answer_are_refused() {
     let (root, user) = UserIdentity::generate("alice", 1);
     let (host, _) = certified_device(&root, user.public_key, "host");
     let (a, _) = certified_device(&root, user.public_key, "a");
@@ -389,10 +393,10 @@ async fn requests_the_plane_does_not_answer_are_refused() {
     ));
     let revocations = Arc::new(std::sync::RwLock::new(RevocationList::new()));
     let metrics = Arc::new(crate::metrics::Metrics::default());
-    let silent: Arc<dyn crate::app_serving::AppServingPlane> =
-        Arc::new(SilentPlane { abandons: false });
-    let abandoning: Arc<dyn crate::app_serving::AppServingPlane> =
-        Arc::new(SilentPlane { abandons: true });
+    let silent: Arc<dyn crate::app_serving::AppActionServer> =
+        Arc::new(SilentServer { abandons: false });
+    let abandoning: Arc<dyn crate::app_serving::AppActionServer> =
+        Arc::new(SilentServer { abandons: true });
     let session = SessionCtx {
         workspaces: &registry,
         autobind: None,
@@ -428,7 +432,7 @@ async fn requests_the_plane_does_not_answer_are_refused() {
         to: host.device_public_key,
     };
 
-    // A workspace request the plane leaves unanswered is undeliverable at once.
+    // A workspace request the app action server leaves unanswered is undeliverable at once.
     let answer = handle_remote_action(&a, &session, &[id], route(), catalogue_request()).await;
     let Some(Envelope::RemoteActionUndeliverable {
         refusal: undelivered,
@@ -442,7 +446,7 @@ async fn requests_the_plane_does_not_answer_are_refused() {
         "{undelivered}"
     );
 
-    // A host operation the plane does not serve is refused at once.
+    // A host operation the app action server does not serve is refused at once.
     let Some(Envelope::HostAction { frame }) =
         handle_host_action(&a, &session, &catalogue_request())
     else {
@@ -453,7 +457,7 @@ async fn requests_the_plane_does_not_answer_are_refused() {
         tilo_actions::remote::ActionHostError::Unavailable { .. }
     ));
 
-    // An answer the plane abandons arrives as a refusal on the connection.
+    // An answer the app action server abandons arrives as a refusal on the connection.
     let abandoned = SessionCtx {
         app_serving: Some(&abandoning),
         carried_calls: None,

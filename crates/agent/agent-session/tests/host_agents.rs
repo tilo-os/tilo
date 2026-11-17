@@ -1,7 +1,7 @@
 //! Agents hosted by `tilo-relay` itself, driven from a browser session.
 //!
 //! The host runs `tilo_relay::agents::start`: an [`AgentHost`] whose
-//! supervisor is the host's app-serving plane, one thread per agent, state
+//! supervisor is the host's app action server, one thread per agent, state
 //! under a directory. A simulated browser (the page's session code built
 //! natively: HTTPS for documents and remote actions) asks for a grant; a
 //! root-holding laptop approves the agent and signs its delegation in the

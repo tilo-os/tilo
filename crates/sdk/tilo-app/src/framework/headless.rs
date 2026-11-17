@@ -129,7 +129,7 @@ pub(crate) fn data_dir_host(
 /// host that keeps the workspace itself does: what the window stores is then
 /// sealed once for that workspace, so the same bytes stored twice are one item
 /// under one reference. A workspace whose keys come from the collaboration
-/// plane holds its members' secret instead, once they arrive
+/// peer network holds its members' secret instead, once they arrive
 /// (`collaboration::broker_key_fetch`).
 ///
 /// # Errors

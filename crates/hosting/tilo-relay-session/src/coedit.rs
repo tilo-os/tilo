@@ -218,7 +218,7 @@ impl RelayCoeditSession {
         Ok(())
     }
 
-    /// Join the workspace's live plane, where presence and previews of every
+    /// Join the workspace's live session, where presence and previews of every
     /// member (native, browser, agent) meet. Call after [`Self::join`].
     ///
     /// # Errors
@@ -618,7 +618,7 @@ impl RelayCoeditSession {
     }
 
     /// What the host tells this session about its workspace: a member
-    /// joining or leaving the live plane, a record opened, a call's news.
+    /// joining or leaving the live session, a record opened, a call's news.
     /// `None` for another workspace's.
     fn workspace_news(&self, envelope: Envelope) -> Option<Inbound> {
         match envelope {

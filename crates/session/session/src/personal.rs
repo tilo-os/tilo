@@ -107,7 +107,7 @@ impl Personal {
 }
 
 /// Dial each of the person's devices the store holds as a sibling, from the ones the fleet named at
-/// start and again whenever the store changes: what it holds is the fleet's, and the plane keeps
+/// start and again whenever the store changes: what it holds is the fleet's, and the peer network keeps
 /// dialling the ones that are down.
 async fn keep_siblings(sync: PersonalSync, dials: SiblingDials, mut held: Vec<[u8; 32]>) {
     let mut changes = sync.changes();
@@ -204,7 +204,7 @@ mod tests {
         let mut dialled = Vec::new();
         while let Ok(command) = commands.try_recv() {
             match command {
-                crate::sync::HostCmd::Plane(Cmd::ConnectDevice(addr)) => {
+                crate::sync::HostCmd::Network(Cmd::ConnectDevice(addr)) => {
                     dialled.push(*addr.id.as_bytes());
                     assert_eq!(addr.relay_urls().collect::<Vec<_>>(), vec![&relay_url()]);
                 }

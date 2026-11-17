@@ -101,7 +101,7 @@ fn command(args: &PrimaryArgs, env: &dyn Fn(&str) -> Option<OsString>) -> Result
         .arg(&mount)
         .arg("--acl")
         .arg(paths.config.join("fs-capabilities.json"))
-        .args(["--data-plane", "fuse", "--storage-sock"])
+        .args(["--backend", "fuse", "--storage-sock"])
         .arg(paths.storage.join("storage.sock"))
         .arg("--blob-sock")
         .arg(paths.runtime.join("fs-blobs.sock"))

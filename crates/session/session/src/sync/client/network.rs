@@ -1,6 +1,6 @@
-//! The thread the collaboration plane runs on: this device's endpoint, bound on the device's own
+//! The thread the peer network runs on: this device's endpoint, bound on the device's own
 //! key, the peer actor served on it, and the commands the session hands it until it stops.
-//! The endpoint is what names this device on the workspaces' planes, and what carries every one of
+//! The endpoint is what names this device on the workspaces' peer networks, and what carries every one of
 //! them.
 
 use std::sync::Arc;
@@ -9,7 +9,7 @@ use iroh::{EndpointAddr, EndpointId};
 use tilo_endpoint_reachability::Reachability;
 use tilo_network_actor::{HostIdentity, NetCmd, NetEvent};
 use tilo_session_client::Cmd;
-use tilo_session_client::plane::Event;
+use tilo_session_client::network::Event;
 
 use super::adopt::{enter, redeem};
 use super::{
@@ -103,16 +103,16 @@ pub(super) fn event_of(event: NetEvent) -> Option<Result<Event, HostEvent>> {
             }));
         }
         // Taken off this path before it gets here: what a host replays into the workspaces this
-        // device holds is admitted on its own thread, and the rest is the plane's own bookkeeping.
+        // device holds is admitted on its own thread, and the rest is the peer network's own bookkeeping.
         NetEvent::NativeInput(_) | NetEvent::OwnReplay { .. } => {
             return None;
         }
     }))
 }
 
-/// The runtime the collaboration plane's thread runs on: two workers of its own, so what the plane
+/// The runtime the peer network's thread runs on: two workers of its own, so what the peer network
 /// settles never waits behind what a session shows.
-fn plane_runtime(
+fn network_runtime(
     ready: &std::sync::mpsc::Sender<Result<(EndpointId, EndpointAddr, Reachability), String>>,
 ) -> Option<tokio::runtime::Runtime> {
     match tokio::runtime::Builder::new_multi_thread()
@@ -122,16 +122,14 @@ fn plane_runtime(
     {
         Ok(runtime) => Some(runtime),
         Err(error) => {
-            let _ = ready.send(Err(format!(
-                "no runtime for the collaboration plane: {error}"
-            )));
+            let _ = ready.send(Err(format!("no runtime for the peer network: {error}")));
             None
         }
     }
 }
 
 /// What the session's endpoint carries beside its workspaces: the channels it runs, and this
-/// device's action plane, which answers the person's other devices on it.
+/// device's app wire, which answers the person's other devices on it.
 pub(crate) struct Serving {
     /// This device's endpoint, once it has bound.
     pub(crate) bound: Bound,
@@ -162,7 +160,7 @@ impl Serving {
 }
 
 /// What the session serves on this device's endpoint beside the workspaces' traffic: the channels
-/// they use, this device's action plane, and whatever else the session was handed — this device as
+/// they use, this device's app wire, and whatever else the session was handed — this device as
 /// an exit for the person's other devices.
 pub(crate) struct Beside {
     pub(crate) link: Option<Arc<KeyLink>>,
@@ -260,7 +258,7 @@ struct Listening {
     attending: Option<tokio::task::JoinHandle<()>>,
 }
 
-/// The session's ends of the plane's thread: what the client hears, what only this desktop keeps,
+/// The session's ends of the peer network's thread: what the client hears, what only this desktop keeps,
 /// what became of an enrollment, and where the bound endpoint is said.
 pub(super) struct Wire {
     pub(super) arrivals: std::sync::mpsc::Sender<Event>,
@@ -286,10 +284,10 @@ pub(super) fn run(
         enrollments,
         ready,
     } = wire;
-    let Some(runtime) = plane_runtime(&ready) else {
+    let Some(runtime) = network_runtime(&ready) else {
         return;
     };
-    // The channels' side of the plane, which the loop below carries what the session says to.
+    // The channels' side of the peer network, which the loop below carries what the session says to.
     let link = beside.link.clone();
     runtime.block_on(async move {
         let Some(Listening {
@@ -318,7 +316,7 @@ pub(super) fn run(
         let asking = Asking {
             landed: enrollments,
             endpoint,
-            plane: actor.clone(),
+            network: actor.clone(),
             events: events.clone(),
             link,
             engine,
@@ -329,7 +327,7 @@ pub(super) fn run(
                 break;
             };
             if !taken {
-                tracing::debug!("the collaboration plane stopped taking commands");
+                tracing::debug!("the peer network stopped taking commands");
                 break;
             }
         }
@@ -342,8 +340,8 @@ pub(super) fn run(
     });
 }
 
-/// Give one command to the plane — a client's own, or what only this desktop keeps beside it —
-/// answering whether it was taken, or `None` when it is the command that ends the plane.
+/// Give one command to the peer network — a client's own, or what only this desktop keeps beside it —
+/// answering whether it was taken, or `None` when it is the command that ends the peer network.
 async fn carry_host(
     actor: &tokio::sync::mpsc::Sender<NetCmd>,
     events: &tokio::sync::mpsc::Sender<NetEvent>,
@@ -351,7 +349,7 @@ async fn carry_host(
     command: HostCmd,
 ) -> Option<bool> {
     Some(match command {
-        HostCmd::Plane(Cmd::Stop) => return None,
+        HostCmd::Network(Cmd::Stop) => return None,
         HostCmd::Enroll(request) => {
             asking.ask(Ask::Invitation(Box::new(request)));
             true
@@ -397,23 +395,23 @@ async fn carry_host(
             })
             .await
             .is_ok(),
-        HostCmd::Plane(command) => carry_out(actor, command, events).await?,
+        HostCmd::Network(command) => carry_out(actor, command, events).await?,
     })
 }
 
-/// What asking a workspace's host needs, held for the plane's loop: the loop never waits on a host,
+/// What asking a workspace's host needs, held for the peer network's loop: the loop never waits on a host,
 /// so an ask runs on its own task and hands what became of it back as an [`Enrolled`].
 struct Asking {
     landed: std::sync::mpsc::Sender<Enrolled>,
     endpoint: iroh::Endpoint,
-    plane: tokio::sync::mpsc::Sender<NetCmd>,
+    network: tokio::sync::mpsc::Sender<NetCmd>,
     events: tokio::sync::mpsc::Sender<NetEvent>,
     link: Option<Arc<KeyLink>>,
     engine: Option<Arc<Engine>>,
     identity: Option<HostIdentity>,
 }
 
-/// One thing the plane asks a workspace's host for: someone's invitation redeemed into their
+/// One thing the peer network asks a workspace's host for: someone's invitation redeemed into their
 /// workspace, or one of the person's own workspaces entered at the device hosting it.
 enum Ask {
     Invitation(Box<super::Enrolling>),
@@ -452,7 +450,7 @@ impl Asking {
             return;
         };
         let endpoint = self.endpoint.clone();
-        let plane = self.plane.clone();
+        let network = self.network.clone();
         let events = self.events.clone();
         let channels = self.link.clone();
         tokio::spawn(async move {
@@ -462,7 +460,7 @@ impl Asking {
                         endpoint,
                         identity,
                         engine,
-                        &plane,
+                        &network,
                         &events,
                         *request,
                         channels.as_deref(),
@@ -474,7 +472,7 @@ impl Asking {
                         endpoint,
                         identity,
                         engine,
-                        &plane,
+                        &network,
                         &events,
                         *request,
                         channels.as_deref(),
@@ -493,7 +491,7 @@ impl Asking {
     }
 }
 
-/// Bind this device's endpoint, serve the peer actor and its action plane on it, and say where the
+/// Bind this device's endpoint, serve the peer actor and its app wire on it, and say where the
 /// session's apps reach this device — or say why it could not, and answer nothing.
 async fn listening(
     identity: Option<&HostIdentity>,
@@ -542,10 +540,10 @@ async fn listening(
         tokio::runtime::Handle::current(),
         Some(tilo_endpoint_reachability::REST_AFTER),
     );
-    // This device's action plane is served on the same endpoint: another of the person's devices
+    // This device's app wire is served on the same endpoint: another of the person's devices
     // reaches what this one publishes here, beside the workspaces' own traffic.
     let mut served: tilo_network_actor::local_host::Protocols = Vec::new();
-    // What the session serves beside its own planes: this device's exit for the person's other
+    // What the session serves beside its own peer networks: this device's exit for the person's other
     // devices, when it offers one.
     served.extend(protocols);
     // The device's files daemon reaches the network through this endpoint rather than one of its
@@ -566,7 +564,7 @@ async fn listening(
     {
         served.push((
             tilo_peer_state::actions::ACTIONS_ALPN.to_vec(),
-            Box::<dyn iroh::protocol::DynProtocolHandler>::from(device.plane()),
+            Box::<dyn iroh::protocol::DynProtocolHandler>::from(device.action_service()),
         ));
         // The session takes it from here: what it installs answers, and an app's own-device actions
         // leave through it.
@@ -601,7 +599,7 @@ async fn listening(
         served,
     );
     // The devices that take part in this device's workspaces through it reach the rest of each
-    // workspace, and its apps, through this plane.
+    // workspace, and its apps, through this peer network.
     if let Some(members) = engine.and_then(|engine| engine.members()) {
         let _ = actor.send(NetCmd::ServeMembers(members)).await;
     }
@@ -712,7 +710,7 @@ enum Taken {
 
 /// Take what hosts replay into the workspaces this device holds, as it arrives: each run of one
 /// session admitted together and in the order the host said it, on a blocking thread so no replay
-/// holds up the collaboration plane.
+/// holds up the peer network.
 async fn take_in(
     mut replayed: tokio::sync::mpsc::UnboundedReceiver<Taken>,
     link: Option<Arc<KeyLink>>,
@@ -816,30 +814,33 @@ async fn admit(
         }
         if admitted.changed {
             // The workspace's governance moved with it: its channels and the devices it admits are
-            // read again, and the plane told what it admits now.
+            // read again, and the peer network told what it admits now.
             link.workspace_changed(workspace);
         }
     }
 }
 
-/// Give one command from the client to the plane: whether it was taken, or `None` when it is the
+/// Give one command from the client to the peer network: whether it was taken, or `None` when it is the
 /// command that ends it.
 async fn carry_out(
-    plane: &tokio::sync::mpsc::Sender<NetCmd>,
+    network: &tokio::sync::mpsc::Sender<NetCmd>,
     command: Cmd,
     events: &tokio::sync::mpsc::Sender<NetEvent>,
 ) -> Option<bool> {
     Some(match command {
-        Cmd::Join(ws) => plane
+        Cmd::Join(ws) => network
             .send(NetCmd::JoinWorkspace {
                 ws,
                 on_event: events.clone(),
             })
             .await
             .is_ok(),
-        Cmd::Leave(ws) => plane.send(NetCmd::LeaveWorkspace { ws }).await.is_ok(),
-        Cmd::Publish { ws, msg } => plane.send(NetCmd::Publish { ws, msg: *msg }).await.is_ok(),
-        Cmd::SendControl { ws, msg, target } => plane
+        Cmd::Leave(ws) => network.send(NetCmd::LeaveWorkspace { ws }).await.is_ok(),
+        Cmd::Publish { ws, msg } => network
+            .send(NetCmd::Publish { ws, msg: *msg })
+            .await
+            .is_ok(),
+        Cmd::SendControl { ws, msg, target } => network
             .send(NetCmd::PublishWorkspaceControl {
                 ws,
                 msg: *msg,
@@ -847,36 +848,36 @@ async fn carry_out(
             })
             .await
             .is_ok(),
-        Cmd::Connect(addr) => plane
+        Cmd::Connect(addr) => network
             .send(NetCmd::ConnectHost {
                 addr,
                 expectation: None,
             })
             .await
             .is_ok(),
-        Cmd::WatchSiblings => plane
+        Cmd::WatchSiblings => network
             .send(NetCmd::WatchSiblings {
                 on_event: events.clone(),
             })
             .await
             .is_ok(),
-        Cmd::TellSiblings(msg) => plane
+        Cmd::TellSiblings(msg) => network
             .send(NetCmd::PublishToSiblings { msg: *msg })
             .await
             .is_ok(),
-        Cmd::ConnectDevice(addr) => plane.send(NetCmd::Connect { addr }).await.is_ok(),
-        Cmd::Replay(ws) => plane.send(NetCmd::NativeReplay { ws }).await.is_ok(),
-        Cmd::OpenDocument { ws, channel, own } => plane
+        Cmd::ConnectDevice(addr) => network.send(NetCmd::Connect { addr }).await.is_ok(),
+        Cmd::Replay(ws) => network.send(NetCmd::NativeReplay { ws }).await.is_ok(),
+        Cmd::OpenDocument { ws, channel, own } => network
             .send(NetCmd::OpenDocument { ws, channel, own })
             .await
             .is_ok(),
-        Cmd::PublishCustody(ws) => plane.send(NetCmd::NativePublish { ws }).await.is_ok(),
-        Cmd::Roster { ws, devices } => plane
+        Cmd::PublishCustody(ws) => network.send(NetCmd::NativePublish { ws }).await.is_ok(),
+        Cmd::Roster { ws, devices } => network
             .send(NetCmd::SetWorkspaceRoster { ws, devices })
             .await
             .is_ok(),
         Cmd::Stop => return None,
-        // A relay session's own commands: this desktop's plane carries none of them, and an answer
+        // A relay session's own commands: this desktop's peer network carries none of them, and an answer
         // one asks for is dropped unanswered.
         _ => false,
     })

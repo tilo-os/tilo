@@ -21,8 +21,8 @@ impl Session {
         // This device's call, as everyone in the workspace reads it, and
         // theirs as this session's apps show them: a join or leave reaches a
         // channel's roster on the pass it happened on.
-        if let Some(plane) = &self.action_plane {
-            plane.follow_calls(sync);
+        if let Some(app_wire) = &self.app_wire {
+            app_wire.follow_calls(sync);
             // Where everyone else here types, in this device's windows on the same record.
             let workspaces = self.shared.handle.read(|tree| {
                 tree.workspaces
@@ -32,10 +32,10 @@ impl Session {
                     .map(|id| id.to_string())
                     .collect()
             });
-            plane.carets.follow(sync, workspaces);
+            app_wire.carets.follow(sync, workspaces);
             // What the workspaces' agents did, drawn in this device's windows on the record each
             // acted in.
-            plane.carets.narrate(sync.take_narrated());
+            app_wire.carets.narrate(sync.take_narrated());
             // Who is here in the workspace in front, named and coloured as the bar and People
             // draw them: the apps there are told, so a caret wears its person's face.
             if let Some((workspace, _)) = sync.front_members() {
@@ -51,7 +51,7 @@ impl Session {
                         collab_types::Member::of_person(&member.wearing(colour), None)
                     })
                     .collect();
-                plane.layout.set_people(&workspace, people);
+                app_wire.layout.set_people(&workspace, people);
             }
         }
         // Whose view this device follows: their window here comes forward each time the place they
@@ -94,7 +94,7 @@ impl Session {
         let own = sync.own();
         let (label, identity) = crate::people::own_face(&own, &self.shared.person);
         let (r, g, b) = crate::people::own_rgb(&identity);
-        let carets = self.action_plane.as_ref().map(|plane| &plane.carets);
+        let carets = self.app_wire.as_ref().map(|app_wire| &app_wire.carets);
         let said = |app: &str| carets.and_then(|carets| carets.said_in(app));
         let shell = self.shared.handle.read(|tree| {
             shell(

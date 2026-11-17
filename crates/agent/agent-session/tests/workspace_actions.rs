@@ -1,6 +1,6 @@
 //! Page actions on records nobody has open, answered by the host.
 //!
-//! The host runs `tilo_relay::agents::start`, whose app-serving plane now
+//! The host runs `tilo_relay::agents::start`, whose app action server now
 //! also answers the workspace's records ([`tilo_agent_session::WorkspaceActions`]).
 //! A browser session creates a Sheets and a Slides record and closes them;
 //! no agent exists. The page then lists the workspace's catalogue, runs a record's

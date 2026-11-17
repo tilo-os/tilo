@@ -130,10 +130,10 @@ pub struct Options {
     /// on it. Without one, the session starts on a fresh shell and keeps nothing (tests and
     /// screenshots).
     pub state: Option<std::path::PathBuf>,
-    /// Whether the session takes part in the collaboration plane: who is here in each workspace,
+    /// Whether the session takes part in the peer network: who is here in each workspace,
     /// over Iroh. Off, this desktop has no members but its own person.
     pub collab: bool,
-    /// A collaboration plane to take part in instead of starting one: a session a test hands the
+    /// A peer network to take part in instead of starting one: a session a test hands the
     /// presence a workspace would have carried ([`sync::Client::untethered`]), which says nothing
     /// on a network.
     pub sync: Option<Rc<sync::Client>>,
@@ -151,7 +151,7 @@ pub struct Options {
     pub vpn: Option<Vpn>,
     /// Whether the apps this session runs read and invoke what its services publish, and on which
     /// socket. Off, the apps it starts reach no service at all.
-    pub action_plane: ActionPlane,
+    pub app_socket: AppSocket,
     /// Where the session's MCP server listens ([`mcp_server::path`]): the socket a program of this
     /// login asks on to work in a workspace as an agent, and the person admits it. `None` : this
     /// session serves no agents (a test, or a session in a window of another desktop).
@@ -204,7 +204,7 @@ impl Machine {
 
 /// Where a session serves its apps the resources its services publish.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub enum ActionPlane {
+pub enum AppSocket {
     /// Nowhere: the apps reach no service.
     #[default]
     Off,
@@ -219,7 +219,7 @@ pub enum ActionPlane {
     At(std::path::PathBuf),
 }
 
-impl ActionPlane {
+impl AppSocket {
     /// What a session on `machine` serves its apps on: the socket the launcher hands them when it
     /// owns the machine, and a socket of its own when it runs in a window of another desktop, whose
     /// socket is not its to take. Every surface app it starts reads its resources there — its lock
@@ -245,7 +245,7 @@ pub fn no_session_actions(action: SessionAction) -> Result<(), String> {
     Ok(())
 }
 
-/// Who is here: this session's membership of each workspace, over the collaboration plane. `None`
+/// Who is here: this session's membership of each workspace, over the peer network. `None`
 /// when the session takes no part in it, or the device's endpoint did not bind: a desktop with no
 /// one else on it.
 /// `beside` is what else this device answers on its endpoint — its exit for the person's other
@@ -342,7 +342,7 @@ pub(crate) fn start_collaboration(
             Some(Rc::new(sync))
         }
         Err(error) => {
-            tracing::warn!(%error, "the collaboration plane");
+            tracing::warn!(%error, "the peer network");
             None
         }
     }
@@ -419,7 +419,7 @@ impl Default for Options {
             fabric: None,
             wake_seams: crate::wake::Seams::default(),
             vpn: None,
-            action_plane: ActionPlane::default(),
+            app_socket: AppSocket::default(),
             mcp_server: None,
             admit_repl: Vec::new(),
             agent_key: None,
@@ -433,17 +433,14 @@ impl Default for Options {
 
 #[cfg(test)]
 mod tests {
-    use super::{ActionPlane, Machine};
+    use super::{AppSocket, Machine};
 
     /// A session in a window of another desktop serves its apps on a socket of its own, never on
     /// the one the desktop it draws in serves: that one is the other session's, and the apps of
     /// this one — its lock screen above all — read their resources on this one.
     #[test]
     fn a_session_serves_its_apps_where_they_reach_it() {
-        assert_eq!(
-            ActionPlane::for_machine(Machine::Owned),
-            ActionPlane::Launcher
-        );
-        assert_eq!(ActionPlane::for_machine(Machine::Window), ActionPlane::Own);
+        assert_eq!(AppSocket::for_machine(Machine::Owned), AppSocket::Launcher);
+        assert_eq!(AppSocket::for_machine(Machine::Window), AppSocket::Own);
     }
 }

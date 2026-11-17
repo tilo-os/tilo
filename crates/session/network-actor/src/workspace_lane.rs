@@ -28,7 +28,7 @@ const LANE_DEPTH: usize = 256;
 /// How long a direct connection may take to come up.
 const DIRECT_DIAL: Duration = Duration::from_millis(300);
 
-/// A message for exactly one device on the authenticated direct plane.
+/// A message for exactly one device on the authenticated direct peer network.
 pub(super) struct Direct {
     pub(super) addr: EndpointAddr,
     /// The connection to the device the actor already holds.

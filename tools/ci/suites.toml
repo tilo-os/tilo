@@ -1553,7 +1553,7 @@ readers = [
   "crates/session/session/src/window_share/tests/page.rs",
   "crates/session/session/src/window_share/tests/watching.rs",
   "crates/session/session/src/services/mod.rs",
-  "crates/session/session/src/plane.rs",
+  "crates/session/session/src/app_wire.rs",
   "crates/session/session/src/shell/mod.rs",
   "crates/session/session/tests/common/dev_apps.rs",
   "crates/session/session/tests/common/mod.rs",

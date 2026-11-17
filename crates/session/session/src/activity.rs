@@ -136,7 +136,7 @@ struct Inner {
     api: RefCell<Option<Arc<dyn crate::task_undo::UndoApi>>>,
     /// The records' content this device keeps.
     #[cfg(target_os = "linux")]
-    content: RefCell<Option<Arc<crate::content::Plane>>>,
+    content: RefCell<Option<Arc<crate::content::ContentService>>>,
     #[cfg(target_os = "linux")]
     undos: crate::task_undo::Undos,
     /// The records each workspace holds, read on a worker of its own, told by the change stream
@@ -398,7 +398,7 @@ impl Activity {
 
     /// Read the output of command runs from `content` .
     #[cfg(target_os = "linux")]
-    pub(crate) fn attach_content(&self, content: Arc<crate::content::Plane>) {
+    pub(crate) fn attach_content(&self, content: Arc<crate::content::ContentService>) {
         *self.0.content.borrow_mut() = Some(content);
     }
 

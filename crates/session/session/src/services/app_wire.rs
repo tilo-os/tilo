@@ -1,4 +1,4 @@
-//! The plane apps reach this session's services on: one published side for all of them, and the
+//! The app wire apps reach this session's services on: one published side for all of them, and the
 //! keys, authority and turns the loop answers their calls with.
 
 use std::cell::RefCell;
@@ -12,10 +12,10 @@ use ui::host_operation::ResourceOperationStart;
 
 use tilo_action_broker::collab_broker::FanoutState;
 
-use crate::plane::Plane;
-use crate::plane::{LayoutAuthority, Sealed, ShortcutLibrary};
+use crate::app_wire::AppWire;
+use crate::app_wire::{LayoutAuthority, Sealed, ShortcutLibrary};
 use crate::{
-    ActionPlane, Options, Service, Services, activity, activity_provider, plane, surfaces,
+    AppSocket, Options, Service, Services, activity, activity_provider, app_wire, surfaces,
 };
 use tilo_desktop_surface::DesktopHandle;
 
@@ -28,13 +28,13 @@ pub(crate) fn answered(started: Started) -> ResourceOperationStart {
     }
 }
 
-/// The system services' published side, on the action plane like every hosted surface: one action
+/// The system services' published side, on the app wire like every hosted surface: one action
 /// host for all of them.
 struct ServiceSurface {
     services: Rc<RefCell<Services>>,
 }
 
-/// A surface app reaches the desktop's actions exactly as a person's palette does: through the plane
+/// A surface app reaches the desktop's actions exactly as a person's palette does: through the app wire
 /// over every surface it hosts.
 impl surfaces::ActionApi for tilo_session_core::surfaces::Surfaces {
     fn resources(&mut self) -> Vec<ResourceSpec> {
@@ -61,7 +61,7 @@ impl Published for ServiceSurface {
     }
 
     /// The lock screen asks the session through here while it is locked, so the services stay
-    /// off the plane; only the lock's own resource is offered then.
+    /// off the app wire; only the lock's own resource is offered then.
     fn serves_while_locked(&self) -> bool {
         true
     }
@@ -121,22 +121,22 @@ impl Published for ServiceSurface {
     }
 }
 
-/// What the plane decides against on the collaboration side: what each of this device's workspaces
-/// revokes, the client to the person's collaboration plane when there is one, and the broker and
+/// What the app wire decides against on the collaboration side: what each of this device's workspaces
+/// revokes, the client to the person's peer network when there is one, and the broker and
 /// keys a workspace's sealed records are opened with.
 pub(crate) struct Collaboration<'a> {
     pub revocations: crate::engine::Revocations,
     pub sync: Option<&'a crate::sync::Client>,
     /// This session's own workspaces, as its engine holds them, when it has an identity to hold
     /// them with: what a change to a workspace's people is written through, whatever the session's
-    /// collaboration plane.
+    /// peer network.
     pub engine: Option<std::sync::Arc<crate::engine::Engine>>,
     pub sealed: Sealed,
     /// What the broker hands the apps that have a record open: the one this session hands a
     /// sibling's writes to, so those reach the apps on the route this device's own writes do.
     pub fanout: std::sync::Arc<FanoutState>,
     /// The records' content this session keeps and asks the workspaces for.
-    pub content: Option<std::sync::Arc<crate::content::Plane>>,
+    pub content: Option<std::sync::Arc<crate::content::ContentService>>,
     /// The records' content in search's index, read from the records.
     pub records: Option<std::sync::Arc<crate::resource_index::RecordIndex>>,
     /// The programs agents write in this session's tasks, run by it.
@@ -160,41 +160,41 @@ pub(crate) struct Collaboration<'a> {
 /// The services root the launcher hands apps could not be made this user's,
 /// or this login has no private directory to serve the session's own socket
 /// in.
-fn action_plane_path(options: &Options) -> Result<Option<std::path::PathBuf>, Error> {
-    Ok(match &options.action_plane {
-        ActionPlane::Off => return Ok(None),
-        ActionPlane::Launcher => {
+fn app_wire_path(options: &Options) -> Result<Option<std::path::PathBuf>, Error> {
+    Ok(match &options.app_socket {
+        AppSocket::Off => return Ok(None),
+        AppSocket::Launcher => {
             // The launcher hands an app the socket under the services root,
             // which only its owner may reach.
             launcher::services::ensure_services_root()?;
             Some(launcher::services::collab_socket())
         }
-        ActionPlane::Own => Some(own_plane_path()?),
-        ActionPlane::At(path) => Some(path.clone()),
+        AppSocket::Own => Some(own_app_wire_path()?),
+        AppSocket::At(path) => Some(path.clone()),
     })
 }
 
 /// The socket this session serves its own apps on when it draws in a window of
-/// another desktop: [`own_plane_path_in`] for this process, in a directory
+/// another desktop: [`own_app_wire_path_in`] for this process, in a directory
 /// only this account may reach, as the broker that binds it requires.
 ///
 /// # Errors
 ///
 /// This login has no runtime directory to keep the socket private in, or the
 /// directory could not be made.
-fn own_plane_path() -> Result<std::path::PathBuf, std::io::Error> {
-    let path = own_plane_path_in(std::env::var_os("XDG_RUNTIME_DIR")).ok_or_else(|| {
+fn own_app_wire_path() -> Result<std::path::PathBuf, std::io::Error> {
+    let path = own_app_wire_path_in(std::env::var_os("XDG_RUNTIME_DIR")).ok_or_else(|| {
         std::io::Error::other("this login has no runtime directory to serve the session's apps in")
     })?;
     private_parent(&path)?;
     Ok(path)
 }
 
-/// [`own_plane_path`] for the runtime directory it reads, so what it decides
+/// [`own_app_wire_path`] for the runtime directory it reads, so what it decides
 /// can be checked: the login's private session directory under `runtime_dir`,
 /// with a socket named for this process, so two sessions of one login never
 /// take each other's.
-fn own_plane_path_in(runtime_dir: Option<std::ffi::OsString>) -> Option<std::path::PathBuf> {
+fn own_app_wire_path_in(runtime_dir: Option<std::ffi::OsString>) -> Option<std::path::PathBuf> {
     let directory = tilo_paths::login::session_dir(runtime_dir)?;
     Some(directory.join(format!("services-{}.sock", std::process::id())))
 }
@@ -238,11 +238,11 @@ fn acting_fabric(
         .or_else(|| sync.and_then(crate::sync::Client::fabric))
 }
 
-/// The plane the apps read and invoke this session's services on, when it serves one: the socket
+/// The app wire the apps read and invoke this session's services on, when it serves one: the socket
 /// the launcher hands its apps, and the link the loop answers their calls through.
 /// The broker it serves on is `collaboration` 's, which the session's channel service gates a
 /// workspace's sealed records with, and whose keys an endpoint asks a record's keys from. What the
-/// plane takes from the session besides its broker: who keeps its agents, the sessions they work
+/// app wire takes from the session besides its broker: who keeps its agents, the sessions they work
 /// in, and the tools service apps reach their lists' changes through.
 pub(crate) struct Knitted {
     pub(crate) agents: Option<std::sync::Arc<dyn tilo_broker_core::services::AgentRoster>>,
@@ -251,7 +251,7 @@ pub(crate) struct Knitted {
     pub(crate) tools: Option<crate::tools::Handle>,
 }
 
-pub(crate) fn start_action_plane(
+pub(crate) fn start_app_wire(
     options: &Options,
     live_activities: &std::sync::Arc<runtime_collab::LiveActivities>,
     handle: &DesktopHandle,
@@ -259,7 +259,7 @@ pub(crate) fn start_action_plane(
     activity: &activity::Activity,
     seams: Knitted,
     collaboration: Collaboration<'_>,
-) -> Result<Option<Plane>, Error> {
+) -> Result<Option<AppWire>, Error> {
     let Collaboration {
         revocations,
         sync,
@@ -273,21 +273,21 @@ pub(crate) fn start_action_plane(
         settings_steps,
         nearby,
     } = collaboration;
-    let Some(path) = action_plane_path(options)? else {
+    let Some(path) = app_wire_path(options)? else {
         return Ok(None);
     };
-    let link = plane::Link::new(options.wake.handle());
+    let link = app_wire::Link::new(options.wake.handle());
     let layout = layout_authority(options, handle, revocations)?;
     // The workspace's activity, as the apps this session runs read it: the same model the shell
     // serves its own windows.
     let activity_wire = activity_provider::wire(activity.requests());
     activity.serve_apps(std::sync::Arc::clone(&activity_wire));
-    // Calls run over the collaboration plane: an app joins a channel through the service, the
+    // Calls run over the peer network: an app joins a channel through the service, the
     // session says the channel in its presence, and what the workspace says of its calls is what
     // the app's channels show.
     let calls = crate::calls::Calls::new();
     let calls_service = calls_service(sync, &calls, options);
-    // An app's action on another of the person's own devices leaves through the plane the
+    // An app's action on another of the person's own devices leaves through the app wire the
     // collaboration endpoint runs.
     let actions = sync.and_then(crate::sync::Client::device_actions);
     let own_device = actions.clone().map(|actions| {
@@ -295,7 +295,7 @@ pub(crate) fn start_action_plane(
             as std::sync::Arc<dyn tilo_broker_core::services::OwnDeviceActions>
     });
     // An offloadable action runs where a device of its workspace would run it sooner: the round
-    // asks them over that same plane, and what the device that wins produced is kept in the content
+    // asks them over that same app wire, and what the device that wins produced is kept in the content
     // this session keeps.
     let action_offload = offload_route(actions.as_ref(), content.as_ref());
     // Files' clipboard lives beside the broker that answers it, and its copies reach the loop that
@@ -310,13 +310,13 @@ pub(crate) fn start_action_plane(
         .and_then(crate::sync::Client::personal)
         .map(|own| own.sync().clone());
     let channels = std::sync::Arc::clone(&sealed.broker);
-    let broker = plane::serve(
+    let broker = app_wire::serve(
         path.clone(),
         std::sync::Arc::clone(&link),
         std::sync::Arc::clone(&options.launches),
         // The fabric this session acts on, and what its services offer on it.
         acting_fabric(options, sync),
-        plane::Hosted {
+        app_wire::Hosted {
             live_activities: std::sync::Arc::clone(live_activities),
             native_media: calls_service.clone(),
             // The index search reads is the one apps publish into: a closed app's content is found
@@ -333,10 +333,10 @@ pub(crate) fn start_action_plane(
             document_content: content,
             action_offload,
             // What the broker writes a workspace's people through, and where it keeps what it
-            // admits: this session's own workspaces, else the ones its collaboration plane holds.
+            // admits: this session's own workspaces, else the ones its peer network holds.
             engine: engine.or_else(|| sync.and_then(crate::sync::Client::engine).cloned()),
             endpoint: sync.map(|sync| sync.endpoint_handle()),
-            journal_root: options.state.as_deref().map(plane::journal_root),
+            journal_root: options.state.as_deref().map(app_wire::journal_root),
             // What each installed app declares it may do on the action API,
             // read by search's own worker off the session's thread.
             lists: options.lists.clone(),
@@ -370,13 +370,13 @@ pub(crate) fn start_action_plane(
         }),
         _ => None,
     };
-    // What arrives on this device's action plane is answered by the broker that now serves: another
+    // What arrives on this device's app wire is answered by the broker that now serves: another
     // of the person's devices runs nothing here the person in front of it could not.
     if let (Some(actions), Some(host)) = (actions, broker.app_action_broker()) {
         actions.install(host.device_host());
         attach_remote_use(&actions, options);
     }
-    Ok(Some(Plane {
+    Ok(Some(AppWire {
         link,
         path,
         layout,
@@ -413,14 +413,14 @@ fn layout_authority(
         handle.read(Clone::clone),
         revocations,
         journal,
-        crate::plane::Names {
+        crate::app_wire::Names {
             person: options.person.clone(),
             earlier: options.earlier.clone(),
         },
     )))
 }
 
-/// The calls the apps reach on this session's collaboration plane, or none when it has no endpoint.
+/// The calls the apps reach on this session's peer network, or none when it has no endpoint.
 fn calls_service(
     sync: Option<&crate::sync::Client>,
     calls: &std::sync::Arc<crate::calls::Calls>,
@@ -456,19 +456,19 @@ fn calls_service(
     Some(service)
 }
 
-/// Where an app's offloadable action runs: the round this device's plane asks the invoking
+/// Where an app's offloadable action runs: the round this device's app wire asks the invoking
 /// workspace's other devices, keeping what the device that wins produced in `content` — the store
-/// the invoking app reads its output from. `None` when this session has no device plane or keeps no
+/// the invoking app reads its output from. `None` when this session has no device action service or keeps no
 /// content to weigh the job by, so every offloadable action runs here.
 fn offload_route(
     actions: Option<&crate::device_actions::DeviceActions>,
-    content: Option<&std::sync::Arc<crate::content::Plane>>,
+    content: Option<&std::sync::Arc<crate::content::ContentService>>,
 ) -> Option<std::sync::Arc<dyn tilo_actions::offload::ActionOffload>> {
     let (actions, content) = (actions?, content?);
     actions.offload_route(std::sync::Arc::clone(content))
 }
 
-/// The services, published on the plane.
+/// The services, published on the app wire.
 pub(crate) fn mount_services(
     surfaces: &mut Surfaces,
     started: Vec<Box<dyn Service>>,
@@ -489,14 +489,14 @@ mod tests {
     use std::ffi::OsString;
     use std::path::Path;
 
-    use super::own_plane_path_in;
+    use super::own_app_wire_path_in;
 
     /// A session in another desktop's window serves its apps in the login's private session
     /// directory, under a name of its own; a login with no runtime directory of its own leaves it
     /// nowhere private to serve them.
     #[test]
     fn a_sessions_own_socket_lives_in_its_private_directory() {
-        let path = own_plane_path_in(Some(OsString::from("/run/user/1000")))
+        let path = own_app_wire_path_in(Some(OsString::from("/run/user/1000")))
             .expect("a login with a runtime directory has a private one");
         assert_eq!(
             path.parent(),
@@ -511,7 +511,7 @@ mod tests {
             "{} is a socket named for this session",
             path.display()
         );
-        assert!(own_plane_path_in(None).is_none());
-        assert!(own_plane_path_in(Some(OsString::from("relative"))).is_none());
+        assert!(own_app_wire_path_in(None).is_none());
+        assert!(own_app_wire_path_in(Some(OsString::from("relative"))).is_none());
     }
 }

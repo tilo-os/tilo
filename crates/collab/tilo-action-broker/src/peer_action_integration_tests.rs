@@ -1,4 +1,4 @@
-// The person's other device acting on this one: the engine's action plane
+// The person's other device acting on this one: the engine's action service
 // hands such a request to this broker's api as an `ActionHost`, and what it
 // gets is the same durable ledger an application's own caller gets.
 
@@ -11,8 +11,8 @@ use tilo_actions::remote::{
 /// The root every device in these fixtures is certified under.
 const ROOT_SEED: u8 = 51;
 
-/// The device the fixture's workspace belongs to, as the engine's action plane
-/// hands a request over: verified by the plane, which is this person.
+/// The device the fixture's workspace belongs to, as the engine's action service
+/// hands a request over: verified by the action service, which is this person.
 fn a_device(fixture: &LocalDirectoryFixture, seed: u8) -> Caller {
     Caller::authenticated(
         SigningKey::from_bytes(&[ROOT_SEED; 32])

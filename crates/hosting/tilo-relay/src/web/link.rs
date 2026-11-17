@@ -10,12 +10,12 @@
 //!   ([`RelayProtocol::serve_link`]);
 //! - the certification path: one request or approver command, as on the
 //!   certification ALPN;
-//! - the plane path: the workspace's live plane, offered and answered as
+//! - the live session path: the workspace's live session, offered and answered as
 //!   `moq-lite`, after the device proves itself on the first stream.
 
 use tilo_net::webtransport::Answer;
 use tilo_relay_client::link::Link;
-use tilo_relay_protocol::web::{LINK_CERTIFY_PATH, LINK_PLANE_PATH, LINK_SESSION_PATH};
+use tilo_relay_protocol::web::{LINK_CERTIFY_PATH, LINK_LIVE_SESSION_PATH, LINK_SESSION_PATH};
 
 use crate::certification::CertificationProtocol;
 use crate::host::RelayProtocol;
@@ -25,34 +25,34 @@ use crate::host::RelayProtocol;
 pub(crate) struct Serving {
     pub(crate) relay: RelayProtocol,
     pub(crate) certification: CertificationProtocol,
-    pub(crate) plane: tilo_live::relay::Relay,
+    pub(crate) live_origin: tilo_live::relay::Relay,
 }
 
-/// Which paths are served, and the subprotocol each answers: the plane's
+/// Which paths are served, and the subprotocol each answers: the live session's
 /// session is `moq-lite`, as its ALPN says over iroh.
 ///
 /// A browser that negotiates no subprotocols offers none at all (Chrome
 /// before it shipped `WebTransport.protocol`), and is still answered at the
-/// plane's path, which speaks that one protocol whatever was negotiated
-/// ([`plane_session`]). One that offers only others is refused.
+/// live session's path, which speaks that one protocol whatever was negotiated
+/// ([`live_session`]). One that offers only others is refused.
 fn answer(path: &str, offered: &[String]) -> Answer {
     match path {
         LINK_SESSION_PATH | LINK_CERTIFY_PATH => Answer::Accept,
-        LINK_PLANE_PATH
+        LINK_LIVE_SESSION_PATH
             if offered
                 .iter()
                 .any(|protocol| protocol == tilo_live::preface::PROTOCOL) =>
         {
             Answer::AcceptAs(tilo_live::preface::PROTOCOL.to_owned())
         }
-        LINK_PLANE_PATH if offered.is_empty() => Answer::Accept,
+        LINK_LIVE_SESSION_PATH if offered.is_empty() => Answer::Accept,
         _ => Answer::Refuse,
     }
 }
 
-/// A session accepted at the plane's path, as the protocol that path speaks:
+/// A session accepted at the live session's path, as the protocol that path speaks:
 /// the one negotiated, else the one the path names.
-fn plane_session(session: tilo_net::webtransport::Session) -> tilo_net::webtransport::Session {
+fn live_session(session: tilo_net::webtransport::Session) -> tilo_net::webtransport::Session {
     session.speaking(tilo_live::preface::PROTOCOL)
 }
 
@@ -69,11 +69,11 @@ pub(crate) async fn serve(listener: tilo_net::webtransport::Listener, serving: S
                             tracing::debug!(%error, "certification over WebTransport ended");
                         }
                     }
-                    LINK_PLANE_PATH => {
-                        super::plane::serve_web(
-                            &serving.plane,
+                    LINK_LIVE_SESSION_PATH => {
+                        super::live::serve_web(
+                            &serving.live_origin,
                             &serving.relay,
-                            plane_session(session),
+                            live_session(session),
                         )
                         .await;
                     }
@@ -89,22 +89,22 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_plane_path_answers_a_browser_that_negotiates_no_subprotocol() {
+    fn the_live_session_path_answers_a_browser_that_negotiates_no_subprotocol() {
         let moq = vec![tilo_live::preface::PROTOCOL.to_owned()];
         assert_eq!(
-            answer(LINK_PLANE_PATH, &moq),
+            answer(LINK_LIVE_SESSION_PATH, &moq),
             Answer::AcceptAs(tilo_live::preface::PROTOCOL.to_owned()),
             "an offered moq-lite is negotiated"
         );
         assert_eq!(
-            answer(LINK_PLANE_PATH, &[]),
+            answer(LINK_LIVE_SESSION_PATH, &[]),
             Answer::Accept,
             "a browser that offers no subprotocols (Chrome before WebTransport.protocol) is still answered"
         );
         assert_eq!(
-            answer(LINK_PLANE_PATH, &["moq-lite-01".to_owned()]),
+            answer(LINK_LIVE_SESSION_PATH, &["moq-lite-01".to_owned()]),
             Answer::Refuse,
-            "one that offers only other protocols speaks none the plane does"
+            "one that offers only other protocols speaks none the live session does"
         );
         assert_eq!(answer(LINK_SESSION_PATH, &[]), Answer::Accept);
         assert_eq!(answer("/elsewhere", &[]), Answer::Refuse);

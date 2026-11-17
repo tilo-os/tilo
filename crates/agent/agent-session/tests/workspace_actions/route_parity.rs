@@ -698,7 +698,7 @@ async fn both_routes_decide_every_callers_actions_alike() {
         differences.push("the host took a run a client claimed".into());
     }
 
-    // Seen live: no client here says anything of itself on the live plane,
+    // Seen live: no client here says anything of itself on the live session,
     // as an SDK client never does. The host speaks for each run it executes:
     // the run is present as an agent named as the host knows it, said by the
     // host for it, and its actions are narrated as that run's.
@@ -876,9 +876,9 @@ async fn an_agent_through_tilo_mcp_is_seen_once_as_the_hosts_run() {
 /// Seen on another person's host: a workspace a node someone else runs
 /// governs (a Lounge's), a member's agent through `tilo mcp`'s path is seen
 /// once, named and narrated, as the run that host speaks for, by the member's
-/// own page, though the host is no member of the workspace's live plane and
+/// own page, though the host is no member of the workspace's live session and
 /// never holds its keys. A member device that says a run on the host's track
-/// is not heard, and one it says on the plane is its own, never the host's.
+/// is not heard, and one it says on the live session is its own, never the host's.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_agent_is_seen_once_on_a_host_another_person_runs() {
     use tilo_peer_state::join::Role;
@@ -921,7 +921,7 @@ async fn an_agent_is_seen_once_on_a_host_another_person_runs() {
 
     // The host is no member device of the workspace: its governance never
     // makes it a reader of the workspace's scope, whose keys seal the live
-    // plane and open every member-readable record.
+    // live session and open every member-readable record.
     let host_key = hex::encode(host.cert.device_public_key);
     let members = loop {
         browser.pump();
@@ -943,7 +943,7 @@ async fn an_agent_is_seen_once_on_a_host_another_person_runs() {
     );
 
     // A member device that says it speaks for a run, as the host would: on
-    // the host's own track (signed by itself, not the host) and on the plane.
+    // the host's own track (signed by itself, not the host) and on the live session.
     let forged = collab_types::presence::Presence::desktop(
         cluster.clone(),
         collab_types::presence::Payload::Shell(Box::new(tilo_session_client::presence::view(

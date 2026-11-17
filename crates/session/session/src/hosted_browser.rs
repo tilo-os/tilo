@@ -141,7 +141,7 @@ pub struct HostedBrowser {
     window: Window,
     /// When the page's use was last reported.
     said_used: Option<Instant>,
-    /// Whether the session's plane and its window shares ask the workspace's host yet: for the
+    /// Whether the session's action service and its window shares ask the workspace's host yet: for the
     /// media keys of this device's own streams, and to write its shares.
     asks_host: bool,
     /// Whether this session's window shares are written by the workspace's host yet.
@@ -196,7 +196,7 @@ impl HostAsks {
     }
 }
 
-/// The plane's lender: the media keys of this device's own streams, as the workspace's host lends
+/// The action service's lender: the media keys of this device's own streams, as the workspace's host lends
 /// them, opened with this device's key.
 struct HostLends {
     asking: HostAsks,
@@ -476,7 +476,7 @@ impl HostedBrowser {
     }
 
     /// Once the workspace's host can be asked, have the session ask it for what this device may not
-    /// hold or write itself: the plane is lent the media keys of this device's own streams
+    /// hold or write itself: the action service is lent the media keys of this device's own streams
     /// ([`HostLends`]), and the window shares are written by the host ([`HostGoverns`]).
     fn ask_host(&mut self, shared: &Shared) {
         if self.asks_host {
@@ -511,7 +511,7 @@ impl HostedBrowser {
         };
         let lender = std::sync::Arc::new(HostLends { asking, key });
         if !sync.lend_media_keys(lender) {
-            // No plane yet: the next pass hands it over.
+            // No action service yet: the next pass hands it over.
             return;
         }
         self.asks_host = true;

@@ -1,6 +1,6 @@
 //! The page's call participation: joining, leaving and what it shows, told to
 //! the host that governs the call. The voice and the pictures themselves are
-//! tracks of the page's own plane ([`super::plane`]).
+//! tracks of the page's own live session ([`super::live_session`]).
 
 use super::{Envelope, RelayClient, Task};
 use crate::remote::NOT_CONNECTED;

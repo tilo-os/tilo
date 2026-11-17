@@ -3,7 +3,7 @@
 //! The owner of a workspace commits only what this device still has custody of: a device the
 //! workspace removed, or whose certificate ran out, finds out before it commits. The check itself
 //! is the client's seam (`tilo_session_client::custody::Custody`); this desktop proves it over the
-//! collaboration plane.
+//! peer network.
 
 #[cfg(target_os = "linux")]
 use tilo_desktop_model::WorkspaceId;

@@ -133,7 +133,7 @@ fn workspace_signed_through(
     governor = testing::enroll_into(governor, &hers, &her_key, &her)
         .expect("the workspace admits her device");
     // What her admission changed reaches this device's copy of the workspace, as it would over
-    // the workspace's own plane.
+    // the workspace's own peer network.
     let workspace_id = WorkspaceId::parse(WORKSPACE).expect("a workspace");
     let now = tilo_clock::wall();
     for (bytes, _) in governor.outgoing() {
@@ -547,8 +547,8 @@ fn session_as(
             presentation: ui::headless::fixture_runner_inputs,
             collab: false,
             state: Some(state.to_path_buf()),
-            action_plane: socket.map_or(crate::ActionPlane::Off, |socket| {
-                crate::ActionPlane::At(socket.to_path_buf())
+            app_socket: socket.map_or(crate::AppSocket::Off, |socket| {
+                crate::AppSocket::At(socket.to_path_buf())
             }),
             ..crate::Options::default()
         },
@@ -1116,7 +1116,7 @@ fn session_serving(state: &std::path::Path, socket: &std::path::Path) -> crate::
             presentation: ui::headless::fixture_runner_inputs,
             collab: false,
             state: Some(state.to_path_buf()),
-            action_plane: crate::ActionPlane::At(socket.to_path_buf()),
+            app_socket: crate::AppSocket::At(socket.to_path_buf()),
             ..crate::Options::default()
         },
         &[tilo_compositor::OutputConfig::new("HEADLESS-1", 1280, 800)],
@@ -1237,9 +1237,9 @@ fn change_governance(
     command: &WorkspaceMembershipCommand,
 ) {
     let broker = session
-        .action_plane
+        .app_wire
         .as_ref()
-        .and_then(crate::plane::Plane::action_broker)
+        .and_then(crate::app_wire::AppWire::action_broker)
         .expect("the session serves its broker");
     wait_for_people(&broker, workspace_id);
     let job = broker
@@ -1502,9 +1502,9 @@ fn an_agent_cannot_change_a_workspaces_people() {
         .step(std::time::Duration::from_millis(1))
         .expect("a frame");
     let broker = session
-        .action_plane
+        .app_wire
         .as_ref()
-        .and_then(crate::plane::Plane::action_broker)
+        .and_then(crate::app_wire::AppWire::action_broker)
         .expect("the session serves its broker");
     wait_for_people(&broker, workspace_id);
     assert!(
@@ -1804,16 +1804,16 @@ fn a_grant_the_person_gives_is_in_force_once_the_shell_carries_it() {
         workspaces: vec![workspace.clone()],
         ..tilo_desktop_model::Layout::default()
     };
-    let session = std::sync::Arc::new(crate::plane::LayoutAuthority::new(
+    let session = std::sync::Arc::new(crate::app_wire::LayoutAuthority::new(
         tree(&workspace),
         crate::engine::revocations_of(None),
         None,
-        crate::plane::Names {
+        crate::app_wire::Names {
             person: person.clone(),
             earlier: Vec::new(),
         },
     ));
-    let grants = crate::plane::SessionGrants::new(
+    let grants = crate::app_wire::SessionGrants::new(
         std::sync::Arc::clone(&engine),
         std::sync::Arc::clone(&session),
     );

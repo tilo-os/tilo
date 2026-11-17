@@ -1,6 +1,6 @@
-//! The Tier 1 data plane end to end: real `fs` daemons serving native
+//! The Tier 1 backend end to end: real `fs` daemons serving native
 //! workspace trees from dedicated Btrfs store volumes, syncing through the
-//! record plane.
+//! record protocol.
 //!
 //! These tests need two dedicated Btrfs store volumes and `CAP_SYS_ADMIN`
 //! (fanotify filesystem marks, pre-content events, bind mounts). Name the
@@ -181,7 +181,7 @@ impl Daemon {
             .arg(&cache)
             .arg("--acl")
             .arg(dir.join("acl.json"))
-            .args(["--data-plane", "native", "--store"])
+            .args(["--backend", "native", "--store"])
             .arg(store)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());

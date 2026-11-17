@@ -29,7 +29,7 @@ function harness() {
   };
 }
 
-test('every tick the runtime says what the person is doing, over the live plane and nothing else', () => {
+test('every tick the runtime says what the person is doing, over the live session and nothing else', () => {
   const h = harness();
   const requests = [];
   const fetched = globalThis.fetch;
@@ -41,7 +41,7 @@ test('every tick the runtime says what the person is doing, over the live plane 
   } finally {
     globalThis.fetch = fetched;
   }
-  assert.deepEqual(requests, [], 'no request of its own: presence is the live plane alone');
+  assert.deepEqual(requests, [], 'no request of its own: presence is the live session alone');
   assert.deepEqual(h.said, [[7, 1_000_000]]);
   assert.equal(h.timers.at(-1).ms, TICK_MS);
   h.advance(TICK_MS);
@@ -81,7 +81,7 @@ test('the people here, this person included, are one entry each with their newes
   assert.deepEqual(h.peer.seen, [expected], 'the peer hears the same names');
 });
 
-test('a plane that cannot be reached is said once in the log, and joining is said when it comes back', () => {
+test('a live session that cannot be reached is said once in the log, and joining is said when it comes back', () => {
   const h = harness();
   const said = [];
   const warn = console.warn;

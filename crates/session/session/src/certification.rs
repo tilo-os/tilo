@@ -1066,7 +1066,7 @@ mod tests {
     fn pair(a: [u8; 32], b: [u8; 32]) -> (SharedLink, SharedLink, DeviceId, DeviceId) {
         let first = DeviceId::new(hex::encode(a)).expect("this laptop");
         let second = DeviceId::new(hex::encode(b)).expect("the other device");
-        // The devices know each other from the live plane, so the ask names the laptop the way the
+        // The devices know each other from the live session, so the ask names the laptop the way the
         // person knows it.
         let here = FabricRuntime::restored(Some((first.clone(), "This laptop".into())), None)
             .expect("a fabric here");
@@ -1244,7 +1244,7 @@ mod tests {
     }
 
     #[test]
-    fn a_revoked_device_loses_its_record_and_its_session_on_the_live_plane() {
+    fn a_revoked_device_loses_its_record_and_its_session_on_the_live_session() {
         let key = [0x71; 32];
         let device = DeviceId::new(hex::encode(key)).expect("the old phone");
         let cert = DeviceCert {

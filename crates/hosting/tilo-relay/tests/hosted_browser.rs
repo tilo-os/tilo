@@ -26,7 +26,7 @@ use tilo_relay::hosted_browser::{
     no_payment_method,
 };
 use tilo_relay::transport::REMOTE_ACTION_ENVELOPE_VERSION;
-use tilo_relay::{AppServingPlane, Envelope, RelayClient};
+use tilo_relay::{AppActionServer, Envelope, RelayClient};
 use tilo_relay_client::Approver;
 use tilo_user_identity::{
     AgentScope, DeviceCapabilities, DeviceCert, HostWitness, RevocationList, prepare_stand_in_cert,
@@ -113,11 +113,11 @@ impl BrowserMeter for Counting {
     }
 }
 
-/// The plane of a relay that routes its workspaces' Browser page actions to
+/// The app action server of a relay that routes its workspaces' Browser page actions to
 /// the window holding them.
 struct Routing(Arc<HostedBrowsers>);
 
-impl AppServingPlane for Routing {
+impl AppActionServer for Routing {
     /// A listing naming no provider is the host's own: it publishes the
     /// workspace itself, and lists the Browser window its VM holds beside it.
     /// The host names no workspace on its own rows, as the workspace host does.
@@ -1551,7 +1551,7 @@ const NOTES: &str = "so.tilo.notes";
 const NOTES_RECORD: &str = "notes-1";
 
 /// The channel the window's own record lives on, and the one a customer's
-/// document lives on: what every plane of the workspace tells a record by.
+/// document lives on: what every protocol of the workspace tells a record by.
 fn window_channel() -> [u8; 32] {
     tilo_relay::environment::document_channel(tilo_relay::hosted_browser::APP, "record-1")
 }
@@ -1882,7 +1882,7 @@ async fn a_stopped_environment_reaches_nothing() {
         1,
         "the session in the VM was ended"
     );
-    // Its connection here is cut: the planes it carried refuse it.
+    // Its connection here is cut: the protocols it carried refuse it.
     assert!(
         tokio::time::timeout(tilo_test_env::hang_bound(), async {
             while environment.recv().await.is_some() {}
@@ -1937,7 +1937,7 @@ async fn an_environment_stops_when_the_session_that_held_it_ends() {
     let environment = fixture.environment_session().await;
     drop(environment);
     // The relay hears that the device's session ended and stops its
-    // environment: one signal, and no plane admits it after.
+    // environment: one signal, and no protocol admits it after.
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
         if fixture
@@ -2354,12 +2354,12 @@ async fn an_environment_writes_nothing_of_the_workspaces_own_document_and_stays(
 
 /// The session in a workspace's VM joins the workspace, and the connection it
 /// joins over ends right after: after that the session takes part over its own
-/// lasting link and the live plane it publishes its window on. The live plane
+/// lasting link and the live session it publishes its window on. The live session
 /// is therefore the relay's only sight of the device being here, and it must
 /// count as such — otherwise the window stops a reconnect-wait after the join
-/// ends, as it did before any plane counted the device.
+/// ends, as it did before any protocol counted the device.
 #[tokio::test]
-async fn a_live_plane_session_keeps_the_window_running_past_the_reconnect_wait() {
+async fn a_live_session_keeps_the_window_running_past_the_reconnect_wait() {
     // The wait the deployment gives a dropped session is 30 s; the same wait,
     // short, proves the same answer here without a minute of sleeping.
     let reconnect = Duration::from_millis(600);
@@ -2381,9 +2381,9 @@ async fn a_live_plane_session_keeps_the_window_running_past_the_reconnect_wait()
         &DeviceIdentity::of(&material),
     )
     .await;
-    // The lasting connection the session keeps: the live plane it publishes
+    // The lasting connection the session keeps: the live session it publishes
     // its window on.
-    let (endpoint, live) = live_plane_session(&fixture.relay.relay, &material).await;
+    let (endpoint, live) = live_session(&fixture.relay.relay, &material).await;
     // The join connection ends the way the session's own does: its endpoint
     // closes, having told the relay it is going.
     joined.close().await;
@@ -2392,11 +2392,11 @@ async fn a_live_plane_session_keeps_the_window_running_past_the_reconnect_wait()
     assert_eq!(
         fixture.environments.stops(),
         0,
-        "a device with a live plane session is still here, though its join connection ended"
+        "a device with a live session is still here, though its join connection ended"
     );
 
     // The session went away for good: its last connection ending stops it,
-    // and with it the window. The connection's teardown reaches the plane a
+    // and with it the window. The connection's teardown reaches the live session a
     // moment after it is dropped, so the stop is watched for.
     endpoint.close().await;
     drop(live);
@@ -2411,11 +2411,11 @@ async fn a_live_plane_session_keeps_the_window_running_past_the_reconnect_wait()
     );
 }
 
-/// The environment's device joins the workspace's live plane as the session
+/// The environment's device joins the workspace's live session as the session
 /// in the VM does: over its own endpoint key, admitted by the certificate the
 /// relay issued it. The session stays open while the returned endpoint and
 /// [`Connected`](tilo_live::admit::Connected) are held.
-async fn live_plane_session(
+async fn live_session(
     relay: &tilo_relay::Relay,
     material: &Material,
 ) -> (iroh::endpoint::Endpoint, tilo_live::admit::Connected) {
@@ -2433,7 +2433,7 @@ async fn live_plane_session(
     let dial = tilo_live::native::Iroh::new(endpoint.clone(), relay.node_addr());
     let joined = tilo_live::admit::Dial::dial(&dial, &grant, None, None, Duration::from_secs(20))
         .await
-        .expect("the live plane admits the environment's device");
+        .expect("the live session admits the environment's device");
     (endpoint, joined)
 }
 

@@ -417,7 +417,7 @@ impl Sync {
             .link
             .send(Cmd::OpenDocumentAt(self.workspace, route.clone()));
         let _ = self.link.send(Cmd::OpenRoute(route.clone()));
-        // And on the workspace's plane, whose host answers what it holds.
+        // And on the workspace's live session, whose host answers what it holds.
         let _ = self.link.engine().open_resource(
             &self.workspace.to_string(),
             &route.app_id,

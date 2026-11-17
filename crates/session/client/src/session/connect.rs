@@ -7,7 +7,7 @@
 //! Over iroh a device that holds its key dials as its device key. A device
 //! whose key stays in custody (a page's, or a test's page-shaped peer) speaks
 //! under a key derived from its store's channel vault — a reload dials as the
-//! same endpoint — and its device signs, for every plane grant, that the
+//! same endpoint — and its device signs, for every live session grant, that the
 //! endpoint speaks for it. Over WebTransport there is no endpoint: the device
 //! proves itself with the relay handshake on each link that needs it.
 
@@ -21,7 +21,7 @@ use tilo_relay_client::link::{Dialer, Purpose};
 use super::{DeviceSigner, LinkError, PeerConfig, RelayClient, Task};
 
 /// The statement a page's device signs to speak through `endpoint` for a day:
-/// long enough for a session and its planes to outlive one roster change,
+/// long enough for a session and its live sessions to outlive one roster change,
 /// short enough that a leaked page key is bounded by the page's device.
 #[cfg(not(target_arch = "wasm32"))]
 const DELEGATION_LIFETIME_NS: u64 = 24 * 60 * 60 * 1_000_000_000;
@@ -66,14 +66,14 @@ impl Dial {
     /// The dialer this session reaches its host through, with this device's
     /// statement that its endpoint speaks for it (empty where none is
     /// needed); `None` before the first connect.
-    /// The dialer a plane of this session's own opens, and the statement that its endpoint
-    /// speaks for the device; `None` when this session runs no plane.
+    /// The dialer a live session of this session's own opens, and the statement that its endpoint
+    /// speaks for the device; `None` when this session runs no live session.
     ///
-    /// A session lent the endpoint its device's own session runs joins no plane of its own: the
-    /// device has one session in each workspace's live plane, and a second one under the same key
+    /// A session lent the endpoint its device's own session runs joins no live session of its own: the
+    /// device has one session in each workspace's live session, and a second one under the same key
     /// shadows the broadcast the device publishes its presence on, so the people around it hear
-    /// the cached group and then silence. The device's own session opens the plane instead.
-    pub(super) fn plane(&self) -> Option<(Arc<Dialer>, Vec<u8>)> {
+    /// the cached group and then silence. The device's own session opens the live session instead.
+    pub(super) fn live_session(&self) -> Option<(Arc<Dialer>, Vec<u8>)> {
         #[cfg(not(target_arch = "wasm32"))]
         if self.lent.is_some() {
             return None;
@@ -146,7 +146,7 @@ impl Task {
             Result<tilo_relay_protocol::certify::ApproverReply, tilo_relay_client::CertifyError>,
         >,
     ) {
-        let Some((dialer, _)) = self.dial.plane() else {
+        let Some((dialer, _)) = self.dial.live_session() else {
             let _ = done.send(Err(LinkError::Unavailable(
                 "the session has not reached its host yet".into(),
             )
@@ -179,7 +179,7 @@ pub(super) async fn connect(
 /// on the first connect and kept for reconnects. A device that holds its key
 /// dials as its device key, as a native peer does; a page's device key never
 /// leaves custody, so its endpoint speaks under its own key for the device,
-/// which signs that it does for every plane grant.
+/// which signs that it does for every live session grant.
 ///
 /// An entry ([`PeerConfig::entering`]) carries `access`, this device's request
 /// for the keys of the workspace's channel group.
@@ -212,7 +212,7 @@ async fn connect_entering(
         })
         .clone();
     // Over iroh a custody-held device's endpoint speaks for it by its signed
-    // statement, which every plane grant carries; over WebTransport the
+    // statement, which every live session grant carries; over WebTransport the
     // device proves itself on each link instead.
     #[cfg(not(target_arch = "wasm32"))]
     if host.carrier() != Carrier::WebTransport {

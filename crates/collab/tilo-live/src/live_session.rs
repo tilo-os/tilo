@@ -2,19 +2,19 @@
 //! under the scope's channel content keys, and what it hears from the
 //! scope's other devices.
 //!
-//! A [`Plane`] is one carrier session ([`crate::carrier`]) with one broadcast
+//! A [`LiveSession`] is one carrier session ([`crate::carrier`]) with one broadcast
 //! of its own ([`crate::live::Namespace`] of this device) and one reader per
 //! roster device and track. Every object it sends is sealed with
 //! `Sealer`; every object it receives is opened with `Opener`, so what the
 //! relay copies is opaque to the relay and a frame from a device the roster
 //! does not name is refused before it is decrypted.
 //!
-//! Presence, audio and the activity note are tracks every plane publishes.
+//! Presence, audio and the activity note are tracks every live session publishes.
 //! Pictures, a shared window and a window's page are not: a camera layer, a
 //! screen layer, a window or a page track exists only while a peer asks for it
-//! ([`Plane::show`]), and a device encodes a layer or a window, or captures a
-//! page, only while it is asked for ([`Plane::wanted_pictures`],
-//! [`Plane::wanted_windows`], [`Plane::wanted_pages`]), so a picture, a window
+//! ([`LiveSession::show`]), and a device encodes a layer or a window, or captures a
+//! page, only while it is asked for ([`LiveSession::wanted_pictures`],
+//! [`LiveSession::wanted_windows`], [`LiveSession::wanted_pages`]), so a picture, a window
 //! or a page nobody watches costs no bitrate and no capture.
 //!
 //! The carrier is whatever [`Dial`] this device has: iroh to the device that
@@ -22,16 +22,16 @@
 //! it.
 //!
 //! A carrier goes away for reasons no workspace controls — a network dropped,
-//! a machine slept — so a plane keeps the dial it joined with and opens
+//! a machine slept — so a live session keeps the dial it joined with and opens
 //! another carrier when its own goes ([`Dial::redials`]). While it is gone,
 //! nobody it was reading is drawn as here: what a peer last said of itself is
 //! heard again from the broadcast the next carrier carries.
 //!
-//! A plane reads at most [`MAX_HEARD`] devices at once. Every device it reads
+//! A live session reads at most [`MAX_HEARD`] devices at once. Every device it reads
 //! is three subscriptions it and its relay hold for as long as the device is
 //! there, and that, not the transport, is what a further device costs. A
-//! device beyond the bound is not heard, and the plane says how many those
-//! are ([`Plane::unheard`]): nobody is absent without a word.
+//! device beyond the bound is not heard, and the live session says how many those
+//! are ([`LiveSession::unheard`]): nobody is absent without a word.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::future::Future;
@@ -41,7 +41,7 @@ use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll, Waker};
 use std::time::Duration;
 
-use crate::frame::{Opener, PlaneKeys, Refusal, Sealer, Stream, TrackName};
+use crate::frame::{LiveKeys, Opener, Refusal, Sealer, Stream, TrackName};
 use crate::page::{self, PageObject};
 use crate::roster::Roster;
 use crate::video::{self, Layer, Source, VideoObject};
@@ -54,29 +54,29 @@ use crate::live::{self, Delivery, Namespace, Track, exact};
 use crate::scope::Scope;
 use crate::voice::{self, VoiceObject};
 
-/// The tracks every plane publishes: the workspace's presence, a call's audio
-/// and the activity note. A plane's pictures ([`Track::Camera`],
+/// The tracks every live session publishes: the workspace's presence, a call's audio
+/// and the activity note. A live session's pictures ([`Track::Camera`],
 /// [`Track::Screen`]) are not among them: a layer exists only while someone
-/// asks for it ([`Plane::show`]).
+/// asks for it ([`LiveSession::show`]).
 pub const TRACKS: [Track; 3] = [Track::Presence, Track::Audio, Track::Activity];
 
-/// Devices of a scope one plane reads at once: the ones it hears.
+/// Devices of a scope one live session reads at once: the ones it hears.
 ///
 /// Each device read is one subscription per track of [`TRACKS`], held by this
-/// plane and by its relay for as long as the device is in the scope. Measured
-/// with every device of a plane and its relay in one process, each device a
-/// device hears holds about 250 KiB of them, so what a plane costs grows with
+/// live session and by its relay for as long as the device is in the scope. Measured
+/// with every device of a live session and its relay in one process, each device a
+/// device hears holds about 250 KiB of them, so what a live session costs grows with
 /// the square of its devices: 277 MiB for thirty-three devices that all hear
 /// each other, a gibibyte for sixty-four and 4.3 GiB for a hundred and
 /// twenty-eight. Thirty-two keeps a relay, which is a member's own device,
 /// within what it can hold, and is about what a session's transport let one
 /// device read before this was a number anyone chose. Devices beyond it are in the scope, are read by
 /// whoever has room for them, and are counted here as not heard
-/// ([`Plane::unheard`]). The carrier allows an admitted connection the
+/// ([`LiveSession::unheard`]). The carrier allows an admitted connection the
 /// streams this many devices take ([`crate::native::MAX_BI_STREAMS`]).
 pub const MAX_HEARD: usize = 32;
 
-/// Who of a scope's devices a plane reads now, and who it does not.
+/// Who of a scope's devices a live session reads now, and who it does not.
 #[derive(Default)]
 struct Hearing {
     /// The devices read, each with how many of its tracks' readers hold it:
@@ -84,13 +84,13 @@ struct Hearing {
     held: BTreeMap<[u8; 32], usize>,
     /// The devices carried here that no reader holds: they wait for one to let go.
     beyond: BTreeSet<[u8; 32]>,
-    /// Whether the presence readers read ([`Plane::hear_presence`]).
+    /// Whether the presence readers read ([`LiveSession::hear_presence`]).
     presence: bool,
     /// The readers waiting for a hold, or for presence to be read.
     waiting: Vec<Waker>,
 }
 
-/// Objects one plane keeps before it drops the oldest: a jitter buffer, not a
+/// Objects one live session keeps before it drops the oldest: a jitter buffer, not a
 /// backlog.
 const QUEUE: usize = 256;
 /// Pictures one received track keeps before it starts over at the next
@@ -98,26 +98,26 @@ const QUEUE: usize = 256;
 const PICTURES_QUEUED: usize = 8;
 /// Join budget: the transport, the admission preface and the setup.
 const JOINT: Duration = Duration::from_secs(10);
-/// Bytes one plane's own publication may cache at its ingress.
+/// Bytes one live session's own publication may cache at its ingress.
 const INGRESS: u64 = 2 * 1024 * 1024;
-/// Bytes a plane caches of what it hears.
+/// Bytes a live session caches of what it hears.
 const EGRESS: u64 = 4 * 1024 * 1024;
-/// Longest anything a plane publishes is retained by its own origin.
+/// Longest anything a live session publishes is retained by its own origin.
 const RETAIN: Duration = Duration::from_secs(30);
 
-/// Why a plane could not start, or stopped carrying something.
+/// Why a live session could not start, or stopped carrying something.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
-pub enum PlaneError {
+pub enum LiveError {
     /// The relay refused the grant.
-    #[error("the live plane was not admitted")]
+    #[error("the live session was not admitted")]
     Denied,
     /// The relay is admitting as many sessions as it takes at once and took
     /// nothing of this one: it judged nobody, so this says nothing about the
     /// grant, and asking again is the remedy.
-    #[error("the live plane's relay is admitting as many devices as it takes at once")]
+    #[error("the live session's relay is admitting as many devices as it takes at once")]
     Busy,
     /// The carrier or its setup failed.
-    #[error("the live plane is unavailable")]
+    #[error("the live session is unavailable")]
     Unavailable,
     /// A frame was not sealed or opened: no key for its epoch, a sender off
     /// the roster, or bytes that do not authenticate.
@@ -135,11 +135,11 @@ pub enum PlaneError {
     #[error("the picture layer needs a keyframe")]
     Unkeyed,
     /// The session has ended.
-    #[error("the live plane has ended")]
+    #[error("the live session has ended")]
     Ended,
 }
 
-impl From<AdmissionError> for PlaneError {
+impl From<AdmissionError> for LiveError {
     fn from(error: AdmissionError) -> Self {
         match error {
             AdmissionError::Denied | AdmissionError::Invalid => Self::Denied,
@@ -149,30 +149,30 @@ impl From<AdmissionError> for PlaneError {
     }
 }
 
-impl From<Refusal> for PlaneError {
+impl From<Refusal> for LiveError {
     fn from(refusal: Refusal) -> Self {
         Self::Refused(refusal)
     }
 }
 
-/// What one plane joins: the scope, this device, the keys it seals and opens
+/// What one live session joins: the scope, this device, the keys it seals and opens
 /// under, and who may send in it.
 #[derive(Clone)]
 pub struct Join {
     pub scope: Scope,
     pub device: [u8; 32],
     /// The scope's channel content keys, or — for a device that publishes
-    /// without them — its own media keys ([`PlaneKeys`]).
-    pub keys: PlaneKeys,
+    /// without them — its own media keys ([`LiveKeys`]).
+    pub keys: LiveKeys,
     pub roster: Roster,
     /// Whether this device publishes its own broadcast, or only listens.
     pub publish: bool,
-    /// Whether this plane reads its peers' presence from the start
-    /// ([`Plane::hear_presence`]).
+    /// Whether this live session reads its peers' presence from the start
+    /// ([`LiveSession::hear_presence`]).
     pub presence: bool,
 }
 
-/// One object a plane heard, already opened.
+/// One object a live session heard, already opened.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Heard {
     /// The device that sealed it.
@@ -201,7 +201,7 @@ impl Heard {
     }
 }
 
-/// One track this plane publishes because a peer asked for it: a picture
+/// One track this live session publishes because a peer asked for it: a picture
 /// layer or a window's page.
 struct Demand {
     track: moq_net::track::Producer,
@@ -220,7 +220,7 @@ impl Demand {
         keyframe: bool,
         timestamp: moq_net::Timestamp,
         bytes: Vec<u8>,
-    ) -> Result<(), PlaneError> {
+    ) -> Result<(), LiveError> {
         if keyframe {
             if let Some(group) = self.group.take() {
                 let _ = group.finish();
@@ -228,29 +228,29 @@ impl Demand {
             self.group = Some(
                 self.track
                     .create_group(moq_net::group::Info::from(self.next_group))
-                    .map_err(|_| PlaneError::Unkeyed)?,
+                    .map_err(|_| LiveError::Unkeyed)?,
             );
             self.next_group = self.next_group.saturating_add(1);
             self.in_group = 0;
         }
         if self.in_group >= video::MAX_GROUP_OBJECTS {
             self.group = None;
-            return Err(PlaneError::Unkeyed);
+            return Err(LiveError::Unkeyed);
         }
-        let group = self.group.as_mut().ok_or(PlaneError::Unkeyed)?;
+        let group = self.group.as_mut().ok_or(LiveError::Unkeyed)?;
         group
             .write_frame(timestamp, bytes)
-            .map_err(|_| PlaneError::Unkeyed)?;
+            .map_err(|_| LiveError::Unkeyed)?;
         self.in_group = self.in_group.saturating_add(1);
         Ok(())
     }
 }
 
-/// The tracks of one plane its readers asked for, as they asked.
+/// The tracks of one live session its readers asked for, as they asked.
 #[derive(Default)]
 struct Demands {
     /// The tracks someone asked this device for, by track name: exactly what
-    /// it encodes ([`Plane::wanted_pictures`]).
+    /// it encodes ([`LiveSession::wanted_pictures`]).
     out: BTreeMap<String, Demand>,
     /// Where a track asked for again numbers its groups: one past the last
     /// group of its earlier acceptance, so a subscriber that asks again is
@@ -264,33 +264,33 @@ struct Demands {
     behind: BTreeSet<([u8; 32], Track)>,
 }
 
-/// What a plane shares with its readers.
+/// What a live session shares with its readers.
 pub(crate) struct Shared {
     pub(crate) join: Join,
-    /// What this plane publishes into, and what its carrier is subscribed out of: the same two the
+    /// What this live session publishes into, and what its carrier is subscribed out of: the same two the
     /// carrier was opened with, for a carrier dialled again after the last one went
-    /// ([`Plane`]'s).
+    /// ([`LiveSession`]'s).
     outgoing: Producer,
     incoming: Producer,
     opener: Mutex<Opener>,
     /// The keys `publish` seals under: the join's, until the channel's epoch
-    /// moves ([`Plane::set_keys`]).
-    keys: Mutex<PlaneKeys>,
+    /// moves ([`LiveSession::set_keys`]).
+    keys: Mutex<LiveKeys>,
     roster: Mutex<Roster>,
     /// How many readers each device the roster named has running now: a
     /// device is read by exactly one set of them.
     reading: Mutex<BTreeSet<[u8; 32]>>,
     /// Which of the devices carried here those readers read, and which they
-    /// do not ([`Plane::unheard`]).
+    /// do not ([`LiveSession::unheard`]).
     hearing: Mutex<Hearing>,
-    /// Told whenever [`Plane::unheard`] says otherwise.
+    /// Told whenever [`LiveSession::unheard`] says otherwise.
     unheard_hook: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
     published: Mutex<std::collections::BTreeMap<String, moq_net::track::Producer>>,
-    /// This device's broadcast, kept for as long as the plane lives: dropping
+    /// This device's broadcast, kept for as long as the live session lives: dropping
     /// it withdraws the announcement its subscribers are reading.
     _broadcast: Option<moq_net::broadcast::Producer>,
     /// The peers' requests for picture tracks of this device's broadcast,
-    /// taken once by the plane's acceptor.
+    /// taken once by the live session's acceptor.
     picture_requests: Mutex<Option<moq_net::broadcast::Dynamic>>,
     /// The picture layers someone shows of this device, and the groups they
     /// are written in.
@@ -300,22 +300,22 @@ pub(crate) struct Shared {
     /// capture a page.
     demand_revision: AtomicU64,
     heard: Mutex<VecDeque<Heard>>,
-    /// How many objects this plane opened from its peers, and why it could not
+    /// How many objects this live session opened from its peers, and why it could not
     /// open what a reader got: the answer a member needs when it hears nobody
     /// who is in the roster.
     heard_total: AtomicU64,
     refusals: Mutex<BTreeMap<String, usize>>,
     ended: Mutex<bool>,
     wake: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
-    /// Told once, when the plane ends: what rejoins the scope elsewhere.
+    /// Told once, when the live session ends: what rejoins the scope elsewhere.
     ended_hook: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
 }
 
 impl Shared {
-    /// The one plane of one device in one scope, with its own broadcast
+    /// The one live session of one device in one scope, with its own broadcast
     /// announced in `outgoing`.
-    fn new(join: &Join, outgoing: &Producer, incoming: &Producer) -> Result<Arc<Self>, PlaneError> {
-        // A plane whose keys cannot seal this device's presence is not one
+    fn new(join: &Join, outgoing: &Producer, incoming: &Producer) -> Result<Arc<Self>, LiveError> {
+        // A live session whose keys cannot seal this device's presence is not one
         // this device may join: the scope's keys are its membership.
         if join.publish {
             let name = live::track(Track::Presence);
@@ -330,7 +330,7 @@ impl Shared {
             let path = Namespace::new(&join.scope, join.device).path();
             let broadcast = outgoing
                 .create_broadcast(path.as_str())
-                .map_err(|_| PlaneError::Unavailable)?;
+                .map_err(|_| LiveError::Unavailable)?;
             // Every track exists before the broadcast is announced: a relay
             // copies the set it finds announced, and a track that appeared
             // later would never be copied to the subscribers already there.
@@ -339,7 +339,7 @@ impl Shared {
                 let name = live::track(track);
                 let producer = broadcast
                     .create_track(name.as_str(), track_info(track))
-                    .map_err(|_| PlaneError::Unavailable)?;
+                    .map_err(|_| LiveError::Unavailable)?;
                 published.insert(name, producer);
             }
             // Taken before the announcement, like the relay's own forwarding:
@@ -347,7 +347,7 @@ impl Shared {
             let requests = broadcast.dynamic();
             broadcast
                 .announce(moq_net::origin::Route::default())
-                .map_err(|_| PlaneError::Unavailable)?;
+                .map_err(|_| LiveError::Unavailable)?;
             (Some(broadcast), published, Some(requests))
         } else {
             (None, std::collections::BTreeMap::new(), None)
@@ -389,14 +389,14 @@ impl Shared {
     }
 
     /// What the carrier subscribes to: every device of this scope.
-    fn subscription(&self) -> Result<Option<Producer>, PlaneError> {
+    fn subscription(&self) -> Result<Option<Producer>, LiveError> {
         let prefix = live::devices(&self.join.scope);
         let pattern =
-            moq_net::Pattern::subtree(prefix.as_str()).map_err(|_| PlaneError::Unavailable)?;
+            moq_net::Pattern::subtree(prefix.as_str()).map_err(|_| LiveError::Unavailable)?;
         let scoped = self
             .incoming
             .scope("", &moq_net::Patterns::from(pattern))
-            .map_err(|_| PlaneError::Unavailable)?;
+            .map_err(|_| LiveError::Unavailable)?;
         Ok(Some(scoped))
     }
 
@@ -419,11 +419,11 @@ impl Shared {
             self.wake_waiting();
         }
     }
-    /// How many devices are carried here that this plane does not hear.
+    /// How many devices are carried here that this live session does not hear.
     fn unheard(&self) -> usize {
         self.hearing.lock_recover().beyond.len()
     }
-    /// Tell whoever reads [`Plane::unheard`] when it says otherwise than
+    /// Tell whoever reads [`LiveSession::unheard`] when it says otherwise than
     /// `before`.
     fn unheard_moved(&self, before: usize) {
         if self.unheard() == before {
@@ -437,7 +437,7 @@ impl Shared {
     /// Take a hold for `device`, whose broadcast is carried here: at once
     /// when its other tracks' readers hold one or one is free, and otherwise
     /// when one is given back, until when the device counts as beyond what
-    /// this plane reads.
+    /// this live session reads.
     fn poll_hold(&self, device: [u8; 32], cx: &Context<'_>) -> Poll<()> {
         let mut hearing = self.hearing.lock_recover();
         let before = hearing.beyond.len();
@@ -503,7 +503,7 @@ impl Shared {
         }
     }
     /// `device`, which waited for a hold, is carried here no longer, or is
-    /// not read any more: it is not one this plane does not hear.
+    /// not read any more: it is not one this live session does not hear.
     fn stops_waiting(&self, device: [u8; 32]) {
         let before = {
             let mut hearing = self.hearing.lock_recover();
@@ -520,8 +520,8 @@ impl Shared {
             waiting.wake();
         }
     }
-    /// Nothing this plane read is heard here any more: every device it was reading has left, as
-    /// whoever draws them sees it. Said when the carrier goes and when the plane ends, so a member
+    /// Nothing this live session read is heard here any more: every device it was reading has left, as
+    /// whoever draws them sees it. Said when the carrier goes and when the live session ends, so a member
     /// whose connection dropped is drawn away at once instead of where they last were, and is drawn
     /// again from the next broadcast of them that is read.
     fn forget_readers(&self) {
@@ -547,7 +547,7 @@ impl Shared {
         self.heard_total.fetch_add(1, Ordering::Relaxed);
         self.wake();
     }
-    /// One frame a reader got and this plane could not open, by why.
+    /// One frame a reader got and this live session could not open, by why.
     fn refused(&self, refusal: &Refusal) {
         self.refusals
             .lock_recover()
@@ -586,7 +586,7 @@ impl Shared {
         drop(demands);
         self.deliver(heard);
     }
-    /// A picture track someone asked for, or one this plane no longer reads,
+    /// A picture track someone asked for, or one this live session no longer reads,
     /// or one that needs a keyframe: the encoder reads it.
     fn demand_moved(&self) {
         self.demand_revision.fetch_add(1, Ordering::Relaxed);
@@ -660,8 +660,8 @@ impl Drop for Hold {
 }
 
 /// Take a hold for `device`, whose `broadcast` is carried here, waiting for
-/// one while the plane reads as many devices as it reads at once: `None`
-/// when the broadcast went away first, the plane ended or the roster names
+/// one while the live session reads as many devices as it reads at once: `None`
+/// when the broadcast went away first, the live session ended or the roster names
 /// the device no longer.
 async fn hold(
     shared: &Arc<Shared>,
@@ -715,7 +715,7 @@ const REDIAL_LONGEST: Duration = Duration::from_secs(8);
 
 /// How long to wait before the `attempt`th redial after a carrier went away: the wait doubles with
 /// every attempt that found no relay, up to [`REDIAL_LONGEST`]. A device takes up to a quarter off
-/// each ([`spread`]), so the planes a relay dropped together do not dial it together.
+/// each ([`spread`]), so the live sessions a relay dropped together do not dial it together.
 fn redial_wait(attempt: u32) -> Duration {
     let doublings = attempt.saturating_sub(1).min(8);
     REDIAL_FIRST
@@ -723,16 +723,16 @@ fn redial_wait(attempt: u32) -> Duration {
         .min(REDIAL_LONGEST)
 }
 
-/// Watch the carrier the plane runs on, and dial another when it goes away.
+/// Watch the carrier the live session runs on, and dial another when it goes away.
 ///
 /// A connection drops for reasons nobody in a workspace controls — a Wi-Fi network moved, a laptop
 /// slept, a peer restarted — and the session it carried is what says where everyone is and what a
-/// call sounds like. So the plane keeps its session and its dial: the carrier is opened again, with
+/// call sounds like. So the live session keeps its session and its dial: the carrier is opened again, with
 /// the same grant and the same broadcast, while nothing it had read is drawn as here
 /// ([`Shared::forget_readers`]) and is drawn again from the next word that arrives.
 ///
-/// The plane ends instead where no carrier can be opened again: a dial that hands over a carrier
-/// once ([`Dial::redials`]), or a relay that will not admit this device now. What holds the plane
+/// The live session ends instead where no carrier can be opened again: a dial that hands over a carrier
+/// once ([`Dial::redials`]), or a relay that will not admit this device now. What holds the live session
 /// then joins it again, with the keys and membership it has by then.
 async fn reconnect(
     shared: Arc<Shared>,
@@ -779,7 +779,7 @@ async fn reconnect(
                     break;
                 }
                 // The relay will not admit this device now, or this dial has no carrier left to
-                // hand over: the plane is over.
+                // hand over: the live session is over.
                 Err(AdmissionError::Denied | AdmissionError::Invalid) => {
                     shared.end();
                     return;
@@ -793,12 +793,12 @@ async fn reconnect(
 }
 
 /// One device's sealed session in one scope.
-pub struct Plane {
+pub struct LiveSession {
     shared: Arc<Shared>,
     /// This device's recent audio objects, newest last: the redundancy its
     /// datagrams carry, so one lost packet costs one frame and not two.
     sent: Mutex<VecDeque<Vec<u8>>>,
-    /// The peer tracks this plane reads now: exactly what its app
+    /// The peer tracks this live session reads now: exactly what its app
     /// shows ([`Self::show`]), one reader each.
     shown: Mutex<BTreeMap<([u8; 32], Track), Task>>,
     /// One reader per device of the roster, by track: started when the device
@@ -806,29 +806,29 @@ pub struct Plane {
     readers: Mutex<Vec<Task>>,
     _demands: Vec<Task>,
     _origins: Vec<OriginTask>,
-    /// The carrier this plane runs on now ([`reconnect`] replaces it), and the task watching it.
+    /// The carrier this live session runs on now ([`reconnect`] replaces it), and the task watching it.
     _carrier: Option<Carrier>,
 }
 
-/// The carrier a plane runs on, and the task that dials another when this one goes.
+/// The carrier a live session runs on, and the task that dials another when this one goes.
 struct Carrier {
     /// Kept alive here, and swapped by the watch: dropping this closes the session.
     _connected: Arc<Mutex<Option<Connected>>>,
     _watch: Task,
 }
 
-impl Plane {
+impl LiveSession {
     /// Join `join`'s scope through `dial`, admitted with `grant`.
     ///
     /// # Errors
     ///
-    /// [`PlaneError::Denied`] when the relay refuses the grant,
-    /// [`PlaneError::Busy`] when the relay took nothing of the session because
+    /// [`LiveError::Denied`] when the relay refuses the grant,
+    /// [`LiveError::Busy`] when the relay took nothing of the session because
     /// it is admitting as many as it takes at once,
-    /// [`PlaneError::Unavailable`] when the carrier or its setup fails, and
-    /// [`PlaneError::Refused`] when the scope's keys do not cover this
+    /// [`LiveError::Unavailable`] when the carrier or its setup fails, and
+    /// [`LiveError::Refused`] when the scope's keys do not cover this
     /// device's own presence.
-    pub async fn join(dial: Arc<dyn Dial>, grant: &[u8], join: Join) -> Result<Self, PlaneError> {
+    pub async fn join(dial: Arc<dyn Dial>, grant: &[u8], join: Join) -> Result<Self, LiveError> {
         Self::join_within(dial, grant, join, JOINT).await
     }
 
@@ -838,7 +838,7 @@ impl Plane {
     ///
     /// The dial is kept: a carrier that goes away mid-session — a network that
     /// dropped, a laptop that slept — is dialled again ([`Dial::redials`]), and
-    /// the plane carries the same session over it, so what this device says and
+    /// the live session carries the same session over it, so what this device says and
     /// hears survives the gap.
     ///
     /// # Errors
@@ -849,7 +849,7 @@ impl Plane {
         grant: &[u8],
         join: Join,
         within: Duration,
-    ) -> Result<Self, PlaneError> {
+    ) -> Result<Self, LiveError> {
         let (outgoing, outgoing_task) = OriginTask::produce(origin_config(INGRESS, RETAIN));
         let (incoming, incoming_task) = OriginTask::produce(origin_config(EGRESS, RETAIN));
         let shared = Shared::new(&join, &outgoing, &incoming)?;
@@ -881,13 +881,13 @@ impl Plane {
     ///
     /// As [`Self::join`].
     #[cfg(feature = "relay")]
-    pub fn local(relay: &crate::relay::Relay, join: &Join) -> Result<Self, PlaneError> {
+    pub fn local(relay: &crate::relay::Relay, join: &Join) -> Result<Self, LiveError> {
         let shared_origin = relay.shared();
         let shared = Shared::new(join, &shared_origin, &shared_origin)?;
         Ok(Self::serve(shared, Vec::new(), None))
     }
 
-    /// Start the readers of a prepared plane.
+    /// Start the readers of a prepared live session.
     fn serve(shared: Arc<Shared>, origins: Vec<OriginTask>, carrier: Option<Carrier>) -> Self {
         let mut readers = Vec::new();
         let mut demands = Vec::new();
@@ -906,7 +906,7 @@ impl Plane {
         }
     }
 
-    /// Who this plane publishes as.
+    /// Who this live session publishes as.
     #[must_use]
     pub fn device(&self) -> [u8; 32] {
         self.shared.join.device
@@ -921,22 +921,22 @@ impl Plane {
     ///
     /// # Errors
     ///
-    /// [`PlaneError::Refused`] when the scope's keys do not cover this
-    /// device's `track`, [`PlaneError::Ended`] when the session has ended,
-    /// [`PlaneError::Invalid`] when `body` is not a voice object of the size
-    /// the audio lane carries, and [`PlaneError::Unavailable`] when the
+    /// [`LiveError::Refused`] when the scope's keys do not cover this
+    /// device's `track`, [`LiveError::Ended`] when the session has ended,
+    /// [`LiveError::Invalid`] when `body` is not a voice object of the size
+    /// the audio lane carries, and [`LiveError::Unavailable`] when the
     /// broadcast is gone.
-    pub fn publish(&self, track: Track, sequence: u32, body: &[u8]) -> Result<(), PlaneError> {
+    pub fn publish(&self, track: Track, sequence: u32, body: &[u8]) -> Result<(), LiveError> {
         if track != Track::Audio {
             return self.publish_burst(track, &[(sequence, body)]);
         }
         let (sealer, mut producer) = self.outlet(track)?;
-        let object = VoiceObject::decode(body).map_err(|_| PlaneError::Invalid)?;
+        let object = VoiceObject::decode(body).map_err(|_| LiveError::Invalid)?;
         let at = object.timestamp;
         let payload = sealer.seal(sequence, &object.payload)?;
         let object = VoiceObject { payload, ..object }
             .encode()
-            .map_err(|_| PlaneError::Invalid)?;
+            .map_err(|_| LiveError::Invalid)?;
         // The objects before this one again, as far as one datagram
         // carries them: a subscriber that lost the previous packet plays
         // it from this one.
@@ -957,7 +957,7 @@ impl Plane {
             .unwrap_or(moq_net::Timestamp::ZERO);
         producer
             .insert_datagram(u64::from(sequence), timestamp, bundle)
-            .map_err(|_| PlaneError::Unavailable)
+            .map_err(|_| LiveError::Unavailable)
     }
 
     /// Seal `objects` and publish them as one group of `track`, in order: a
@@ -969,18 +969,18 @@ impl Plane {
     /// # Errors
     ///
     /// As [`Self::publish`], for a track other than audio.
-    pub fn publish_burst(&self, track: Track, objects: &[(u32, &[u8])]) -> Result<(), PlaneError> {
+    pub fn publish_burst(&self, track: Track, objects: &[(u32, &[u8])]) -> Result<(), LiveError> {
         if track == Track::Audio {
-            return Err(PlaneError::Invalid);
+            return Err(LiveError::Invalid);
         }
         let (sealer, producer) = self.outlet(track)?;
         write_group(&producer, &sealer, objects)
     }
 
     /// What `track` is sealed with and published on, while the session lasts.
-    fn outlet(&self, track: Track) -> Result<(Sealer, moq_net::track::Producer), PlaneError> {
+    fn outlet(&self, track: Track) -> Result<(Sealer, moq_net::track::Producer), LiveError> {
         if self.shared.ended() {
-            return Err(PlaneError::Ended);
+            return Err(LiveError::Ended);
         }
         let name = live::track(track);
         let keys = self.shared.keys.lock_recover().clone();
@@ -998,7 +998,7 @@ impl Plane {
             .lock_recover()
             .get(name.as_str())
             .cloned()
-            .ok_or(PlaneError::Unavailable)?;
+            .ok_or(LiveError::Unavailable)?;
         Ok((sealer, producer))
     }
 
@@ -1008,20 +1008,20 @@ impl Plane {
         self.shared.heard.lock_recover().pop_front()
     }
 
-    /// How many objects this plane opened from the peers it reads.
+    /// How many objects this live session opened from the peers it reads.
     #[must_use]
     pub fn heard_total(&self) -> u64 {
         self.shared.heard_total.load(Ordering::Relaxed)
     }
 
-    /// Why this plane could not open what it read, by reason and count: what a
+    /// Why this live session could not open what it read, by reason and count: what a
     /// member shows when it is in a scope and hears nobody who is in it.
     #[must_use]
     pub fn refusals(&self) -> BTreeMap<String, usize> {
         self.shared.refusals.lock_recover().clone()
     }
 
-    /// How many devices are in this plane's scope now that it does not hear:
+    /// How many devices are in this live session's scope now that it does not hear:
     /// the ones beyond the [`MAX_HEARD`] it reads at once, each read once one
     /// it reads has gone. A device it does not hear is absent from presence,
     /// a call and a shared window on this device, and nothing else says so.
@@ -1050,7 +1050,7 @@ impl Plane {
     }
 
     /// Show `tracks` of `sender` here, and stop showing those left out: this
-    /// plane asks the peer for exactly these picture layers, windows and
+    /// live session asks the peer for exactly these picture layers, windows and
     /// window pages, and its session encodes a layer or a window, or captures
     /// a page, only while a peer asks for it. A track is read from the peer's own broadcast, so what
     /// arrives is [`Shared::deliver`]ed as that peer's objects.
@@ -1218,11 +1218,11 @@ impl Plane {
     ///
     /// # Errors
     ///
-    /// [`PlaneError::Unwanted`] when nobody shows this layer,
-    /// [`PlaneError::Unkeyed`] for a picture before the layer's first
+    /// [`LiveError::Unwanted`] when nobody shows this layer,
+    /// [`LiveError::Unkeyed`] for a picture before the layer's first
     /// keyframe or a group past [`video::MAX_GROUP_OBJECTS`] (send a
     /// keyframe), and otherwise as [`Self::publish`].
-    pub fn send_picture(&self, source: Source, object: &VideoObject) -> Result<(), PlaneError> {
+    pub fn send_picture(&self, source: Source, object: &VideoObject) -> Result<(), LiveError> {
         let track = match source {
             Source::Camera => Track::Camera(object.layer),
             Source::Screen => Track::Screen(object.layer),
@@ -1240,7 +1240,7 @@ impl Plane {
                         ..object
                     }
                     .encode()
-                    .map_err(|_| PlaneError::Invalid)
+                    .map_err(|_| LiveError::Invalid)
                 }
             },
         )
@@ -1254,11 +1254,11 @@ impl Plane {
     ///
     /// # Errors
     ///
-    /// [`PlaneError::Unwanted`] when nobody shows this window,
-    /// [`PlaneError::Unkeyed`] for a picture before its first keyframe or a
+    /// [`LiveError::Unwanted`] when nobody shows this window,
+    /// [`LiveError::Unkeyed`] for a picture before its first keyframe or a
     /// group past [`video::MAX_GROUP_OBJECTS`] (send a keyframe), and
     /// otherwise as [`Self::publish`].
-    pub fn send_window(&self, tab: u64, object: &VideoObject) -> Result<(), PlaneError> {
+    pub fn send_window(&self, tab: u64, object: &VideoObject) -> Result<(), LiveError> {
         let object = VideoObject {
             layer: Layer::High,
             ..object.clone()
@@ -1274,7 +1274,7 @@ impl Plane {
                     ..object
                 }
                 .encode()
-                .map_err(|_| PlaneError::Invalid)
+                .map_err(|_| LiveError::Invalid)
             },
         )
     }
@@ -1289,11 +1289,11 @@ impl Plane {
     ///
     /// # Errors
     ///
-    /// [`PlaneError::Unwanted`] when nobody shows this page,
-    /// [`PlaneError::Unkeyed`] for a patch before the page's first whole
+    /// [`LiveError::Unwanted`] when nobody shows this page,
+    /// [`LiveError::Unkeyed`] for a patch before the page's first whole
     /// frame or a group past [`page::MAX_GROUP_OBJECTS`] (send a whole
     /// frame), and otherwise as [`Self::publish`].
-    pub fn send_page(&self, tab: u64, object: &PageObject) -> Result<(), PlaneError> {
+    pub fn send_page(&self, tab: u64, object: &PageObject) -> Result<(), LiveError> {
         let track = Track::Page(tab);
         let object = object.clone();
         self.send_keyed(
@@ -1307,7 +1307,7 @@ impl Plane {
                     ..object
                 }
                 .encode()
-                .map_err(|_| PlaneError::Invalid)
+                .map_err(|_| LiveError::Invalid)
             },
         )
     }
@@ -1321,10 +1321,10 @@ impl Plane {
         whole: bool,
         timestamp_us: u64,
         payload: &[u8],
-        rebuild: impl FnOnce(Vec<u8>) -> Result<Vec<u8>, PlaneError>,
-    ) -> Result<(), PlaneError> {
+        rebuild: impl FnOnce(Vec<u8>) -> Result<Vec<u8>, LiveError>,
+    ) -> Result<(), LiveError> {
         if self.shared.ended() {
-            return Err(PlaneError::Ended);
+            return Err(LiveError::Ended);
         }
         let name = live::track(track);
         let keys = self.shared.keys.lock_recover().clone();
@@ -1335,10 +1335,10 @@ impl Plane {
             TrackName::new(&self.shared.join.scope, name.as_str()),
         )?;
         let timestamp = moq_net::Timestamp::from_scale(timestamp_us, 1_000_000)
-            .map_err(|_| PlaneError::Invalid)?;
+            .map_err(|_| LiveError::Invalid)?;
         let mut demands = self.shared.demands.lock_recover();
         let Some(out) = demands.out.get_mut(&name) else {
-            return Err(PlaneError::Unwanted);
+            return Err(LiveError::Unwanted);
         };
         let cipher_body =
             sealer.seal(u32::try_from(out.next_group).unwrap_or(u32::MAX), payload)?;
@@ -1355,7 +1355,7 @@ impl Plane {
     /// Who may send from now on, under the same keys: a roster that moved
     /// while the epoch stayed as it was.
     ///
-    /// A device that joined the roster is read from now on: a plane reads the
+    /// A device that joined the roster is read from now on: a live session reads the
     /// devices it knew when it started, so without this a member who joins
     /// after it is never heard.
     pub fn set_roster(&self, roster: Roster) {
@@ -1369,7 +1369,7 @@ impl Plane {
 
     /// Seal and open under `keys` from now on: a channel whose epoch moved,
     /// or one sender's media keys where it holds those.
-    pub fn set_keys(&self, keys: impl Into<PlaneKeys>) {
+    pub fn set_keys(&self, keys: impl Into<LiveKeys>) {
         let keys = keys.into();
         let roster = self.shared.roster.lock_recover().clone();
         *self.shared.keys.lock_recover() = keys.clone();
@@ -1381,7 +1381,7 @@ impl Plane {
         *self.shared.wake.lock_recover() = Some(wake);
     }
 
-    /// Ask `ended` to run once, when the plane ends: the carrier closed, the
+    /// Ask `ended` to run once, when the live session ends: the carrier closed, the
     /// relay went away, or the roster no longer opens what it reads.
     pub fn set_ended(&self, ended: Arc<dyn Fn() + Send + Sync>) {
         *self.shared.ended_hook.lock_recover() = Some(ended);
@@ -1394,13 +1394,13 @@ impl Plane {
     }
 }
 
-impl Drop for Plane {
+impl Drop for LiveSession {
     fn drop(&mut self) {
         self.shared.end();
     }
 }
 
-/// The stream a plane track's frames are keyed and sealed as.
+/// The stream a live session track's frames are keyed and sealed as.
 #[must_use]
 pub const fn stream(track: Track) -> Stream {
     match track {
@@ -1576,22 +1576,22 @@ pub(crate) async fn unused(track: &moq_net::track::Producer) {
     }
 }
 
-/// Read `track` of `device`'s broadcast for as long as the plane lives.
+/// Read `track` of `device`'s broadcast for as long as the live session lives.
 ///
 /// One subscription per broadcast, held while the device publishes: a frame
-/// this plane cannot open yet is passed over, and the next opens once
-/// [`Plane::set_keys`] caught up. A device's broadcast ends when its plane does — it left the workspace and
+/// this live session cannot open yet is passed over, and the next opens once
+/// [`LiveSession::set_keys`] caught up. A device's broadcast ends when its live session does — it left the workspace and
 /// came back, or a page reloaded — and is announced again under the same
 /// namespace by the session that took its place. This reader waits for that
 /// announcement and reads the track again, so the device is heard here
-/// without this plane joining again; what it said before is not played twice.
+/// without this live session joining again; what it said before is not played twice.
 ///
 /// A track every device is read by ([`TRACKS`]) is read from a hold: its
-/// device is one of the [`MAX_HEARD`] this plane reads at once, or the
+/// device is one of the [`MAX_HEARD`] this live session reads at once, or the
 /// reader waits for one of those to go and the device counts as not heard
-/// until then ([`Plane::unheard`]). A track asked for by what the device
-/// shows ([`Plane::show`]) takes none. Presence is read only while the plane
-/// hears it ([`Plane::hear_presence`]): its subscription is dropped when that
+/// until then ([`LiveSession::unheard`]). A track asked for by what the device
+/// shows ([`LiveSession::show`]) takes none. Presence is read only while the live session
+/// hears it ([`LiveSession::hear_presence`]): its subscription is dropped when that
 /// stops, and taken again at the newest group when it starts again.
 async fn receive(shared: Arc<Shared>, device: [u8; 32], track: Track) {
     let address = Namespace::new(&shared.join.scope, device).path();
@@ -1672,11 +1672,11 @@ async fn receive(shared: Arc<Shared>, device: [u8; 32], track: Track) {
     }
 }
 
-/// Read one subscription of `track` until it ends, the plane is over or the
+/// Read one subscription of `track` until it ends, the live session is over or the
 /// device left the roster: `true` when a presence track that delivered a
-/// frame ended with its broadcast. A frame this plane cannot open is counted
-/// ([`Plane::refusals`]) and passed over: the subscription stays, and the
-/// device's next frame is opened under whatever keys and roster the plane
+/// frame ended with its broadcast. A frame this live session cannot open is counted
+/// ([`LiveSession::refusals`]) and passed over: the subscription stays, and the
+/// device's next frame is opened under whatever keys and roster the live session
 /// holds by then.
 async fn read(
     shared: &Shared,
@@ -1822,26 +1822,26 @@ fn write_group(
     producer: &moq_net::track::Producer,
     sealer: &Sealer,
     objects: &[(u32, &[u8])],
-) -> Result<(), PlaneError> {
+) -> Result<(), LiveError> {
     let Some(&(last, _)) = objects.last() else {
         return Ok(());
     };
     let mut group = producer
         .create_group(moq_net::group::Info::from(u64::from(last)))
-        .map_err(|_| PlaneError::Unavailable)?;
+        .map_err(|_| LiveError::Unavailable)?;
     for &(sequence, body) in objects {
         let frame = sealer.seal(sequence, body)?;
         let timestamp = moq_net::Timestamp::from_scale(u64::from(sequence), 1)
             .unwrap_or(moq_net::Timestamp::ZERO);
         group
             .write_frame(timestamp, frame)
-            .map_err(|_| PlaneError::Unavailable)?;
+            .map_err(|_| LiveError::Unavailable)?;
     }
-    group.finish().map_err(|_| PlaneError::Unavailable)?;
+    group.finish().map_err(|_| LiveError::Unavailable)?;
     Ok(())
 }
 
-/// What a plane's reader, or the relay's copy, sees next on a subscribed
+/// What a live session's reader, or the relay's copy, sees next on a subscribed
 /// track.
 pub(crate) enum Next {
     Datagram(moq_net::Datagram),

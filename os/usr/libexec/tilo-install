@@ -73,7 +73,7 @@
 #      the GPT + LUKS2 layout and bootc installs `to-filesystem` into the opened
 #      mapping — see that script for why the volume is not created by
 #      `--block-setup tpm2-luks`. On a large enough disk the layout ends with
-#      the LUKS2 + Btrfs store the storage daemon's native data plane serves
+#      the LUKS2 + Btrfs store the storage daemon's native backend serves
 #      from; its key file goes into the encrypted root (step 3b),
 #      from where it unlocks at boot without a second prompt,
 #   3. create the user account: `bootc install` does NOT make users, so we
@@ -112,7 +112,7 @@ LOCAL_IMG="localhost/bootc"
 # enrolment). Overridable so it can be driven directly in a test VM.
 DISK_ENCRYPT="${TILO_DISK_ENCRYPT:-/usr/libexec/tilo-disk-encrypt}"
 STAGING_HANDOFF=/usr/libexec/tilo-staging-handoff
-# The store volume the storage daemon's native data plane serves from.
+# The store volume the storage daemon's native backend serves from.
 STORE_VOLUME="${TILO_STORE_VOLUME:-/usr/libexec/tilo-store-volume}"
 GUIDED_PARTITION="${TILO_GUIDED_PARTITION:-/usr/libexec/tilo-guided-partition}"
 EFI_ARTIFACTS="${TILO_INSTALL_EFI_ARTIFACTS:-/usr/libexec/tilo-install-efi-artifacts}"
@@ -1391,7 +1391,7 @@ if [ "$ENCRYPT" -eq 1 ]; then
   if [ -n "$STORE_PART" ]; then
     [ -n "$STORE_LUKS_UUID" ] && [ -n "$STORE_FS_UUID" ] && [ -n "$STORE_KEY_FILE" ] \
       || die "encryption: tilo-disk-encrypt prepare reported an incomplete store volume"
-    log "  store volume: $STORE_PART (LUKS2 + Btrfs for the native data plane)"
+    log "  store volume: $STORE_PART (LUKS2 + Btrfs for the native backend)"
   fi
 
   # From here the volume is open and the tree is mounted. If anything below fails

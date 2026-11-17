@@ -166,8 +166,8 @@ its person's agent, iff
   person, as every new device of theirs does, so the workspace's roster holds
   it under its person;
 - in a governed workspace, its person is still a member;
-- and the plane is one an agent works on (subscribe, state, publish, replay,
-  channel access, remote actions, the live plane, content discovery), never
+- and the protocol is one an agent works on (subscribe, state, publish, replay,
+  channel access, remote actions, the live session, content discovery), never
   compute, environments or governed membership, and never by attachment or a
   same-owner host's enrolment.
 

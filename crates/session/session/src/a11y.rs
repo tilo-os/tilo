@@ -136,7 +136,7 @@ pub(crate) struct Accessibility {
     /// The surfaces the shell's own screen stands in for: they draw nothing while it draws, so they
     /// read as nothing too, and the screen's parts are the windows a client finds.
     aside: Vec<Shared>,
-    /// The adapters by the place of the surface they publish on the plane.
+    /// The adapters by the place of the surface they publish on the app wire.
     windows: BTreeMap<usize, Exported>,
 }
 

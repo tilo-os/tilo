@@ -55,7 +55,7 @@ pub const fn surface_of(_: &str, _: &str) -> Option<Vec<u8>> {
 
 /// The bytes of the surface `hash` of `app` this host decides its changes
 /// with: the one it runs the app with, or one the workspace gave it. The
-/// first is put in the content plane here, so a host that runs a later version
+/// first is put in the content store here, so a host that runs a later version
 /// of the app still reads what was written with this one.
 pub(crate) fn kept(app: &str, hash: &str) -> Option<Vec<u8>> {
     if let Some(bytes) = surface_of(app, hash) {
@@ -73,7 +73,7 @@ pub(crate) fn read(hash: &str) -> Option<Vec<u8>> {
     if let Some(bytes) = surfaces.bytes.lock_recover().get(&hash) {
         return Some(bytes.clone());
     }
-    // The plane is the workspace's, not this process's memory: a surface
+    // The content store is the workspace's, not this process's memory: a surface
     // another start kept is read here, and kept for the rest of this one.
     let bytes = std::fs::read(surfaces.dir.join(hex::encode(hash))).ok()?;
     (blake3::hash(&bytes).as_bytes() == &hash).then(|| {
@@ -93,7 +93,7 @@ pub(crate) fn holds(hash: &str) -> bool {
     })
 }
 
-/// Keep `bytes` as the surface `hash`: whether they were new to the plane and
+/// Keep `bytes` as the surface `hash`: whether they were new to the content store and
 /// hash to the address they came under. A surface that arrived is one this
 /// host can decide the changes it held for
 /// ([`arrivals`]).
@@ -117,7 +117,7 @@ pub(crate) fn keep(hash: &str, bytes: &[u8]) -> bool {
     // Written beside the workspace's state, as the content it is: a start
     // after this one reads it there rather than asking for it again.
     if let Err(error) = write(&surfaces.dir, &hex::encode(hash), bytes) {
-        tracing::warn!(%error, "a surface could not be written to the content plane");
+        tracing::warn!(%error, "a surface could not be written to the content content store");
     }
     arrived();
     true
@@ -159,10 +159,10 @@ const fn signed_surface(_: &str) -> Option<[u8; 32]> {
 /// the image's build beside its programs (`TILO_SURFACES` names another).
 const BUILT_SURFACES: &str = "/usr/local/share/tilo/surfaces";
 
-/// Publish the surfaces this build carries into the content plane `dir`, by
+/// Publish the surfaces this build carries into the content store `dir`, by
 /// their hash: a change written by an older version of an app than this build
 /// runs is decided here even when no member still has that version. Files
-/// already in the plane are left as they are, so a start publishes once.
+/// already in the content store are left as they are, so a start publishes once.
 fn publish_built(dir: &Path) {
     let built = std::env::var_os("TILO_SURFACES")
         .map_or_else(|| PathBuf::from(BUILT_SURFACES), PathBuf::from);
@@ -195,13 +195,13 @@ fn publish_from(built: &Path, dir: &Path) {
         tracing::info!(
             published,
             kept,
-            "the surfaces this build carries are in the content plane"
+            "the surfaces this build carries are in the content content store"
         );
     }
 }
 
 /// Decide every change this process receives against the surfaces of the apps
-/// this host runs in its own process, or keeps under `dir`, its content plane
+/// this host runs in its own process, or keeps under `dir`, its content store
 /// for them. Call it once, on the runtime the relay runs on, before the relay
 /// starts.
 pub fn decide_receipt(dir: &Path) {
@@ -263,7 +263,7 @@ pub(crate) fn role_refusal(
     author_device: [u8; 32],
 ) -> Option<tilo_relay_protocol::refusal::Refusal> {
     // What a role says about a document change it sends: an app's record or the
-    // workspace's own. A plane's key material and presence frames are no
+    // workspace's own. A content store's key material and presence frames are no
     // document change and pass.
     let (_, _, body) = crate::coedit::retention_view(delta)?;
     let message = postcard::from_bytes::<neighbour_wire::NeighbourMsg>(body).ok()?;
@@ -391,7 +391,7 @@ mod tests {
     fn the_surfaces_a_build_carries_are_published_by_hash_once() {
         let scratch = tempfile::tempdir().unwrap();
         let built = scratch.path().join("built");
-        let plane = scratch.path().join("surfaces");
+        let content_store = scratch.path().join("surfaces");
         std::fs::create_dir_all(&built).unwrap();
         let old = b"kind = \"chat.workspace\"\nversion = 1\n";
         let older = b"kind = \"chat.workspace\"\nversion = 2\n";
@@ -399,31 +399,31 @@ mod tests {
         std::fs::write(built.join("chat.4c1e77.toml"), older).unwrap();
         std::fs::write(built.join("slides.9102a1.toml"), old).unwrap();
 
-        publish_from(&built, &plane);
+        publish_from(&built, &content_store);
 
         for (version, bytes) in [("chat v1", old.as_slice()), ("chat v2", older.as_slice())] {
             let hash = hex::encode(blake3::hash(bytes).as_bytes());
             assert_eq!(
-                std::fs::read(plane.join(&hash)).unwrap(),
+                std::fs::read(content_store.join(&hash)).unwrap(),
                 bytes,
-                "{version} is in the plane, by its hash"
+                "{version} is in the content store, by its hash"
             );
         }
         assert_eq!(
-            std::fs::read_dir(&plane).unwrap().count(),
+            std::fs::read_dir(&content_store).unwrap().count(),
             2,
             "one file per version, not one per file"
         );
 
         // A start after this one publishes nothing new.
-        let kept = std::fs::metadata(plane.join(hex::encode(blake3::hash(old).as_bytes())))
+        let kept = std::fs::metadata(content_store.join(hex::encode(blake3::hash(old).as_bytes())))
             .unwrap()
             .modified()
             .unwrap();
-        publish_from(&built, &plane);
-        assert_eq!(std::fs::read_dir(&plane).unwrap().count(), 2);
+        publish_from(&built, &content_store);
+        assert_eq!(std::fs::read_dir(&content_store).unwrap().count(), 2);
         assert_eq!(
-            std::fs::metadata(plane.join(hex::encode(blake3::hash(old).as_bytes())))
+            std::fs::metadata(content_store.join(hex::encode(blake3::hash(old).as_bytes())))
                 .unwrap()
                 .modified()
                 .unwrap(),

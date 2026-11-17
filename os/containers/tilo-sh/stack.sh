@@ -201,7 +201,7 @@ packet_port=$((base + 2))      # the relay's packet relay (8443)
 routes_port=$((base + 3))      # the relay's own routes (8790): /mode, /avatars, /discord/callback
 iroh_port=$((base + 4))        # the relay's iroh endpoint, UDP (7704)
 relay_web_port=$((base + 5))   # the relay's own dev TLS listener, which nothing here uses
-live_port=$((base + 6))        # Caddy: the live plane's origin (live-eu1.tilo.sh)
+live_port=$((base + 6))        # Caddy: the live session's origin (live-eu1.tilo.sh)
 caddy_http_port=$((base + 7))  # Caddy's HTTP port, which serves nothing here
 link_port=$((base + 8))        # the relay's WebTransport listener, UDP: how pages reach it
 api_port=$((base + 10))       # the API server (mcp.tilo.sh)
@@ -1945,7 +1945,7 @@ status() {
     "api|http://127.0.0.1:$api_port/health" "web|$site_health"; do
     local name=${svc%%|*} probe=${svc#*|} shown answer args=()
     case $name in
-      tls) shown="$relay_origin (relay), $live_origin (live plane)" ;;
+      tls) shown="$relay_origin (relay), $live_origin (live session)" ;;
       relay) shown="the Lounge, behind tls" ;;
       api) shown="$api_origin (MCP: $api_origin/mcp)" ;;
       web) shown="$site_origin" ;;
@@ -2141,7 +2141,7 @@ status_remote() {
     "api|$api_origin/health" "web|$site_health"; do
     name=${svc%%|*} probe=${svc#*|} args=()
     case $name in
-      tls) shown="$relay_origin (relay), $live_origin (live plane)" ;;
+      tls) shown="$relay_origin (relay), $live_origin (live origin)" ;;
       relay) shown="the Lounge, behind tls" ;;
       api) shown="$api_origin (MCP: $api_origin/mcp)" ;;
       web) shown="$site_origin"; args=(-H "$site_host_header") ;;

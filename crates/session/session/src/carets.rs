@@ -4,7 +4,7 @@
 //! name, in their colour, as it draws an agent's. Whether they are writing a message there rides
 //! with it, so a conversation on every other device says they are typing.
 //!
-//! What the person types in goes on the workspace's live plane with the rest of their word about
+//! What the person types in goes on the workspace's live session with the rest of their word about
 //! themselves ([`collab_types::presence::ShellSelection`]): the editor and the range, as live
 //! anchors every member's copy of the app resolves against its own editors, and whether a draft is
 //! under way there. Nothing of it is kept: a caret is where someone is now.

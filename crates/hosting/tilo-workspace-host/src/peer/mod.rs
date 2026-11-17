@@ -193,11 +193,11 @@ pub struct PeerContext {
     /// Metrics — cheap counters.
     pub metrics: Arc<crate::metrics::Metrics>,
     /// This relay's own device key: the address remote-action frames use to
-    /// reach the app-serving plane.
+    /// reach the app action server.
     pub own_device_public_key: [u8; 32],
     /// Answers remote-action frames addressed to this relay. `None` unless
     /// the host supplied one and advertises `app_serving`.
-    pub app_serving: Option<Arc<dyn crate::app_serving::AppServingPlane>>,
+    pub app_serving: Option<Arc<dyn crate::app_serving::AppActionServer>>,
     /// Agent devices this host was told about, see [`AgentRegistry`].
     pub agents: AgentRegistry,
     /// The devices this host certified for its browser environments, and the
@@ -251,7 +251,7 @@ struct SessionCtx<'a> {
     /// agent's run; `None` for a session nothing stops.
     stop: Option<&'a Arc<tokio::sync::Notify>>,
     own_device_public_key: &'a [u8; 32],
-    app_serving: Option<&'a Arc<dyn crate::app_serving::AppServingPlane>>,
+    app_serving: Option<&'a Arc<dyn crate::app_serving::AppActionServer>>,
     revocations: &'a Arc<std::sync::RwLock<tilo_user_identity::RevocationList>>,
     agents: &'a AgentRegistry,
     environments: &'a crate::environment::EnvironmentRegistry,

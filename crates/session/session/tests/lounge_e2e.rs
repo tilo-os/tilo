@@ -62,7 +62,7 @@ use crate::common::publisher;
 
 /// The origin the deployment's ingress publishes for the service: what its pages and its links
 /// name. On this machine it is the address the service is reached at, because the service
-/// publishes its live plane at that origin's host and the port it bound, and the member's page
+/// publishes its live session at that origin's host and the port it bound, and the member's page
 /// dials it there.
 const ORIGIN: &str = "https://127.0.0.1";
 
@@ -131,7 +131,7 @@ impl WorkspaceService {
             .env("TILO_WORKSPACES_ADMISSION", admission)
             // The origin the ingress publishes. The listeners below stand where it forwards to,
             // each on a port the kernel picks: the plain one's is announced once the service has bound
-            // it, and the live plane's is the service's own origin host and that port.
+            // it, and the live session's is the service's own origin host and that port.
             .env("TILO_WORKSPACES_RELAY_ORIGIN", ORIGIN)
             .env("TILO_WORKSPACES_PUBLIC_API", ORIGIN)
             .env("TILO_WORKSPACES_WEB_ENTRY", "https://tilo.sh/")
@@ -317,7 +317,7 @@ fn client() -> Result<tilo_net::Client, String> {
 }
 
 /// What the host publishes for a page: its certificate, and the iroh endpoint its session and
-/// planes are reached at.
+/// live sessions are reached at.
 fn host_info(
     runtime: &tokio::runtime::Runtime,
     plain: &str,
@@ -409,7 +409,7 @@ fn the_members_desktop(member: &Member) -> SharedDesktop {
     }
 }
 
-/// A desktop session of this computer, taking part in the collaboration plane, keeping the
+/// A desktop session of this computer, taking part in the peer network, keeping the
 /// workspaces it holds beside `state` .
 fn collaborative_session(state: &std::path::Path) -> Session {
     crate::common::headless(Options {
@@ -865,7 +865,7 @@ fn the_launchers_place(
 }
 
 /// A session that opens apps through `launcher`, in the workspaces it holds,
-/// taking part in the collaboration plane as [`collaborative_session`] does.
+/// taking part in the peer network as [`collaborative_session`] does.
 fn session_opening(
     state: &std::path::Path,
     home: &tilo_test_env::TestHome,

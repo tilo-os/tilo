@@ -93,7 +93,7 @@ canonical desktop (`src/desktop.rs`: `tilo-desktop-surface` over a
 and each tab's record are kept per workspace in the profile's storage and
 committed with the records themselves, so a reload restores the same
 windows on the same documents. Who is here is the session's own: a started
-peer runs `tilo_session::sync::Client` over the page's live plane, so the
+peer runs `tilo_session::sync::Client` over the page's live session, so the
 board, its schedule and the certificates, waves and calls on it are the
 desktop's (`src/peer_sync.rs`). With `peer`, a started certified peer, the
 mount's records and desktop replicate through that peer's workspace, and

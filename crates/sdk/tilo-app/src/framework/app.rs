@@ -2028,7 +2028,7 @@ fn prepare_named(
         .context
         .provide_content(tilo_content_device::for_app());
     // A launch outside every workspace keeps this device's own records, whose
-    // keys no collaboration plane holds: the window seals what it stores under
+    // keys no peer network holds: the window seals what it stores under
     // the workspace's own secret ([`super::headless::hold_workspace_keys`]). A window of a
     // collaboration workspace holds its members' secret instead, once its route
     // carries their keys.

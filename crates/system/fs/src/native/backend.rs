@@ -1,4 +1,4 @@
-//! The running Tier 1 data plane of one workspace.
+//! The running Tier 1 backend of one workspace.
 //!
 //! Startup order is what keeps the tree safe to use: the subvolume exists, the
 //! pre-content group starts and re-adopts every placeholder an earlier run left (a
@@ -88,7 +88,7 @@ impl NativeConfig {
 }
 
 #[derive(Clone, Debug, Default)]
-pub struct PlaneStatus {
+pub struct BackendStatus {
     pub epochs: u64,
     pub ops_published: u64,
     pub bytes_published: u64,
@@ -99,16 +99,16 @@ pub struct PlaneStatus {
     pub last_error: Option<String>,
 }
 
-pub struct NativePlane {
+pub struct NativeBackend {
     stop: Arc<AtomicBool>,
     thread: Option<JoinHandle<Result<()>>>,
-    /// Turns true when the plane thread ends, however it ends.
+    /// Turns true when the backend thread ends, however it ends.
     finished: tokio::sync::watch::Receiver<bool>,
-    status: Arc<Mutex<PlaneStatus>>,
+    status: Arc<Mutex<BackendStatus>>,
     mount_point: PathBuf,
 }
 
-/// Marks the plane thread finished when dropped: on return, error or panic.
+/// Marks the backend thread finished when dropped: on return, error or panic.
 struct ExitSignal(tokio::sync::watch::Sender<bool>);
 
 impl Drop for ExitSignal {
@@ -222,8 +222,8 @@ struct Engine {
     /// renamed into place (which are not in-place writes).
     modified: HashSet<PathBuf>,
     replaced: HashSet<PathBuf>,
-    status: Arc<Mutex<PlaneStatus>>,
-    /// Removals the record plane refused, retried every epoch.
+    status: Arc<Mutex<BackendStatus>>,
+    /// Removals the record protocol refused, retried every epoch.
     retry_removals: HashSet<PathBuf>,
     retry_at: Option<Instant>,
     /// Where the last projection stopped, waiting for a version not yet
@@ -238,8 +238,8 @@ struct Engine {
     marks_seen: HashMap<[u8; 32], (ChangesetMark, Instant)>,
 }
 
-impl NativePlane {
-    /// Sets the plane up and exposes the tree. Returns once the workspace is
+impl NativeBackend {
+    /// Sets the backend up and exposes the tree. Returns once the workspace is
     /// bind-mounted at the workspace path.
     pub fn start(
         cfg: NativeConfig,
@@ -247,13 +247,13 @@ impl NativePlane {
         content: Arc<Hydrator>,
         runtime: tokio::runtime::Handle,
     ) -> Result<Self> {
-        let status = Arc::new(Mutex::new(PlaneStatus::default()));
+        let status = Arc::new(Mutex::new(BackendStatus::default()));
         let mut engine = Engine::open(cfg.clone(), fs, content, runtime, Arc::clone(&status))?;
         let t = Instant::now();
         engine.initial_epoch()?;
         engine.project();
         eprintln!(
-            "native data plane: initial epoch and projection in {} ms",
+            "native backend: initial epoch and projection in {} ms",
             t.elapsed().as_millis()
         );
         std::fs::create_dir_all(&cfg.mount_point)?;
@@ -269,12 +269,12 @@ impl NativePlane {
         let thread = {
             let stop = Arc::clone(&stop);
             std::thread::Builder::new()
-                .name("native-plane".into())
+                .name("native-backend".into())
                 .spawn(move || {
                     let _exit = ExitSignal(exit);
                     engine.run(&stop)
                 })
-                .context("starting the native data plane thread")?
+                .context("starting the native backend thread")?
         };
         Ok(Self {
             stop,
@@ -285,7 +285,7 @@ impl NativePlane {
         })
     }
 
-    pub fn status(&self) -> PlaneStatus {
+    pub fn status(&self) -> BackendStatus {
         self.status.lock().map(|s| s.clone()).unwrap_or_default()
     }
 
@@ -293,7 +293,7 @@ impl NativePlane {
         self.thread.as_ref().is_none_or(JoinHandle::is_finished)
     }
 
-    /// Resolves once the plane thread has ended on its own (an error). The thread
+    /// Resolves once the backend thread has ended on its own (an error). The thread
     /// signals its own end, so a mount waits on this without a health tick.
     pub async fn finished(&self) {
         let mut finished = self.finished.clone();
@@ -306,19 +306,19 @@ impl NativePlane {
         match self.thread.take() {
             Some(t) => t
                 .join()
-                .map_err(|_| anyhow!("native data plane thread panicked"))?,
+                .map_err(|_| anyhow!("native backend thread panicked"))?,
             None => Ok(()),
         }
     }
 }
 
-impl Drop for NativePlane {
+impl Drop for NativeBackend {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Relaxed);
         if let Some(t) = self.thread.take() {
             let _ = t.join();
         }
-        // The bind never outlives the plane, even on an error path.
+        // The bind never outlives the backend, even on an error path.
         let _ = detach(&self.mount_point);
     }
 }
@@ -329,7 +329,7 @@ impl Engine {
         fs: Arc<QuickFS>,
         content: Arc<Hydrator>,
         runtime: tokio::runtime::Handle,
-        status: Arc<Mutex<PlaneStatus>>,
+        status: Arc<Mutex<BackendStatus>>,
     ) -> Result<Self> {
         let layout = StoreLayout::new(&cfg.store);
         let (live, owner) = prepare_workspace(&layout, &cfg)?;
@@ -471,7 +471,7 @@ impl Engine {
     }
 
     fn note_error(&self, error: &anyhow::Error) {
-        eprintln!("native data plane: {error:#}");
+        eprintln!("native backend: {error:#}");
         if let Ok(mut s) = self.status.lock() {
             s.last_error = Some(format!("{error:#}"));
         }
@@ -825,7 +825,7 @@ impl Engine {
     }
 
     /// Publishes a rename as a move of the record, so the file keeps its
-    /// identity. When the record plane refuses (the source is not a record
+    /// identity. When the record protocol refuses (the source is not a record
     /// here, a destination it cannot replace), the rename is published as a
     /// removal and the creation of everything now at `path`.
     fn publish_move(
@@ -1237,7 +1237,7 @@ fn start_placeholders(
     live: &Path,
     content: &Arc<Hydrator>,
     runtime: &tokio::runtime::Handle,
-    status: &Mutex<PlaneStatus>,
+    status: &Mutex<BackendStatus>,
 ) -> Result<Arc<Placeholders>> {
     let placeholders = Arc::new(
         Placeholders::start(

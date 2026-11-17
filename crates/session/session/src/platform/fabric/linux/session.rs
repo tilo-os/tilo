@@ -243,7 +243,7 @@ impl SessionFabric {
                 }
             }
             // What the person's devices carry for each other beyond the fabric state this session
-            // keeps — records — belongs to their own planes; this session routes none of it and
+            // keeps — records — belongs to their own peer networks; this session routes none of it and
             // drops it rather than half-handling it.
             PersonalFabricPayload::Document { .. }
             | PersonalFabricPayload::DocumentContentWant { .. }

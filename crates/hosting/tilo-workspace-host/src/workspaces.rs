@@ -46,13 +46,13 @@ mod surfaces;
 pub(crate) use content::lacks_answer;
 pub use content::{ContentKeeper, WholeDocuments, WorkspaceContent};
 mod desktop_writes;
-mod device_keys;
-mod device_plane;
+mod device_actions;
 #[cfg(test)]
-mod device_plane_tests;
+mod device_actions_tests;
+mod device_keys;
 mod follow;
 mod removals;
-pub use device_plane::HostJobs;
+pub use device_actions::HostJobs;
 pub use follow::ResourceWrite;
 #[cfg(test)]
 mod device_rejoin_tests;
@@ -149,7 +149,7 @@ use tilo_user_identity::{DeviceCert, RevocationList};
 use tokio::sync::Mutex as AsyncMutex;
 use web_time::SystemTime;
 
-pub(crate) use actions::{GovernedPlane, HostWorkspaceActions};
+pub(crate) use actions::{GovernedServer, HostWorkspaceActions};
 pub(crate) use admissions::DEFAULT_MAX_PRE_ADMISSIONS;
 pub use collaboration::{AddMemberRequest, CollaborationError, GovernanceCompletion, MemberPlace};
 pub use host_invitations::HostInvitation;
@@ -932,7 +932,7 @@ pub struct Workspaces {
     inner: Arc<WorkspacesInner>,
 }
 
-/// [`Workspaces`] for whoever must not keep them alive: the browser plane, which
+/// [`Workspaces`] for whoever must not keep them alive: the browser action service, which
 /// hands sessions the calls of the workspaces this relay carries.
 #[derive(Clone)]
 pub struct WeakWorkspaces(std::sync::Weak<WorkspacesInner>);
@@ -961,13 +961,13 @@ struct WorkspacesInner {
     dir: PathBuf,
     /// The workspaces governed here, each under its id spelled out: the one
     /// id a workspace has, which its channels carry too ([`Workspaces::held`]).
-    workspaces: Arc<device_plane::WorkspacesMap>,
-    /// The plane the workspaces answer their members' devices on, as this
-    /// host's own device ([`device_plane`]).
-    plane: tilo_peer_state::actions::ActionPlane,
+    workspaces: Arc<device_actions::WorkspacesMap>,
+    /// The action service the workspaces answer their members' devices on, as this
+    /// host's own device ([`device_actions`]).
+    action_service: tilo_peer_state::actions::ActionService,
     /// The work this host runs for its workspaces' devices: none until an
     /// embedder hands it a job runner ([`Workspaces::run_jobs`]).
-    jobs: Arc<device_plane::HostWork>,
+    jobs: Arc<device_actions::HostWork>,
     /// Who waits for whom while workspaces are created ([`Creating`]).
     creating: creating::Creating,
     calls: Arc<voice::Calls>,
@@ -1246,9 +1246,12 @@ impl Workspaces {
         // A workspace a host made keeps the certificate it made it with: a host
         // renamed since serves with the record's own, verified.
         let host = host_serving(host, &dir);
-        let workspaces = Arc::new(device_plane::WorkspacesMap::default());
-        let (plane, jobs) =
-            device_plane::plane(Arc::clone(&workspaces), host.key.clone(), host.work.clone());
+        let workspaces = Arc::new(device_actions::WorkspacesMap::default());
+        let (action_service, jobs) = device_actions::action_service(
+            Arc::clone(&workspaces),
+            host.key.clone(),
+            host.work.clone(),
+        );
         let store =
             LinkStore::open(store, Appetite::StoreAll).map_err(|error| error.to_string())?;
         let this = Self {
@@ -1258,7 +1261,7 @@ impl Workspaces {
                 store: Arc::new(store),
                 direct: tilo_peer_state::direct::Serving::new(),
                 dir: dir.clone(),
-                plane,
+                action_service,
                 jobs,
                 workspaces,
                 calls: Arc::default(),
@@ -1697,12 +1700,12 @@ impl Workspaces {
         tilo_peer_state::join_answer::JoinAnswer(self.clone())
     }
 
-    /// The plane the host answers its workspaces' member devices on, as its
+    /// The action service the host answers its workspaces' member devices on, as its
     /// own device: what another device of a workspace asks it where no member
-    /// session runs in between ([`device_plane`]).
+    /// session runs in between ([`device_actions`]).
     #[must_use]
-    pub fn plane(&self) -> tilo_peer_state::actions::ActionPlane {
-        self.inner.plane.clone()
+    pub fn action_service(&self) -> tilo_peer_state::actions::ActionService {
+        self.inner.action_service.clone()
     }
 
     /// Run the transform an offloadable action declares for the workspaces

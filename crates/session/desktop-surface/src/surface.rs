@@ -439,7 +439,7 @@ impl DesktopHandle {
     }
 
     /// The windows other devices host that this shell shows, with the device hosting each: the
-    /// windows whose page a host asks the plane for.
+    /// windows whose page a host asks the live session for.
     #[must_use]
     pub fn hosted_windows(&self) -> Vec<(TabId, String)> {
         self.read(|tree| {

@@ -5,7 +5,7 @@
 //! what a refusal says.
 
 use crate::gate::{self, WorkspaceAction};
-use crate::plane::Event;
+use crate::network::Event;
 
 use super::Client;
 
@@ -19,14 +19,14 @@ pub trait Shell {
 
 impl Client {
     /// Why `event`'s message is refused by the workspace it arrived in: `None` when it is admitted,
-    /// and when nothing here decides — a plane that takes part as nobody, or a message that is no
+    /// and when nothing here decides — a client that takes part as nobody, or a message that is no
     /// workspace's traffic ([`gate::required_workspace_action`]).
     pub(crate) fn refusal(&self, event: &Event) -> Option<String> {
         let Event::Msg { ws, peer, msg } = event else {
             return None;
         };
         // A session whose device no person certified is a member of no workspace's governance: a
-        // stand-in plane has no policy to be held to.
+        // stand-in client has no policy to be held to.
         self.person()?;
         let required: WorkspaceAction = gate::required_workspace_action(msg)?;
         if *peer == self.publisher() {

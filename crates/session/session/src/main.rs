@@ -1101,7 +1101,7 @@ fn device_options(
     config: tilo_session::SessionConfig,
 ) -> tilo_session::Options {
     use tilo_session::{
-        ActionPlane, Options, Vpn,
+        AppSocket, Options, Vpn,
         displays::{Backlights, Screens},
     };
     let owned = machine.is_owned();
@@ -1116,7 +1116,7 @@ fn device_options(
         // The apps this session starts reach its services over the socket the launcher hands them;
         // a session inside another desktop's window serves them on a socket of its own, leaving
         // that desktop's alone.
-        action_plane: ActionPlane::for_machine(machine),
+        app_socket: AppSocket::for_machine(machine),
         // A program of this login asks the person at the seat's MCP server to work in a workspace
         // as an agent; a session in another desktop's window serves none.
         mcp_server: owned.then(tilo_session::mcp_server::path).flatten(),

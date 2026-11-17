@@ -38,7 +38,7 @@ use tilo_peer_state::owner::{self, NativeWorkspaceOwner};
 use tilo_peer_state::owner_commit::{CommitOperation, OwnerCommitRequest};
 use tilo_peer_state::workspace_membership::{SettingsChange, WorkspaceMembershipCommand};
 use tilo_service::LoopWake;
-use tilo_session::{ActionPlane, Launches, Options, Records, SearchOptions, Session};
+use tilo_session::{AppSocket, Launches, Options, Records, SearchOptions, Session};
 use tilo_user_identity::DeviceCert;
 
 /// The workspace the shell shows, the id it has on every device, and the app whose records it holds.
@@ -226,7 +226,7 @@ fn kept(person: &str, shortcuts: &[SavedShortcut]) -> Workspace {
     workspace
 }
 
-/// A session keeping this device's shell under `state` , with the action plane the shortcuts run on
+/// A session keeping this device's shell under `state` , with the app wire the shortcuts run on
 /// at `socket` , for `person` , showing the workspace its governance holds.
 fn session_keeping(data: &Path, state: &Path, socket: &Path, person: &str) -> Session {
     session_launching(data, state, socket, person, Arc::new(Launches::default()))
@@ -244,7 +244,7 @@ fn session_launching(
     crate::common::headless(Options {
         collab: false,
         state: Some(state.to_path_buf()),
-        action_plane: ActionPlane::At(socket.to_path_buf()),
+        app_socket: AppSocket::At(socket.to_path_buf()),
         person: person.to_owned(),
         wake: LoopWake::default(),
         launches,

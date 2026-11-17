@@ -257,7 +257,7 @@ async fn device_host(root: &SigningKey) -> Box_ {
         WorkspaceHost::open(
             HostConfig {
                 apps: Some(Arc::clone(&key_sessions)
-                    as Arc<dyn tilo_workspace_host::app_serving::AppServingPlane>),
+                    as Arc<dyn tilo_workspace_host::app_serving::AppActionServer>),
                 ..HostConfig::new(
                     state.path().join("workspace-host"),
                     tilo_relay_protocol::WorkSetting::none(),

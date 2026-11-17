@@ -11,7 +11,7 @@ use tilo_desktop_search::providers::happening::{CallHere, PersonHere, WindowHere
 use crate::Shared;
 
 impl Shared {
-    /// The person's layout, with who else is here in the workspace in front as the plane lists
+    /// The person's layout, with who else is here in the workspace in front as the live session lists
     /// them: what the shell's bar shows.
     #[cfg(target_os = "linux")]
     pub(crate) fn layout_reading(&self) -> tilo_session_core::shell::LayoutReading {

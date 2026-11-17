@@ -3,7 +3,7 @@
 //! mount changes reaches the person's other devices — a device that joins
 //! later is given the tree whole, and a device of someone else is refused.
 //!
-//! The session here is the record's plane: the mounts reach it as two
+//! The session here is the record's app wire: the mounts reach it as two
 //! certified devices of one person reach the workspace their records route on,
 //! and the tree is read back through `fs_protocol::tree`, the projection the
 //! Files app renders.

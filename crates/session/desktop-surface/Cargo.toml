@@ -80,7 +80,7 @@ neighbour-wire = { version = "0.1.0", path = "../../collab/neighbour-wire" }
 tilo-copy-lint = { path = "../../dev/copy-lint" }
 # The integration tests count named scopes on the frame path.
 tilo-resource = { path = "../../sdk/tilo-resource", features = ["test-support"] }
-# Members' pointers are placed through the live plane's layout mapping
+# Members' pointers are placed through the live session's layout mapping
 # against the windows and strip a desktop shows.
 tilo-relay-protocol = { path = "../../hosting/tilo-relay-protocol" }
 # `scenario!`: the cases of one subject in one test function.

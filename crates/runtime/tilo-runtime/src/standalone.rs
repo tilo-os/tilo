@@ -60,7 +60,7 @@ use tilo_identity_host::{
     broker::{IdentityBrokerHandle, WorkspaceMembership},
     provisioning::IdentityStorage,
 };
-use tilo_peer_state::actions::ActionPlane;
+use tilo_peer_state::actions::ActionService;
 use tilo_peer_state::owner_commit::OwnerCommitService;
 use tilo_peer_state::{PeerPersonal, PersonalSync};
 use workspace::{ProfileGrants, ProfileWorkspace};
@@ -189,7 +189,7 @@ impl Standalone {
         // The joined workspaces' files, once the broker that carries their
         // records runs: where a member taking a workspace's work runs it.
         let replica_slot = files::ReplicaSlot::default();
-        let take_work = take_work_plane(root, &joined, take_work, &replica_slot, stage)?;
+        let take_work = take_work_action_service(root, &joined, take_work, &replica_slot, stage)?;
         stage("opening the person's store to their other devices");
         let personal = serve_personally(PersonalServing {
             root,
@@ -316,22 +316,22 @@ fn taking_work(serving: Serving) -> io::Result<Option<take_work::Relay>> {
     .map_err(io::Error::other)
 }
 
-/// The device plane this profile answers its relay's work on, when it takes
+/// The device action service this profile answers its relay's work on, when it takes
 /// work: served on the endpoint its other devices reach it at.
-fn take_work_plane(
+fn take_work_action_service(
     root: &Path,
     joined: &Arc<Joined>,
     relay: Option<take_work::Relay>,
     replicas: &files::ReplicaSlot,
     stage: &mut dyn FnMut(&str),
-) -> io::Result<Option<ActionPlane>> {
+) -> io::Result<Option<ActionService>> {
     let Some(relay) = relay else {
         return Ok(None);
     };
     stage("taking the work of the workspaces relayed here");
     // Browser environments start on the hosted-VM service this host's
     // environment names, when it runs one.
-    take_work::plane(root, joined, relay, Some(Arc::clone(replicas)), None).map(Some)
+    take_work::action_service(root, joined, relay, Some(Arc::clone(replicas)), None).map(Some)
 }
 
 /// What the broker's services are opened from: this profile's workspace, apps
@@ -383,12 +383,18 @@ fn broker_services(
     // other devices of the invoking workspace answer an offer round over the
     // endpoint this profile syncs on, and the content an offloaded run reads
     // and answers with is the content this broker routes.
-    let action_offload = parts
-        .joined
-        .offer_plane()
-        .and_then(|(plane, endpoint, runtime)| {
-            crate::offload::offer_route(plane, endpoint, runtime, Arc::clone(&document_content))
-        });
+    let action_offload =
+        parts
+            .joined
+            .offer_action_service()
+            .and_then(|(action_service, endpoint, runtime)| {
+                crate::offload::offer_route(
+                    action_service,
+                    endpoint,
+                    runtime,
+                    Arc::clone(&document_content),
+                )
+            });
     Ok(HostServices {
         native_certificates: Some(Arc::new(Certificates {
             workspace: parts.workspace_id.to_owned(),
@@ -1036,9 +1042,9 @@ struct PersonalServing<'a> {
     joined: &'a Joined,
     channels: Arc<Mutex<BrokerChannels>>,
     fanout: Arc<FanoutState>,
-    /// The device plane this profile answers its relay's work on, when it
+    /// The device action service this profile answers its relay's work on, when it
     /// takes work at all.
-    take_work: Option<ActionPlane>,
+    take_work: Option<ActionService>,
     /// The workspace host this device runs, when it governs the profile's
     /// workspace: the person's keys open their sessions with it here.
     host: Option<&'a tilo_workspace_host::host::WorkspaceHost>,
@@ -1056,7 +1062,7 @@ struct PersonalParts {
 /// Open the person's own store on the identity this device acts as, and serve
 /// it to their other devices from the endpoint this runtime runs: the store,
 /// the workspaces this device keeps and, for a member that takes work, its
-/// device plane answer on one router, so neither protocol is answered by a
+/// device action service answer on one router, so neither protocol is answered by a
 /// router the other one dropped.
 ///
 /// # Errors
@@ -1092,16 +1098,16 @@ fn serve_personally(serving: PersonalServing<'_>) -> io::Result<PersonalParts> {
         let mut router = iroh::protocol::Router::builder(joined.endpoint())
             .accept(tilo_peer_state::PERSONAL_ALPN, sync.clone());
         // The workspace host answers the person's keys as every host does.
-        // A member that takes its relay's work answers the device plane with
-        // that work's plane instead, registered after it.
+        // A member that takes its relay's work answers the device action service with
+        // that work's action service instead, registered after it.
         for (alpn, handler) in host
             .map(tilo_workspace_host::host::WorkspaceHost::protocols)
             .unwrap_or_default()
         {
             router = router.accept(alpn, handler);
         }
-        if let Some(plane) = take_work {
-            router = router.accept(tilo_peer_state::actions::ACTIONS_ALPN, plane);
+        if let Some(action_service) = take_work {
+            router = router.accept(tilo_peer_state::actions::ACTIONS_ALPN, action_service);
         }
         router.spawn()
     };
@@ -1336,7 +1342,7 @@ fn place_own_workspace(
             .block_on(tilo_workspace_host::host::WorkspaceHost::open(
                 tilo_workspace_host::host::HostConfig {
                     apps: Some(Arc::clone(&key_sessions)
-                        as Arc<dyn tilo_workspace_host::app_serving::AppServingPlane>),
+                        as Arc<dyn tilo_workspace_host::app_serving::AppActionServer>),
                     ..tilo_workspace_host::host::HostConfig::new(
                         profile.join(HOST_STORE),
                         tilo_relay_protocol::WorkSetting::none(),

@@ -79,7 +79,7 @@ const AFTER_THE_REMOVAL: Duration = Duration::from_secs(10);
 const COMMUNITY_WORKSPACE: &str = "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71";
 const CLUB_WORKSPACE: &str = "1b7c4e08-3a5d-42f6-8c9e-2d6f0a1b3c5e";
 
-/// A session on the headless backend, taking no part in the collaboration plane.
+/// A session on the headless backend, taking no part in the peer network.
 fn session() -> Session {
     crate::common::headless(Options {
         collab: false,
@@ -803,7 +803,7 @@ fn expired_throwaway_identity(
     (hex::encode(aged.user_public_key), paths)
 }
 
-/// A session that takes part in the collaboration plane, keeping the workspaces it holds beside
+/// A session that takes part in the peer network, keeping the workspaces it holds beside
 /// `state` .
 fn collaborative_session(state: &std::path::Path) -> Session {
     crate::common::headless(Options {
@@ -1786,7 +1786,7 @@ fn wait_until_their_pointer(
             std::time::Instant::now() < deadline,
             "gave up waiting for {what} after {:?}; it looks hung (set TILO_TEST_HANG_BOUND_SECS to wait longer).\n\
              the shell's refusals: {:?}\nthe session says: {:?}\nthe pointers drawn: {:?}\n\
-             the other member's channels and planes: {}",
+             the other member's channels and app_wires: {}",
             tilo_test_env::hang_bound(),
             session.shell_refusals(),
             session.accessible_labels(),

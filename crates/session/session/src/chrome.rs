@@ -410,7 +410,7 @@ pub(crate) struct SessionChrome {
     /// The session has no quick settings panel: the status cluster is the bell that opens the
     /// notification centre.
     notifications_only: bool,
-    /// Who is here, when this session takes part in the collaboration plane: the bar's trees carry
+    /// Who is here, when this session takes part in the peer network: the bar's trees carry
     /// them as the active workspace's members and their presence.
     sync: Option<Rc<crate::sync::Client>>,
     /// What each window of the shell shows, as its app reports it: where a person's record stands,

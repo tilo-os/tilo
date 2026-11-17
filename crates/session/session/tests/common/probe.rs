@@ -1,4 +1,4 @@
-//! The surface probe: a client of the session's plane that reports what it read.
+//! The surface probe: a client of the session's app wire that reports what it read.
 
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};

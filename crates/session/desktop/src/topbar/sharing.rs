@@ -83,7 +83,7 @@ impl TopBarChrome {
 
     /// Read how each face looks: who is idle or away, in a call (their ring breathing), or bouncing
     /// from a wave. What the roster the bar read says of each face leads: on a session whose people
-    /// come from the collaboration plane, that is everyone here, and `presence` is empty. A face
+    /// come from the peer network, that is everyone here, and `presence` is empty. A face
     /// the roster says nothing of falls back to `presence` , which is where a wave's bounce always
     /// comes from.
     pub(super) fn read_face_looks(

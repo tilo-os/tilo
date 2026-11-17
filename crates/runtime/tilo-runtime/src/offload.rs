@@ -34,7 +34,7 @@ use tilo_actions::offload::{ActionOffload, OffloadFuture, OffloadRequest, Offloa
 use tilo_actions::remote::{InvokeRequest, Pending, pending};
 use tilo_actions::{InvocationId, InvocationUpdate, Offload};
 use tilo_lock::MutexRecover as _;
-use tilo_peer_state::actions::{ActionPlane, FOLLOW_DEADLINE, OFFER_DEADLINE, RemoteDevice};
+use tilo_peer_state::actions::{ActionService, FOLLOW_DEADLINE, OFFER_DEADLINE, RemoteDevice};
 use tilo_peer_state::offload::{OffloadPeers, RanAway};
 use tilo_peer_state::placement::Choice;
 use tilo_relay_protocol::{Machine, Whose, WorkSetting};
@@ -50,7 +50,7 @@ pub use tilo_relay::offload::{BindError, MediaFuture, WorkspaceMedia};
 pub const OFFLOAD_ENV: &str = "TILO_ACTION_OFFLOAD";
 /// The route for offloadable invocations on this device over the offer round:
 /// it asks the workspace's other devices whether they would run the job
-/// sooner, through `peers` — a host's device plane, which asks as this device
+/// sooner, through `peers` — a host's device action service, which asks as this device
 /// and runs the invocation on the device that wins — and keeps the answer's
 /// content where the invoking app reads its output.
 ///
@@ -78,7 +78,7 @@ pub fn offer_offload(
     }))
 }
 
-/// The offer round as a host installs it: it asks `plane`'s workspaces' other
+/// The offer round as a host installs it: it asks `action_service`'s workspaces' other
 /// devices whether they would run the job sooner, reaching each at the
 /// address its device key resolves to on this device's network, and reads and
 /// keeps their content through `content` ([`RouteMedia`], [`RouteOutputs`]).
@@ -86,13 +86,13 @@ pub fn offer_offload(
 /// runs here — when offload is turned off.
 #[must_use]
 pub fn offer_route(
-    plane: ActionPlane,
+    action_service: ActionService,
     endpoint: Endpoint,
     runtime: tokio::runtime::Handle,
     content: Arc<RouteContent>,
 ) -> Option<Arc<dyn ActionOffload>> {
-    let peers = PlanePeers::new(
-        plane,
+    let peers = ActionServicePeers::new(
+        action_service,
         endpoint,
         |id: EndpointId| EndpointAddr::new(id),
         Arc::new(RouteOutputs::new(Arc::clone(&content))),
@@ -124,7 +124,7 @@ pub trait OutputContent: Send + Sync {
 
 /// The content this device shares with its workspaces already, as the record
 /// content service its broker answers `wantBlob` through carries it: a device
-/// that runs its workspaces' records through a host has no content plane of
+/// that runs its workspaces' records through a host has no content store of
 /// its own beside it.
 pub struct RouteOutputs(Arc<RouteContent>);
 
@@ -274,16 +274,16 @@ fn power() -> Power {
 /// it.
 type Reachable = Arc<dyn Fn(&str, [u8; 32]) -> bool + Send + Sync>;
 
-/// [`OffloadPeers`] over a device plane: the round asks the workspace's other
-/// devices through `plane` — who may be asked is what the plane's own roster
+/// [`OffloadPeers`] over a device action service: the round asks the workspace's other
+/// devices through `action_service` — who may be asked is what the action service's own roster
 /// says — and the invocation runs on the device that wins it through the same
 /// connection, with the content it produced waited for through `outputs`.
 ///
-/// The plane asks as this device and at `endpoint`; `addresses` says where
-/// each device the plane resolves is reached. Nothing here carries authority:
+/// The action service asks as this device and at `endpoint`; `addresses` says where
+/// each device the action service resolves is reached. Nothing here carries authority:
 /// the device that wins decides the invocation through its own dispatcher.
-pub struct PlanePeers {
-    plane: ActionPlane,
+pub struct ActionServicePeers {
+    action_service: ActionService,
     endpoint: Endpoint,
     addresses: Arc<dyn Fn(EndpointId) -> EndpointAddr + Send + Sync>,
     /// Which devices of a workspace are connected here now: the round asks
@@ -293,21 +293,21 @@ pub struct PlanePeers {
     runtime: tokio::runtime::Handle,
 }
 
-impl PlanePeers {
-    /// [`OffloadPeers`] over `plane`, asked at `endpoint`, with every device
+impl ActionServicePeers {
+    /// [`OffloadPeers`] over `action_service`, asked at `endpoint`, with every device
     /// reached at the address `addresses` gives for it, and what an answer
     /// produced waited for through `outputs`. `runtime` carries the asks and
     /// the runs, never the thread that invokes.
     #[must_use]
     pub fn new(
-        plane: ActionPlane,
+        action_service: ActionService,
         endpoint: Endpoint,
         addresses: impl Fn(EndpointId) -> EndpointAddr + Send + Sync + 'static,
         outputs: Arc<dyn OutputContent>,
         runtime: tokio::runtime::Handle,
     ) -> Self {
         Self {
-            plane,
+            action_service,
             endpoint,
             addresses: Arc::new(addresses),
             reachable: Arc::new(|_, _| true),
@@ -336,7 +336,7 @@ impl PlanePeers {
     }
 }
 
-impl OffloadPeers for PlanePeers {
+impl OffloadPeers for ActionServicePeers {
     fn ask(
         &self,
         workspace: &str,
@@ -346,8 +346,8 @@ impl OffloadPeers for PlanePeers {
         within: Duration,
     ) -> Pending<Choice> {
         let (complete, answer) = pending();
-        let (plane, endpoint, runtime) = (
-            self.plane.clone(),
+        let (action_service, endpoint, runtime) = (
+            self.action_service.clone(),
             self.endpoint.clone(),
             self.runtime.clone(),
         );
@@ -358,7 +358,7 @@ impl OffloadPeers for PlanePeers {
             // Only the devices that are connected here now: one that is away
             // has nothing to answer with, and waiting for it costs the run
             // here more than it could ever save.
-            let targets: Vec<EndpointAddr> = plane
+            let targets: Vec<EndpointAddr> = action_service
                 .key_holders(&workspace)
                 .await
                 .into_iter()
@@ -366,7 +366,7 @@ impl OffloadPeers for PlanePeers {
                 .filter_map(|key| EndpointId::from_bytes(&key).ok())
                 .map(|id| addresses(id))
                 .collect();
-            let chosen = plane
+            let chosen = action_service
                 .offers(
                     &endpoint, targets, &workspace, &route, &work, invocation, within,
                 )
@@ -391,7 +391,11 @@ impl OffloadPeers for PlanePeers {
             complete.complete(Err("that is not a device key".into()));
             return answer;
         };
-        let remote = Arc::new(self.plane.remote(&self.endpoint, &self.addr(id), workspace));
+        let remote = Arc::new(self.action_service.remote(
+            &self.endpoint,
+            &self.addr(id),
+            workspace,
+        ));
         let outputs = Arc::clone(&self.outputs);
         let workspace = workspace.to_owned();
         self.runtime.spawn(async move {

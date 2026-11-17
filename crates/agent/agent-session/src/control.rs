@@ -1557,7 +1557,7 @@ fn refused(reason: String) -> ActionHostError {
 }
 
 /// [`ActionHost`] over a shared [`AgentSupervisor`]; wrap it in
-/// `tilo_relay::ActionHostPlane` to answer browsers through the host.
+/// `tilo_relay::ActionHostServer` to answer browsers through the host.
 #[derive(Clone)]
 pub struct SupervisorHost(pub Arc<AgentSupervisor>);
 

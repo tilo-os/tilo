@@ -1,5 +1,5 @@
 //! This device's lists as resources of the session's: its windows, the tray, the agents at the
-//! person's plane and the styles, and inviting into a workspace. A shell's views read them, and
+//! person's peer network and the styles, and inviting into a workspace. A shell's views read them, and
 //! so does a script or an agent, through the API, by the same addresses: one reading for every
 //! reader.
 
@@ -405,7 +405,7 @@ pub(crate) struct DeviceLists {
     pub(crate) person: String,
     /// The surfaces the shell shows over its windows, and where they stand.
     pub(crate) surfaces: Surfaces,
-    /// Who is here, when this session takes part in the collaboration plane.
+    /// Who is here, when this session takes part in the peer network.
     pub(crate) sync: Option<Rc<crate::sync::Client>>,
     /// The apps' live activities: Clocks' timer is the bar's clock beside the time, and the person
     /// putting the floating one away hides it until Clocks shows something new.

@@ -10,7 +10,7 @@
 //! it runs is shared with the workspace's members, who see it in their shell
 //! and drive it with their keyboard and pointer.
 //!
-//! The relay asks the member device over the device plane, as it asks for
+//! The relay asks the member device over the device action service, as it asks for
 //! Browser:
 //!
 //! - [`target`] names an open, an action of the workspace's environment

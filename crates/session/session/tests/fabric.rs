@@ -37,7 +37,7 @@ use tilo_user_identity::DeviceCapabilities;
 const PASS: Duration = Duration::from_millis(20);
 
 /// One of the person's devices, on its own loopback endpoint, taking part in the collaboration
-/// plane as its certified self.
+/// app wire as its certified self.
 struct Device {
     client: Client,
     id: DeviceId,

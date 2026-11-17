@@ -633,7 +633,7 @@ fn spawn_step(step: impl FnOnce() + Send + 'static) -> Result<(), String> {
 /// The broker's API to pairing: how Settings pairs a device, as the person using it, without
 /// starting any process itself.
 pub(crate) struct BrokerApi {
-    pub(crate) layout: std::sync::Arc<crate::plane::LayoutAuthority>,
+    pub(crate) layout: std::sync::Arc<crate::app_wire::LayoutAuthority>,
     pub(crate) fabric: Option<SharedLink>,
     pub(crate) pairing: &'static Pairing,
 }

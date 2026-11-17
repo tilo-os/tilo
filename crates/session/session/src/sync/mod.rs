@@ -1,10 +1,10 @@
-//! The session as a client of the collaboration plane: the workspaces it shows, this person's
+//! The session as a client of the peer network: the workspaces it shows, this person's
 //! presence in them, and everyone else's.
 //!
-//! The client itself — the boards of each workspace, this device's own word on them, and the plane
+//! The client itself — the boards of each workspace, this device's own word on them, and the peer network
 //! seam every host carries it over — lives in `tilo-session-client`, so an agent or a program links
 //! it without a desktop. What this session adds is the desktop's own host: the peer actor on an
-//! iroh endpoint, the live plane, the workspaces' state and their channels, the device fabric and
+//! iroh endpoint, the live session, the workspaces' state and their channels, the device fabric and
 //! the transfers, and the roster the bar draws.
 
 pub use tilo_session_client::presence;
@@ -22,7 +22,7 @@ pub mod layout;
 pub(crate) const REDEEM_WITHIN: std::time::Duration = std::time::Duration::from_secs(120);
 
 /// How long taking the granted workspace in may take: installing what the host granted and telling
-/// the plane to carry it is this device's own work, and the person is told a join did not happen
+/// the peer network to carry it is this device's own work, and the person is told a join did not happen
 /// rather than left waiting on it.
 pub(crate) const SETTLE_WITHIN: std::time::Duration = std::time::Duration::from_secs(30);
 

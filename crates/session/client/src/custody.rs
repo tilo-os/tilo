@@ -2,7 +2,7 @@
 //!
 //! The owner of a workspace commits only what this device still has custody of: a device the
 //! workspace removed, or whose certificate ran out, finds out before it commits. Each host keeps
-//! its own proof of that — this desktop's signed custody over the collaboration plane, a page's
+//! its own proof of that — this desktop's signed custody over the peer network, a page's
 //! over its own transport.
 //!
 //! A session's [`PeerStore`] is what a peer keeps between sessions. The device key itself never passes through here: it lives behind a

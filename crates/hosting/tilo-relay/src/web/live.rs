@@ -1,7 +1,7 @@
-//! The relay's live plane: one `moq-lite` relay every carrier of a workspace's
+//! The relay's live origin: one `moq-lite` relay every carrier of a workspace's
 //! live tracks reaches, and the authority that admits them to it.
 //!
-//! The plane belongs to the relay, not to a listener: every device dials
+//! The live origin belongs to the relay, not to a listener: every device dials
 //! it over the relay's iroh endpoint ([`tilo_live::native`]) as its own
 //! certificate says it may. A page dials it the same way: its device
 //! certificate is the grant, and the delegation it carries names the endpoint
@@ -168,12 +168,12 @@ struct DeviceKey {
     workspace: WorkspaceId,
 }
 
-/// Every device the plane admits over iroh, by the device and workspace it
+/// Every device the live origin admits over iroh, by the device and workspace it
 /// presented.
 type Members = BTreeMap<DeviceKey, Arc<Grant>>;
 
-/// The live plane's authority: the devices the workspaces' governance admits,
-/// and nothing else — a device that never opened a plane session is
+/// The live origin's authority: the devices the workspaces' governance admits,
+/// and nothing else — a device that never opened a live session is
 /// nobody here.
 pub(crate) struct Authority {
     relay: RelayProtocol,
@@ -193,9 +193,9 @@ impl Authority {
         }
     }
 
-    /// Who the plane carries now: every person with an admitted device,
+    /// Who the live origin carries now: every person with an admitted device,
     /// with the devices they are here on. One person on two devices is one
-    /// entry. A plane is the one account of who is here: a native device and a
+    /// entry. The live origin is the one account of who is here: a native device and a
     /// page alike reach it, and nothing counts a page that never joined.
     pub(crate) fn devices(&self) -> BTreeMap<[u8; 32], BTreeSet<[u8; 32]>> {
         let mut people: BTreeMap<[u8; 32], BTreeSet<[u8; 32]>> = BTreeMap::new();
@@ -210,7 +210,7 @@ impl Authority {
         people
     }
 
-    /// Every grant the plane carries, as the one account of who is here.
+    /// Every grant the live origin carries, as the one account of who is here.
     fn carried(&self) -> Vec<Arc<Grant>> {
         self.members.lock_recover().values().cloned().collect()
     }
@@ -228,7 +228,7 @@ impl Authority {
     }
 
     /// Whether the workspace's governance admits `peer`'s device to `op` now:
-    /// the same answer every plane of the workspace takes, read from the
+    /// the same answer every live session of the workspace takes, read from the
     /// workspace as it stands.
     async fn admits_as(
         &self,
@@ -284,7 +284,7 @@ impl Authority {
             device_public_key: device,
             cert: certificate,
         };
-        // A device dials the plane as it enters, while the workspace is still
+        // A device dials the live origin as it enters, while the workspace is still
         // taking it in: the admission waits for the workspace and decides on
         // it, so a newcomer is not refused for arriving at a busy moment.
         if !self.admits_as(&peer, id, WorkspaceOperation::Publish).await {
@@ -295,8 +295,8 @@ impl Authority {
             workspace: id,
         };
         // An environment's session in a workspace's VM joins the workspace and
-        // then takes part over its own direct link and this plane; it never
-        // opens a state-plane session. So the plane it publishes its window on
+        // then takes part over its own direct link and this live origin; it never
+        // opens a state-protocol session. So the live origin it publishes its window on
         // is the lasting connection that says it is still here, and a stopped
         // environment is not mistaken for one whose connection dropped.
         let environment = crate::environment::environment_of(&self.environments, &device).is_some();
@@ -323,28 +323,28 @@ impl Authority {
 
 impl RelayAuthority for Authority {
     fn admit<'a>(&'a self, peer: Peer, proof: &'a [u8]) -> Admission<'a> {
-        // Every device reaches this plane over iroh, a page included: it
+        // Every device reaches this live origin over iroh, a page included: it
         // proves itself with the certificate its grant carries.
         let Peer(device) = peer;
         Box::pin(self.admit_member(device, proof))
     }
 }
 
-/// The relay's live plane: the origin every carrier of its workspaces'
+/// The relay's live origin: the origin every carrier of its workspaces'
 /// tracks reaches, and the authority that admits them.
-pub(crate) struct Plane {
+pub(crate) struct LiveOrigin {
     authority: Arc<Authority>,
     relay: Relay,
     tasks: Vec<tokio::task::JoinHandle<()>>,
 }
 
-impl Plane {
-    /// Start the plane for `relay`'s workspace: the origin its sessions copy
+impl LiveOrigin {
+    /// Start the live origin for `relay`'s workspace: the origin its sessions copy
     /// into, and the answer that cuts an admitted one when the workspace moves
     /// its membership. Must be called inside a Tokio runtime.
     pub(crate) fn start(relay: RelayProtocol) -> Self {
         let authority = Arc::new(Authority::new(relay));
-        let plane = Relay::new(authority.clone());
+        let origin = Relay::new(authority.clone());
         let refreshing = authority.clone();
         let refresh = tokio::spawn(async move {
             let mut epoch = crate::authority_epoch::subscribe();
@@ -354,45 +354,45 @@ impl Plane {
         });
         Self {
             authority,
-            relay: plane,
+            relay: origin,
             tasks: vec![refresh],
         }
     }
 
-    /// The protocol a device dials this plane on: one `moq-lite` session on
+    /// The protocol a device dials this live origin on: one `moq-lite` session on
     /// the iroh carrier, admitted by the device's grant as any other carrier
     /// session is.
     pub(crate) fn protocol(&self) -> (Vec<u8>, Box<dyn iroh::protocol::DynProtocolHandler>) {
         let relay = self.relay.clone();
         let handler = tilo_live::native::handler(move |session: tilo_live::native::Session| {
             let relay = relay.clone();
-            // A session this plane admitted may open what an admitted session opens.
+            // A session this live origin admitted may open what an admitted session opens.
             async move { tilo_live::native::serve_on(&relay, session).await }
         });
         (tilo_live::native::ALPN.to_vec(), Box::new(handler))
     }
 
-    /// The plane's origin, which every carrier's sessions are served into.
+    /// The live origin's origin, which every carrier's sessions are served into.
     pub(crate) fn origin(&self) -> Relay {
         self.relay.clone()
     }
 
-    /// Who the plane carries: the one account of who is here.
+    /// Who the live origin carries: the one account of who is here.
     pub(crate) fn authority(&self) -> Arc<Authority> {
         Arc::clone(&self.authority)
     }
 
-    /// The one task the plane runs besides its sessions, which stands while
-    /// the plane does.
+    /// The one task the live origin runs besides its sessions, which stands while
+    /// the live origin does.
     pub(crate) fn tasks(&mut self) -> Vec<tokio::task::JoinHandle<()>> {
         std::mem::take(&mut self.tasks)
     }
 }
 
-/// Serve one WebTransport session at the plane's path: the device proves
+/// Serve one WebTransport session at the live origin's path: the device proves
 /// itself with the relay handshake on the session's first stream (the
 /// transport does not say who dialled it, as iroh's does), then the
-/// session is the plane's, admitted by the device's grant as any other
+/// session is the live origin's, admitted by the device's grant as any other
 /// carrier's.
 pub(crate) async fn serve_web(
     origin: &Relay,
@@ -417,7 +417,7 @@ pub(crate) async fn serve_web(
 mod tests {
     use super::*;
 
-    /// A device of the person who owns the workspace, as the plane admits one.
+    /// A device of the person who owns the workspace, as the live origin admits one.
     fn peer(device: [u8; 32]) -> AuthenticatedPeer {
         AuthenticatedPeer {
             user_public_key: [0xA1; 32],

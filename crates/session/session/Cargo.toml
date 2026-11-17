@@ -78,7 +78,7 @@ tilo-resource = { path = "../../sdk/tilo-resource" }
 # (`record_index::hosted_entries`).
 tilo-app = { path = "../../sdk/tilo-app" }
 tilo-desktop = { path = "../desktop" }
-# The member's own client of the collaboration plane: the boards of who is here and this
+# The member's own client of the peer network: the boards of who is here and this
 # device's own word, which this session hosts with its own endpoint.
 tilo-session-client = { path = "../client" }
 # The roles every host runs: the shell's document and the layout it holds.
@@ -158,10 +158,10 @@ uuid.workspace = true
 futures-util.workspace = true
 tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 tilo-failure = { version = "0.1.0", path = "../../platform/tilo-failure" }
-# The workspaces' live plane: a sealed `moq-lite` session per workspace over
+# The workspaces' live session: a sealed `moq-lite` session per workspace over
 # this session's own endpoint, and the relay role a member serves for the
 # others.
-tilo-live = { path = "../../collab/tilo-live", features = ["plane"] }
+tilo-live = { path = "../../collab/tilo-live", features = ["live_session"] }
 # The endpoint every device dials: presence names a publisher and where it is reached with it, on
 # every host.
 
@@ -194,7 +194,7 @@ tilo-app-id = { version = "0.1.0", path = "../../platform/tilo-app-id" }
 # The toolkit's native half: the winit runner, the host services and the
 # broker transport, which only a desktop host runs.
 ui = { package = "tilo-ui", path = "../../sdk/ui-core" }
-# The live plane over this session's own iroh endpoint: native only.
+# The live session over this session's own iroh endpoint: native only.
 tilo-live = { path = "../../collab/tilo-live", features = ["relay", "iroh"] }
 tokio = { workspace = true, features = ["rt-multi-thread", "sync", "macros", "time"] }
 # A Rust app's views and resources, published in a development session only
@@ -240,7 +240,7 @@ tilo-host-account = { path = "../../hosting/tilo-host-account" }
 # does, for the history's descriptions and group names.
 tilo-model-client = { path = "../../agent/model-client", features = ["runtime-client"] }
 # Who is here: the session's own membership of each workspace, on the
-# collaboration plane's peer actor.
+# peer network's peer actor.
 tilo-network-actor = { path = "../network-actor" }
 # A host's own questions to a member, asked on the collaboration endpoint:
 # what an agent asks before it acts on a workspace, answered by the person.
