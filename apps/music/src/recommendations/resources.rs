@@ -1,4 +1,4 @@
-use ui::tilo_actions::ResourceSpec;
+use ui::framework::LiveRow;
 use ui::tilo_resource::Effect;
 
 use super::{Input, suggestion, suggestions};
@@ -7,7 +7,7 @@ use crate::model::Library;
 
 pub const PREFERENCES: &str = "music.recommendation-preferences:library";
 
-pub fn resource_by_id(lib: &Library, id: &str) -> Option<ResourceSpec> {
+pub fn row_by_id(lib: &Library, id: &str) -> Option<LiveRow> {
     let open = || {
         MusicEffect::Open {
             place: Place::View("recommendations".into()),
@@ -15,23 +15,26 @@ pub fn resource_by_id(lib: &Library, id: &str) -> Option<ResourceSpec> {
         .bound()
     };
     if id == PREFERENCES {
-        return Some(
-            ResourceSpec::new(
-                id,
-                "music.recommendation-preferences",
-                crate::i18n::t("music-recommendations-title"),
-            )
-            .with_action(open())
-            .with_children(Input::ALL.into_iter().filter_map(|input| {
-                resource_by_id(lib, &format!("music.recommendation-input:{}", input.key()))
-            })),
-        );
+        let mut row = LiveRow::new(
+            id,
+            "music.recommendation-preferences",
+            crate::i18n::t("music-recommendations-title"),
+        )
+        .operation(open());
+        for input in Input::ALL {
+            if let Some(child) =
+                row_by_id(lib, &format!("music.recommendation-input:{}", input.key()))
+            {
+                row = row.row(child);
+            }
+        }
+        return Some(row);
     }
     if let Some(key) = id.strip_prefix("music.recommendation-input:") {
         let input = Input::ALL.into_iter().find(|i| i.key() == key)?;
         let enabled = lib.recommendations.enabled(input);
         return Some(
-            ResourceSpec::new(
+            LiveRow::new(
                 id,
                 "music.recommendation-input",
                 format!(
@@ -44,11 +47,11 @@ pub fn resource_by_id(lib: &Library, id: &str) -> Option<ResourceSpec> {
                     })
                 ),
             )
-            .with_action(open()),
+            .operation(open()),
         );
     }
     if let Some(track) = id.strip_prefix("music.recommendation:") {
-        return song_resource(lib, id, track);
+        return song_row(lib, id, track);
     }
     if let Some(artist) = id.strip_prefix("music.recommendation-artist:") {
         let preferred = lib.recommendations.prefers(artist);
@@ -56,18 +59,18 @@ pub fn resource_by_id(lib: &Library, id: &str) -> Option<ResourceSpec> {
             return None;
         }
         return Some(
-            ResourceSpec::new(
+            LiveRow::new(
                 id,
                 "music.recommendation-artist",
                 lib.artist(artist).map_or(artist, |a| a.name.as_str()),
             )
-            .with_action(open()),
+            .operation(open()),
         );
     }
     None
 }
 
-fn song_resource(lib: &Library, id: &str, track: &str) -> Option<ResourceSpec> {
+fn song_row(lib: &Library, id: &str, track: &str) -> Option<LiveRow> {
     let dismissed = lib.recommendations.is_dismissed(track);
     let suggestion = suggestion(lib, track);
     if suggestion.is_none() && !dismissed {
@@ -91,18 +94,18 @@ fn song_resource(lib: &Library, id: &str, track: &str) -> Option<ResourceSpec> {
             crate::i18n::t("music-recommendations-missing-track"),
         )
     };
-    let row = ResourceSpec::new(id, "music.recommendation", label)
-        .with_action(
+    let row = LiveRow::new(id, "music.recommendation", label)
+        .operation(
             MusicEffect::Open {
                 place: Place::View("recommendations".into()),
             }
             .bound(),
         )
-        .with_action(play);
+        .operation(play);
     Some(row)
 }
 
-pub fn resources(lib: &Library) -> Vec<ResourceSpec> {
+pub fn rows(lib: &Library) -> Vec<LiveRow> {
     let picks = suggestions(lib, 6);
     let artists = picks
         .iter()
@@ -126,5 +129,5 @@ pub fn resources(lib: &Library) -> Vec<ResourceSpec> {
                 .into_iter()
                 .map(|id| format!("music.recommendation-artist:{id}")),
         );
-    ids.filter_map(|id| resource_by_id(lib, &id)).collect()
+    ids.filter_map(|id| row_by_id(lib, &id)).collect()
 }

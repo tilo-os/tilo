@@ -114,7 +114,7 @@ tilo_test_env::scenario! {
         lib.liked.insert("tk_g1".into());
         let pick = suggestions(&lib, 1).pop().unwrap();
         let id = format!("music.recommendation:{}", pick.track);
-        let resource = resource_by_id(&lib, &id).unwrap();
+        let resource = row_by_id(&lib, &id).unwrap().into_resource();
         assert!(resource.label.contains(&pick.reason.label(&lib)));
         for offered in ["open", "play"] {
             assert!(
@@ -126,9 +126,11 @@ tilo_test_env::scenario! {
         apply(&mut doc, &paths().dismissed.insert(&pick.track)).unwrap();
         let dismissed = doc.state().unwrap();
         assert!(suggestion(&dismissed, &pick.track).is_none());
-        let row = resource_by_id(&dismissed, &id).expect("a dismissed song stays restorable");
+        let row = row_by_id(&dismissed, &id)
+            .expect("a dismissed song stays restorable")
+            .into_resource();
         assert!(row.actions.iter().any(|a| a.id == "play"));
-        assert!(resource_by_id(&lib, "music.recommendation-input:unknown").is_none());
+        assert!(row_by_id(&lib, "music.recommendation-input:unknown").is_none());
     }
 
     phase recommendations_seed_roundtrips_nondefault_feedback_and_disabled_inputs;
@@ -212,8 +214,9 @@ tilo_test_env::scenario! {
         let mut forgotten = Library::default();
         forgotten.recommendations.dismissed.insert("deleted".into());
         assert_ne!(
-            resource_by_id(&forgotten, "music.recommendation:deleted")
+            row_by_id(&forgotten, "music.recommendation:deleted")
                 .unwrap()
+                .into_resource()
                 .actions
                 .iter()
                 .find(|a| a.id == "play")

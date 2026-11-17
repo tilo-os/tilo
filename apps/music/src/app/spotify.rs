@@ -169,12 +169,13 @@ impl Music {
         else {
             return;
         };
-        let resource = tilo_actions::ResourceSpec::new(
+        let resource = ui::framework::LiveRow::new(
             "music.library",
             "music.library",
             crate::i18n::CATALOG.t("music-resource-library"),
         )
-        .with_action(spec.clone());
+        .operation(spec.clone())
+        .into_resource();
         let arguments = effect.arguments();
         let Ok(binding) =
             tilo_actions::ActionBinding::new(&resource, &spec, move |()| arguments.clone())
@@ -654,12 +655,10 @@ impl Music {
                         _ => "music-spotify-select-device",
                     };
                     let label = crate::i18n::t_args(key, &[("device", (&device.name).into())]);
-                    let resource = tilo_actions::ResourceSpec::new(
-                        &address,
-                        "music.spotify-device",
-                        &device.name,
-                    )
-                    .with_action(effect.bound());
+                    let resource =
+                        ui::framework::LiveRow::new(&address, "music.spotify-device", &device.name)
+                            .effect(&effect)
+                            .into_resource();
                     let binding =
                         tilo_actions::ActionBinding::unit_for(&resource, effect.id()).ok()?;
                     Some(

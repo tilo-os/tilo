@@ -1048,11 +1048,7 @@ impl Music {
     /// This device's rows: the player, the queue, the open file and offline copies.
     pub(crate) fn device_rows(&self) -> Vec<ui::framework::LiveRow> {
         let mut rows = self.music_rows().all();
-        rows.extend(
-            crate::recommendations::resources(&self.lib)
-                .into_iter()
-                .map(ui::framework::LiveRow::from_resource),
-        );
+        rows.extend(crate::recommendations::rows(&self.lib));
         rows.push(self.source_row());
         rows.extend(self.spotify_device_rows());
         rows.extend(self.spotify_remote_rows());
@@ -1118,8 +1114,7 @@ impl Music {
             return Some(row);
         }
         if id.starts_with("music.recommendation") {
-            return crate::recommendations::resource_by_id(&self.lib, id)
-                .map(ui::framework::LiveRow::from_resource);
+            return crate::recommendations::row_by_id(&self.lib, id);
         }
         if let Some(track) = id.strip_prefix("music.track:")
             && !self.stored_library.tracks.contains_key(track)

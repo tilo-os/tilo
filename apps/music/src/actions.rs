@@ -1109,14 +1109,12 @@ mod tests {
     use automerge::AutoCommit;
     use tilo_actions::ActionKind;
     use tilo_actions::{
-        ActionRegistry, ArgValue, ExecutionMode, OperationKind, ParamType, ResourceSpec, ResultSpec,
+        ArgValue, ExecutionMode, OperationKind, ParamType, ResourceSpec, ResultSpec,
     };
-    use ui::tilo_resource::{Edit, Id, Invoke, Replica, Resource as _};
+    use ui::tilo_resource::{Edit, Id, Invoke, Replica};
 
-    fn registry() -> ActionRegistry {
-        let mut registry = ActionRegistry::new();
-        Library::register(&mut registry);
-        registry
+    fn registry() -> tilo_actions::ActionRegistry {
+        tilo_actions::ActionRegistry::with(ui::tilo_resource::group::register::<Library>)
     }
 
     fn tiny_portable_png() -> String {

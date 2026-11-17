@@ -24,12 +24,13 @@ pub(crate) struct Playing {
 
 /// `effect` on this device's player row, which offers it whatever plays.
 fn on_player(effect: &MusicEffect) -> Option<ui::tilo_actions::ActionBinding<()>> {
-    let player = ui::tilo_actions::ResourceSpec::new(
+    let player = ui::framework::LiveRow::new(
         crate::actions::PLAYER_RESOURCE_ID,
         "music.player",
         crate::i18n::CATALOG.t("music-resource-player"),
     )
-    .with_action(effect.bound());
+    .effect(effect)
+    .into_resource();
     ui::tilo_actions::ActionBinding::unit_for(&player, effect.id()).ok()
 }
 
