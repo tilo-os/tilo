@@ -49,6 +49,7 @@ paths = [
     "apps/tl/mail/*",
     "crates/platform/mail-session/*",
     "crates/hosting/tilo-workspace-host/src/workspaces/mail_watch.rs",
+    "crates/hosting/tilo-workspace-host/src/workspaces/person_settings.rs",
     "crates/hosting/tilo-workspace-host/src/workspaces/person_settings/sending.rs",
     "crates/hosting/tilo-workspace-host/src/workspaces/actions/host/mail_assistant_tests.rs",
 ]
