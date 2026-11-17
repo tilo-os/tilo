@@ -33,7 +33,7 @@ struct Served {
 }
 
 /// A rule about reading what is at `node`.
-fn reading(node: String, answer: &str) -> Bound {
+pub(super) fn reading(node: String, answer: &str) -> Bound {
     Bound {
         node,
         kinds: vec!["read".into()],
@@ -42,7 +42,7 @@ fn reading(node: String, answer: &str) -> Bound {
 }
 
 /// Where a rule names everything Chat keeps in `workspace`.
-fn chat_in(workspace: &str) -> String {
+pub(super) fn chat_in(workspace: &str) -> String {
     format!("workspace:{workspace}/app:{CHAT}")
 }
 
@@ -158,7 +158,7 @@ impl Served {
         let server = enrol(&ada, "tilo-sh", DeviceCapabilities::member());
         let browser = enrol(&ada, "browser", DeviceCapabilities::member());
         let state = crate::support::scratch_dir();
-        let (served, actions) = crate::harness::hosted::serving_records_with_actions(
+        let (served, actions) = crate::harness::hosted::serving_documents_with_actions(
             &ada,
             &server,
             state.path(),

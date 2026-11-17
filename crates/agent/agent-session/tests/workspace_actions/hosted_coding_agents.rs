@@ -1110,7 +1110,7 @@ macro_rules! two_teams {
         let $browser = enrol(&$root, "browser", DeviceCapabilities::member());
         let $second = enrol(&$root, "laptop", DeviceCapabilities::member());
         let state = crate::support::scratch_dir();
-        let (serving, $actions) = crate::harness::hosted::serving_records_with_actions(
+        let (serving, $actions) = crate::harness::hosted::serving_documents_with_actions(
             &$root,
             &server,
             state.path(),

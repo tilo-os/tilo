@@ -376,7 +376,10 @@ impl Worker {
         })
     }
 
-    /// The changes to the records of `workspace_id` after `after`, for `caller`.
+    /// The changes to what `workspace_id` holds after `after`, for `caller`: the person whose
+    /// device this service is on reads every change of the workspace, and anyone else it admits
+    /// reads the changes of what the workspace lets them read now, an agent held to the rules
+    /// its turn carries ([`Self::readable`]).
     pub(super) fn changes(
         &mut self,
         workspace_id: WorkspaceId,
@@ -398,18 +401,48 @@ impl Worker {
             .collect();
         let cluster_id = state.workspace.clone().unwrap_or_default();
         let engine = std::sync::Arc::clone(&state.engine);
-        let log = &mut self.membership(workspace_id)?.changes;
-        log.take_in(
-            &records,
-            |(app, record)| {
-                engine
-                    .document_revision(&cluster_id, app, record)
-                    .ok()
-                    .flatten()
-            },
-            |(app, record)| engine.record(&cluster_id, app, record).ok().flatten(),
-            &ui::history_source::sentence::ThreadWords,
-        );
-        Ok(log.page(after))
+        let page = {
+            let log = &mut self.membership(workspace_id)?.changes;
+            log.take_in(
+                &records,
+                |(app, record)| {
+                    engine
+                        .document_revision(&cluster_id, app, record)
+                        .ok()
+                        .flatten()
+                },
+                |(app, record)| engine.record(&cluster_id, app, record).ok().flatten(),
+                &ui::history_source::sentence::ThreadWords,
+            );
+            log.page(after)
+        };
+        let Some(who) = self.bounded(caller) else {
+            return Ok(page);
+        };
+        // Decided before anything is answered, as a search is: a change to a resource the
+        // workspace keeps from the caller, or lets them read only parts of, is not theirs to
+        // see.
+        let readable: Vec<DocumentRoute> = routes
+            .into_iter()
+            .filter(|route| {
+                matches!(
+                    self.readable(workspace_id, Some(&who), route),
+                    Some(Readable::Whole)
+                )
+            })
+            .collect();
+        let changes = page
+            .changes
+            .into_iter()
+            .filter(|change| {
+                readable
+                    .iter()
+                    .any(|route| route.app_id == change.app && route.document == change.record)
+            })
+            .collect();
+        Ok(ChangePage {
+            changes,
+            cursor: page.cursor,
+        })
     }
 }

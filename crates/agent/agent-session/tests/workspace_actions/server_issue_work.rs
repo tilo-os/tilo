@@ -5,7 +5,7 @@
 //! that was lost is not started for ever. Nothing of it reads as done. No device of the person is
 //! on for any of it, and a server that starts again reads the same from the workspace's documents.
 use super::*;
-use crate::harness::hosted::serving_records_with_actions as serving_with_actions;
+use crate::harness::hosted::serving_documents_with_actions as serving_with_actions;
 use serde_json::{Value, json};
 use tasks::model::{StoppedWhy, TaskState};
 use tilo_actions::remote::{

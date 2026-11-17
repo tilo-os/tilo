@@ -15,7 +15,7 @@ macro_rules! team {
         let server = enrol(&$root, "tilo-sh", DeviceCapabilities::member());
         let $browser = enrol(&$root, "browser", DeviceCapabilities::member());
         let state = crate::support::scratch_dir();
-        let (serving, $actions) = crate::harness::hosted::serving_records_with_actions(
+        let (serving, $actions) = crate::harness::hosted::serving_documents_with_actions(
             &$root,
             &server,
             state.path(),

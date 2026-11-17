@@ -152,7 +152,7 @@ pub async fn start(root: &SigningKey, host: &Device, state: &Path, options: Opti
 
 /// [`serving_documents`], with the action service it serves the records with: what the agents the
 /// host runs for its workspaces act through.
-pub async fn serving_records_with_actions(
+pub async fn serving_documents_with_actions(
     root: &SigningKey,
     host: &Device,
     state: &Path,

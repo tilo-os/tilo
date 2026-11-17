@@ -235,7 +235,7 @@ async fn an_agent_on_the_host_works_with_its_keepers_own_model() {
     // other: the native apps name their surfaces as the server first runs them.
     let _ = crate::common::catalogue();
     tilo_server::surfaces::decide_receipt(&state.path().join("surfaces"));
-    let (server, actions) = crate::harness::hosted::serving_records_with_actions(
+    let (server, actions) = crate::harness::hosted::serving_documents_with_actions(
         &root,
         &host,
         state.path(),
@@ -361,7 +361,7 @@ async fn a_keeper_whose_model_cannot_answer_is_told_and_no_other_model_is_asked(
     let host = enrol(&root, "tilo-sh", DeviceCapabilities::member());
     let browser = enrol(&root, "browser", DeviceCapabilities::member());
     let state = crate::support::scratch_dir();
-    let (server, actions) = crate::harness::hosted::serving_records_with_actions(
+    let (server, actions) = crate::harness::hosted::serving_documents_with_actions(
         &root,
         &host,
         state.path(),
@@ -438,7 +438,7 @@ async fn an_agent_on_the_host_works_on_the_issue_a_person_gives_it() {
     let host = enrol(&root, "tilo-sh", DeviceCapabilities::member());
     let browser = enrol(&root, "browser", DeviceCapabilities::member());
     let state = crate::support::scratch_dir();
-    let (server, actions) = crate::harness::hosted::serving_records_with_actions(
+    let (server, actions) = crate::harness::hosted::serving_documents_with_actions(
         &root,
         &host,
         state.path(),
@@ -573,7 +573,7 @@ async fn an_agent_on_the_host_stops_at_its_keepers_daily_limit() {
     let host = enrol(&root, "tilo-sh", DeviceCapabilities::member());
     let browser = enrol(&root, "browser", DeviceCapabilities::member());
     let state = crate::support::scratch_dir();
-    let (server, actions) = crate::harness::hosted::serving_records_with_actions(
+    let (server, actions) = crate::harness::hosted::serving_documents_with_actions(
         &root,
         &host,
         state.path(),
@@ -687,7 +687,7 @@ async fn an_agent_on_the_host_answers_the_message_a_person_writes_it() {
     let host = enrol(&root, "tilo-sh", DeviceCapabilities::member());
     let browser = enrol(&root, "browser", DeviceCapabilities::member());
     let state = crate::support::scratch_dir();
-    let (server, actions) = crate::harness::hosted::serving_records_with_actions(
+    let (server, actions) = crate::harness::hosted::serving_documents_with_actions(
         &root,
         &host,
         state.path(),
@@ -818,7 +818,7 @@ async fn a_first_message_is_taken_at_the_look_its_own_write_starts() {
     let server = enrol(&root, "tilo-sh", DeviceCapabilities::member());
     let browser = enrol(&root, "browser", DeviceCapabilities::member());
     let state = crate::support::scratch_dir();
-    let (serving, actions) = crate::harness::hosted::serving_records_with_actions(
+    let (serving, actions) = crate::harness::hosted::serving_documents_with_actions(
         &root,
         &server,
         state.path(),
@@ -980,7 +980,7 @@ async fn an_agent_on_the_server_keeps_the_summary_of_a_long_conversation() {
     let host = enrol(&root, "tilo-sh", DeviceCapabilities::member());
     let browser = enrol(&root, "browser", DeviceCapabilities::member());
     let state = crate::support::scratch_dir();
-    let (server, actions) = crate::harness::hosted::serving_records_with_actions(
+    let (server, actions) = crate::harness::hosted::serving_documents_with_actions(
         &root,
         &host,
         state.path(),
@@ -1295,7 +1295,7 @@ async fn what_a_persons_events_answer_reaches_the_model_of_a_turn() {
     let server = enrol(&root, "tilo-sh", DeviceCapabilities::member());
     let browser = enrol(&root, "browser", DeviceCapabilities::member());
     let state = crate::support::scratch_dir();
-    let (served, actions) = crate::harness::hosted::serving_records_with_actions(
+    let (served, actions) = crate::harness::hosted::serving_documents_with_actions(
         &root,
         &server,
         state.path(),
@@ -1379,6 +1379,10 @@ async fn what_a_persons_events_answer_reaches_the_model_of_a_turn() {
 /// What a turn finds by words in what its workspace holds.
 #[path = "hosted_search.rs"]
 mod search;
+
+/// What wakes a turn's watch of its workspace, and what it is told of it.
+#[path = "hosted_agent_watch.rs"]
+mod watch;
 
 /// What starts a turn besides its person's typing, and what reaches a turn that is going.
 #[path = "hosted_agent_asks.rs"]

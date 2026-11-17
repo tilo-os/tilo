@@ -37,9 +37,9 @@ use std::time::{Duration, Instant};
 
 use serde_json::{Map, Value, json};
 use tilo_actions::remote::{
-    ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueQuery, InvocationReceipt,
-    InvocationState, InvokeArgument, InvokeRequest, Pending, ReceiptStatus, RemoteActionMessage,
-    RemoteActionTarget, pending,
+    ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueQuery, ChangeFeed, ChangePage,
+    InvocationReceipt, InvocationState, InvokeArgument, InvokeRequest, Pending, ReceiptStatus,
+    RemoteActionMessage, RemoteActionTarget, WatchScope, pending,
 };
 use tilo_actions::{InvocationId, InvocationUpdate, api::ActionAddress};
 use tilo_agent_session::model::PlanTurns;
@@ -390,9 +390,37 @@ impl ActionProvider for WorkspaceActionProvider {
             })
     }
 
+    /// The next time what a watch of the caller's workspace follows may have changed: the
+    /// workspace's own service holds that wait, answered by a write landing in its replica of
+    /// the resources, whoever wrote it, and by who is in the workspace moving with its
+    /// governance. A watch of a turn on this server is woken by a person's edit or message and
+    /// by another agent's change, not only by its own invocations.
+    fn changed(&self, caller: &Caller, scope: WatchScope) -> Option<Pending<()>> {
+        // Either answer is the same to a watch: what it follows is read again, and a refusal is
+        // told by that read. A service that answers nothing at all is not running, and the
+        // watch waits its own deadline instead of on a wake that would come at once for ever.
+        self.actions
+            .serve(
+                self.workspace,
+                caller,
+                RemoteActionMessage::ChangedRequest {
+                    correlation: 0,
+                    scope,
+                },
+            )
+            .map(|answer| answer.map(|_| ()))
+    }
+
     /// The workspace's own search, asked as whoever calls it: what an agent's `find` answers
     /// with on this server.
     fn resource_search(&self) -> Option<Arc<dyn tilo_actions::remote::ResourceSearch>> {
+        Some(Arc::new(self.clone()))
+    }
+
+    /// The workspace's own feed of its resources' changes, asked as whoever calls it: what a
+    /// watch of the whole workspace reads on this server, and only what that caller may read
+    /// of them.
+    fn change_feed(&self) -> Option<Arc<dyn ChangeFeed>> {
         Some(Arc::new(self.clone()))
     }
 }
@@ -432,6 +460,30 @@ impl tilo_actions::remote::ResourceSearch for WorkspaceActionProvider {
         )
         .map(|answer| match answer {
             RemoteActionMessage::SearchResponse { result, .. } => result,
+            _ => Err(unavailable()),
+        })
+    }
+}
+
+/// What a watch of the whole workspace reads on this server: every change to everything its
+/// workspace holds, as the service that keeps it saw it, for the caller its tools act as. The
+/// service answers only what that caller may read, so an agent is told of a person's edit or a
+/// bot's change in what it reads, and of nothing in what its rules keep from it.
+impl ChangeFeed for WorkspaceActionProvider {
+    fn since(
+        &self,
+        caller: &Caller,
+        after: Option<&str>,
+    ) -> Pending<Result<ChangePage, ActionCallError>> {
+        self.serve(
+            caller,
+            RemoteActionMessage::ChangesRequest {
+                correlation: 0,
+                after: after.map(str::to_owned),
+            },
+        )
+        .map(|answer| match answer {
+            RemoteActionMessage::ChangesResponse { result, .. } => result,
             _ => Err(unavailable()),
         })
     }

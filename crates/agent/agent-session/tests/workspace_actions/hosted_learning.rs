@@ -202,7 +202,7 @@ macro_rules! team {
         let ada_browser = enrol(&ada_root, "browser", DeviceCapabilities::member());
         let bo_browser = enrol(&bo_root, "bo-browser", DeviceCapabilities::member());
         let state = crate::support::scratch_dir();
-        let (served, $actions) = crate::harness::hosted::serving_records_with_actions(
+        let (served, $actions) = crate::harness::hosted::serving_documents_with_actions(
             &ada_root,
             &server,
             state.path(),
