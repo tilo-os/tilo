@@ -1052,7 +1052,8 @@ impl Widget for Slider {
             min: self.range.0,
             max: self.range.1,
             step: self.step,
-            text: self.value_text.as_ref().map(|_| self.spoken_value()),
+            text: (self.value_text.is_some() || self.shows_value).then(|| self.spoken_value()),
+            shown: self.shows_value,
         });
     }
 

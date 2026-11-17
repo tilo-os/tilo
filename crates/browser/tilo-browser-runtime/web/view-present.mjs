@@ -617,7 +617,7 @@ export function createViewPresenter(layer, {onScroll, picture, semantic, onFrame
         mark(input, 'value', target);
         out.push(input);
         // What it is at, said beside it as the canvas says it.
-        if (control.text) {
+        if (control.text && control.shown) {
           const said = elementFor(`${key}:said`, 'span', next);
           write(said, 'css', 'flex:none;min-width:40px;text-align:end;font-size:13px;font-variant-numeric:tabular-nums;color:var(--tilo-text-dim,#6e6e73);');
           write(said, 'text', control.text);

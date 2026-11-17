@@ -140,6 +140,9 @@ pub enum Control {
         /// How the value is said ("50 percent"), where the app has its own words for it.
         #[serde(skip_serializing_if = "Option::is_none")]
         text: Option<String>,
+        /// The value is shown in those words beside the track.
+        #[serde(skip_serializing_if = "std::ops::Not::not")]
+        shown: bool,
     },
     /// A typed entry: a number with its steppers, a date, a time, a colour or a search field.
     Entry {
