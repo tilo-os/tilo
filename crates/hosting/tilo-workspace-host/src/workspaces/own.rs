@@ -578,7 +578,7 @@ impl Workspaces {
     /// Whether this host keeps for `person`, an owner of it, a workspace
     /// another host governs: as it keeps workspaces of their own here, only
     /// for someone it let in ([`Self::let_in`]) whose workspaces here have
-    /// room left. Why not, in plain words, when it does not.
+    /// capacity left. Why not, in plain words, when it does not.
     ///
     /// # Errors
     ///

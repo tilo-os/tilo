@@ -7,7 +7,7 @@
 //! joining member gets it (its signed governance, roster and revocations)
 //! and its own signed address. This host then
 //!
-//! - keeps a record of the workspace under `<state_root>/hosted/<workspace>.json`, its
+//! - keeps an entry for the workspace under `<state_root>/hosted/<workspace>.json`, its
 //!   own, never the workspace's files;
 //! - attaches, for that workspace only ([`crate::attach`]), to every other
 //!   holder its governance names and to the host that handed it over:
@@ -29,8 +29,8 @@
 //! person's, and the workspaces of others its operator names, or anyone's when
 //! the operator says so), or for an owner of the workspace: someone the host
 //! let in, as it keeps workspaces of their own for them, whose workspaces
-//! there have room ([`crate::workspaces::Workspaces::keeps_for_owner`]). The
-//! record keeps whom, so the workspace is served again after a restart.
+//! there have capacity ([`crate::workspaces::Workspaces::keeps_for_owner`]). The
+//! entry keeps whom, so the workspace is served again after a restart.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -68,9 +68,9 @@ pub struct HostWorkspaceRequest {
     pub bootstrap: JoinBootstrap,
 }
 
-/// The record a hosting member keeps of each workspace it serves.
+/// The entry a hosting member keeps of each workspace it serves.
 #[derive(Clone, Debug, Serialize, Deserialize)]
-struct HostedRecord {
+struct HostedEntry {
     /// The workspace's UUID.
     workspace: String,
     workspace_id: WorkspaceId,
@@ -85,7 +85,7 @@ struct HostedRecord {
     kept_for: Option<String>,
 }
 
-impl HostedRecord {
+impl HostedEntry {
     fn of(request: &HostWorkspaceRequest, kept_for: Option<[u8; 32]>) -> Result<Self, String> {
         Ok(Self {
             workspace: request.workspace.clone(),
@@ -104,7 +104,7 @@ impl HostedRecord {
                 let mut key = [0; 32];
                 hex::decode_to_slice(person, &mut key)
                     .map(|()| key)
-                    .map_err(|error| format!("the record's owner is no key: {error}"))
+                    .map_err(|error| format!("the entry's owner is no key: {error}"))
             })
             .transpose()
     }
@@ -187,7 +187,7 @@ impl Hosting {
         self.dir.join(format!("{workspace}.json"))
     }
 
-    /// Serve again every workspace recorded here, as the host opens. A record
+    /// Serve again every workspace recorded here, as the host opens. An entry
     /// that no longer holds up is skipped with a warning; its workspace is
     /// served again when its governor asks.
     pub(crate) async fn resume(&self) {
@@ -201,10 +201,10 @@ impl Hosting {
             }
             let resumed = async {
                 let text = std::fs::read_to_string(&path).map_err(|error| error.to_string())?;
-                let record: HostedRecord =
+                let entry: HostedEntry =
                     serde_json::from_str(&text).map_err(|error| error.to_string())?;
-                let request = record.request()?;
-                self.serve(None, &request, true, record.kept_for()?)
+                let request = entry.request()?;
+                self.serve(None, &request, true, entry.kept_for()?)
                     .await
                     .map(drop)
             }
@@ -234,8 +234,8 @@ impl Hosting {
         // Refused before anything is served or any path is made.
         let id = named(request)?;
         let hint = self.serve(Some(caller), request, false, kept_for).await?;
-        let record = HostedRecord::of(request, kept_for)?;
-        let bytes = serde_json::to_vec_pretty(&record).map_err(|error| error.to_string())?;
+        let entry = HostedEntry::of(request, kept_for)?;
+        let bytes = serde_json::to_vec_pretty(&entry).map_err(|error| error.to_string())?;
         write_durably(&self.dir, &self.resource_path(id), &bytes)?;
         tracing::info!(workspace = %request.workspace, workspace_id = %request.workspace_id, "serving a workspace for its governor");
         Ok(hint)
@@ -259,27 +259,27 @@ impl Hosting {
         let id = WorkspaceId::parse(workspace)
             .ok_or_else(|| "a workspace is named by its id".to_owned())?;
         let path = self.resource_path(id);
-        // No record: the workspace was not hosted here. One that does not read
+        // No entry: the workspace was not hosted here. One that does not read
         // is an error, never "not hosted": that would forget the workspace while
         // it went on being served.
-        let record = match std::fs::read_to_string(&path) {
+        let entry = match std::fs::read_to_string(&path) {
             Ok(text) => Some(
-                serde_json::from_str::<HostedRecord>(&text)
+                serde_json::from_str::<HostedEntry>(&text)
                     .map_err(|error| {
-                        format!("the workspace's hosting record does not read: {error}")
+                        format!("the workspace's hosting entry does not read: {error}")
                     })?
                     .request()?,
             ),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
             Err(error) => {
                 return Err(format!(
-                    "the workspace's hosting record does not read: {error}"
+                    "the workspace's hosting entry does not read: {error}"
                 ));
             }
         };
         // This device's own person, or the person whose device governs the
         // workspace, asks it to stop.
-        let governor = record
+        let governor = entry
             .as_ref()
             .map(|request| request.governor_hint.host.user_public_key);
         if caller.user_public_key != self.services.cert.user_public_key
@@ -290,7 +290,7 @@ impl Hosting {
                     .into(),
             );
         }
-        let workspace_id = record.map(|request| request.workspace_id);
+        let workspace_id = entry.map(|request| request.workspace_id);
         let served = self.served.lock_recover().remove(&id).is_some();
         if let Some(workspace_id) = workspace_id {
             stop_serving(&self.services, workspace_id).await?;
@@ -454,7 +454,7 @@ impl Hosting {
             services: services.clone(),
             workspace: request.workspace.clone(),
             workspace_id: request.workspace_id,
-            record: self.resource_path(id),
+            entry: self.resource_path(id),
             peer,
             replica: Arc::clone(&replica),
             named,
@@ -760,7 +760,7 @@ struct Follower {
     services: WorkspaceServices,
     workspace: String,
     workspace_id: WorkspaceId,
-    record: PathBuf,
+    entry: PathBuf,
     peer: StatePeer,
     /// What subscribing devices are answered from.
     replica: Arc<HostedReplica>,
@@ -861,8 +861,8 @@ impl Follower {
             if let Err(error) = stop_serving(&self.services, self.workspace_id).await {
                 tracing::warn!(workspace = %self.workspace, %error, "a workspace no longer hosted here was not closed");
             }
-            if let Err(error) = std::fs::remove_file(&self.record) {
-                tracing::debug!(workspace = %self.workspace, %error, "the hosted workspace's record was not removed");
+            if let Err(error) = std::fs::remove_file(&self.entry) {
+                tracing::debug!(workspace = %self.workspace, %error, "the hosted workspace's entry was not removed");
             }
         }
     }

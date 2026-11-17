@@ -26,7 +26,7 @@ use tilo_relay_protocol::WorkspaceId;
 struct Page {
     /// The device of the host this page's session is with.
     host: [u8; 32],
-    /// The person the host acts for, its root key as hex: a host runs workspaces for people
+    /// The person the host acts for, its root key as hex: a host serves workspaces for people
     /// and is nobody in them itself.
     host_person: String,
     handle: Link,
@@ -151,7 +151,7 @@ pub(crate) fn device_of(id: u32) -> Option<[u8; 32]> {
     PAGES.with_borrow(|pages| pages.get(&id).map(|page| page.device))
 }
 
-/// The person `id`'s workspace host acts for, its root key as hex: the host runs workspaces
+/// The person `id`'s workspace host acts for, its root key as hex: the host serves workspaces
 /// for people and is nobody in them itself, so a list of a workspace's people never offers it.
 pub(crate) fn host_person(id: u32) -> Option<String> {
     PAGES.with_borrow(|pages| pages.get(&id).map(|page| page.host_person.clone()))

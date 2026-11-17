@@ -6,7 +6,7 @@
 //! - `workspace/hosts#add {origin}` has the host whose site is at `origin`
 //!   (`https://tilo.sh`) hold it as well: both keep it, a change on either
 //!   reaches the other, and its members reach it at either. That host takes
-//!   it as its own rules say: only for an owner of it it let in, with room;
+//!   it as its own rules say: only for an owner of it it let in, if it has capacity;
 //! - `workspace/hosts#remove {host}` has a host, named by its site or by its
 //!   device key as the list names it, hold it no more.
 //!

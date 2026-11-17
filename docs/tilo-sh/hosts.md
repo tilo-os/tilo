@@ -85,7 +85,7 @@ choose its hosts, from a device of theirs or a key they created reaching all the
 
 The other host decides whether it takes the workspace, by its own rules: it keeps one only for an owner
 of it whom it let in (on tilo.sh: you signed in there), and only while that person's workspaces there
-have room. Otherwise it refuses, and says why. The host the workspace was made on stays the one that
+have capacity. Otherwise it refuses, and says why. The host the workspace was made on stays the one that
 decides who is in it; the others follow it.
 
 ## Running your own host

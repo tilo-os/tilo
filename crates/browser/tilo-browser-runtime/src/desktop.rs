@@ -428,7 +428,7 @@ pub(crate) struct Shared {
     pub peer: Option<u32>,
     /// The workspace it shows: whose live session those windows' pages travel.
     pub workspace: String,
-    /// The workspace's agents, as Chat's record of them names each: an agent is a member of
+    /// The workspace's agents, as Chat's agents resource names each: an agent is a member of
     /// the workspace like a person is, so a page names it to its windows whether or not a
     /// device of its works here now. `None` for a page in no workspace.
     pub agents: Option<

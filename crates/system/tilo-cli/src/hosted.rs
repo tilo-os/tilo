@@ -97,7 +97,7 @@ pub enum HostsCmd {
         after_help = "Example:\n  tilo workspace hosts add https://tilo.sh -w Tilo\n\n\
                       Both hosts keep the workspace from then on: a change on either reaches the \
                       other, and its people reach it at either. Only its owners choose its \
-                      hosts, and the other host takes it only if it let you in and has room for \
+                      hosts, and the other host takes it only if it let you in and has capacity for \
                       it: sign in there first."
     )]
     Add {

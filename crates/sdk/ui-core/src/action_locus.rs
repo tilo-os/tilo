@@ -134,8 +134,8 @@ fn ink_around(
         .collect()
 }
 
-/// What a card standing over the frame would hide: each line of words and each control it shows
-/// within `viewport`. A box taller than a few lines (a list, a pane, the window) is room, not ink.
+/// What a card over the frame would hide: each line of words and each control it shows
+/// within `viewport`. A box taller than a few lines (a list, a pane, the window) is a panel, not ink.
 fn occupied(
     tree: &crate::a11y_tree::SemanticTree,
     viewport: vello::kurbo::Rect,

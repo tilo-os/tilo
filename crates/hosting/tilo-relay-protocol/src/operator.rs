@@ -557,7 +557,7 @@ mod tests {
                 origin: "http://127.0.0.1:8790".into(),
             },
             OperatorEvent::Unanswered {
-                reason: "the operator socket takes import_people and standing".into(),
+                reason: "the operator socket takes import_people and status".into(),
             },
         ]
     }
@@ -703,7 +703,7 @@ mod tests {
                 }
                 .to_line(),
                 format!(
-                    "tilo-workspace-operator {{\"event\":\"standing\",\"request\":\"{}\",\"standing\":\"pending\"}}",
+                    "tilo-workspace-operator {{\"event\":\"status\",\"request\":\"{}\",\"state\":\"pending\"}}",
                     "12".repeat(32)
                 )
             );

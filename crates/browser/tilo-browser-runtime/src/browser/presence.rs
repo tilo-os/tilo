@@ -32,7 +32,7 @@ pub(crate) struct Presence {
     /// Who the workspace lists as its members, as this mount put them on its presence: who its
     /// windows offer as people, whether or not each is here now.
     pub(crate) members: Option<std::collections::BTreeSet<String>>,
-    /// The workspace's agents, as its record of them names each, and as this mount put them
+    /// The workspace's agents, as Chat's agents resource names each, and as this mount put them
     /// on its presence: a cursor named, and an agent a retired one no longer is.
     pub(crate) agents: Vec<(MemberId, String, PresenceHue)>,
 }
@@ -76,7 +76,7 @@ impl Mount {
         let people = crate::shell::here_people(&desktop.here, &desktop.shared, &tree);
         let mut here = desktop.here.borrow_mut();
         let own = here.own_user().map(str::to_owned);
-        // A host runs workspaces for people and is nobody in them itself: the person its own
+        // A host serves workspaces for people and is nobody in them itself: the person its own
         // device acts for is no row of a list of the workspace's people, unless it is this
         // page's own.
         let host = self.peer.and_then(crate::peer_sync::host_person);
@@ -108,16 +108,16 @@ impl Mount {
         });
     }
 
-    /// Name the workspace's agents as its record of them does, and forget each the record
-    /// retired, so an app's people list offers exactly those it keeps now.
+    /// Name the workspace's agents as the agents resource names them, and forget each the
+    /// resource retired, so an app's people list offers exactly those it keeps now.
     fn place_agents(&mut self) {
         let Some(desktop) = &self.desktop else {
             return;
         };
-        let Some(record) = &desktop.shared.agents else {
+        let Some(resource) = &desktop.shared.agents else {
             return;
         };
-        let Some(state) = record.try_get() else {
+        let Some(state) = resource.try_get() else {
             return;
         };
         let mut agents: Vec<(MemberId, String, PresenceHue)> = state

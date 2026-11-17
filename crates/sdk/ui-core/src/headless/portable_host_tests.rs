@@ -1319,13 +1319,13 @@ fn a_window_that_drew_a_frame_asks_for_none_until_something_changes() {
 }
 
 /// An agent renaming an item a list shows is drawn on the row's title where the new title lands:
-/// the title in its colour and its caret wearing what it did, with no card standing for it
+/// the title in its colour and its caret wearing what it did, with no card drawn for it
 /// anywhere else on the page.
 #[test]
 fn an_agents_rename_is_drawn_on_the_rows_title() {
     use crate::permissions::MemberId;
     use crate::widget::ListRow;
-    let title = "Book room 4 for Friday";
+    let title = "Book the studio for Friday";
     let rows = || {
         Box::new(
             Column::new()
@@ -1352,7 +1352,7 @@ fn an_agents_rename_is_drawn_on_the_rows_title() {
     event.actor = tilo_actions::Acting::agent("scribe");
     event.action.label = "Rename".into();
     event.action.did = Some("renamed".into());
-    event.resource.label = "Book the room for Friday".into();
+    event.resource.label = "Book the studio for Friday".into();
     event.anchor = tilo_actions::InteractionAnchor::Text {
         region: "title".into(),
         ranges: vec![tilo_actions::InteractionTextRange {

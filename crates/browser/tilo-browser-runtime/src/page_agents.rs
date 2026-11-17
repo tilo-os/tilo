@@ -1,9 +1,9 @@
-//! The workspace's agents on the page, as Chat's record of them names each: an agent is a
+//! The workspace's agents on the page, as Chat's agents resource names each: an agent is a
 //! member of the workspace like a person is, and a page names it to its windows so an app's
 //! people list offers it whether or not a device of its works here now.
 //!
-//! The record is the one every app of the workspace opens ([`tilo_app::tilo_workspace_agent`]),
-//! read here in the records the page keeps for the workspace's windows.
+//! The resource is the one every app of the workspace opens ([`tilo_app::tilo_workspace_agent`]),
+//! read here in the resources the page keeps for the workspace's windows.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -22,9 +22,9 @@ pub(crate) fn open(
     workspace: &str,
     author: String,
 ) -> Option<WorkspaceResource<WorkspaceAgents>> {
-    let records = crate::workspace_resources::in_page(owners, stores, workspace, author, true);
+    let resources = crate::workspace_resources::in_page(owners, stores, workspace, author, true);
     WorkspaceResource::open(
-        &records,
+        &resources,
         OWNER,
         (tilo_app_id::apps::CHAT, "Chat"),
         None,

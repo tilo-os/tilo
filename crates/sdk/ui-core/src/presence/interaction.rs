@@ -809,18 +809,18 @@ impl PresenceCtx {
         }
         let columns = card_columns(viewport);
         let clear = |column: &&Vec<Rect>| {
-            column.iter().take(visible).all(|slot| {
+            column.iter().take(visible).all(|cell| {
                 occupied
                     .iter()
-                    .all(|taken| slot.intersect(*taken).is_zero_area())
+                    .all(|taken| cell.intersect(*taken).is_zero_area())
             })
         };
-        let Some(slots) = columns.iter().find(clear).or_else(|| columns.first()) else {
+        let Some(cells) = columns.iter().find(clear).or_else(|| columns.first()) else {
             return Vec::new();
         };
         let mut out = Vec::with_capacity(visible);
         for (index, entry) in entries.iter().copied().take(visible).enumerate() {
-            let Some(&rect) = slots.get(index) else {
+            let Some(&rect) = cells.get(index) else {
                 break;
             };
             out.push(InteractionCardPlacement {

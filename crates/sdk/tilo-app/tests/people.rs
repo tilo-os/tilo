@@ -9,7 +9,7 @@ use tilo_app::prelude::*;
 /// The workspace the window is in.
 const WORKSPACE: &str = "6f0c3a52-8e1b-4d6a-9c2f-3b7e5d1a4c90";
 
-/// An issue-like record with an assignee, so the picker has an action to bind.
+/// An issue-like resource with an assignee, so the picker has an action to bind.
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct Ticket {
     pub assignee: Option<String>,
@@ -94,7 +94,7 @@ fn fixture() -> Fixture {
     presence.set_self_member(me.clone(), "Happy Heron");
     presence.set_display_name(keeper.clone(), "Ada Lovelace");
     presence.set_workspace_members([me, keeper]);
-    // The workspace's record of its agents names each to presence, as the page does.
+    // The workspace's agents resource names each to presence, as the page does.
     presence.set_display_name(MemberId::agent(agent.clone()), "Planner");
     // The page's host: a device that names a person the workspace never admitted.
     presence.set_display_name(host, "lounge workspace host");
