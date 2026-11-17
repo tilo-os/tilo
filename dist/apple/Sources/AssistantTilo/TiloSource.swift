@@ -59,6 +59,16 @@ public final class TiloSource: AssistantSource {
     private var toldWanted = false
     /// The server tells nothing this way, or does not hold an ask until its log moves.
     private var toldRefused = false
+    /// Whether this app read her server's log since it started. What the log held before that
+    /// is no news.
+    private var toldRead = false
+    /// Whether the log was read on this way in, before the conversation was said.
+    private var toldFresh = false
+    /// How long a read with nothing in it is doubted where pieces are held.
+    var emptyDoubt: Duration = .seconds(3)
+    /// How long after a conversation was said empty its first pieces are still what the device
+    /// kept, come a moment late, and no news.
+    var settling: Duration = .seconds(20)
     private static let routeKey = "TiloLiveRoute"
     private static let personKey = "TiloLivePerson"
 
@@ -99,6 +109,10 @@ public final class TiloSource: AssistantSource {
         var conversation: String?
         var held: [Item] = []
         var told = false
+        /// Since when a read with nothing in it is doubted, while pieces are held.
+        var emptySince: ContinuousClock.Instant?
+        /// Since when it stands said with nothing in it.
+        var saidEmptyAt: ContinuousClock.Instant?
         /// Whether an agent is at work on a message of it.
         var answering = false
         var listeners: [UUID: AsyncStream<ConversationChange>.Continuation] = [:]
@@ -236,11 +250,13 @@ public final class TiloSource: AssistantSource {
         toldSince = nil
         since.set(nil)
         toldUpTo = 0
+        toldRead = false
+        toldFresh = false
         toldWanted = false
         toldRefused = false
         for chat in Array(feeds.keys) {
             feeds[chat]?.conversation = nil
-            say([], in: chat)
+            say([], in: chat, doubting: false)
         }
         agents.set([])
         taskList.set([])
@@ -323,11 +339,14 @@ public final class TiloSource: AssistantSource {
         case .assistant:
             await findAssistant()
         }
+        // What her server told her so far is read before her conversation is said: what was a
+        // reminder yesterday stands as one from the first, and is not told again.
+        toldRefused = false
+        await readToldOnce()
         for chat in Array(feeds.keys) { feeds[chat]?.told = false }
         await look()
         await survey(.everything)
         toldWanted = true
-        toldRefused = false
         followTold()
         await handAddress()
     }
@@ -709,16 +728,35 @@ public final class TiloSource: AssistantSource {
         return nil
     }
 
-    private func say(_ now: [Item], in chat: Chat) {
+    private func say(_ now: [Item], in chat: Chat, doubting: Bool = true) {
         guard var feed = feeds[chat] else { return }
+        // One read with nothing in it does not empty a conversation that holds pieces: a page
+        // that just got in reads so before it has published Chat's messages. It is read again,
+        // and believed where it still says so after a while. What the app empties itself, at a
+        // sign-out, is no read and is not doubted.
+        if doubting, now.isEmpty, !feed.held.isEmpty {
+            guard let since = feed.emptySince else {
+                feed.emptySince = .now
+                feeds[chat] = feed
+                lookAgain(after: emptyDoubt)
+                return
+            }
+            if ContinuousClock.now - since < emptyDoubt { return }
+        }
+        feed.emptySince = nil
         let before = feed.held
         feed.held = now
         defer { feeds[chat] = feed }
-        guard feed.told else {
+        // The pieces that first fill a conversation just said empty are what the device kept,
+        // come a moment late: they are said whole, and none of them is news.
+        let late = feed.saidEmptyAt.map { !now.isEmpty && ContinuousClock.now - $0 < settling } ?? false
+        guard feed.told, !late else {
             feed.told = true
+            feed.saidEmptyAt = now.isEmpty ? .now : nil
             for listener in feed.listeners.values { listener.yield(.all(now)) }
             return
         }
+        feed.saidEmptyAt = now.isEmpty ? feed.saidEmptyAt ?? .now : nil
         let known = Set(before.map(\.id))
         let present = Set(now.map(\.id))
         for gone in before where !present.contains(gone.id) {
@@ -749,12 +787,23 @@ public final class TiloSource: AssistantSource {
         Task { [weak self] in
             var waits = false
             var quick = 0
+            // The log was read on this way in, before the conversation was said: what follows
+            // is what came while she was away, and then the ask her server holds.
+            if let self, self.toldFresh {
+                self.toldFresh = false
+                await self.readSince()
+                waits = true
+            }
             while let place = self?.toldUpTo {
                 let asked = ContinuousClock.now
                 do {
                     let read = try await engine.told(after: place, waiting: waits ? .seconds(10) : nil, device: device)
                     guard let self else { return }
                     self.toldUpTo = max(self.toldUpTo, read.newest)
+                    // Where the read on the way in went unanswered, this is the app's first read
+                    // of her server's log: the pieces it marks are said whole, none of them told.
+                    let before = !self.toldRead
+                    self.toldRead = true
                     if read.told.isEmpty {
                         // A server that does not hold the ask until its log moves is not asked
                         // without end. One quick answer with nothing in it is no such server: its
@@ -773,6 +822,7 @@ public final class TiloSource: AssistantSource {
                         for thing in read.told {
                             if let message = thing.message { self.toldByMessage[message] = thing }
                         }
+                        if before { for chat in Array(self.feeds.keys) { self.feeds[chat]?.told = false } }
                         await self.look()
                     }
                     // What happened while the person was away is counted at their first look after.
@@ -787,6 +837,36 @@ public final class TiloSource: AssistantSource {
                 }
             }
             self?.followsTold = false
+        }
+    }
+
+    /// Read what her server told her so far, once since the app started, before her conversation
+    /// is said. A reminder that came due yesterday is then a reminder in the first thing the
+    /// conversation says, not a piece that turns into one a moment later: a piece that turns
+    /// into a reminder is told, and that told every old one again at every start.
+    private func readToldOnce() async {
+        guard !toldRead, case .open = engine.state else { return }
+        do {
+            let read = try await engine.told(after: toldUpTo, device: deviceName)
+            toldRead = true
+            toldFresh = true
+            toldUpTo = max(toldUpTo, read.newest)
+            for thing in read.told {
+                if let message = thing.message { toldByMessage[message] = thing }
+            }
+        } catch TiloEngine.Problem.refused {
+            // A server that tells nothing this way is not asked again before the device gets in anew.
+            toldRefused = true
+        } catch {
+            // Not answered: the following reads the log, and says whole what it then marks.
+        }
+    }
+
+    /// Read the conversations once more after a while, where no word of a change may come.
+    private func lookAgain(after pause: Duration) {
+        Task { [weak self] in
+            try? await Task.sleep(for: pause + .milliseconds(50))
+            await self?.look()
         }
     }
 

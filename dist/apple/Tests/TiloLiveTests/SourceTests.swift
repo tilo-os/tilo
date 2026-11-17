@@ -578,10 +578,11 @@ final class TiloSourceTests: XCTestCase {
         try await until("the conversation followed") { self.held.count == 10 }
         try await Task.sleep(for: .milliseconds(300))
         let asked = try await page("return JSON.stringify(window.hostAsked)")
-        // The last five are what she was told: its log whole, what came while she was away, then the ask
-        // her server is to hold until the log moves. This one answers it at once with nothing, three
-        // times in a row, and is asked no more.
-        XCTAssertEqual(asked, #"["tilo.models list","tilo.vault list","tilo.learned list","tilo.telling read","tilo.events list","tilo.telling list","tilo.telling since-you-left","tilo.telling list","tilo.telling list","tilo.telling list"]"#)
+        // The first is what she was told so far: its log whole, read before her conversation is said,
+        // so that nothing old is told again. The last four are what came while she was away, then the
+        // ask her server is to hold until the log moves. This one answers it at once with nothing,
+        // three times in a row, and is asked no more.
+        XCTAssertEqual(asked, #"["tilo.telling list","tilo.models list","tilo.vault list","tilo.learned list","tilo.telling read","tilo.events list","tilo.telling since-you-left","tilo.telling list","tilo.telling list","tilo.telling list"]"#)
     }
 
     func testWhatItLearnedAndWhatIsImportantAreThePersonsOwnOnTheirHost() async throws {
