@@ -882,18 +882,18 @@ fn turns(
             let message = part.messages.get(&summons.message)?;
             let address = summons.address();
             let (instruction, subject) = chat::summons::request(message);
-            // What came before it in the conversation, oldest first: "what did I ask you
-            // before?" and "move the reminder to Friday" are understood through it.
-            let conversation = &summons.conversation;
-            let mut earlier: Vec<&chat::record::Message> = part
-                .messages
-                .iter()
-                .map(|(_, earlier)| earlier)
-                .filter(|earlier| &earlier.channel == conversation)
-                .filter(|earlier| earlier.ts < message.ts && !earlier.text.trim().is_empty())
-                .collect();
-            earlier.sort_by_key(|earlier| earlier.ts);
-            let instruction = with_conversation(instruction, &earlier);
+            // What came before it in the conversation, as every turn is told it
+            // ([`chat::recall::told`]): "what did I ask you before?" and "move the reminder to
+            // Friday" are understood through it.
+            let instruction = chat::recall::told(
+                chat,
+                part,
+                &summons.conversation,
+                &summons.message,
+                &MemberId::agent(&summons.agent),
+                instruction,
+            )
+            .instruction;
             let name = agent_names
                 .get(&summons.agent)
                 .cloned()
@@ -935,57 +935,6 @@ fn session_of(workspace: &str, conversation: &str, agent: &str) -> String {
         tilo_broker_core::services::AGENT_SESSION_PREFIX,
         digest.to_hex().get(..32).unwrap_or_default()
     )
-}
-
-/// The most characters of earlier conversation a turn's instruction carries, all messages
-/// together: the newest are kept and the older ones counted, so a long conversation stays within
-/// what a turn's instruction may hold (32 KiB, the agent's `validate`).
-const CONVERSATION_CHARS: usize = 12 * 1024;
-/// The most characters of one earlier message a turn is told.
-const SAID_CHARS: usize = 1_500;
-
-/// `instruction` with the conversation before the turn appended, as the agent reads a request that
-/// continues one ([`runtime_collab::INSTRUCTION_CONVERSATION`]): one line per message, the
-/// person's and the agent's own told apart. The agent reads what the request asks for from the
-/// person's own words alone ([`runtime_collab::TurnRequest::request`]); the conversation is what a
-/// follow-up ("move the reminder to Friday", "what did I ask you before?") is understood through.
-fn with_conversation(instruction: String, earlier: &[&chat::record::Message]) -> String {
-    if earlier.is_empty() {
-        return instruction;
-    }
-    let mut kept = Vec::new();
-    let mut room = CONVERSATION_CHARS;
-    for message in earlier.iter().rev() {
-        let said = message.text.trim();
-        let mut text: String = said.chars().take(SAID_CHARS).collect();
-        if text.len() < said.len() {
-            text.push('…');
-        }
-        let who = if person_of(&message.author).is_some() {
-            "Person: "
-        } else {
-            "You: "
-        };
-        let line = format!("\n{who}{}", text.replace('\n', "\n  "));
-        let Some(left) = room.checked_sub(line.len()) else {
-            break;
-        };
-        room = left;
-        kept.push(line);
-    }
-    let mut out = instruction;
-    out.push_str(runtime_collab::INSTRUCTION_CONVERSATION);
-    let left_out = earlier.len().saturating_sub(kept.len());
-    if left_out > 0 {
-        let _ = std::fmt::Write::write_fmt(
-            &mut out,
-            format_args!("\n({left_out} earlier messages left out)"),
-        );
-    }
-    for line in kept.into_iter().rev() {
-        out.push_str(&line);
-    }
-    out
 }
 
 #[cfg(test)]
