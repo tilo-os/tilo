@@ -770,6 +770,10 @@ mod tests {
     #[test]
     fn a_session_reports_ready_up_and_use() {
         let life = Life::new(1_000);
+        assert!(
+            life.alive(),
+            "a session that started and has not ended is alive: it keeps its VM awake"
+        );
         assert!(!life.ready() && life.expired(1_000, LIMITS).is_none());
         life.report(Report::Ready, 2_000);
         life.report(Report::Used, 3_000);
@@ -794,6 +798,7 @@ mod tests {
         life.report(Report::Used, 700_000);
         assert_eq!(life.expired(1_200_000, LIMITS), None, "use resets it");
         life.ended("its session exited (1)".into());
+        assert!(!life.alive(), "an ended session is no reason to keep a VM");
         assert_eq!(life.expired(1_200_000, LIMITS), Some(End::Session));
         assert_eq!(
             life.ended_because().as_deref(),
