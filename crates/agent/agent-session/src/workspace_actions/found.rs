@@ -86,6 +86,26 @@ fn inside(within: &Within, entry: &IndexEntry) -> bool {
     within.holds(place, entry.when)
 }
 
+/// Where a resource found in the document at `route` is listed, nearest first:
+/// a chain's item under the chain's own resource, then under each resource its
+/// id extends, then at the document's top. A part of a chain is a piece of the
+/// document that keeps the chain, and what it holds is published by the chain
+/// (under `chain:` and that document's id), not by the part.
+fn naming_parents(route: &DocumentRoute, resource: &str) -> Vec<Option<String>> {
+    super::opened::chain_of(&route.document)
+        .map(|chain| ui::resource::chain_resource_id(&chain))
+        .into_iter()
+        .map(Some)
+        .chain(
+            resource
+                .match_indices('/')
+                .map(|(at, _)| resource.get(..at).map(str::to_owned))
+                .rev()
+                .chain(std::iter::once(None)),
+        )
+        .collect()
+}
+
 /// Where the workspace decides the item `resource` names as `<kind>/<field>/<item>` in the
 /// resource at `route`: what a grant on that item alone names. `None` for an id of another
 /// shape, which no such grant names.
@@ -317,12 +337,7 @@ impl Worker {
         entry: &IndexEntry,
     ) -> Option<Found> {
         let id = entry.resource.as_str();
-        let holders = id
-            .match_indices('/')
-            .map(|(at, _)| id.get(..at).map(str::to_owned))
-            .rev()
-            .chain(std::iter::once(None));
-        for parent in holders {
+        for parent in naming_parents(route, id) {
             let query = CatalogueQuery {
                 provider: Some(record_provider(route)),
                 parent_resource: parent,
@@ -411,5 +426,49 @@ impl Worker {
             &ui::history_source::sentence::ThreadWords,
         );
         Ok(log.page(after))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn route(document: &str) -> DocumentRoute {
+        DocumentRoute {
+            app_id: "so.tilo.notes".into(),
+            cluster_id: "workspace".into(),
+            document: document.into(),
+        }
+    }
+
+    /// A chain's part is searched as the chain's document: its items are
+    /// published by the chain, under `chain:` and its id, and are asked for
+    /// there first.
+    #[test]
+    fn a_chain_parts_item_is_asked_for_under_the_chain_first() {
+        let part = route("derived:part.0@derived:pages@derived:default@tab:0000000000000000");
+        assert_eq!(
+            naming_parents(&part, "notes.pages/pages/note"),
+            [
+                Some("chain:derived:pages@derived:default@tab:0000000000000000".to_owned()),
+                Some("notes.pages/pages".to_owned()),
+                Some("notes.pages".to_owned()),
+                None,
+            ]
+        );
+    }
+
+    /// A document of its own lists its items under themselves, as it always has.
+    #[test]
+    fn a_documents_own_item_is_asked_for_under_its_collection() {
+        let document = route("derived:messages@derived:default@tab:0000000000000000");
+        assert_eq!(
+            naming_parents(&document, "chat.messages/messages/m1"),
+            [
+                Some("chat.messages/messages".to_owned()),
+                Some("chat.messages".to_owned()),
+                None,
+            ]
+        );
     }
 }
